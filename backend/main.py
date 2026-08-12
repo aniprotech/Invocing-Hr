@@ -3220,6 +3220,95 @@ def employee_forgot_password(body: ForgotPasswordIn, background_tasks: Backgroun
 
 
 # ============================================================================
+# SEARCH - one box that actually finds things
+# ============================================================================
+
+def _hit(kind, label, sub="", number="", record_id=None):
+    return {"type": kind, "label": label, "sub": sub,
+            "number": number, "id": record_id}
+
+
+@app.get("/api/search")
+def global_search(request: Request, q: str = "", limit: int = 8,
+                  db: Session = Depends(get_db)):
+    """Search everything the tenant owns, on the server.
+
+    The old search ran in the browser over whatever lists happened to be
+    loaded, so employees were unfindable until you had opened the Employees
+    tab, and quotes and recurring invoices were never searched at all. It also
+    matched invoices on fields the API does not return, which meant customer
+    names never matched anything.
+    """
+    client = get_client_user(request, db)
+    term = (q or "").strip()
+    if len(term) < 2:
+        return {"query": term, "results": []}
+
+    like = f"%{term.lower()}%"
+    cap = max(1, min(limit, 25))
+    results = []
+
+    def matches(*fields):
+        return or_(*[sqlfunc.lower(sqlfunc.coalesce(f, "")).like(like) for f in fields])
+
+    for inv in db.query(models.DBInvoice).filter(
+        models.DBInvoice.client_id == client.id,
+        matches(models.DBInvoice.number, models.DBInvoice.to_contact,
+                models.DBInvoice.email, models.DBInvoice.ref, models.DBInvoice.status),
+    ).order_by(models.DBInvoice.id.desc()).limit(cap).all():
+        results.append(_hit("invoice", f"{inv.number} - {inv.to_contact or 'No customer'}",
+                            f"{inv.status or ''}", inv.number, inv.id))
+
+    for q_row in db.query(models.DBQuote).filter(
+        models.DBQuote.client_id == client.id,
+        matches(models.DBQuote.number, models.DBQuote.to_contact,
+                models.DBQuote.email, models.DBQuote.title, models.DBQuote.ref),
+    ).order_by(models.DBQuote.id.desc()).limit(cap).all():
+        results.append(_hit("quote", f"{q_row.number} - {q_row.to_contact or 'No customer'}",
+                            q_row.title or quote_display_status(q_row), q_row.number, q_row.id))
+
+    for c in db.query(models.DBContact).filter(
+        models.DBContact.client_id == client.id,
+        matches(models.DBContact.name, models.DBContact.email,
+                models.DBContact.phone_number),
+    ).limit(cap).all():
+        results.append(_hit("contact", c.name or c.email or "Unknown",
+                            c.email or c.phone_number or "", "", c.id))
+
+    for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client.id,
+        matches(models.DBEmployee.first_name, models.DBEmployee.last_name,
+                models.DBEmployee.email, models.DBEmployee.job_title,
+                models.DBEmployee.employee_id),
+    ).limit(cap).all():
+        results.append(_hit("employee", f"{e.first_name} {e.last_name}".strip(),
+                            e.job_title or e.email or "", e.employee_id or "", e.id))
+
+    for r in db.query(models.DBRecurringInvoice).filter(
+        models.DBRecurringInvoice.client_id == client.id,
+        matches(models.DBRecurringInvoice.name, models.DBRecurringInvoice.to_contact,
+                models.DBRecurringInvoice.email),
+    ).limit(cap).all():
+        results.append(_hit("recurring", r.name or r.to_contact or "Recurring",
+                            f"every {r.frequency}", "", r.id))
+
+    # Payslips carry an employee_id, not a name, so the name is searched
+    # through the employee record rather than a column that does not exist.
+    for p, emp in db.query(models.DBPayslip, models.DBEmployee).join(
+        models.DBEmployee, models.DBPayslip.employee_id == models.DBEmployee.id
+    ).filter(
+        models.DBPayslip.client_id == client.id,
+        matches(models.DBPayslip.number, models.DBPayslip.status,
+                models.DBEmployee.first_name, models.DBEmployee.last_name),
+    ).order_by(models.DBPayslip.id.desc()).limit(cap).all():
+        who = f"{emp.first_name} {emp.last_name}".strip() or "Unknown"
+        results.append(_hit("payslip", f"{who} - {p.number or ''}",
+                            p.status or "", p.number or "", p.id))
+
+    return {"query": term, "results": results}
+
+
+# ============================================================================
 # SALES PIPELINE - quotes and invoices as one flow instead of two lists
 # ============================================================================
 

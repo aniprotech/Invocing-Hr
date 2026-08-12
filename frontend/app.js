@@ -616,32 +616,38 @@ function handleGlobalSearch(e) {
     }, 300);
 }
 
-function runGlobalSearch(q) {
-    var results = [];
-    allInvoices.forEach(function(inv) {
-        var text = (inv.number + ' ' + (inv.client_name || '') + ' ' + (inv.client_email || '') + ' ' + (inv.status || '')).toLowerCase();
-        if (text.includes(q)) results.push({ type: 'invoice', label: inv.number + ' — ' + (inv.client_name || 'No client'), status: inv.status, view: 'invoices-view' });
-    });
-    if (typeof allContacts !== 'undefined') {
-        allContacts.forEach(function(c) {
-            var text = ((c.name || '') + ' ' + (c.email || '') + ' ' + (c.phone || '')).toLowerCase();
-            if (text.includes(q)) results.push({ type: 'contact', label: (c.name || c.email || 'Unknown'), sub: c.email || '', view: 'contacts-view' });
+async function runGlobalSearch(q) {
+    // Server-side: the browser only ever held the lists you had already
+    // opened, so employees were unfindable until you visited their tab and
+    // quotes were never searched at all.
+    try {
+        var res = await fetch('/api/search?q=' + encodeURIComponent(q), {
+            credentials: 'same-origin',
         });
+        if (!res.ok) { hideSearchResults(); return; }
+        var data = await res.json();
+        showSearchResults(data.results || [], q);
+    } catch (e) {
+        hideSearchResults();
     }
-    if (typeof allEmployees !== 'undefined') {
-        allEmployees.forEach(function(emp) {
-            var text = ((emp.first_name || '') + ' ' + (emp.last_name || '') + ' ' + (emp.email || '') + ' ' + (emp.job_title || '') + ' ' + (emp.department || '')).toLowerCase();
-            if (text.includes(q)) results.push({ type: 'employee', label: (emp.first_name + ' ' + emp.last_name).trim(), sub: emp.email || emp.job_title || '', view: 'employees-view' });
-        });
-    }
-    if (typeof allPayslips !== 'undefined') {
-        allPayslips.forEach(function(ps) {
-            var text = ((ps.employee_name || '') + ' ' + (ps.period || '') + ' ' + (ps.status || '')).toLowerCase();
-            if (text.includes(q)) results.push({ type: 'payslip', label: (ps.employee_name || 'Unknown') + ' — ' + (ps.period || ''), sub: ps.status || '', view: 'payroll-view' });
-        });
-    }
-    showSearchResults(results, q);
 }
+
+// Where each kind of result goes when clicked. Landing on the list and making
+// somebody scroll for what they just found is not finding it.
+function openSearchResult(type, number, id) {
+    hideSearchResults();
+    var input = document.getElementById('global-search');
+    if (input) input.value = '';
+
+    if (type === 'invoice' && number) { showView('invoices-view'); viewInvoice(number); return; }
+    if (type === 'quote' && number) { showView('quotes-view'); viewQuote(number); return; }
+    if (type === 'employee' && id) { openEmployee(id); return; }
+    if (type === 'recurring') { showView('recurring-view'); return; }
+    if (type === 'payslip') { showView('payroll-view'); return; }
+    if (type === 'contact') { showView('contacts-view'); return; }
+    showView('dashboard-view');
+}
+window.openSearchResult = openSearchResult;
 
 function showSearchResults(results, q) {
     hideSearchResults();
@@ -653,8 +659,10 @@ function showSearchResults(results, q) {
     if (results.length === 0) {
         dropdown.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-secondary);font-size:0.85rem;">No results for "' + esc(q) + '"</div>';
     } else {
-        var types = { invoice: 'Invoices', contact: 'Contacts', employee: 'Employees', payslip: 'Payroll' };
-        var icons = { invoice: '&#128196;', contact: '&#128100;', employee: '&#128101;', payslip: '&#128176;' };
+        var types = { invoice: 'Invoices', quote: 'Quotes', recurring: 'Recurring',
+                      contact: 'Contacts', employee: 'Employees', payslip: 'Payroll' };
+        var icons = { invoice: '&#128196;', quote: '&#128220;', recurring: '&#128257;',
+                      contact: '&#128100;', employee: '&#128101;', payslip: '&#128176;' };
         var grouped = {};
         results.forEach(function(r) {
             if (!grouped[r.type]) grouped[r.type] = [];
@@ -665,7 +673,7 @@ function showSearchResults(results, q) {
             html += '<div style="padding:8px 14px 4px;font-size:0.72rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;">' + (types[type] || type) + '</div>';
             grouped[type].slice(0, 5).forEach(function(r) {
                 var highlight = esc(r.label).replace(new RegExp('(' + escapeRegex(esc(q)) + ')', 'gi'), '<strong style="color:var(--primary-color);">$1</strong>');
-                html += '<div class="search-result-item" onclick="handleSearchResultClick(\'' + r.view + '\')" style="padding:8px 14px;cursor:pointer;display:flex;align-items:center;gap:10px;transition:background 0.15s;">' +
+                html += '<div class="search-result-item" onclick="openSearchResult(\'' + r.type + '\', \'' + encodeURIComponent(r.number || '') + '\', ' + (r.id || 0) + ')" style="padding:8px 14px;cursor:pointer;display:flex;align-items:center;gap:10px;transition:background 0.15s;">' +
                     '<span style="font-size:1rem;">' + (icons[r.type] || '&#128269;') + '</span>' +
                     '<div style="min-width:0;">' +
                         '<div style="font-size:0.85rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + highlight + '</div>' +
@@ -691,17 +699,10 @@ function hideSearchResults() {
     if (existing) existing.remove();
 }
 
-function handleSearchResultClick(view) {
-    hideSearchResults();
-    document.getElementById('global-search').value = '';
-    showView(view);
-}
-
 document.addEventListener('click', function(e) {
     if (!e.target.closest('.search-bar')) hideSearchResults();
 });
 window.handleGlobalSearch = handleGlobalSearch;
-window.handleSearchResultClick = handleSearchResultClick;
 
 async function fetchNextInvoiceNumber() {
     try {
