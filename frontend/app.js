@@ -1097,17 +1097,40 @@ function generateTemplateWithAI() {
 }
 window.generateTemplateWithAI = generateTemplateWithAI;
 
-function previewInvoiceTemplate() {
-    // We just trigger viewInvoice on a dummy invoice or download it.
-    // Easiest is to generate PDF as data URI and open it.
+// Open a generated PDF in a new tab.
+//
+// This used to write an <iframe src="data:application/pdf;base64,..."> into a
+// blank window. Chrome has refused to render PDFs from data: URLs for years,
+// so the tab opened, was titled, and stayed blank. A blob URL goes straight to
+// the browser's own PDF viewer.
+function openPdfPreview(doc, title) {
+    var url;
     try {
-        var doc = generateInvoicePDF(true); // pass true for dummy data
-        var pdfB64 = doc.output('datauristring');
-        var win = window.open();
-        if (win) win.document.write('<iframe src="' + pdfB64 + '" frameborder="0" style="border:0; top:0px; left:0px; bottom:0px; right:0px; width:100%; height:100%;" allowfullscreen></iframe>');
-        else showToast('Popup blocked', 'error');
-    } catch(e) {
-        showToast('Preview failed', 'error');
+        url = URL.createObjectURL(doc.output('blob'));
+    } catch (e) {
+        showToast('Could not build the preview: ' + e.message, 'error');
+        return;
+    }
+    var win = window.open(url, '_blank');
+    if (!win) {
+        URL.revokeObjectURL(url);
+        showToast('Popup blocked - allow popups for this site to preview', 'error');
+        return;
+    }
+    try { win.document.title = title || 'Preview'; } catch (e) { /* cross-origin once the PDF loads */ }
+    // Revoked on a delay: doing it immediately pulls the file out from under
+    // the tab before the viewer has finished reading it.
+    setTimeout(function () { URL.revokeObjectURL(url); }, 120000);
+}
+window.openPdfPreview = openPdfPreview;
+
+function previewInvoiceTemplate() {
+    // Sample data, so the tenant can see their template before issuing anything.
+    try {
+        openPdfPreview(generateInvoicePDF(true), 'Template preview');
+    } catch (e) {
+        console.error('previewInvoiceTemplate error:', e);
+        showToast('Preview failed: ' + e.message, 'error');
     }
 }
 window.previewInvoiceTemplate = previewInvoiceTemplate;
@@ -2000,16 +2023,8 @@ window.downloadPDF = downloadPDF;
 // --- PDF Preview ---
 function previewPDF() {
     try {
-        var doc = generateInvoicePDF(false);
-        var pdfDataUri = doc.output('datauristring');
-        var win = window.open('', '_blank');
-        if (win) {
-            win.document.write('<!DOCTYPE html><html><head><title>Invoice Preview</title><style>body,html{margin:0;padding:0;height:100%;background:#000;}</style></head><body><iframe src="' + pdfDataUri + '" frameborder="0" style="border:0;top:0;left:0;bottom:0;right:0;width:100%;height:100%;min-height:100vh;" allowfullscreen></iframe></body></html>');
-            win.document.close();
-        } else {
-            showToast('Popup blocked — please allow popups for this site', 'error');
-        }
-    } catch(e) {
+        openPdfPreview(generateInvoicePDF(false), 'Invoice preview');
+    } catch (e) {
         console.error('previewPDF error:', e);
         showToast('Preview failed: ' + e.message, 'error');
     }
