@@ -3547,6 +3547,14 @@ async function viewPayslip(psId) {
         document.getElementById('ps-detail-ins').textContent = (ps.insurance || 0).toFixed(2);
         document.getElementById('ps-detail-ret').textContent = (ps.retirement || 0).toFixed(2);
         document.getElementById('ps-detail-other').textContent = (ps.other_deductions || 0).toFixed(2);
+        // Shown only when there is one, so an ordinary payslip is not cluttered
+        // with a zero row - but the four lines always add up to the total.
+        var standing = ps.standing_deduction || 0;
+        var standingRow = document.getElementById('ps-detail-standing-row');
+        if (standingRow) {
+            standingRow.style.display = standing > 0 ? '' : 'none';
+            document.getElementById('ps-detail-standing').textContent = standing.toFixed(2);
+        }
         document.getElementById('ps-detail-dedtotal').textContent = (ps.total_deductions || 0).toFixed(2);
         var netBigEl = document.getElementById('ps-detail-net-big');
         if (netBigEl) netBigEl.textContent = getCurrencySymbol() + (ps.net_pay || 0).toFixed(2);
@@ -3928,12 +3936,20 @@ function generatePayslipPDF() {
         ['Allowances', ps.allowances]
     ], ps.gross_pay, 'Gross pay');
 
-    var dedEnd = moneyTable(colR, 'DEDUCTIONS', [
+    // A standing deduction set on the employee record sits inside the total.
+    // Without its own line the four rows did not add up to the total printed
+    // underneath them, and nobody reading their payslip could see why.
+    var dedRows = [
         ['Tax', ps.tax_amount],
         ['Insurance', ps.insurance],
         ['Retirement', ps.retirement],
         ['Other', ps.other_deductions]
-    ], ps.total_deductions, 'Total deductions');
+    ];
+    if ((ps.standing_deduction || 0) > 0) {
+        dedRows.push(['Standing deduction', ps.standing_deduction]);
+    }
+    var dedEnd = moneyTable(colR, 'DEDUCTIONS', dedRows,
+                            ps.total_deductions, 'Total deductions');
 
     y = Math.max(earnEnd, dedEnd) + 22;
 

@@ -5867,6 +5867,9 @@ def compute_payslip_figures(emp, data):
         "hours_worked": hours, "overtime_hours": ot_hours, "overtime_rate": money(ot_rate),
         "basic_salary": basic, "overtime_pay": ot_pay, "bonus": bonus, "allowances": allowances,
         "gross_pay": gross, "tax_amount": tax, "insurance": insurance, "retirement": retirement,
+        # Deliberately not returned here: this dict is splatted straight into
+        # DBPayslip, which has no such column. It is derived on read instead,
+        # which also makes payslips issued before this fix reconcile.
         "other_deductions": other, "total_deductions": total_deductions, "net_pay": net,
     }
 
@@ -6108,6 +6111,12 @@ def get_payslip(ps_id: int, request: Request, db: Session = Depends(get_db)):
         "bonus": ps.bonus, "allowances": ps.allowances, "gross_pay": ps.gross_pay,
         "tax_amount": ps.tax_amount, "insurance": ps.insurance, "retirement": ps.retirement,
         "other_deductions": ps.other_deductions, "total_deductions": ps.total_deductions,
+        # A standing deduction on the employee record is inside the total but
+        # was never one of the shown lines, so a payslip did not add up.
+        # Derived rather than stored, so payslips already issued reconcile too.
+        "standing_deduction": money(
+            (ps.total_deductions or 0) - (ps.tax_amount or 0) - (ps.insurance or 0)
+            - (ps.retirement or 0) - (ps.other_deductions or 0)),
         "net_pay": ps.net_pay, "status": ps.status, "sent": ps.sent, "notes": ps.notes,
         "company": {
             "name": settings_map.get("company_name", "") or (client.company_name or ""),
