@@ -316,6 +316,7 @@ function showView(viewId) {
         'view-invoice-view': 'nav-invoices',
         'sales-pipeline-view': 'nav-pipeline',
         'recurring-view': 'nav-recurring',
+        'customer-view': 'nav-contacts',
         'quotes-view': 'nav-quotes',
         'create-quote-view': 'nav-quotes',
         'view-quote-view': 'nav-quotes',
@@ -645,7 +646,7 @@ function openSearchResult(type, number, id) {
     if (type === 'employee' && id) { openEmployee(id); return; }
     if (type === 'recurring') { showView('recurring-view'); return; }
     if (type === 'payslip') { showView('payroll-view'); return; }
-    if (type === 'contact') { showView('contacts-view'); return; }
+    if (type === 'contact') { if (id) { openCustomer(id); } else { showView('contacts-view'); } return; }
     showView('dashboard-view');
 }
 window.openSearchResult = openSearchResult;
@@ -6044,8 +6045,10 @@ function renderContacts(contacts) {
     }
     contacts.forEach(function(c) {
         tbody.insertAdjacentHTML('beforeend',
+            // The name opens their history; the buttons still edit the record.
             '<tr>' +
-            '<td><strong>' + esc(c.name || '-') + '</strong></td>' +
+            '<td style="cursor:pointer;" onclick="openCustomer(' + c.id + ')">' +
+                '<strong style="color:var(--primary-color);">' + esc(c.name || '-') + '</strong></td>' +
             '<td>' + esc(c.email || '-') + '</td>' +
             '<td>' + esc(c.phone_number || c.phone || '-') + '</td>' +
             '<td class="text-right">' +
@@ -9096,3 +9099,65 @@ async function removeTeamMember(id) {
     } catch (e) { showToast('Failed: ' + e.message, 'error'); }
 }
 window.removeTeamMember = removeTeamMember;
+
+// ==================== CUSTOMER DETAIL ====================
+// Contacts were a flat list. This is everything about one of them: what they
+// were quoted, what they were billed, what they paid and what they still owe.
+
+async function openCustomer(contactId) {
+    try {
+        var res = await fetch('/api/contacts/' + contactId + '/detail', { credentials: 'same-origin' });
+        if (!res.ok) { showToast('Customer not found', 'error'); return; }
+        renderCustomer(await res.json());
+        showView('customer-view');
+    } catch (e) { showToast('Failed: ' + e.message, 'error'); }
+}
+window.openCustomer = openCustomer;
+
+function renderCustomer(d) {
+    var c = d.contact || {}, s = d.summary || {};
+    document.getElementById('cust-name').textContent = c.name || 'Customer';
+
+    var sub = [c.email, c.phone_number].filter(Boolean).join(' · ');
+    document.getElementById('cust-summary').innerHTML =
+        statTile('Outstanding', moneyLines(s.outstanding, formatCurrency(0)), sub || 'owed now') +
+        statTile('Billed all time', moneyLines(s.billed, formatCurrency(0)),
+                 s.invoice_count + (s.invoice_count === 1 ? ' invoice' : ' invoices')) +
+        statTile('Paid', moneyLines(s.paid, formatCurrency(0)), 'received') +
+        statTile('Overdue', String(s.overdue_count || 0),
+                 (s.overdue_count === 1 ? 'invoice' : 'invoices') + ' past due');
+
+    var inv = document.getElementById('cust-invoices');
+    inv.innerHTML = (d.invoices || []).length ? d.invoices.map(function (i) {
+        return '<tr style="cursor:pointer;" onclick="viewInvoice(\'' + encodeURIComponent(i.number) + '\')">' +
+            '<td><strong>' + esc(i.number) + '</strong></td>' +
+            '<td>' + esc(i.date || '-') + '</td>' +
+            '<td' + (i.is_overdue ? ' style="color:var(--danger-color);"' : '') + '>' +
+                esc(i.due_date || '-') + (i.is_overdue ? ' (' + i.days_overdue + 'd late)' : '') + '</td>' +
+            '<td class="text-right">' + formatCurrency(i.paid, i.currency) + '</td>' +
+            '<td class="text-right"><strong>' + formatCurrency(i.due, i.currency) + '</strong></td>' +
+            '<td><span class="status-pill ' + (i.status === 'Paid' ? 'status-active' : 'status-onboarding') + '">' +
+                esc(i.status) + '</span></td></tr>';
+    }).join('') : '<tr><td colspan="6" style="text-align:center;padding:28px;color:var(--text-secondary);">Nothing billed yet.</td></tr>';
+
+    var qt = document.getElementById('cust-quotes');
+    qt.innerHTML = (d.quotes || []).length ? d.quotes.map(function (q) {
+        return '<tr style="cursor:pointer;" onclick="viewQuote(\'' + encodeURIComponent(q.number) + '\')">' +
+            '<td><strong>' + esc(q.number) + '</strong></td>' +
+            '<td>' + esc(q.title || '-') + '</td>' +
+            '<td>' + esc(q.date || '-') + '</td>' +
+            '<td>' + esc(q.expiry_date || '-') + '</td>' +
+            '<td class="text-right"><strong>' + formatCurrency(q.total, q.currency) + '</strong></td>' +
+            '<td><span class="status-pill ' + quoteStatusClass(q.status) + '">' + esc(q.status) + '</span></td></tr>';
+    }).join('') : '<tr><td colspan="6" style="text-align:center;padding:28px;color:var(--text-secondary);">No quotes yet.</td></tr>';
+
+    var pay = document.getElementById('cust-payments');
+    pay.innerHTML = (d.payments || []).length ? d.payments.map(function (p) {
+        return '<tr>' +
+            '<td>' + esc(p.invoice_number) + '</td>' +
+            '<td>' + esc(p.paid_on || '-') + '</td>' +
+            '<td>' + esc((p.method || '').replace('_', ' ')) + '</td>' +
+            '<td>' + esc(p.reference || '-') + '</td>' +
+            '<td class="text-right"><strong>' + formatCurrency(p.amount) + '</strong></td></tr>';
+    }).join('') : '<tr><td colspan="5" style="text-align:center;padding:28px;color:var(--text-secondary);">Nothing received yet.</td></tr>';
+}

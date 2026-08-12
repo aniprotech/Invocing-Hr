@@ -10,8 +10,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>A</text></svg>">
-    <link rel="stylesheet" href="styles.css?v=34">
-    <link rel="stylesheet" href="mobile.css?v=34">
+    <link rel="stylesheet" href="styles.css?v=35">
+    <link rel="stylesheet" href="mobile.css?v=35">
 </head>
 <body>
     <a class="skip-link" href="#main-content-region">Skip to main content</a>
@@ -234,6 +234,49 @@
                                 <tbody id="invoices-table-body"></tbody>
                             </table>
                         </div>
+                    </div>
+                </div>
+
+                <!-- ========== CUSTOMER DETAIL ========== -->
+                <div id="customer-view" class="view-section dashboard" style="display:none;">
+                    <div class="invoices-header-area">
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <span style="color:var(--text-secondary);font-size:0.9rem;cursor:pointer;" onclick="showView('contacts-view')">Contacts</span>
+                            <span style="color:var(--text-secondary);font-size:0.9rem;">/</span>
+                            <h1 id="cust-name">Customer</h1>
+                        </div>
+                        <div class="invoices-actions">
+                            <button class="btn btn-outline" onclick="prepareNewQuote()">New Quote</button>
+                            <button class="btn btn-primary" onclick="showView('create-invoice-view')">New Invoice</button>
+                        </div>
+                    </div>
+                    <div id="cust-summary" class="grid-4 mb-24"></div>
+                    <div class="glass-widget" style="margin-bottom:24px;">
+                        <div class="widget-header"><h3>Invoices</h3></div>
+                        <div class="widget-content"><div class="table-responsive">
+                            <table class="data-table"><thead><tr>
+                                <th>Number</th><th>Date</th><th>Due</th>
+                                <th class="text-right">Paid</th><th class="text-right">Owed</th><th>Status</th>
+                            </tr></thead><tbody id="cust-invoices"></tbody></table>
+                        </div></div>
+                    </div>
+                    <div class="glass-widget" style="margin-bottom:24px;">
+                        <div class="widget-header"><h3>Quotes</h3></div>
+                        <div class="widget-content"><div class="table-responsive">
+                            <table class="data-table"><thead><tr>
+                                <th>Number</th><th>Subject</th><th>Date</th>
+                                <th>Valid until</th><th class="text-right">Total</th><th>Status</th>
+                            </tr></thead><tbody id="cust-quotes"></tbody></table>
+                        </div></div>
+                    </div>
+                    <div class="glass-widget">
+                        <div class="widget-header"><h3>Payments received</h3></div>
+                        <div class="widget-content"><div class="table-responsive">
+                            <table class="data-table"><thead><tr>
+                                <th>Invoice</th><th>Date</th><th>Method</th>
+                                <th>Reference</th><th class="text-right">Amount</th>
+                            </tr></thead><tbody id="cust-payments"></tbody></table>
+                        </div></div>
                     </div>
                 </div>
 
@@ -2486,7 +2529,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="app.js?v=34"></script>
+    <script src="app.js?v=35"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">

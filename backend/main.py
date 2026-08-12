@@ -3444,6 +3444,92 @@ def remove_member(member_id: int, request: Request, db: Session = Depends(get_db
 
 
 # ============================================================================
+# CUSTOMER DETAIL - everything about one customer in one place
+# ============================================================================
+
+@app.get("/api/contacts/{contact_id}/detail")
+def customer_detail(contact_id: int, request: Request, db: Session = Depends(get_db)):
+    """One customer's whole history: what they were quoted, what they were
+    invoiced, what they have paid and what they still owe.
+
+    Invoices and quotes reference a customer by the name written on them, not
+    by a foreign key, so they are gathered by name. Matching is case-insensitive
+    because "Bramley Works" and "bramley works" are the same company.
+    """
+    client = get_client_user(request, db)
+    contact = db.query(models.DBContact).filter(
+        models.DBContact.id == contact_id,
+        models.DBContact.client_id == client.id,
+    ).first()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    name = (contact.name or "").strip().lower()
+    today = datetime.now().date()
+
+    invoices = [i for i in db.query(models.DBInvoice).filter(
+        models.DBInvoice.client_id == client.id
+    ).order_by(models.DBInvoice.id.desc()).all()
+        if (i.to_contact or "").strip().lower() == name]
+
+    quotes = [q for q in db.query(models.DBQuote).filter(
+        models.DBQuote.client_id == client.id
+    ).order_by(models.DBQuote.id.desc()).all()
+        if (q.to_contact or "").strip().lower() == name]
+
+    payments = []
+    if invoices:
+        by_id = {i.id: i for i in invoices}
+        payments = [{
+            "invoice_number": by_id[p.invoice_id].number,
+            "amount": p.amount, "paid_on": p.paid_on,
+            "method": p.method, "reference": p.reference or "",
+        } for p in db.query(models.DBPayment).filter(
+            models.DBPayment.invoice_id.in_(list(by_id))
+        ).order_by(models.DBPayment.id.desc()).all()]
+
+    open_invoices = [i for i in invoices if i.status in OPEN_INVOICE_STATUSES]
+    overdue = [i for i in open_invoices if invoice_overdue_days(i, today) > 0]
+
+    def totals(rows, amount):
+        return totals_by_currency(
+            [{"currency": r.currency, "total": amount(r)} for r in rows],
+            fallback=client.currency or "GBP")
+
+    return {
+        "contact": {
+            "id": contact.id, "name": contact.name or "",
+            "email": contact.email or "", "phone_number": contact.phone_number or "",
+        },
+        "summary": {
+            "invoice_count": len(invoices),
+            "quote_count": len(quotes),
+            "overdue_count": len(overdue),
+            # Per currency, because a customer billed in two currencies has two
+            # balances, not one meaningless sum.
+            "billed": totals(invoices, lambda i: (i.paid or 0) + (i.due or 0)),
+            "paid": totals(invoices, lambda i: i.paid or 0),
+            "outstanding": totals(open_invoices, lambda i: i.due or 0),
+        },
+        "invoices": [{
+            "number": i.number, "date": i.issue_date, "due_date": i.due_date,
+            "status": i.status, "paid": i.paid or 0, "due": i.due or 0,
+            "currency": i.currency or (client.currency or ""),
+            "is_overdue": invoice_overdue_days(i, today) > 0,
+            "days_overdue": invoice_overdue_days(i, today),
+        } for i in invoices],
+        "quotes": [{
+            "number": q.number, "date": q.issue_date, "expiry_date": q.expiry_date,
+            "status": quote_display_status(q), "title": q.title or "",
+            "total": compute_invoice_totals(q.line_items, q.tax_type)[2],
+            "currency": q.currency or (client.currency or ""),
+            "invoice_number": q.invoice_number or "",
+        } for q in quotes],
+        "payments": payments,
+    }
+
+
+# ============================================================================
 # SEARCH - one box that actually finds things
 # ============================================================================
 
