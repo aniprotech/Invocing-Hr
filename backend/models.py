@@ -204,6 +204,32 @@ class DBJobRun(Base):
     finished_at = Column(String, default="")
 
 
+class DBTeamMember(Base):
+    """Somebody who works at a tenant, other than the account owner.
+
+    The owner stays on DBClient, which is where the company and its original
+    credentials live. Everyone else is a row here, so adding colleagues never
+    touches the record the whole tenancy hangs off.
+    """
+    __tablename__ = "team_members"
+    __table_args__ = (
+        UniqueConstraint('client_id', 'email', name='uq_client_member_email'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    email = Column(String, nullable=False, index=True)
+    name = Column(String, default="")
+    password_hash = Column(String, default="")
+    # owner: everything. admin: everything but the team and the wallet.
+    # viewer: read-only, enforced centrally rather than endpoint by endpoint.
+    role = Column(String, default="admin", index=True)
+    is_active = Column(Boolean, default=True)
+    invited_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    accepted_at = Column(String, default="")
+    last_login = Column(String, default="")
+
+
 class DBPasswordReset(Base):
     """One password reset link.
 
@@ -218,6 +244,7 @@ class DBPasswordReset(Base):
     user_type = Column(String, default="client", index=True)
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=True, index=True)
     employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True, index=True)
+    member_id = Column(Integer, ForeignKey("team_members.id"), nullable=True, index=True)
     token_hash = Column(String, nullable=False, index=True)
     expires_at = Column(String, nullable=False)
     used_at = Column(String, default="")

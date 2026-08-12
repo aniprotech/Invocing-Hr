@@ -10,8 +10,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>A</text></svg>">
-    <link rel="stylesheet" href="styles.css?v=33">
-    <link rel="stylesheet" href="mobile.css?v=33">
+    <link rel="stylesheet" href="styles.css?v=34">
+    <link rel="stylesheet" href="mobile.css?v=34">
 </head>
 <body>
     <a class="skip-link" href="#main-content-region">Skip to main content</a>
@@ -1011,6 +1011,34 @@
                         </div>
                     </div>
                     
+                    <div class="glass-widget" style="margin-bottom:24px;">
+                        <div class="widget-header">
+                            <h3>Team</h3>
+                            <button class="btn btn-outline btn-sm" id="team-invite-btn" onclick="inviteTeamMember()">+ Invite</button>
+                        </div>
+                        <div class="widget-content">
+                            <p style="color:var(--text-secondary);font-size:0.85rem;margin-bottom:16px;">
+                                Give colleagues their own sign-in instead of sharing one. <strong>Admin</strong> can do
+                                everything except manage this list; <strong>viewer</strong> can look but not change
+                                anything. Only the account owner can invite or remove people.
+                            </p>
+                            <div class="table-responsive">
+                                <table class="data-table" style="min-width:520px;">
+                                    <thead>
+                                        <tr>
+                                            <th style="min-width:180px;">Person</th>
+                                            <th style="min-width:110px;">Role</th>
+                                            <th style="min-width:110px;">Status</th>
+                                            <th style="min-width:130px;">Last signed in</th>
+                                            <th style="min-width:80px;"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="team-table-body"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="glass-widget" style="margin-bottom:24px;">
                         <div class="widget-header">
                             <h3>Tax Rates</h3>
@@ -2458,7 +2486,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="app.js?v=33"></script>
+    <script src="app.js?v=34"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">

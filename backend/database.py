@@ -1076,5 +1076,29 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 38: {sys.exc_info()[1]}")
 
+            # Team members, so a company is not one shared login
+            try:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS team_members (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        email VARCHAR NOT NULL,
+                        name VARCHAR DEFAULT '',
+                        password_hash VARCHAR DEFAULT '',
+                        role VARCHAR DEFAULT 'admin',
+                        is_active BOOLEAN DEFAULT TRUE,
+                        invited_at VARCHAR DEFAULT (NOW()::TEXT),
+                        accepted_at VARCHAR DEFAULT '',
+                        last_login VARCHAR DEFAULT '',
+                        CONSTRAINT uq_client_member_email UNIQUE (client_id, email)
+                    )
+                """))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_team_members_client_id ON team_members (client_id)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_team_members_email ON team_members (email)"))
+                conn.execute(text("ALTER TABLE password_resets ADD COLUMN IF NOT EXISTS member_id INTEGER"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 39: {sys.exc_info()[1]}")
+
     except Exception as e:
         print(f"Column check skipped: {e}")

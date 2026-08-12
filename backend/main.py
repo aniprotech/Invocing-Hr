@@ -513,6 +513,9 @@ class ClientOnboard(BaseModel):
     industry: Optional[str] = ""
     logo_url: Optional[str] = ""
 
+WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
 def get_client_user(request: Request, db: Session):
     client_id = request.session.get("client_id")
     if not client_id:
@@ -520,6 +523,19 @@ def get_client_user(request: Request, db: Session):
     client = db.query(models.DBClient).filter(models.DBClient.id == client_id).first()
     if not client or not client.is_active:
         raise HTTPException(status_code=403, detail="Account disabled")
+
+    # Read-only members are stopped here rather than on each endpoint. Every
+    # route that touches tenant data resolves the tenant through this function,
+    # so there is one place to get right instead of two hundred to remember.
+    member_id = request.session.get("member_id")
+    if member_id and request.method in WRITE_METHODS:
+        member = db.query(models.DBTeamMember).filter(
+            models.DBTeamMember.id == member_id).first()
+        if not member or not member.is_active:
+            raise HTTPException(status_code=403, detail="Your access has been removed")
+        if member.role == "viewer":
+            raise HTTPException(status_code=403,
+                                detail="Your account has read-only access.")
     return client
 
 @app.post("/api/client/register")
@@ -549,12 +565,30 @@ def client_login(body: ClientLogin, request: Request, db: Session = Depends(get_
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
     client = db.query(models.DBClient).filter(models.DBClient.email == body.email).first()
     if not client or not verify_password(body.password, client.password_hash):
+        # Not the account owner - it may be one of their colleagues.
+        member = db.query(models.DBTeamMember).filter(
+            sqlfunc.lower(models.DBTeamMember.email) == (body.email or "").strip().lower()
+        ).first()
+        if (member and member.is_active and member.password_hash
+                and verify_password(body.password, member.password_hash)):
+            owner = db.query(models.DBClient).filter(
+                models.DBClient.id == member.client_id).first()
+            if not owner or not owner.is_active:
+                raise HTTPException(status_code=403, detail="Account disabled")
+            request.session["client_id"] = owner.id
+            request.session["member_id"] = member.id
+            member.last_login = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_login(db, owner.id, member.email, "member", "password", request, "success")
+            db.commit()
+            return {"message": "Logged in", "is_onboarded": owner.is_onboarded,
+                    "company_name": owner.company_name, "role": member.role}
         log_login(db, None, body.email, "client", "password", request, "failed")
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not client.is_active:
         log_login(db, client.id, body.email, "client", "password", request, "disabled")
         raise HTTPException(status_code=403, detail="Account disabled")
     request.session["client_id"] = client.id
+    request.session.pop("member_id", None)
     log_login(db, client.id, body.email, "client", "password", request, "success")
     return {"message": "Logged in", "is_onboarded": client.is_onboarded, "company_name": client.company_name}
 
@@ -3020,8 +3054,10 @@ def issue_reset_token(db, user_type, subject_id, ip=""):
         models.DBPasswordReset.user_type == user_type,
         models.DBPasswordReset.used_at == "",
     )
-    q = (q.filter(models.DBPasswordReset.client_id == subject_id) if user_type == "client"
-         else q.filter(models.DBPasswordReset.employee_id == subject_id))
+    column = {"client": models.DBPasswordReset.client_id,
+              "employee": models.DBPasswordReset.employee_id,
+              "member": models.DBPasswordReset.member_id}[user_type]
+    q = q.filter(column == subject_id)
     q.update({"used_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
              synchronize_session=False)
 
@@ -3033,10 +3069,8 @@ def issue_reset_token(db, user_type, subject_id, ip=""):
                     ).strftime("%Y-%m-%d %H:%M:%S"),
         requested_ip=ip,
     )
-    if user_type == "client":
-        row.client_id = subject_id
-    else:
-        row.employee_id = subject_id
+    setattr(row, {"client": "client_id", "employee": "employee_id",
+                  "member": "member_id"}[user_type], subject_id)
     db.add(row)
     return token
 
@@ -3147,7 +3181,18 @@ def reset_password(body: ResetPasswordIn, request: Request, db: Session = Depend
         raise HTTPException(status_code=400, detail="That reset link is invalid or has expired")
     validate_password_strength(body.password)
 
-    if row.user_type == "employee":
+    if row.user_type == "member":
+        subject = db.query(models.DBTeamMember).filter(
+            models.DBTeamMember.id == row.member_id).first()
+        if not subject or not subject.is_active:
+            raise HTTPException(status_code=400,
+                                detail="That link is invalid or has expired")
+        subject.password_hash = hash_password(body.password)
+        # Setting a password is how an invite is accepted.
+        if not subject.accepted_at:
+            subject.accepted_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        client_id, who = subject.client_id, subject.email
+    elif row.user_type == "employee":
         subject = db.query(models.DBEmployee).filter(
             models.DBEmployee.id == row.employee_id).first()
         if not subject or subject.status == "terminated":
@@ -3171,9 +3216,12 @@ def reset_password(body: ResetPasswordIn, request: Request, db: Session = Depend
         models.DBPasswordReset.user_type == row.user_type,
         models.DBPasswordReset.used_at == "",
     )
-    spent = (spent.filter(models.DBPasswordReset.client_id == row.client_id)
-             if row.user_type == "client"
-             else spent.filter(models.DBPasswordReset.employee_id == row.employee_id))
+    spent_column, spent_value = {
+        "client": (models.DBPasswordReset.client_id, row.client_id),
+        "employee": (models.DBPasswordReset.employee_id, row.employee_id),
+        "member": (models.DBPasswordReset.member_id, row.member_id),
+    }[row.user_type]
+    spent = spent.filter(spent_column == spent_value)
     spent.update({"used_at": now}, synchronize_session=False)
 
     log_login(db, client_id, who, row.user_type, "password_reset", request, "success")
@@ -3217,6 +3265,182 @@ def employee_forgot_password(body: ForgotPasswordIn, background_tasks: Backgroun
         client_id=emp.client_id,
     )
     return generic
+
+
+# ============================================================================
+# TEAM - more than one person per business
+# ============================================================================
+
+# owner  - everything, and the only role that can manage the team
+# admin  - everything else, including billing and the wallet
+# viewer - read-only
+TEAM_ROLES = ("owner", "admin", "viewer")
+
+def current_member(request: Request, db: Session):
+    """The signed-in team member, or None when it is the account owner."""
+    member_id = request.session.get("member_id")
+    if not member_id:
+        return None
+    return db.query(models.DBTeamMember).filter(
+        models.DBTeamMember.id == member_id).first()
+
+
+def current_role(request: Request, db: Session) -> str:
+    member = current_member(request, db)
+    return (member.role if member else "owner")
+
+
+def require_owner(request: Request, db: Session):
+    if current_role(request, db) != "owner":
+        raise HTTPException(status_code=403,
+                            detail="Only the account owner can do that")
+
+
+def member_to_dict(m, is_owner=False):
+    return {
+        "id": m.id if m else 0,
+        "email": m.email if m else "",
+        "name": (m.name if m else "") or "",
+        "role": "owner" if is_owner else (m.role if m else "admin"),
+        "is_active": bool(m.is_active) if m else True,
+        "accepted": bool(m.accepted_at) if m else True,
+        "last_login": (m.last_login if m else "") or "",
+        "is_account_owner": is_owner,
+    }
+
+
+class TeamInvite(BaseModel):
+    email: str
+    name: Optional[str] = ""
+    role: Optional[str] = "admin"
+
+
+class TeamUpdate(BaseModel):
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+    name: Optional[str] = None
+
+
+@app.get("/api/team")
+def list_team(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    rows = db.query(models.DBTeamMember).filter(
+        models.DBTeamMember.client_id == client.id
+    ).order_by(models.DBTeamMember.id.asc()).all()
+
+    # The owner is on DBClient, not in this table, but they are a person on the
+    # team and leaving them out of the list would be confusing.
+    owner = {
+        "id": 0, "email": client.email, "name": client.contact_name or "",
+        "role": "owner", "is_active": bool(client.is_active), "accepted": True,
+        "last_login": client.last_login or "", "is_account_owner": True,
+    }
+    return {"members": [owner] + [member_to_dict(m) for m in rows],
+            "your_role": current_role(request, db)}
+
+
+@app.post("/api/team/invite")
+def invite_member(body: TeamInvite, background_tasks: BackgroundTasks,
+                  request: Request, db: Session = Depends(get_db)):
+    """Add a colleague and email them a link to set their own password.
+
+    Reuses the password-reset machinery rather than inventing a second kind of
+    token, so an invite is single-use and expires like any other link, and no
+    password ever travels by email.
+    """
+    client = get_client_user(request, db)
+    require_owner(request, db)
+
+    email = (body.email or "").strip().lower()
+    if not email or not validate_email_address(email):
+        raise HTTPException(status_code=400, detail="A valid email address is required")
+    role = (body.role or "admin").strip().lower()
+    if role not in ("admin", "viewer"):
+        raise HTTPException(status_code=400,
+                            detail="Role must be admin or viewer. There is one owner.")
+    if email == (client.email or "").lower():
+        raise HTTPException(status_code=400, detail="That is the account owner's address")
+    if db.query(models.DBTeamMember).filter(
+        models.DBTeamMember.client_id == client.id,
+        sqlfunc.lower(models.DBTeamMember.email) == email,
+    ).first():
+        raise HTTPException(status_code=400, detail="They are already on the team")
+
+    member = models.DBTeamMember(
+        client_id=client.id, email=email, name=(body.name or "").strip(), role=role)
+    db.add(member)
+    db.flush()
+
+    token = issue_reset_token(db, "member", member.id, request.client.host if request.client else "")
+    log_audit(db, client.id, "team_invited", "team", member.id, email, role, request)
+    db.commit()
+
+    base = (os.getenv("APP_BASE_URL") or str(request.base_url)).rstrip("/")
+    link = f"{base}/reset-password.html?token={token}&portal=team"
+    who = client.company_name or "the team"
+    text_body, html_body = reset_email_bodies(link, who, RESET_TOKEN_TTL_MINUTES)
+    text_body = text_body.replace("Someone asked to reset the password for",
+                                  "You have been invited to")
+    from_email = os.getenv("FROM_EMAIL", "hello@keyroutes.co")
+    background_tasks.add_task(
+        send_email_background, email, f"You have been added to {who} on aniprotech",
+        text_body, f"aniprotech <{from_email}>", html_body, None, "", "",
+        client_id=client.id)
+
+    return member_to_dict(member)
+
+
+@app.put("/api/team/{member_id}")
+def update_member(member_id: int, body: TeamUpdate, request: Request,
+                  db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    require_owner(request, db)
+    member = db.query(models.DBTeamMember).filter(
+        models.DBTeamMember.id == member_id,
+        models.DBTeamMember.client_id == client.id,
+    ).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Team member not found")
+
+    if body.role is not None:
+        role = body.role.strip().lower()
+        if role not in ("admin", "viewer"):
+            raise HTTPException(status_code=400, detail="Role must be admin or viewer")
+        member.role = role
+    if body.is_active is not None:
+        member.is_active = bool(body.is_active)
+    if body.name is not None:
+        member.name = body.name.strip()
+
+    log_audit(db, client.id, "team_updated", "team", member.id, member.email,
+              member.role, request)
+    db.commit()
+    db.refresh(member)
+    return member_to_dict(member)
+
+
+@app.delete("/api/team/{member_id}")
+def remove_member(member_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    require_owner(request, db)
+    member = db.query(models.DBTeamMember).filter(
+        models.DBTeamMember.id == member_id,
+        models.DBTeamMember.client_id == client.id,
+    ).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Team member not found")
+
+    # Any outstanding invite or reset link for them dies with the account.
+    db.query(models.DBPasswordReset).filter(
+        models.DBPasswordReset.member_id == member.id,
+        models.DBPasswordReset.used_at == "",
+    ).update({"used_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+             synchronize_session=False)
+
+    log_audit(db, client.id, "team_removed", "team", member.id, member.email, "", request)
+    db.delete(member)
+    db.commit()
+    return {"message": "Removed from the team"}
 
 
 # ============================================================================

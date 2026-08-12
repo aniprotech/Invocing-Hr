@@ -347,6 +347,7 @@ function showView(viewId) {
     if (viewId === 'settings-view' && typeof loadGmailStatus === 'function') loadGmailStatus();
     if (viewId === 'settings-view' && typeof loadSettings === 'function') loadSettings();
     if (viewId === 'settings-view' && typeof loadTaxRates === 'function') loadTaxRates();
+    if (viewId === 'settings-view' && typeof loadTeam === 'function') loadTeam();
     if (viewId === 'settings-view' && typeof loadAuditLogs === 'function') loadAuditLogs();
     if (viewId === 'reports-view' && typeof loadReports === 'function') loadReports();
     // Close mobile menu
@@ -4508,6 +4509,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     // the pickers once the tenant's own list arrives.
     if (typeof loadTaxRates === 'function') loadTaxRates();
     if (typeof loadAiStatus === 'function') loadAiStatus();
+    if (typeof loadTeam === 'function') loadTeam();
 
     Object.keys(DOC_FORM_SCOPES).forEach(function(scope) {
         var body = document.getElementById(DOC_FORM_SCOPES[scope].body);
@@ -8962,3 +8964,135 @@ async function stopRecurring(id) {
     } catch (e) { showToast('Failed: ' + e.message, 'error'); }
 }
 window.stopRecurring = stopRecurring;
+
+// ==================== TEAM ====================
+// A company used to be one shared login. These are the people who have their
+// own, and what each of them is allowed to do.
+
+var _team = { members: [], your_role: 'owner' };
+
+async function loadTeam() {
+    var tbody = document.getElementById('team-table-body');
+    if (!tbody) return;
+    try {
+        var res = await fetch('/api/team', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        _team = await res.json();
+        renderTeam();
+        applyRoleToUi();
+    } catch (e) { console.error('Team load failed:', e); }
+}
+window.loadTeam = loadTeam;
+
+function renderTeam() {
+    var tbody = document.getElementById('team-table-body');
+    if (!tbody) return;
+    var isOwner = _team.your_role === 'owner';
+
+    var inviteBtn = document.getElementById('team-invite-btn');
+    if (inviteBtn) inviteBtn.style.display = isOwner ? '' : 'none';
+
+    tbody.innerHTML = (_team.members || []).map(function (m) {
+        var status = m.is_account_owner ? 'Account owner'
+                   : (!m.is_active ? 'Disabled'
+                   : (m.accepted ? 'Active' : 'Invited'));
+        var statusClass = (!m.is_active && !m.is_account_owner) ? 'status-terminated'
+                        : (m.accepted ? 'status-active' : 'status-onboarding');
+
+        // Only the owner may change roles, and the owner's own row is fixed:
+        // there is exactly one account owner.
+        var roleCell = (isOwner && !m.is_account_owner)
+            ? '<select class="form-control" style="min-width:100px;" onchange="setTeamRole(' + m.id + ', this.value)">' +
+                  '<option value="admin"' + (m.role === 'admin' ? ' selected' : '') + '>Admin</option>' +
+                  '<option value="viewer"' + (m.role === 'viewer' ? ' selected' : '') + '>Viewer</option>' +
+              '</select>'
+            : '<span class="status-pill status-draft">' + esc(m.role) + '</span>';
+
+        var actions = (isOwner && !m.is_account_owner)
+            ? '<button class="btn btn-outline btn-sm" onclick="toggleTeamMember(' + m.id + ',' + (!m.is_active) + ')">' +
+                  (m.is_active ? 'Disable' : 'Enable') + '</button>' +
+              '<button class="btn btn-outline btn-sm" style="color:var(--danger-color);border-color:var(--danger-color);margin-left:6px;" ' +
+                  'onclick="removeTeamMember(' + m.id + ')">Remove</button>'
+            : '';
+
+        return '<tr>' +
+            '<td><strong>' + esc(m.name || m.email) + '</strong>' +
+                (m.name ? '<div style="font-size:0.8rem;color:var(--text-secondary);">' + esc(m.email) + '</div>' : '') +
+            '</td>' +
+            '<td>' + roleCell + '</td>' +
+            '<td><span class="status-pill ' + statusClass + '">' + esc(status) + '</span></td>' +
+            '<td>' + esc(m.last_login || 'Never') + '</td>' +
+            '<td class="text-right">' + actions + '</td>' +
+        '</tr>';
+    }).join('');
+}
+
+// A read-only member should not be shown buttons that will only refuse them.
+function applyRoleToUi() {
+    if (_team.your_role !== 'viewer') return;
+    var banner = document.getElementById('readonly-banner');
+    if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'readonly-banner';
+        banner.style.cssText = 'background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.35);' +
+            'color:#f59e0b;padding:8px 14px;font-size:0.85rem;text-align:center;';
+        banner.textContent = 'You have read-only access. You can look at everything but not change it.';
+        document.body.insertBefore(banner, document.body.firstChild);
+    }
+}
+
+async function inviteTeamMember() {
+    var email = prompt('Their work email address');
+    if (!email) return;
+    var role = prompt('Role: admin or viewer', 'admin');
+    if (!role) return;
+    var name = prompt('Their name (optional)') || '';
+    try {
+        var res = await fetch('/api/team/invite', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ email: email.trim(), role: role.trim().toLowerCase(), name: name.trim() }),
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) { reportApiError(res, data, 'Could not send that invite'); return; }
+        showToast('Invited ' + data.email + '. They will get a link to set a password.', 'success');
+        loadTeam();
+    } catch (e) { showToast('Failed: ' + e.message, 'error'); }
+}
+window.inviteTeamMember = inviteTeamMember;
+
+async function setTeamRole(id, role) {
+    await updateTeamMember(id, { role: role }, 'Role updated');
+}
+window.setTeamRole = setTeamRole;
+
+async function toggleTeamMember(id, makeActive) {
+    await updateTeamMember(id, { is_active: makeActive },
+                           makeActive ? 'Access restored' : 'Access suspended');
+}
+window.toggleTeamMember = toggleTeamMember;
+
+async function updateTeamMember(id, body, okMessage) {
+    try {
+        var res = await fetch('/api/team/' + id, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin', body: JSON.stringify(body),
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) { reportApiError(res, data, 'Could not update them'); return; }
+        showToast(okMessage, 'success');
+        loadTeam();
+    } catch (e) { showToast('Failed: ' + e.message, 'error'); }
+}
+
+async function removeTeamMember(id) {
+    if (!confirm('Remove them from the team? They will not be able to sign in.')) return;
+    try {
+        var res = await fetch('/api/team/' + id, { method: 'DELETE', credentials: 'same-origin' });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) { reportApiError(res, data, 'Could not remove them'); return; }
+        showToast('Removed from the team', 'success');
+        loadTeam();
+    } catch (e) { showToast('Failed: ' + e.message, 'error'); }
+}
+window.removeTeamMember = removeTeamMember;
