@@ -339,8 +339,10 @@ def test_an_operator_can_run_the_jobs_now(client, tenant):
         "identifier": "hello@keyroutes.co", "password": "TestSuper123"})
     res = client.post("/api/superadmin/run-jobs")
     assert res.status_code == 200, res.text
-    assert {r["job"] for r in res.json()["results"]} == {
-        "recurring_invoices", "overdue_reminders"}
+    # A subset check, so registering another job does not fail this test.
+    ran = {r["job"] for r in res.json()["results"]}
+    assert {"recurring_invoices", "overdue_reminders"} <= ran
+    assert ran == {j[0] for j in main.SCHEDULED_JOBS}
 
 
 def test_running_the_jobs_needs_an_operator(client):

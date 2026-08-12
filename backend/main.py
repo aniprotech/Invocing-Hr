@@ -2992,6 +2992,132 @@ def job_overdue_reminders(db, now):
     return f"{sent} reminder(s) sent"
 
 
+# --- Interview reminders ----------------------------------------------------
+
+# How far ahead of an interview the nudge goes out.
+INTERVIEW_REMINDER_HOURS = 24
+
+
+@scheduled_job("interview_reminders")
+def job_interview_reminders(db, now):
+    """Remind both sides about an interview happening tomorrow.
+
+    An interview was booked and then nothing happened until it either did or
+    did not. Candidates no-show when nobody reminds them, and an interviewer
+    who has forgotten is worse than one who cancels.
+    """
+    horizon = now + timedelta(hours=INTERVIEW_REMINDER_HOURS)
+    sent = 0
+
+    rows = db.query(models.DBInterview, models.DBFormSubmission).join(
+        models.DBFormSubmission,
+        models.DBInterview.submission_id == models.DBFormSubmission.id,
+    ).filter(
+        models.DBInterview.status == "scheduled",
+        models.DBInterview.scheduled_at != "",
+    ).all()
+
+    for iv, sub in rows:
+        try:
+            when = datetime.strptime(iv.scheduled_at[:16], "%Y-%m-%d %H:%M")
+        except (TypeError, ValueError):
+            continue
+        # Only the ones inside the window, and never one already in the past.
+        if not (now <= when <= horizon):
+            continue
+
+        client = db.query(models.DBClient).filter(
+            models.DBClient.id == iv.client_id).first()
+        company = (client.company_name if client else "") or "the team"
+        from_email = os.getenv("FROM_EMAIL", "hello@keyroutes.co")
+        where = iv.meeting_link or iv.location or (
+            "a video call" if iv.mode == "video" else iv.mode)
+
+        recipients = []
+        if sub.candidate_email and validate_email_address(sub.candidate_email):
+            recipients.append(("candidate", sub.candidate_email,
+                               sub.candidate_name or "there"))
+        if iv.interviewer_id:
+            interviewer = db.query(models.DBEmployee).filter(
+                models.DBEmployee.id == iv.interviewer_id).first()
+            if interviewer and interviewer.email and validate_email_address(interviewer.email):
+                recipients.append(("interviewer", interviewer.email,
+                                   interviewer.first_name or "there"))
+
+        for who, address, name in recipients:
+            # Written before sending, and the unique index means two workers
+            # racing cannot both send the same nudge.
+            db.add(models.DBInterviewReminder(
+                client_id=iv.client_id, interview_id=iv.id,
+                recipient=who, sent_to=address))
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                continue
+
+            subject = "Reminder: {} on {}".format(iv.round_name, iv.scheduled_at[:16])
+            if who == "candidate":
+                body = (
+                    "Hello {},\n\nA reminder that your {} with {} is on {}.\n\n"
+                    "Where: {}\nLasting about {} minutes.\n\n"
+                    "If you can no longer make it, reply to this email and we "
+                    "will rearrange.\n\nGood luck,\n{}\n"
+                ).format(name, iv.round_name, company, iv.scheduled_at[:16],
+                         where, iv.duration_minutes, company)
+            else:
+                body = (
+                    "Hello {},\n\nYou are interviewing {} ({}) on {}.\n\n"
+                    "Where: {}\nLasting about {} minutes.\n\n{}\n"
+                ).format(name, sub.candidate_name or "a candidate", iv.round_name,
+                         iv.scheduled_at[:16], where, iv.duration_minutes, company)
+
+            html = (
+                '<!DOCTYPE html><html><body style="font-family:Arial,Helvetica,sans-serif;'
+                'background:#f1f5f9;margin:0;"><div style="max-width:520px;margin:0 auto;'
+                'padding:40px 20px;"><div style="background:#fff;border-radius:12px;'
+                'overflow:hidden;"><div style="background:#0f172a;padding:28px;'
+                'text-align:center;"><div style="font-size:12px;letter-spacing:2px;'
+                'text-transform:uppercase;color:#94a3b8;">Interview reminder</div>'
+                '<div style="font-size:22px;font-weight:800;color:#fff;margin-top:6px;">'
+                + esc(iv.round_name) + '</div></div><div style="padding:26px;">'
+                '<p style="margin:0 0 16px;font-size:15px;">Hello ' + esc(name) + ',</p>'
+                '<p style="margin:0 0 18px;font-size:15px;color:#475569;">'
+                'This is a reminder about the ' + esc(iv.round_name) + ' on <strong>'
+                + esc(iv.scheduled_at[:16]) + '</strong>, lasting about '
+                + str(iv.duration_minutes) + ' minutes.</p>'
+                '<p style="margin:0;font-size:14px;"><strong>Where:</strong> '
+                + esc(where) + '</p></div>'
+                '<div style="background:#f8fafc;padding:18px;text-align:center;'
+                'border-top:1px solid #e2e8f0;"><div style="font-size:13px;'
+                'font-weight:700;color:#0f172a;">' + esc(company) + '</div></div>'
+                '</div></div></body></html>'
+            )
+
+            send_email_background(address, subject, body,
+                                  "{} <{}>".format(company, from_email),
+                                  html, None, "", "", client_id=iv.client_id)
+            sent += 1
+
+    return "{} interview reminder(s) sent".format(sent)
+
+
+@app.get("/api/recruitment/interviews/{interview_id}/reminders")
+def interview_reminders(interview_id: int, request: Request,
+                        db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    iv = db.query(models.DBInterview).filter(
+        models.DBInterview.id == interview_id,
+        models.DBInterview.client_id == client.id,
+    ).first()
+    if not iv:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    rows = db.query(models.DBInterviewReminder).filter(
+        models.DBInterviewReminder.interview_id == iv.id).all()
+    return [{"recipient": r.recipient, "sent_to": r.sent_to, "sent_at": r.sent_at}
+            for r in rows]
+
+
 @app.get("/api/invoices/{number}/reminders")
 def invoice_reminders(number: str, request: Request, db: Session = Depends(get_db)):
     client = get_client_user(request, db)

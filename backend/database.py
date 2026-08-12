@@ -1100,5 +1100,23 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 39: {sys.exc_info()[1]}")
 
+            # Interview reminders
+            try:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS interview_reminders (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id),
+                        interview_id INTEGER REFERENCES interviews(id) NOT NULL,
+                        recipient VARCHAR DEFAULT 'candidate',
+                        sent_to VARCHAR DEFAULT '',
+                        sent_at VARCHAR DEFAULT (NOW()::TEXT),
+                        CONSTRAINT uq_interview_reminder UNIQUE (interview_id, recipient)
+                    )
+                """))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_interview_reminders_iv ON interview_reminders (interview_id)"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 40: {sys.exc_info()[1]}")
+
     except Exception as e:
         print(f"Column check skipped: {e}")

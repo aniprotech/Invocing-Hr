@@ -181,6 +181,22 @@ class DBInvoiceReminder(Base):
     sent_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
+class DBInterviewReminder(Base):
+    """One interview reminder actually sent, so nobody is nudged twice."""
+    __tablename__ = "interview_reminders"
+    __table_args__ = (
+        UniqueConstraint('interview_id', 'recipient', name='uq_interview_reminder'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=True, index=True)
+    interview_id = Column(Integer, ForeignKey("interviews.id"), nullable=False, index=True)
+    # "candidate" or "interviewer" - each gets at most one.
+    recipient = Column(String, default="candidate")
+    sent_to = Column(String, default="")
+    sent_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
 class DBJobRun(Base):
     """A claim on one run of one scheduled job.
 
