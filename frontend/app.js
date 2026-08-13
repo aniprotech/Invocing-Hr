@@ -406,26 +406,8 @@ function enforcePortalSeparation() {
             item.style.display = 'none';
         }
     });
-
-    // The two portals are separate pages, so the switcher has to show where you
-    // are now. It used to be hidden outright, which left the only route between
-    // them going back out through the landing page.
-    var switcher = document.getElementById('portal-switcher');
-    if (switcher) {
-        switcher.value = targetPortal;
-    }
 }
 window.enforcePortalSeparation = enforcePortalSeparation;
-
-// Crossing between the two portals. Each is its own page, so this is a
-// navigation, not a view change - and going nowhere when you pick the portal
-// you are already in.
-function switchPortal(target) {
-    var here = window.location.pathname.indexOf('hr.html') >= 0 ? 'hr' : 'invoicing';
-    if (target === here) return;
-    window.location.href = target === 'hr' ? '/hr.html' : '/app.html';
-}
-window.switchPortal = switchPortal;
 
 // --- Utility ---
 var allInvoices = [];

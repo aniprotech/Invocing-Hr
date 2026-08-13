@@ -10,8 +10,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>A</text></svg>">
-    <link rel="stylesheet" href="styles.css?v=38">
-    <link rel="stylesheet" href="mobile.css?v=38">
+    <link rel="stylesheet" href="styles.css?v=39">
+    <link rel="stylesheet" href="mobile.css?v=39">
 </head>
 <body>
     <a class="skip-link" href="#main-content-region">Skip to main content</a>
@@ -34,10 +34,6 @@
                 </button>
                 <div class="logo" style="display:flex;align-items:center;gap:16px;">
                     <h2><span class="text-primary">aniprotech</span></h2>
-                    <select id="portal-switcher" onchange="switchPortal(this.value)" style="background:var(--bg-card);color:var(--text-primary);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:6px 12px;font-size:0.9rem;outline:none;cursor:pointer;font-weight:600;">
-                        <option value="invoicing">Invoicing Portal</option>
-                        <option value="hr">HR Portal</option>
-                    </select>
                 </div>
                 <nav class="top-nav-menu" id="main-nav">
                     <a href="#" class="nav-item active" id="nav-dashboard" onclick="event.preventDefault();showView('dashboard-view')" data-portal="invoicing">Dashboard</a>
@@ -2533,7 +2529,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="app.js?v=38"></script>
+    <script src="app.js?v=39"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
