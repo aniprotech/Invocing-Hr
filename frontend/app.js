@@ -6178,6 +6178,25 @@ function showReportsTab(tab) {
     }
 }
 
+// Reports are figured one currency at a time, because adding GBP to INR needs
+// a rate we do not have. The headline numbers are the account's own currency;
+// anything invoiced in another shows up here rather than vanishing.
+function otherCurrencyNote(data, pick) {
+    var others = (data && data.other_currencies) || [];
+    if (!others.length) return '';
+    var parts = others.map(function (block) {
+        return '<span style="white-space:nowrap;"><strong>' +
+            formatCurrency(pick(block), block.currency) + '</strong></span>';
+    }).join(' &middot; ');
+    return '<div style="margin-bottom:16px;padding:12px 14px;border-radius:8px;' +
+        'background:rgba(255,255,255,0.03);border-left:3px solid var(--warning-color, #f0ad4e);' +
+        'font-size:0.86rem;color:var(--text-secondary);">' +
+        'Figures below are in <strong>' + (data.currency || '') + '</strong>. ' +
+        'Invoiced separately: ' + parts +
+        '<br><span style="opacity:0.75;">Currencies are never added together, as no exchange rate is set.</span>' +
+        '</div>';
+}
+
 async function loadProfitLoss() {
     showReportsTab('pl');
     var body = document.getElementById('pl-report-body');
@@ -6188,7 +6207,7 @@ async function loadProfitLoss() {
         if (!res.ok) throw new Error('Failed');
         var data = await res.json();
         if (body) {
-            body.innerHTML = '<div class="grid-3 mb-24">' +
+            body.innerHTML = otherCurrencyNote(data, function (b) { return b.total_revenue; }) + '<div class="grid-3 mb-24">' +
                 '<div style="text-align:center;padding:20px;"><div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:8px;">Total Revenue</div><div style="font-size:1.5rem;font-weight:700;color:var(--success-color);">' + formatCurrency(data.total_revenue) + '</div></div>' +
                 '<div style="text-align:center;padding:20px;"><div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:8px;">Total Expenses</div><div style="font-size:1.5rem;font-weight:700;color:var(--danger-color);">' + formatCurrency(data.total_expenses) + '</div></div>' +
                 '<div style="text-align:center;padding:20px;"><div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:8px;">Net Profit</div><div style="font-size:1.5rem;font-weight:700;color:' + (data.net_profit >= 0 ? 'var(--success-color)' : 'var(--danger-color)') + ';">' + formatCurrency(data.net_profit) + '</div></div>' +
@@ -6218,7 +6237,7 @@ async function loadBalanceSheet() {
         if (!res.ok) throw new Error('Failed');
         var data = await res.json();
         if (body) {
-            body.innerHTML =
+            body.innerHTML = otherCurrencyNote(data, function (b) { return b.total_assets; }) +
                 '<div class="grid-3 gap-24">' +
                 '<div>' +
                     '<h3 style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;margin-bottom:16px;">Assets</h3>' +
@@ -6261,7 +6280,7 @@ async function loadCashSummary() {
         data.money_in.forEach(function(v) { totalIn += v; });
         data.money_out.forEach(function(v) { totalOut += v; });
         if (body) {
-            body.innerHTML = '<div class="grid-3 mb-24">' +
+            body.innerHTML = otherCurrencyNote(data, function (b) { return (b.money_in || []).reduce(function (t, v) { return t + v; }, 0); }) + '<div class="grid-3 mb-24">' +
                 '<div style="text-align:center;padding:20px;"><div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:8px;">Money In</div><div style="font-size:1.5rem;font-weight:700;color:var(--success-color);">' + formatCurrency(totalIn) + '</div></div>' +
                 '<div style="text-align:center;padding:20px;"><div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:8px;">Money Out</div><div style="font-size:1.5rem;font-weight:700;color:var(--danger-color);">' + formatCurrency(totalOut) + '</div></div>' +
                 '<div style="text-align:center;padding:20px;"><div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:8px;">Net Cash</div><div style="font-size:1.5rem;font-weight:700;color:' + ((totalIn - totalOut) >= 0 ? 'var(--success-color)' : 'var(--danger-color)') + ';">' + formatCurrency(totalIn - totalOut) + '</div></div>' +

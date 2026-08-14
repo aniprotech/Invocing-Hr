@@ -2018,73 +2018,129 @@ def next_bill_number(request: Request, db: Session = Depends(get_db)):
     return {"number": "BILL-0001"}
 
 
+def base_currency(client) -> str:
+    """The currency a business keeps its books in. Bills carry no currency of
+    their own, so they are always this one."""
+    return ((client.currency or "") or "GBP").upper()
+
+
+def invoices_by_currency(invoices, base: str) -> dict:
+    """Group invoices by the currency they were issued in.
+
+    Every report below reports one currency at a time. Adding GBP to INR needs
+    an exchange rate we do not have, and inventing one puts a made-up figure in
+    front of somebody making decisions with it - which is exactly how the sales
+    pipeline once showed a total in the trillions.
+    """
+    groups = {}
+    for inv in invoices:
+        code = ((inv.currency or "") or base).upper() or base
+        groups.setdefault(code, []).append(inv)
+    return groups
+
+
 @app.get("/api/reports/profit-loss")
 def profit_loss_report(request: Request, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
+    base = base_currency(client)
     invoices = db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id).all()
     bills = db.query(models.DBBill).filter(models.DBBill.client_id == client.id).all()
-    monthly_revenue = {}
-    monthly_expenses = {}
-    for inv in invoices:
-        m = inv.issue_date[:7] if inv.issue_date and len(inv.issue_date) >= 7 else "Unknown"
-        monthly_revenue[m] = monthly_revenue.get(m, 0) + (inv.paid or 0)
-    for b in bills:
-        m = b.issue_date[:7] if b.issue_date and len(b.issue_date) >= 7 else "Unknown"
-        monthly_expenses[m] = monthly_expenses.get(m, 0) + (b.total or 0)
-    all_months = sorted(set(list(monthly_revenue.keys()) + list(monthly_expenses.keys())))
-    total_revenue = sum(monthly_revenue.values())
-    total_expenses = sum(monthly_expenses.values())
-    return {
-        "months": all_months,
-        "revenue": [monthly_revenue.get(m, 0) for m in all_months],
-        "expenses": [monthly_expenses.get(m, 0) for m in all_months],
-        "profit": [monthly_revenue.get(m, 0) - monthly_expenses.get(m, 0) for m in all_months],
-        "total_revenue": total_revenue,
-        "total_expenses": total_expenses,
-        "net_profit": total_revenue - total_expenses,
-    }
+    groups = invoices_by_currency(invoices, base)
+
+    def figures(inv_list, bill_list):
+        monthly_revenue = {}
+        monthly_expenses = {}
+        for inv in inv_list:
+            m = inv.issue_date[:7] if inv.issue_date and len(inv.issue_date) >= 7 else "Unknown"
+            monthly_revenue[m] = monthly_revenue.get(m, 0) + (inv.paid or 0)
+        for b in bill_list:
+            m = b.issue_date[:7] if b.issue_date and len(b.issue_date) >= 7 else "Unknown"
+            monthly_expenses[m] = monthly_expenses.get(m, 0) + (b.total or 0)
+        all_months = sorted(set(list(monthly_revenue.keys()) + list(monthly_expenses.keys())))
+        total_revenue = money(sum(monthly_revenue.values()))
+        total_expenses = money(sum(monthly_expenses.values()))
+        return {
+            "months": all_months,
+            "revenue": [money(monthly_revenue.get(m, 0)) for m in all_months],
+            "expenses": [money(monthly_expenses.get(m, 0)) for m in all_months],
+            "profit": [money(monthly_revenue.get(m, 0) - monthly_expenses.get(m, 0)) for m in all_months],
+            "total_revenue": total_revenue,
+            "total_expenses": total_expenses,
+            "net_profit": money(total_revenue - total_expenses),
+        }
+
+    report = figures(groups.get(base, []), bills)
+    report["currency"] = base
+    report["other_currencies"] = [
+        dict(figures(groups[code], []), currency=code)
+        for code in sorted(groups) if code != base
+    ]
+    return report
 
 
 @app.get("/api/reports/balance-sheet")
 def balance_sheet_report(request: Request, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
+    base = base_currency(client)
     invoices = db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id).all()
     bills = db.query(models.DBBill).filter(models.DBBill.client_id == client.id).all()
-    total_invoiced = sum(inv.paid or 0 for inv in invoices)
-    outstanding = sum(inv.due or 0 for inv in invoices if inv.status != "Paid")
-    total_billed = sum(b.total or 0 for b in bills)
-    bills_paid = sum(b.amount_paid or 0 for b in bills)
-    bills_unpaid = sum((b.total or 0) - (b.amount_paid or 0) for b in bills)
-    return {
-        "assets": {"cash_collected": total_invoiced, "accounts_receivable": outstanding},
-        "liabilities": {"accounts_payable": bills_unpaid},
-        "equity": {"retained_earnings": total_invoiced - bills_paid},
-        "total_assets": total_invoiced + outstanding,
-        "total_liabilities": bills_unpaid,
-        "total_equity": total_invoiced - bills_paid,
-    }
+    groups = invoices_by_currency(invoices, base)
+
+    def figures(inv_list, bill_list):
+        collected = money(sum(inv.paid or 0 for inv in inv_list))
+        outstanding = money(sum(inv.due or 0 for inv in inv_list if inv.status != "Paid"))
+        bills_paid = money(sum(b.amount_paid or 0 for b in bill_list))
+        bills_unpaid = money(sum((b.total or 0) - (b.amount_paid or 0) for b in bill_list))
+        return {
+            "assets": {"cash_collected": collected, "accounts_receivable": outstanding},
+            "liabilities": {"accounts_payable": bills_unpaid},
+            "equity": {"retained_earnings": money(collected - bills_paid)},
+            "total_assets": money(collected + outstanding),
+            "total_liabilities": bills_unpaid,
+            "total_equity": money(collected - bills_paid),
+        }
+
+    report = figures(groups.get(base, []), bills)
+    report["currency"] = base
+    report["other_currencies"] = [
+        dict(figures(groups[code], []), currency=code)
+        for code in sorted(groups) if code != base
+    ]
+    return report
 
 
 @app.get("/api/reports/cash-summary")
 def cash_summary_report(request: Request, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
+    base = base_currency(client)
     invoices = db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id).all()
     bills = db.query(models.DBBill).filter(models.DBBill.client_id == client.id).all()
-    monthly_in = {}
-    monthly_out = {}
-    for inv in invoices:
-        m = inv.issue_date[:7] if inv.issue_date and len(inv.issue_date) >= 7 else "Unknown"
-        monthly_in[m] = monthly_in.get(m, 0) + (inv.paid or 0)
-    for b in bills:
-        m = b.issue_date[:7] if b.issue_date and len(b.issue_date) >= 7 else "Unknown"
-        monthly_out[m] = monthly_out.get(m, 0) + (b.amount_paid or 0)
-    all_months = sorted(set(list(monthly_in.keys()) + list(monthly_out.keys())))
-    return {
-        "months": all_months,
-        "money_in": [monthly_in.get(m, 0) for m in all_months],
-        "money_out": [monthly_out.get(m, 0) for m in all_months],
-        "net_cash": [monthly_in.get(m, 0) - monthly_out.get(m, 0) for m in all_months],
-    }
+    groups = invoices_by_currency(invoices, base)
+
+    def figures(inv_list, bill_list):
+        monthly_in = {}
+        monthly_out = {}
+        for inv in inv_list:
+            m = inv.issue_date[:7] if inv.issue_date and len(inv.issue_date) >= 7 else "Unknown"
+            monthly_in[m] = monthly_in.get(m, 0) + (inv.paid or 0)
+        for b in bill_list:
+            m = b.issue_date[:7] if b.issue_date and len(b.issue_date) >= 7 else "Unknown"
+            monthly_out[m] = monthly_out.get(m, 0) + (b.amount_paid or 0)
+        all_months = sorted(set(list(monthly_in.keys()) + list(monthly_out.keys())))
+        return {
+            "months": all_months,
+            "money_in": [money(monthly_in.get(m, 0)) for m in all_months],
+            "money_out": [money(monthly_out.get(m, 0)) for m in all_months],
+            "net_cash": [money(monthly_in.get(m, 0) - monthly_out.get(m, 0)) for m in all_months],
+        }
+
+    report = figures(groups.get(base, []), bills)
+    report["currency"] = base
+    report["other_currencies"] = [
+        dict(figures(groups[code], []), currency=code)
+        for code in sorted(groups) if code != base
+    ]
+    return report
 @app.get("/api/auth/login")
 async def login(request: Request, role: str = "client", portal: str = None):
     request.session['oauth_role'] = role
@@ -2443,40 +2499,54 @@ def aged_receivables(request: Request, db: Session = Depends(get_db)):
     """Outstanding balances bucketed by how late they are - the report every
     finance team asks for first."""
     client = get_client_user(request, db)
+    base = base_currency(client)
     invoices = db.query(models.DBInvoice).filter(
         models.DBInvoice.client_id == client.id,
         models.DBInvoice.status.notin_(["Draft", "Paid", "Void"]),
     ).all()
     today = datetime.now().date()
-    buckets = {"current": 0.0, "1_30": 0.0, "31_60": 0.0, "61_90": 0.0, "over_90": 0.0}
-    rows = []
-    for inv in invoices:
-        outstanding = money(inv.due or 0)
-        if outstanding <= 0:
-            continue
-        days = invoice_overdue_days(inv, today)
-        if days == 0:
-            bucket = "current"
-        elif days <= 30:
-            bucket = "1_30"
-        elif days <= 60:
-            bucket = "31_60"
-        elif days <= 90:
-            bucket = "61_90"
-        else:
-            bucket = "over_90"
-        buckets[bucket] = money(buckets[bucket] + outstanding)
-        rows.append({
-            "number": inv.number, "contact": inv.to_contact, "due_date": inv.due_date,
-            "outstanding": outstanding, "days_overdue": days, "bucket": bucket,
-        })
-    rows.sort(key=lambda r: r["days_overdue"], reverse=True)
-    return {
-        "buckets": buckets,
-        "total_outstanding": money(sum(buckets.values())),
-        "currency": client.currency or "GBP",
-        "invoices": rows,
-    }
+
+    def figures(inv_list):
+        buckets = {"current": 0.0, "1_30": 0.0, "31_60": 0.0, "61_90": 0.0, "over_90": 0.0}
+        rows = []
+        for inv in inv_list:
+            outstanding = money(inv.due or 0)
+            if outstanding <= 0:
+                continue
+            days = invoice_overdue_days(inv, today)
+            if days == 0:
+                bucket = "current"
+            elif days <= 30:
+                bucket = "1_30"
+            elif days <= 60:
+                bucket = "31_60"
+            elif days <= 90:
+                bucket = "61_90"
+            else:
+                bucket = "over_90"
+            buckets[bucket] = money(buckets[bucket] + outstanding)
+            rows.append({
+                "number": inv.number, "contact": inv.to_contact, "due_date": inv.due_date,
+                "outstanding": outstanding, "days_overdue": days, "bucket": bucket,
+                # Each row carries its own currency so a mixed table can print
+                # the right symbol against every line.
+                "currency": ((inv.currency or "") or base).upper() or base,
+            })
+        rows.sort(key=lambda r: r["days_overdue"], reverse=True)
+        return {
+            "buckets": buckets,
+            "total_outstanding": money(sum(buckets.values())),
+            "invoices": rows,
+        }
+
+    groups = invoices_by_currency(invoices, base)
+    report = figures(groups.get(base, []))
+    report["currency"] = base
+    report["other_currencies"] = [
+        dict(figures(groups[code]), currency=code)
+        for code in sorted(groups) if code != base
+    ]
+    return report
 
 # --- Settings API ---
 
