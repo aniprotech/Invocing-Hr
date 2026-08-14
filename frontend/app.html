@@ -10,8 +10,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>A</text></svg>">
-    <link rel="stylesheet" href="styles.css?v=40">
-    <link rel="stylesheet" href="mobile.css?v=40">
+    <link rel="stylesheet" href="styles.css?v=41">
+    <link rel="stylesheet" href="mobile.css?v=41">
 </head>
 <body>
     <a class="skip-link" href="#main-content-region">Skip to main content</a>
@@ -977,6 +977,133 @@
                 <div id="settings-view" class="view-section dashboard" style="display:none;">
                     <div class="invoices-header-area">
                         <div><h1>Settings</h1><p class="subtitle">Manage your account and preferences</p></div>
+                    </div>
+
+                    <!-- Branding themes: controls on the left, a live preview on
+                         the right, so every change is visible before it is saved. -->
+                    <div class="glass-widget" style="margin-bottom:24px;">
+                        <div class="widget-header" style="flex-wrap:wrap;gap:12px;">
+                            <div>
+                                <h3>Invoice branding</h3>
+                                <p class="subtitle" style="margin:4px 0 0;">How your invoices and quotes look to a customer</p>
+                            </div>
+                            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                                <select id="theme-picker" onchange="selectBrandingTheme(this.value)"
+                                        style="background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border-color);border-radius:8px;padding:8px 12px;font-weight:600;"></select>
+                                <button class="btn-secondary" onclick="newBrandingTheme()">New theme</button>
+                                <button class="btn-secondary" onclick="deleteBrandingTheme()">Delete</button>
+                                <button class="btn-primary" onclick="saveBrandingTheme()">Save theme</button>
+                            </div>
+                        </div>
+
+                        <div class="branding-editor">
+                            <div class="branding-controls" id="branding-controls">
+                                <details open>
+                                    <summary>Brand and styling</summary>
+                                    <label class="bfield">Theme name
+                                        <input type="text" id="bt-name" maxlength="60">
+                                    </label>
+                                    <label class="bfield">Logo
+                                        <input type="file" id="bt-logo" accept="image/*" onchange="uploadThemeLogo(event)">
+                                    </label>
+                                    <div id="bt-logo-preview" class="bt-logo-preview"></div>
+                                    <label class="bfield">Logo position
+                                        <select id="bt-logo_position" onchange="renderThemePreview()">
+                                            <option value="left">Left</option>
+                                            <option value="center">Center</option>
+                                            <option value="right">Right</option>
+                                        </select>
+                                    </label>
+                                    <label class="bfield">Brand colour
+                                        <span style="display:flex;gap:8px;align-items:center;">
+                                            <input type="color" id="bt-brand_color" onchange="renderThemePreview()" style="width:52px;height:38px;padding:2px;">
+                                            <span id="bt-palette" class="bt-palette"></span>
+                                        </span>
+                                    </label>
+                                    <label class="bfield">Font
+                                        <select id="bt-font" onchange="renderThemePreview()">
+                                            <option value="helvetica">Helvetica</option>
+                                            <option value="times">Times</option>
+                                            <option value="courier">Courier</option>
+                                        </select>
+                                    </label>
+                                    <button class="btn-secondary" style="width:100%;margin-top:8px;" onclick="designThemeWithAI()">
+                                        Design this theme for me
+                                    </button>
+                                    <p id="bt-ai-note" class="bt-note"></p>
+                                </details>
+
+                                <details>
+                                    <summary>Columns</summary>
+                                    <p class="bt-note">Turn a column off to hide it, or rename it to match how you sell.</p>
+                                    <div id="bt-columns"></div>
+                                </details>
+
+                                <details>
+                                    <summary>Tax and currency</summary>
+                                    <label class="bfield">Tax breakdown
+                                        <select id="bt-tax_breakdown" onchange="renderThemePreview()">
+                                            <option value="combined">Combine to one line total</option>
+                                            <option value="separate_rates">Show tax rates separately</option>
+                                            <option value="separate_components">Show tax components separately</option>
+                                        </select>
+                                    </label>
+                                    <label class="bcheck"><input type="checkbox" id="bt-exclude_zero_rates" onchange="renderThemePreview()"> Exclude 0% rates</label>
+                                    <label class="bcheck"><input type="checkbox" id="bt-always_show_currency_code" onchange="renderThemePreview()"> Always show currency code</label>
+                                    <label class="bcheck"><input type="checkbox" id="bt-show_conversion_rate" onchange="renderThemePreview()"> Show conversion rate</label>
+                                </details>
+
+                                <details>
+                                    <summary>Online invoice</summary>
+                                    <label class="bcheck"><input type="checkbox" id="bt-show_text_links" onchange="renderThemePreview()"> Text links</label>
+                                    <label class="bcheck"><input type="checkbox" id="bt-show_qr_code" onchange="renderThemePreview()"> QR code</label>
+                                </details>
+
+                                <details>
+                                    <summary>Wording</summary>
+                                    <label class="bfield">Approved invoice title
+                                        <input type="text" id="bt-approved_invoice_title" maxlength="60" oninput="renderThemePreview()">
+                                    </label>
+                                    <label class="bfield">Draft invoice title
+                                        <input type="text" id="bt-draft_invoice_title" maxlength="60" oninput="renderThemePreview()">
+                                    </label>
+                                    <label class="bfield">Quote title
+                                        <input type="text" id="bt-quote_title" maxlength="60" oninput="renderThemePreview()">
+                                    </label>
+                                    <label class="bfield">Payment terms
+                                        <textarea id="bt-payment_terms" rows="3" oninput="renderThemePreview()"></textarea>
+                                    </label>
+                                    <label class="bfield">Footer note
+                                        <textarea id="bt-footer_note" rows="2" oninput="renderThemePreview()"></textarea>
+                                    </label>
+                                </details>
+
+                                <details>
+                                    <summary>Printing</summary>
+                                    <label class="bfield">Customer address position
+                                        <select id="bt-address_position" onchange="renderThemePreview()">
+                                            <option value="default">Default</option>
+                                            <option value="window_envelope">Window envelope</option>
+                                        </select>
+                                    </label>
+                                    <label class="bcheck"><input type="checkbox" id="bt-show_page_numbers" onchange="renderThemePreview()"> Show page numbers</label>
+                                </details>
+                            </div>
+
+                            <div class="branding-preview">
+                                <div class="bp-toolbar">
+                                    <span class="bt-note" style="margin:0;">Live preview</span>
+                                    <span>
+                                        <button class="btn-secondary bp-size is-active" id="bp-desktop" onclick="setPreviewWidth('desktop')">Desktop</button>
+                                        <button class="btn-secondary bp-size" id="bp-mobile" onclick="setPreviewWidth('mobile')">Mobile</button>
+                                        <button class="btn-secondary" onclick="previewThemedPDF()">Open PDF</button>
+                                    </span>
+                                </div>
+                                <div class="bp-frame" id="bp-frame">
+                                    <div class="bp-paper" id="theme-preview"></div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <div class="glass-widget" style="margin-bottom:24px;">
                         <div class="widget-header">
@@ -2529,7 +2656,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="app.js?v=40"></script>
+    <script src="app.js?v=41"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">

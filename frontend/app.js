@@ -349,6 +349,7 @@ function showView(viewId) {
     if (viewId === 'settings-view' && typeof loadSettings === 'function') loadSettings();
     if (viewId === 'settings-view' && typeof loadTaxRates === 'function') loadTaxRates();
     if (viewId === 'settings-view' && typeof loadTeam === 'function') loadTeam();
+    if (viewId === 'settings-view' && typeof loadBrandingThemes === 'function') loadBrandingThemes();
     if (viewId === 'settings-view' && typeof loadAuditLogs === 'function') loadAuditLogs();
     if (viewId === 'reports-view' && typeof loadReports === 'function') loadReports();
     // Close mobile menu
@@ -1164,6 +1165,35 @@ function documentTaxLabel(cfg) {
     return names.length === 1 ? names[0] : 'Tax';
 }
 
+// The branding theme in force. Loaded once at sign-in; these defaults keep
+// the renderer working before it arrives and if the request fails.
+var _brandTheme = {
+    logo_data: '', logo_position: 'right', brand_color: '#000000', font: 'helvetica',
+    show_item: false, show_quantity: true, show_price: true,
+    show_discount: false, show_tax: true,
+    label_item: 'Item', label_description: 'Description', label_quantity: 'Quantity',
+    label_price: 'Unit Price', label_discount: 'Discount', label_tax: 'Tax',
+    label_amount: 'Amount',
+    approved_invoice_title: 'TAX INVOICE', draft_invoice_title: 'DRAFT INVOICE',
+    quote_title: 'QUOTE', payment_terms: '', footer_note: '',
+    show_page_numbers: true, always_show_currency_code: false
+};
+
+async function loadBrandTheme() {
+    try {
+        var res = await fetch('/api/branding-themes/default', { credentials: 'same-origin' });
+        if (res.ok) _brandTheme = await res.json();
+    } catch (e) { /* the defaults above still render a correct invoice */ }
+}
+window.loadBrandTheme = loadBrandTheme;
+
+// '#rrggbb' to the [r,g,b] jsPDF wants.
+function hexToRgb(hex) {
+    var m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || '');
+    if (!m) return [0, 0, 0];
+    return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)];
+}
+
 var PDF_DOC_TYPES = {
     invoice: {
         p: 'view-inv-', s: 'view-summary-', body: 'view-line-items-body',
@@ -1182,6 +1212,10 @@ var PDF_DOC_TYPES = {
 
 function generateInvoicePDF(isDummy, kind) {
     var cfg = PDF_DOC_TYPES[kind] || PDF_DOC_TYPES.invoice;
+    var th = _brandTheme || {};
+    // jsPDF only has these three; anything else would silently fall back.
+    var TF = ({ helvetica: 1, times: 1, courier: 1 })[th.font] ? th.font : 'helvetica';
+    var brandRGB = hexToRgb(th.brand_color || '#000000');
     var _jsPDF = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
     if (!_jsPDF) { throw new Error('jsPDF is not loaded'); }
     var doc = new _jsPDF('p', 'pt', 'a4');
@@ -1237,9 +1271,14 @@ function generateInvoicePDF(isDummy, kind) {
         }
     }
     function drawFooter() {
-        doc.setFontSize(8); doc.setFont('helvetica','normal');
+        doc.setFontSize(8); doc.setFont(TF,'normal');
         doc.setTextColor(150,150,150);
-        doc.text('Page ' + pageNum, w/2, h - 25, { align:'center' });
+        if (th.footer_note) {
+            doc.text(String(th.footer_note).slice(0, 120), w/2, h - 36, { align:'center' });
+        }
+        if (th.show_page_numbers !== false) {
+            doc.text('Page ' + pageNum, w/2, h - 25, { align:'center' });
+        }
     }
 
     // ── White page ───────────────────────────────────────────────
@@ -1283,7 +1322,12 @@ function generateInvoicePDF(isDummy, kind) {
     y = 45;
 
     // ── Right column: Logo ──
-    var logoX = mr - 65, logoY = y - 5, logoW = 65, logoH = 65;
+    var logoW = 65, logoH = 65, logoY = y - 5;
+    var logoX = mr - logoW;
+    if (th.logo_position === 'left') logoX = ml;
+    else if (th.logo_position === 'center') logoX = (w - logoW) / 2;
+    // A theme carries its own logo; the account-wide one is the fallback.
+    savedLogo = th.logo_data || savedLogo;
     if (savedLogo) {
         try { doc.addImage(savedLogo, undefined, logoX, logoY, logoW, logoH); } catch(e) {}
     } else {
@@ -1314,9 +1358,14 @@ function generateInvoicePDF(isDummy, kind) {
         });
     });
 
-    // ── Left column: TAX INVOICE heading ──
-    doc.setFontSize(26); doc.setFont('helvetica','bold'); doc.setTextColor(0,0,0);
-    doc.text(cfg.heading, ml, y + 18);
+    // ── Left column: the document title, in the brand colour ──
+    var heading = cfg.heading;
+    if (kind === 'quote') heading = th.quote_title || cfg.heading;
+    else heading = th.approved_invoice_title || cfg.heading;
+    doc.setFontSize(26); doc.setFont(TF,'bold');
+    doc.setTextColor(brandRGB[0], brandRGB[1], brandRGB[2]);
+    doc.text(heading, ml, y + 18);
+    doc.setTextColor(0, 0, 0);
 
     // ── Centre column: Invoice meta ──
     var centreX = w / 2 - 40;
@@ -1366,30 +1415,35 @@ function generateInvoicePDF(isDummy, kind) {
 
     // Column definitions (must be before drawTableHeader is called)
     // We add col widths for border drawing
-    var col = {
-        desc:  ml,
-        qty:   w - 230,
-        price: w - 160,
-        amt:   mr - 60
-    };
-    var cw = {
-        desc: col.qty - col.desc,
-        qty: col.price - col.qty,
-        price: col.amt - col.price,
-        amt: mr - col.amt
-    };
+    // Columns are built from the theme, so hiding one genuinely removes it and
+    // the description reclaims the space. Amount is never optional - an invoice
+    // without it is not an invoice.
+    var numCols = [];
+    if (th.show_quantity !== false) numCols.push({ k: 'qty', label: th.label_quantity || 'Quantity' });
+    if (th.show_price !== false) numCols.push({ k: 'price', label: th.label_price || 'Unit Price' });
+    if (th.show_discount) numCols.push({ k: 'disc', label: th.label_discount || 'Discount' });
+    if (th.show_tax) numCols.push({ k: 'tax', label: th.label_tax || 'Tax' });
+    numCols.push({ k: 'amount', label: (th.label_amount || 'Amount') + ' ' + currLabel });
 
-    // Helper to draw vertical borders for the current row segment
+    // Wider for the last column, which carries the longest figures.
+    var NUM_W = Math.min(78, Math.max(46, (mr - ml - 150) / numCols.length));
+    var numTotal = NUM_W * numCols.length;
+    var descX = ml;
+    var descW = (mr - ml) - numTotal;
+    numCols.forEach(function (c, i) {
+        c.x = ml + descW + (i * NUM_W);
+        c.w = NUM_W;
+    });
+
+    var col = { desc: descX };
+    var cw = { desc: descW };
+
     function drawRowBorders(startY, endY) {
         doc.setDrawColor(200, 200, 200);
         doc.setLineWidth(0.5);
-        // Outer borders
         doc.line(ml, startY, ml, endY);
         doc.line(mr, startY, mr, endY);
-        // Inner borders
-        doc.line(col.qty, startY, col.qty, endY);
-        doc.line(col.price, startY, col.price, endY);
-        doc.line(col.amt, startY, col.amt, endY);
+        numCols.forEach(function (c) { doc.line(c.x, startY, c.x, endY); });
     }
 
     var _inTable = false;
@@ -1397,15 +1451,20 @@ function generateInvoicePDF(isDummy, kind) {
     
     // We overwrite the table header drawer to include borders
     function drawTableHeader() {
-        doc.setFontSize(8.5); doc.setFont('helvetica','bold'); doc.setTextColor(0,0,0);
+        doc.setFontSize(8.5); doc.setFont(TF,'bold');
+        doc.setTextColor(brandRGB[0], brandRGB[1], brandRGB[2]);
         doc.setDrawColor(0,0,0);
-        lh(ml, mr, y, 0.8); 
+        lh(ml, mr, y, 0.8);
         var hTop = y;
         y += 8;
-        doc.text('Item / Description',       col.desc + 4,  y + 10);
-        doc.text('Quantity',               col.qty + cw.qty - 4,   y + 10, { align:'right' });
-        doc.text('Unit Price',             col.price + cw.price - 4, y + 10, { align:'right' });
-        doc.text('Amount ' + currLabel,    col.amt + cw.amt - 4,   y + 10, { align:'right' });
+        var descHead = th.show_item
+            ? (th.label_item || 'Item') + ' / ' + (th.label_description || 'Description')
+            : (th.label_description || 'Description');
+        doc.text(descHead, col.desc + 4, y + 10);
+        numCols.forEach(function (c) {
+            doc.text(c.label, c.x + c.w - 4, y + 10, { align: 'right' });
+        });
+        doc.setTextColor(0, 0, 0);
         y += 14;
         doc.setDrawColor(0,0,0);
         lh(ml, mr, y, 0.8);
@@ -1461,7 +1520,10 @@ function generateInvoicePDF(isDummy, kind) {
 
     _inTable = true;
     rows.forEach(function(row) {
-        var nameLines = doc.splitTextToSize(breakLong(row.name||'-', 50), cw.desc - 8);
+        // With the item column off, only the description prints.
+        var nameLines = th.show_item
+            ? doc.splitTextToSize(breakLong(row.name || '-', 50), cw.desc - 8)
+            : [];
         var descLines = row.desc ? doc.splitTextToSize(breakLong(row.desc, 60), cw.desc - 8) : [];
         
         // We will process line by line to handle breaks mid-row
@@ -1496,10 +1558,13 @@ function generateInvoicePDF(isDummy, kind) {
             
             // Print qty/price/amount only on the first physical line of this item on the current page
             if (firstLineOfRow) {
-                doc.setFont('helvetica','normal'); doc.setTextColor(0,0,0);
-                doc.text(row.qty,   col.qty + cw.qty - 4,   y + 8, { align:'right' });
-                doc.text(row.price, col.price + cw.price - 4, y + 8, { align:'right' });
-                doc.text(row.amount, col.amt + cw.amt - 4,  y + 8, { align:'right' });
+                doc.setFont(TF,'normal'); doc.setTextColor(0,0,0);
+                numCols.forEach(function (c) {
+                    var v = row[c.k];
+                    if (c.k === 'disc') v = (parseFloat(row.disc) || 0) ? row.disc + '%' : '-';
+                    if (c.k === 'tax') v = (parseFloat(row.tax) || 0) ? row.tax + '%' : '-';
+                    doc.text(String(v == null ? '' : v), c.x + c.w - 4, y + 8, { align: 'right' });
+                });
                 firstLineOfRow = false;
             }
             
@@ -4521,6 +4586,8 @@ document.addEventListener('DOMContentLoaded', async function() {
     // never renders an empty shell behind a redirect.
     if (!(await requireAuth())) return;
     checkAuthStatus();
+    // The PDF renderer needs the theme before anyone can export a document.
+    loadBrandTheme();
     handleTopUpReturn();
     loadSettings();
     fetchDashboardData();
@@ -9205,3 +9272,465 @@ function renderCustomer(d) {
             '<td class="text-right"><strong>' + formatCurrency(p.amount) + '</strong></td></tr>';
     }).join('') : '<tr><td colspan="5" style="text-align:center;padding:28px;color:var(--text-secondary);">Nothing received yet.</td></tr>';
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  INVOICE BRANDING
+//
+//  A theme is a set of presentation choices held on the server and applied at
+//  render time, so editing one restyles every document that uses it. Nothing
+//  here changes what is owed.
+// ═══════════════════════════════════════════════════════════════════════════
+
+var _themes = [];
+var _themeId = null;
+var _themeLogo = '';
+
+// Which line-item columns exist, in the order they print. Kept as data so the
+// toggles, the preview and the PDF all read one list.
+var THEME_COLUMNS = [
+    { key: 'item', label: 'label_item', toggle: 'show_item', fixed: false },
+    { key: 'description', label: 'label_description', toggle: null, fixed: true },
+    { key: 'quantity', label: 'label_quantity', toggle: 'show_quantity', fixed: false },
+    { key: 'price', label: 'label_price', toggle: 'show_price', fixed: false },
+    { key: 'discount', label: 'label_discount', toggle: 'show_discount', fixed: false },
+    { key: 'tax', label: 'label_tax', toggle: 'show_tax', fixed: false },
+    { key: 'amount', label: 'label_amount', toggle: null, fixed: true }
+];
+
+function el(id) { return document.getElementById(id); }
+
+function currentTheme() {
+    for (var i = 0; i < _themes.length; i++) {
+        if (_themes[i].id === _themeId) return _themes[i];
+    }
+    return _themes[0] || null;
+}
+
+async function loadBrandingThemes() {
+    try {
+        var res = await fetch('/api/branding-themes', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        var data = await res.json();
+        _themes = data.themes || [];
+        if (!_themes.length) return;
+        var stillThere = _themes.some(function (t) { return t.id === _themeId; });
+        if (!stillThere) {
+            var def = _themes.filter(function (t) { return t.is_default; })[0];
+            _themeId = (def || _themes[0]).id;
+        }
+        renderThemePicker();
+        fillThemeForm(currentTheme());
+    } catch (e) { /* settings page still works without it */ }
+}
+window.loadBrandingThemes = loadBrandingThemes;
+
+function renderThemePicker() {
+    var pick = el('theme-picker');
+    if (!pick) return;
+    pick.innerHTML = _themes.map(function (t) {
+        return '<option value="' + t.id + '"' + (t.id === _themeId ? ' selected' : '') + '>' +
+            esc(t.name) + (t.is_default ? ' (default)' : '') + '</option>';
+    }).join('');
+}
+
+function selectBrandingTheme(id) {
+    _themeId = parseInt(id, 10);
+    fillThemeForm(currentTheme());
+}
+window.selectBrandingTheme = selectBrandingTheme;
+
+function fillThemeForm(theme) {
+    if (!theme) return;
+    _themeLogo = theme.logo_data || '';
+
+    el('bt-name').value = theme.name || '';
+    el('bt-logo_position').value = theme.logo_position || 'right';
+    el('bt-brand_color').value = theme.brand_color || '#4f46e5';
+    el('bt-font').value = theme.font || 'helvetica';
+    el('bt-tax_breakdown').value = theme.tax_breakdown || 'separate_rates';
+    el('bt-address_position').value = theme.address_position || 'default';
+
+    ['exclude_zero_rates', 'always_show_currency_code', 'show_conversion_rate',
+        'show_text_links', 'show_qr_code', 'show_page_numbers'].forEach(function (f) {
+            var node = el('bt-' + f);
+            if (node) node.checked = !!theme[f];
+        });
+    ['approved_invoice_title', 'draft_invoice_title', 'quote_title',
+        'payment_terms', 'footer_note'].forEach(function (f) {
+            var node = el('bt-' + f);
+            if (node) node.value = theme[f] || '';
+        });
+
+    renderColumnToggles(theme);
+    renderLogoPreview();
+    renderThemePreview();
+}
+
+function renderColumnToggles(theme) {
+    var host = el('bt-columns');
+    if (!host) return;
+    host.innerHTML = THEME_COLUMNS.map(function (col) {
+        var checked = col.fixed ? true : !!theme[col.toggle];
+        var disabled = col.fixed ? ' disabled title="Always shown"' : '';
+        return '<div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;">' +
+            '<input type="checkbox" id="bt-' + col.toggle + '"' +
+            (checked ? ' checked' : '') + disabled +
+            ' onchange="renderThemePreview()">' +
+            '<input type="text" id="bt-' + col.label + '" value="' +
+            esc(theme[col.label] || '') + '" maxlength="30" ' +
+            'oninput="renderThemePreview()" style="flex:1;padding:7px 10px;border-radius:7px;' +
+            'border:1px solid var(--border-color);background:var(--bg-card);color:var(--text-primary);">' +
+            '</div>';
+    }).join('');
+}
+
+function renderLogoPreview() {
+    var host = el('bt-logo-preview');
+    if (!host) return;
+    host.innerHTML = _themeLogo ? '<img src="' + _themeLogo + '" alt="Your logo">' : '';
+}
+
+// --- reading the form back ----------------------------------------------------
+
+function readThemeForm() {
+    var body = {
+        name: el('bt-name').value.trim(),
+        logo_data: _themeLogo,
+        logo_position: el('bt-logo_position').value,
+        brand_color: el('bt-brand_color').value,
+        font: el('bt-font').value,
+        tax_breakdown: el('bt-tax_breakdown').value,
+        address_position: el('bt-address_position').value
+    };
+    ['exclude_zero_rates', 'always_show_currency_code', 'show_conversion_rate',
+        'show_text_links', 'show_qr_code', 'show_page_numbers'].forEach(function (f) {
+            var node = el('bt-' + f);
+            if (node) body[f] = node.checked;
+        });
+    ['approved_invoice_title', 'draft_invoice_title', 'quote_title',
+        'payment_terms', 'footer_note'].forEach(function (f) {
+            var node = el('bt-' + f);
+            if (node) body[f] = node.value;
+        });
+    THEME_COLUMNS.forEach(function (col) {
+        if (col.toggle) {
+            var t = el('bt-' + col.toggle);
+            if (t) body[col.toggle] = t.checked;
+        }
+        var l = el('bt-' + col.label);
+        if (l) body[col.label] = l.value;
+    });
+    return body;
+}
+
+// --- the logo, and the colours inside it --------------------------------------
+
+function uploadThemeLogo(event) {
+    var file = event.target.files && event.target.files[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+        showToast('That logo is over 2MB. Try a smaller one.', 'error');
+        return;
+    }
+    var reader = new FileReader();
+    reader.onload = function () {
+        _themeLogo = reader.result;
+        renderLogoPreview();
+        samplePaletteFromLogo(_themeLogo);
+        renderThemePreview();
+    };
+    reader.readAsDataURL(file);
+}
+window.uploadThemeLogo = uploadThemeLogo;
+
+// Pull the dominant colours straight out of the artwork. Xero makes you find
+// your own hex code; the logo already contains the answer.
+function samplePaletteFromLogo(dataUri) {
+    var img = new Image();
+    img.onload = function () {
+        try {
+            var size = 48;
+            var canvas = document.createElement('canvas');
+            canvas.width = size; canvas.height = size;
+            var ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, size, size);
+            var px = ctx.getImageData(0, 0, size, size).data;
+
+            var counts = {};
+            for (var i = 0; i < px.length; i += 4) {
+                if (px[i + 3] < 200) continue;                       // transparent
+                var r = px[i], g = px[i + 1], b = px[i + 2];
+                if (r > 235 && g > 235 && b > 235) continue;         // paper
+                if (r < 25 && g < 25 && b < 25) continue;            // ink
+                // Round into buckets so near-identical pixels count together.
+                var key = [Math.round(r / 24) * 24, Math.round(g / 24) * 24,
+                Math.round(b / 24) * 24].join(',');
+                counts[key] = (counts[key] || 0) + 1;
+            }
+            var ranked = Object.keys(counts).sort(function (a, b2) {
+                return counts[b2] - counts[a];
+            }).slice(0, 5);
+            showPalette(ranked.map(function (k) {
+                return '#' + k.split(',').map(function (n) {
+                    return ('0' + Math.min(255, parseInt(n, 10)).toString(16)).slice(-2);
+                }).join('');
+            }));
+        } catch (e) {
+            // A logo loaded from another origin taints the canvas. Not fatal -
+            // the colour picker still works by hand.
+            showPalette([]);
+        }
+    };
+    img.onerror = function () { showPalette([]); };
+    img.src = dataUri;
+}
+
+function showPalette(colors) {
+    var host = el('bt-palette');
+    if (!host) return;
+    host.innerHTML = (colors || []).map(function (c) {
+        return '<button type="button" class="bt-swatch" style="background:' + c +
+            ';" title="Use ' + c + '" onclick="adoptBrandColor(\'' + c + '\')"></button>';
+    }).join('');
+}
+
+function adoptBrandColor(hex) {
+    el('bt-brand_color').value = hex;
+    renderThemePreview();
+}
+window.adoptBrandColor = adoptBrandColor;
+
+// --- the live preview ---------------------------------------------------------
+
+function setPreviewWidth(mode) {
+    var frame = el('bp-frame');
+    if (frame) frame.classList.toggle('is-mobile', mode === 'mobile');
+    var d = el('bp-desktop'), m = el('bp-mobile');
+    if (d) d.classList.toggle('is-active', mode !== 'mobile');
+    if (m) m.classList.toggle('is-active', mode === 'mobile');
+}
+window.setPreviewWidth = setPreviewWidth;
+
+var PREVIEW_ROWS = [
+    { item: 'GS-100', description: 'Supply and install garden shed netting', qty: 1, price: 900, discount: 0, tax: '10%', amount: 900 },
+    { item: 'GS-210', description: 'Supply and install steel poles', qty: 4, price: 164, discount: 5, tax: '10%', amount: 660 },
+    { item: 'RS-004', description: 'Roofing screws with sealing washers, galvanised 40mm', qty: 2, price: 18.9, discount: 0, tax: '10%', amount: 37.8 }
+];
+
+function renderThemePreview() {
+    var host = el('theme-preview');
+    if (!host) return;
+    var t = readThemeForm();
+    var brand = t.brand_color || '#4f46e5';
+    var fonts = {
+        helvetica: 'Helvetica, Arial, sans-serif',
+        times: 'Georgia, "Times New Roman", serif',
+        courier: '"Courier New", monospace'
+    };
+    var code = t.always_show_currency_code ? 'GBP ' : '';
+
+    var cols = THEME_COLUMNS.filter(function (c) {
+        return c.fixed || t[c.toggle];
+    });
+
+    var head = cols.map(function (c) {
+        var numeric = c.key !== 'description' && c.key !== 'item';
+        return '<th class="' + (numeric ? 'num' : '') + '">' +
+            esc(t[c.label] || '') + '</th>';
+    }).join('');
+
+    var rows = PREVIEW_ROWS.map(function (r) {
+        return '<tr>' + cols.map(function (c) {
+            var v;
+            if (c.key === 'item') v = r.item;
+            else if (c.key === 'description') v = r.description;
+            else if (c.key === 'quantity') v = r.qty;
+            else if (c.key === 'price') v = code + r.price.toFixed(2);
+            else if (c.key === 'discount') v = r.discount ? r.discount + '%' : '-';
+            else if (c.key === 'tax') v = r.tax;
+            else v = code + r.amount.toFixed(2);
+            var numeric = c.key !== 'description' && c.key !== 'item';
+            return '<td class="' + (numeric ? 'num' : '') + '">' + esc(String(v)) + '</td>';
+        }).join('') + '</tr>';
+    }).join('');
+
+    var logo = _themeLogo
+        ? '<img src="' + _themeLogo + '" style="max-height:46px;max-width:150px;">'
+        : '<div style="width:110px;height:40px;border:1px dashed #bbb;display:flex;' +
+        'align-items:center;justify-content:center;color:#999;font-size:9px;">Your logo</div>';
+
+    var align = { left: 'flex-start', center: 'center', right: 'flex-end' }[t.logo_position] || 'flex-end';
+
+    // Tax presentation is the one place the choice really shows.
+    var taxLines = '';
+    if (t.tax_breakdown === 'combined') {
+        taxLines = row('Total VAT', code + '149.78');
+    } else if (t.tax_breakdown === 'separate_components') {
+        taxLines = row('VAT 10% (goods)', code + '110.00') + row('VAT 10% (labour)', code + '39.78');
+    } else {
+        taxLines = row('Total VAT 10%', code + '149.78');
+        if (!t.exclude_zero_rates) taxLines += row('Total VAT 0%', code + '0.00');
+    }
+
+    function row(label, value, bold) {
+        return '<div style="display:flex;justify-content:space-between;padding:3px 0;' +
+            (bold ? 'font-weight:700;border-top:1.5px solid ' + brand + ';margin-top:5px;padding-top:7px;' : '') +
+            '"><span>' + esc(label) + '</span><span>' + esc(value) + '</span></div>';
+    }
+
+    var addressBlock =
+        '<div><div style="font-weight:700;margin-bottom:3px;">Bill to</div>' +
+        'Anika Care Limited<br>34 Quinns Mill Road<br>Leeds, LS3 1HH</div>';
+
+    var onlineBits = '';
+    if (t.show_qr_code || t.show_text_links) {
+        onlineBits = '<div style="display:flex;gap:10px;align-items:center;margin-top:14px;">' +
+            (t.show_qr_code ? '<div style="width:52px;height:52px;background:repeating-linear-gradient(' +
+                '45deg,#111,#111 3px,#fff 3px,#fff 6px);"></div>' : '') +
+            (t.show_text_links ? '<a href="#" onclick="return false;" style="color:' + brand +
+                ';font-weight:600;">View and pay online</a>' : '') +
+            '</div>';
+    }
+
+    host.style.fontFamily = fonts[t.font] || fonts.helvetica;
+    host.innerHTML =
+        '<div style="display:flex;justify-content:' + align + ';margin-bottom:14px;">' + logo + '</div>' +
+        '<div style="display:flex;justify-content:space-between;gap:16px;' +
+        (t.address_position === 'window_envelope' ? 'flex-direction:column;' : '') + '">' +
+        addressBlock +
+        '<div style="text-align:' + (t.address_position === 'window_envelope' ? 'left' : 'right') + ';">' +
+        '<div style="font-size:1.7em;font-weight:700;color:' + brand + ';letter-spacing:0.5px;">' +
+        esc(t.approved_invoice_title || 'TAX INVOICE') + '</div>' +
+        '<div style="margin-top:6px;">Invoice number: INV-0273<br>Issue date: 14 Aug 2026<br>Due date: 31 Aug 2026</div>' +
+        '</div></div>' +
+        '<table><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table>' +
+        '<div style="display:flex;justify-content:flex-end;margin-top:14px;">' +
+        '<div style="min-width:210px;">' +
+        row('Subtotal', code + '1497.80') + taxLines +
+        (t.show_conversion_rate ? row('Rate', '1 GBP = 105.40 INR') : '') +
+        row('Amount due', code + '1647.58', true) +
+        '</div></div>' +
+        onlineBits +
+        (t.payment_terms ? '<div style="margin-top:16px;padding-top:10px;border-top:1px solid #e6e6e6;">' +
+            esc(t.payment_terms) + '</div>' : '') +
+        (t.footer_note ? '<div style="margin-top:12px;text-align:center;color:#777;">' +
+            esc(t.footer_note) + '</div>' : '') +
+        (t.show_page_numbers ? '<div style="margin-top:12px;text-align:center;color:#aaa;">Page 1</div>' : '');
+}
+window.renderThemePreview = renderThemePreview;
+
+// --- saving -------------------------------------------------------------------
+
+async function saveBrandingTheme() {
+    var t = currentTheme();
+    if (!t) return;
+    var body = readThemeForm();
+    if (!body.name) { showToast('Give the theme a name', 'error'); return; }
+    try {
+        var res = await fetch('/api/branding-themes/' + t.id, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(body)
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) { showToast(data.detail || 'Could not save the theme', 'error'); return; }
+        showToast('Theme saved', 'success');
+        await loadBrandTheme();
+        await loadBrandingThemes();
+    } catch (e) { showToast('Could not save the theme', 'error'); }
+}
+window.saveBrandingTheme = saveBrandingTheme;
+
+async function newBrandingTheme() {
+    var name = prompt('Name for the new theme');
+    if (!name) return;
+    try {
+        var res = await fetch('/api/branding-themes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ name: name })
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) { showToast(data.detail || 'Could not create the theme', 'error'); return; }
+        _themeId = data.id;
+        await loadBrandingThemes();
+        showToast('Theme created', 'success');
+    } catch (e) { showToast('Could not create the theme', 'error'); }
+}
+window.newBrandingTheme = newBrandingTheme;
+
+async function deleteBrandingTheme() {
+    var t = currentTheme();
+    if (!t) return;
+    if (!confirm('Delete the theme "' + t.name + '"?')) return;
+    try {
+        var res = await fetch('/api/branding-themes/' + t.id, {
+            method: 'DELETE', credentials: 'same-origin'
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) { showToast(data.detail || 'Could not delete the theme', 'error'); return; }
+        _themeId = null;
+        await loadBrandingThemes();
+        showToast('Theme deleted', 'success');
+    } catch (e) { showToast('Could not delete the theme', 'error'); }
+}
+window.deleteBrandingTheme = deleteBrandingTheme;
+
+// --- the AI pass --------------------------------------------------------------
+
+async function designThemeWithAI() {
+    var note = el('bt-ai-note');
+    if (note) note.textContent = 'Designing...';
+    // Send the colours already sampled from the logo so the suggestion is
+    // built around the real artwork.
+    var swatches = Array.prototype.map.call(
+        document.querySelectorAll('#bt-palette .bt-swatch'),
+        function (b) { return rgbToHex(b.style.backgroundColor); }
+    ).filter(Boolean);
+
+    try {
+        var res = await fetch('/api/ai/brand-theme', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ logo_colors: swatches })
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok || !data.available) {
+            if (note) note.textContent = data.reason || data.detail || 'The AI is not available right now.';
+            return;
+        }
+        var s = data.suggestion || {};
+        ['approved_invoice_title', 'draft_invoice_title', 'quote_title',
+            'payment_terms', 'footer_note'].forEach(function (f) {
+                if (s[f] && el('bt-' + f)) el('bt-' + f).value = s[f];
+            });
+        if (s.brand_color) el('bt-brand_color').value = s.brand_color;
+        if (s.palette) showPalette(s.palette);
+        renderThemePreview();
+        if (note) note.textContent = s.rationale ? s.rationale + ' Nothing is saved until you press Save theme.' : 'Applied. Nothing is saved until you press Save theme.';
+    } catch (e) {
+        if (note) note.textContent = 'Could not reach the AI.';
+    }
+}
+window.designThemeWithAI = designThemeWithAI;
+
+function rgbToHex(rgb) {
+    var m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(rgb || '');
+    if (!m) return '';
+    return '#' + [m[1], m[2], m[3]].map(function (n) {
+        return ('0' + parseInt(n, 10).toString(16)).slice(-2);
+    }).join('');
+}
+
+function previewThemedPDF() {
+    try {
+        var doc = generateInvoicePDF(true, 'invoice');
+        openPdfPreview(doc, 'Branding preview');
+    } catch (e) {
+        showToast('Could not build the preview: ' + e.message, 'error');
+    }
+}
+window.previewThemedPDF = previewThemedPDF;

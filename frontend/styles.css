@@ -1147,3 +1147,136 @@ body::after {
 @media (max-width: 700px) {
     .onb-col-body { max-height: 55vh; }
 }
+
+/* ── Invoice branding editor ──────────────────────────────────────────────
+   Controls on the left, a paper-like preview on the right. The preview keeps
+   a white background whatever the app theme is, because that is what the
+   customer receives. */
+.branding-editor {
+    display: grid;
+    grid-template-columns: minmax(280px, 380px) 1fr;
+    gap: 24px;
+    align-items: start;
+}
+.branding-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 70vh;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+.branding-controls details {
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.02);
+    padding: 0 14px;
+}
+.branding-controls details[open] { padding-bottom: 14px; }
+.branding-controls summary {
+    cursor: pointer;
+    padding: 12px 0;
+    font-weight: 600;
+    list-style: none;
+}
+.branding-controls summary::-webkit-details-marker { display: none; }
+.branding-controls summary::after { content: '+'; float: right; opacity: 0.5; }
+.branding-controls details[open] summary::after { content: '\2212'; }
+
+.bfield {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 12px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+.bfield input[type="text"],
+.bfield input[type="file"],
+.bfield select,
+.bfield textarea {
+    width: 100%;
+    padding: 9px 11px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    font-family: inherit;
+}
+.bcheck {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 0;
+    font-size: 0.88rem;
+    cursor: pointer;
+}
+.bt-note { font-size: 0.78rem; color: var(--text-secondary); margin: 6px 0 10px; }
+.bt-logo-preview:not(:empty) {
+    padding: 10px;
+    border: 1px dashed var(--border-color);
+    border-radius: 8px;
+    margin-bottom: 12px;
+    background: #fff;
+    text-align: center;
+}
+.bt-logo-preview img { max-height: 56px; max-width: 100%; }
+
+/* Colours sampled from the logo - clicking one adopts it. */
+.bt-palette { display: inline-flex; gap: 6px; }
+.bt-swatch {
+    width: 26px; height: 26px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    cursor: pointer;
+    padding: 0;
+}
+
+.branding-preview { position: sticky; top: 12px; }
+.bp-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+.bp-size.is-active { border-color: var(--primary-color); color: var(--primary-color); }
+.bp-frame {
+    background: rgba(0, 0, 0, 0.25);
+    border-radius: 12px;
+    padding: 20px;
+    max-height: 70vh;
+    overflow: auto;
+    display: flex;
+    justify-content: center;
+}
+.bp-paper {
+    background: #fff;
+    color: #1a1a1a;
+    width: 100%;
+    max-width: 620px;
+    min-height: 500px;
+    padding: 34px 38px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+    font-size: 11px;
+    line-height: 1.5;
+}
+.bp-frame.is-mobile .bp-paper { max-width: 320px; padding: 20px; font-size: 9px; }
+
+.bp-paper table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+.bp-paper th {
+    text-align: left;
+    padding: 7px 6px;
+    border-bottom: 1.5px solid currentColor;
+    font-size: 0.92em;
+}
+.bp-paper td { padding: 7px 6px; border-bottom: 1px solid #e6e6e6; }
+.bp-paper .num { text-align: right; }
+
+@media (max-width: 900px) {
+    .branding-editor { grid-template-columns: 1fr; }
+    .branding-controls { max-height: none; }
+    .branding-preview { position: static; }
+}
