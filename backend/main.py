@@ -8563,6 +8563,50 @@ def superadmin_migration_warnings(request: Request):
     return {"count": len(problems), "warnings": problems}
 
 
+@app.get("/api/superadmin/environment")
+def superadmin_environment(request: Request):
+    """Which settings production is actually running with.
+
+    Never returns a value, only whether one is present - this is a page an
+    operator reads to answer "did that variable take effect?", and secrets do
+    not belong in an HTTP response even behind an admin check.
+    """
+    require_superadmin(request)
+
+    def state(name, ok, why, fix):
+        return {"name": name, "ok": bool(ok), "detail": why, "fix": fix}
+
+    checks = [
+        state("SECRET_KEY", bool(os.getenv("SECRET_KEY")),
+              "Sessions survive a redeploy."
+              if os.getenv("SECRET_KEY") else
+              "Not set, so a new key is generated on every boot and every "
+              "signed-in user is signed out on each redeploy.",
+              "Set SECRET_KEY to a long random string in the host environment."),
+        state("GROQ_API_KEY", bool(os.getenv("GROQ_API_KEY")),
+              "The AI features can reach the model."
+              if os.getenv("GROQ_API_KEY") else
+              "Not set, so every AI feature fails at the point of use.",
+              "Set GROQ_API_KEY in the host environment."),
+        state("DATABASE_URL", bool(os.getenv("DATABASE_URL")),
+              "Using the configured database."
+              if os.getenv("DATABASE_URL") else
+              "Not set, so the app is on a local SQLite file that a redeploy "
+              "discards along with all of its data.",
+              "Point DATABASE_URL at the Postgres instance."),
+        state("Payment gateways",
+              any(os.getenv(k) for k in
+                  ("STRIPE_SECRET_KEY", "RAZORPAY_KEY_SECRET", "PAYPAL_CLIENT_SECRET")),
+              "At least one gateway is configured.",
+              "Set the keys for whichever gateway you intend to take money with."),
+    ]
+    return {
+        "checks": checks,
+        "ready": all(c["ok"] for c in checks),
+        "outstanding": [c["name"] for c in checks if not c["ok"]],
+    }
+
+
 class PricingRuleIn(BaseModel):
     action_key: Optional[str] = ""
     label: Optional[str] = ""
