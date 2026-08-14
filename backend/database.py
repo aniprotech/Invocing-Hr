@@ -1118,5 +1118,54 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 40: {sys.exc_info()[1]}")
 
+            # Branding themes - how invoices and quotes are presented
+            try:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS branding_themes (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        name VARCHAR DEFAULT 'Standard',
+                        is_default BOOLEAN DEFAULT FALSE,
+                        logo_data TEXT DEFAULT '',
+                        logo_position VARCHAR DEFAULT 'right',
+                        brand_color VARCHAR DEFAULT '#4F46E5',
+                        font VARCHAR DEFAULT 'helvetica',
+                        show_item BOOLEAN DEFAULT FALSE,
+                        show_quantity BOOLEAN DEFAULT TRUE,
+                        show_price BOOLEAN DEFAULT TRUE,
+                        show_discount BOOLEAN DEFAULT FALSE,
+                        show_tax BOOLEAN DEFAULT TRUE,
+                        label_item VARCHAR DEFAULT 'Item',
+                        label_description VARCHAR DEFAULT 'Description',
+                        label_quantity VARCHAR DEFAULT 'Quantity',
+                        label_price VARCHAR DEFAULT 'Unit Price',
+                        label_discount VARCHAR DEFAULT 'Discount',
+                        label_tax VARCHAR DEFAULT 'Tax',
+                        label_amount VARCHAR DEFAULT 'Amount',
+                        tax_breakdown VARCHAR DEFAULT 'separate_rates',
+                        exclude_zero_rates BOOLEAN DEFAULT FALSE,
+                        always_show_currency_code BOOLEAN DEFAULT FALSE,
+                        show_conversion_rate BOOLEAN DEFAULT FALSE,
+                        show_text_links BOOLEAN DEFAULT TRUE,
+                        show_qr_code BOOLEAN DEFAULT TRUE,
+                        approved_invoice_title VARCHAR DEFAULT 'TAX INVOICE',
+                        draft_invoice_title VARCHAR DEFAULT 'DRAFT INVOICE',
+                        quote_title VARCHAR DEFAULT 'QUOTE',
+                        payment_terms TEXT DEFAULT '',
+                        footer_note TEXT DEFAULT '',
+                        address_position VARCHAR DEFAULT 'default',
+                        show_page_numbers BOOLEAN DEFAULT TRUE,
+                        created_at VARCHAR DEFAULT (NOW()::TEXT),
+                        updated_at VARCHAR DEFAULT (NOW()::TEXT),
+                        CONSTRAINT uq_client_theme_name UNIQUE (client_id, name)
+                    )
+                """))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_branding_themes_client "
+                    "ON branding_themes (client_id)"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 41: {sys.exc_info()[1]}")
+
     except Exception as e:
         print(f"Column check skipped: {e}")

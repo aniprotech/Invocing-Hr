@@ -4306,6 +4306,246 @@ def replace_tax_rates(body: TaxRatesIn, request: Request, db: Session = Depends(
     return [tax_rate_to_dict(t) for t in rows]
 
 
+
+
+# ============================================================================
+# BRANDING THEMES - how invoices and quotes are presented
+#
+# Presentation only: nothing here changes what is owed. A theme is stored once
+# and applied at render time, so editing it restyles every past document too
+# rather than leaving a trail of differently-shaped PDFs.
+# ============================================================================
+
+LOGO_POSITIONS = ("left", "center", "right")
+TAX_BREAKDOWNS = ("combined", "separate_rates", "separate_components")
+ADDRESS_POSITIONS = ("default", "window_envelope")
+# jsPDF ships three core families. Offering a font the renderer does not have
+# would silently fall back and quietly change every invoice.
+THEME_FONTS = ("helvetica", "times", "courier")
+
+THEME_BOOLS = (
+    "show_item", "show_quantity", "show_price", "show_discount", "show_tax",
+    "exclude_zero_rates", "always_show_currency_code", "show_conversion_rate",
+    "show_text_links", "show_qr_code", "show_page_numbers",
+)
+THEME_STRINGS = (
+    "label_item", "label_description", "label_quantity", "label_price",
+    "label_discount", "label_tax", "label_amount",
+    "approved_invoice_title", "draft_invoice_title", "quote_title",
+    "payment_terms", "footer_note",
+)
+
+
+def valid_hex_colour(value: str, fallback: str = "#4F46E5") -> str:
+    """Accept #rgb or #rrggbb only. This string is written straight into a PDF
+    and into inline CSS in the preview, so it must never carry anything else."""
+    v = (value or "").strip()
+    if re.fullmatch(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})", v):
+        return v.lower()
+    return fallback
+
+
+def theme_to_dict(t) -> dict:
+    out = {
+        "id": t.id, "name": t.name, "is_default": bool(t.is_default),
+        "logo_data": t.logo_data or "", "logo_position": t.logo_position or "right",
+        "brand_color": t.brand_color or "#4F46E5", "font": t.font or "helvetica",
+        "tax_breakdown": t.tax_breakdown or "separate_rates",
+        "address_position": t.address_position or "default",
+        "updated_at": t.updated_at or "",
+    }
+    for f in THEME_BOOLS:
+        out[f] = bool(getattr(t, f))
+    for f in THEME_STRINGS:
+        out[f] = getattr(t, f) or ""
+    return out
+
+
+def apply_theme_fields(theme, body: dict):
+    """Copy whatever the caller sent, ignoring anything it may not set.
+
+    Deliberately a whitelist: a theme is rendered into a PDF and echoed into
+    the preview, so an unexpected key must never reach either.
+    """
+    if "name" in body:
+        name = (body.get("name") or "").strip()[:60]
+        if not name:
+            raise HTTPException(status_code=400, detail="A theme needs a name")
+        theme.name = name
+    if "logo_data" in body:
+        logo = body.get("logo_data") or ""
+        if logo and not logo.startswith("data:image/"):
+            raise HTTPException(status_code=400,
+                                detail="The logo must be an image")
+        if len(logo) > 3_000_000:
+            raise HTTPException(status_code=400,
+                                detail="That logo is too large - keep it under about 2MB")
+        theme.logo_data = logo
+    if "logo_position" in body and body["logo_position"] in LOGO_POSITIONS:
+        theme.logo_position = body["logo_position"]
+    if "brand_color" in body:
+        theme.brand_color = valid_hex_colour(body["brand_color"], theme.brand_color or "#4F46E5")
+    if "font" in body and body["font"] in THEME_FONTS:
+        theme.font = body["font"]
+    if "tax_breakdown" in body and body["tax_breakdown"] in TAX_BREAKDOWNS:
+        theme.tax_breakdown = body["tax_breakdown"]
+    if "address_position" in body and body["address_position"] in ADDRESS_POSITIONS:
+        theme.address_position = body["address_position"]
+    for f in THEME_BOOLS:
+        if f in body:
+            setattr(theme, f, bool(body[f]))
+    for f in THEME_STRINGS:
+        if f in body:
+            setattr(theme, f, str(body[f] or "")[:2000])
+    theme.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def ensure_default_theme(db: Session, client_id: int):
+    """Every account has at least one theme, so the PDF code never has to cope
+    with there being none."""
+    existing = db.query(models.DBBrandingTheme).filter(
+        models.DBBrandingTheme.client_id == client_id).count()
+    if existing:
+        return
+    db.add(models.DBBrandingTheme(client_id=client_id, name="Standard", is_default=True))
+    db.commit()
+
+
+def default_theme_for(db: Session, client_id: int):
+    ensure_default_theme(db, client_id)
+    theme = db.query(models.DBBrandingTheme).filter(
+        models.DBBrandingTheme.client_id == client_id,
+        models.DBBrandingTheme.is_default == True).first()  # noqa: E712
+    if not theme:
+        theme = db.query(models.DBBrandingTheme).filter(
+            models.DBBrandingTheme.client_id == client_id
+        ).order_by(models.DBBrandingTheme.id.asc()).first()
+    return theme
+
+
+@app.get("/api/branding-themes")
+def list_branding_themes(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    ensure_default_theme(db, client.id)
+    rows = db.query(models.DBBrandingTheme).filter(
+        models.DBBrandingTheme.client_id == client.id
+    ).order_by(models.DBBrandingTheme.is_default.desc(),
+               models.DBBrandingTheme.name.asc()).all()
+    return {"themes": [theme_to_dict(t) for t in rows],
+            "fonts": list(THEME_FONTS)}
+
+
+@app.get("/api/branding-themes/default")
+def get_default_branding_theme(request: Request, db: Session = Depends(get_db)):
+    """What the PDF renderer asks for. Always answers with a theme."""
+    client = get_client_user(request, db)
+    return theme_to_dict(default_theme_for(db, client.id))
+
+
+@app.post("/api/branding-themes")
+def create_branding_theme(request: Request, body: dict = None,
+                          db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    ensure_default_theme(db, client.id)
+
+    name = (body.get("name") or "").strip()[:60] or "New theme"
+    clash = db.query(models.DBBrandingTheme).filter(
+        models.DBBrandingTheme.client_id == client.id,
+        models.DBBrandingTheme.name == name).first()
+    if clash:
+        raise HTTPException(status_code=400,
+                            detail=f"You already have a theme called '{name}'")
+
+    theme = models.DBBrandingTheme(client_id=client.id, name=name)
+    body = dict(body)
+    body.pop("name", None)
+    apply_theme_fields(theme, body)
+    db.add(theme)
+    db.commit()
+    db.refresh(theme)
+    log_audit(db, client.id, "branding_theme_created", "branding", theme.id,
+              theme.name, "", request)
+    db.commit()
+    return theme_to_dict(theme)
+
+
+@app.put("/api/branding-themes/{theme_id}")
+def update_branding_theme(theme_id: int, request: Request, body: dict = None,
+                          db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    theme = db.query(models.DBBrandingTheme).filter(
+        models.DBBrandingTheme.id == theme_id,
+        models.DBBrandingTheme.client_id == client.id).first()
+    if not theme:
+        raise HTTPException(status_code=404, detail="Theme not found")
+
+    body = dict(body or {})
+    new_name = (body.get("name") or "").strip()[:60]
+    if new_name and new_name != theme.name:
+        clash = db.query(models.DBBrandingTheme).filter(
+            models.DBBrandingTheme.client_id == client.id,
+            models.DBBrandingTheme.name == new_name,
+            models.DBBrandingTheme.id != theme.id).first()
+        if clash:
+            raise HTTPException(status_code=400,
+                                detail=f"You already have a theme called '{new_name}'")
+
+    apply_theme_fields(theme, body)
+    log_audit(db, client.id, "branding_theme_updated", "branding", theme.id,
+              theme.name, "", request)
+    db.commit()
+    db.refresh(theme)
+    return theme_to_dict(theme)
+
+
+@app.post("/api/branding-themes/{theme_id}/default")
+def set_default_branding_theme(theme_id: int, request: Request,
+                               db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    theme = db.query(models.DBBrandingTheme).filter(
+        models.DBBrandingTheme.id == theme_id,
+        models.DBBrandingTheme.client_id == client.id).first()
+    if not theme:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    db.query(models.DBBrandingTheme).filter(
+        models.DBBrandingTheme.client_id == client.id
+    ).update({models.DBBrandingTheme.is_default: False})
+    theme.is_default = True
+    db.commit()
+    return theme_to_dict(theme)
+
+
+@app.delete("/api/branding-themes/{theme_id}")
+def delete_branding_theme(theme_id: int, request: Request,
+                          db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    theme = db.query(models.DBBrandingTheme).filter(
+        models.DBBrandingTheme.id == theme_id,
+        models.DBBrandingTheme.client_id == client.id).first()
+    if not theme:
+        raise HTTPException(status_code=404, detail="Theme not found")
+
+    remaining = db.query(models.DBBrandingTheme).filter(
+        models.DBBrandingTheme.client_id == client.id).count()
+    if remaining <= 1:
+        raise HTTPException(status_code=400,
+                            detail="This is your only theme, so it cannot be deleted")
+
+    was_default = bool(theme.is_default)
+    db.delete(theme)
+    db.commit()
+    if was_default:
+        # Never leave an account with no default; the renderer relies on one.
+        fallback = db.query(models.DBBrandingTheme).filter(
+            models.DBBrandingTheme.client_id == client.id
+        ).order_by(models.DBBrandingTheme.id.asc()).first()
+        if fallback:
+            fallback.is_default = True
+            db.commit()
+    return {"ok": True}
+
+
 # ============================================================================
 # QUOTES - priced proposals that can become invoices
 # ============================================================================
@@ -8230,6 +8470,8 @@ DEFAULT_PRICING = [
      "Charged per interview question set."),
     ("ai_describe_item",  "AI line item wording",    "invoicing", 10, 20,
      "Charged per invoice description rewritten."),
+    ("ai_brand_theme",    "AI branding theme",       "invoicing", 25, 5,
+     "Charged per invoice theme designed."),
 ]
 
 PLATFORM_CURRENCY = os.getenv("PLATFORM_CURRENCY", "GBP").upper()
@@ -11849,6 +12091,68 @@ def ai_job_description(request: Request, body: dict = None, db: Session = Depend
         "description": as_text(result.get("description")),
         "requirements": as_list(result.get("requirements")),
     }
+
+
+@app.post("/api/ai/brand-theme")
+def ai_brand_theme(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Propose a whole branding theme instead of making somebody choose thirty
+    settings one at a time.
+
+    The colours come from the logo, not from the model - a palette sampled from
+    the actual artwork is always closer than a guessed hex code, and it costs
+    nothing. The model is used only for the wording, which is the part that
+    genuinely needs writing: document titles, payment terms, a footer line.
+    """
+    client = get_client_user(request, db)
+    body = body or {}
+
+    # Sampled in the browser from the uploaded logo and posted here.
+    palette = [valid_hex_colour(c, "") for c in (body.get("logo_colors") or [])]
+    palette = [c for c in palette if c]
+
+    industry = (body.get("industry") or client.industry or "").strip()[:80]
+    tone = (body.get("tone") or "professional").strip()[:40]
+    company = (client.company_name or "our company").strip()
+
+    ensure_can_afford(db, client.id, "ai_brand_theme")
+
+    result = llm_json([
+        {"role": "system", "content":
+            "You set the wording on a business's invoices. Return ONLY valid JSON "
+            "with keys: approved_invoice_title, draft_invoice_title, quote_title, "
+            "payment_terms, footer_note, rationale. "
+            "Titles are short and conventional for the country and trade - most "
+            "businesses want 'TAX INVOICE' or 'INVOICE', so do not be inventive. "
+            "payment_terms is one or two plain sentences telling the customer how "
+            "and by when to pay. footer_note is a single short line of thanks or "
+            "contact detail. rationale is one sentence on why these suit the trade. "
+            "Never invent a bank account, a registration number, a discount, or a "
+            "number of days that was not given to you."},
+        {"role": "user", "content":
+            f"Business: {company}\nTrade: {industry or 'not stated'}\n"
+            f"Tone wanted: {tone}"},
+    ])
+
+    if not result:
+        return {"available": False, "reason": llm_error_message()}
+
+    charge_after_success(db, client.id, "ai_brand_theme", 1, company)
+
+    # The model never picks the colour. Sampling the logo keeps the invoice
+    # matching the artwork the customer already recognises.
+    suggestion = {
+        "approved_invoice_title": as_text(result.get("approved_invoice_title"))[:60] or "TAX INVOICE",
+        "draft_invoice_title": as_text(result.get("draft_invoice_title"))[:60] or "DRAFT INVOICE",
+        "quote_title": as_text(result.get("quote_title"))[:60] or "QUOTE",
+        "payment_terms": as_text(result.get("payment_terms"))[:600],
+        "footer_note": as_text(result.get("footer_note"))[:200],
+        "rationale": as_text(result.get("rationale"))[:300],
+    }
+    if palette:
+        suggestion["brand_color"] = palette[0]
+        suggestion["palette"] = palette[:5]
+
+    return {"available": True, "suggestion": suggestion}
 
 
 @app.post("/api/ai/interview-questions")

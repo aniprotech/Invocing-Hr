@@ -1092,3 +1092,72 @@ class DBTopUpOrder(Base):
     credited = Column(Boolean, default=False)                 # guards double-crediting
     credited_at = Column(String, default="")
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBBrandingTheme(Base):
+    """How a business wants its invoices and quotes to look.
+
+    A tenant can keep several - a standard theme, one for a customer who wants
+    their PO number as a column, a plainer one for print. Exactly one is the
+    default, which is what a new document uses.
+
+    Every display decision lives here rather than in the PDF code, so changing
+    a theme re-renders every document that uses it without touching a stored
+    file. Nothing here affects what is owed; it is presentation only.
+    """
+    __tablename__ = "branding_themes"
+    __table_args__ = (
+        UniqueConstraint('client_id', 'name', name='uq_client_theme_name'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    name = Column(String, default="Standard")
+    is_default = Column(Boolean, default=False, index=True)
+
+    # --- brand and styling ---
+    logo_data = Column(Text, default="")            # data: URI, per theme
+    logo_position = Column(String, default="right")  # left | center | right
+    brand_color = Column(String, default="#4F46E5")
+    font = Column(String, default="helvetica")       # a jsPDF core font
+
+    # --- which columns the line-item table shows, and what they are called ---
+    show_item = Column(Boolean, default=False)
+    show_quantity = Column(Boolean, default=True)
+    show_price = Column(Boolean, default=True)
+    show_discount = Column(Boolean, default=False)
+    show_tax = Column(Boolean, default=True)
+    label_item = Column(String, default="Item")
+    label_description = Column(String, default="Description")
+    label_quantity = Column(String, default="Quantity")
+    label_price = Column(String, default="Unit Price")
+    label_discount = Column(String, default="Discount")
+    label_tax = Column(String, default="Tax")
+    label_amount = Column(String, default="Amount")
+
+    # --- tax ---
+    # combined | separate_rates | separate_components
+    tax_breakdown = Column(String, default="separate_rates")
+    exclude_zero_rates = Column(Boolean, default=False)
+
+    # --- currency ---
+    always_show_currency_code = Column(Boolean, default=False)
+    show_conversion_rate = Column(Boolean, default=False)
+
+    # --- the online invoice ---
+    show_text_links = Column(Boolean, default=True)
+    show_qr_code = Column(Boolean, default=True)
+
+    # --- wording ---
+    approved_invoice_title = Column(String, default="TAX INVOICE")
+    draft_invoice_title = Column(String, default="DRAFT INVOICE")
+    quote_title = Column(String, default="QUOTE")
+    payment_terms = Column(Text, default="")
+    footer_note = Column(Text, default="")
+
+    # --- print ---
+    address_position = Column(String, default="default")   # default | window_envelope
+    show_page_numbers = Column(Boolean, default=True)
+
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    updated_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
