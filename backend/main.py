@@ -4374,9 +4374,15 @@ def apply_theme_fields(theme, body: dict):
         theme.name = name
     if "logo_data" in body:
         logo = body.get("logo_data") or ""
-        if logo and not logo.startswith("data:image/"):
-            raise HTTPException(status_code=400,
-                                detail="The logo must be an image")
+        # Matched in full, not just by prefix. This string is written into an
+        # <img src> and into a PDF, so a quote or an angle bracket smuggled in
+        # after a valid-looking prefix must never be stored.
+        if logo and not re.fullmatch(
+                r"data:image/(png|jpe?g|gif|webp|svg\+xml);base64,[A-Za-z0-9+/=\s]+",
+                logo):
+            raise HTTPException(
+                status_code=400,
+                detail="The logo must be a base64 image (PNG, JPEG, GIF or WebP)")
         if len(logo) > 3_000_000:
             raise HTTPException(status_code=400,
                                 detail="That logo is too large - keep it under about 2MB")

@@ -2,7 +2,7 @@
 answer every question about them from a single call."""
 import pytest
 
-from conftest import make_employee
+from conftest import make_employee, work_every_day
 
 
 @pytest.fixture
@@ -56,6 +56,7 @@ def test_profile_reflects_approval_without_a_separate_call(client, account):
 
 def test_profile_shows_someone_currently_clocked_in(client, tenant, person):
     # Logging in clocks the employee in; they stay clocked in until logout.
+    work_every_day(tenant)
     client.post("/api/employee/auth/login", json={"email": person["email"], "password": "EmpPass123"})
     a = tenant.get(f"/api/employees/{person['id']}").json()["attendance_summary"]
     assert a["days_present"] == 1
@@ -64,6 +65,7 @@ def test_profile_shows_someone_currently_clocked_in(client, tenant, person):
 
 
 def test_profile_shows_a_completed_day(client, tenant, person):
+    work_every_day(tenant)
     client.post("/api/employee/auth/login", json={"email": person["email"], "password": "EmpPass123"})
     client.post("/api/employee/auth/logout")   # logout clocks them out
     a = tenant.get(f"/api/employees/{person['id']}").json()["attendance_summary"]

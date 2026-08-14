@@ -9371,9 +9371,12 @@ function renderColumnToggles(theme) {
     if (!host) return;
     host.innerHTML = THEME_COLUMNS.map(function (col) {
         var checked = col.fixed ? true : !!theme[col.toggle];
+        // Description and Amount are always shown and carry no toggle, so they
+        // get no id - two of them would otherwise share id="bt-null".
+        var boxId = col.toggle ? ' id="bt-' + col.toggle + '"' : '';
         var disabled = col.fixed ? ' disabled title="Always shown"' : '';
         return '<div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;">' +
-            '<input type="checkbox" id="bt-' + col.toggle + '"' +
+            '<input type="checkbox"' + boxId +
             (checked ? ' checked' : '') + disabled +
             ' onchange="renderThemePreview()">' +
             '<input type="text" id="bt-' + col.label + '" value="' +
@@ -9387,7 +9390,7 @@ function renderColumnToggles(theme) {
 function renderLogoPreview() {
     var host = el('bt-logo-preview');
     if (!host) return;
-    host.innerHTML = _themeLogo ? '<img src="' + _themeLogo + '" alt="Your logo">' : '';
+    host.innerHTML = _themeLogo ? '<img src="' + esc(_themeLogo) + '" alt="Your logo">' : '';
 }
 
 // --- reading the form back ----------------------------------------------------
@@ -9529,33 +9532,42 @@ function renderThemePreview() {
     };
     var code = t.always_show_currency_code ? 'GBP ' : '';
 
+    // The item name prints above the description rather than in a column of
+    // its own, which is what the PDF does. Keeping the two in step matters
+    // more than matching Xero's exact table shape.
     var cols = THEME_COLUMNS.filter(function (c) {
-        return c.fixed || t[c.toggle];
+        return c.key !== 'item' && (c.fixed || t[c.toggle]);
     });
 
     var head = cols.map(function (c) {
-        var numeric = c.key !== 'description' && c.key !== 'item';
-        return '<th class="' + (numeric ? 'num' : '') + '">' +
-            esc(t[c.label] || '') + '</th>';
+        var numeric = c.key !== 'description';
+        var label = t[c.label] || '';
+        if (c.key === 'description' && t.show_item) {
+            label = (t.label_item || 'Item') + ' / ' + label;
+        }
+        return '<th class="' + (numeric ? 'num' : '') + '">' + esc(label) + '</th>';
     }).join('');
 
     var rows = PREVIEW_ROWS.map(function (r) {
         return '<tr>' + cols.map(function (c) {
+            if (c.key === 'description') {
+                var desc = esc(r.description);
+                return '<td>' + (t.show_item
+                    ? '<div style="font-weight:700;">' + esc(r.item) + '</div>' + desc
+                    : desc) + '</td>';
+            }
             var v;
-            if (c.key === 'item') v = r.item;
-            else if (c.key === 'description') v = r.description;
-            else if (c.key === 'quantity') v = r.qty;
+            if (c.key === 'quantity') v = r.qty;
             else if (c.key === 'price') v = code + r.price.toFixed(2);
             else if (c.key === 'discount') v = r.discount ? r.discount + '%' : '-';
             else if (c.key === 'tax') v = r.tax;
             else v = code + r.amount.toFixed(2);
-            var numeric = c.key !== 'description' && c.key !== 'item';
-            return '<td class="' + (numeric ? 'num' : '') + '">' + esc(String(v)) + '</td>';
+            return '<td class="num">' + esc(String(v)) + '</td>';
         }).join('') + '</tr>';
     }).join('');
 
     var logo = _themeLogo
-        ? '<img src="' + _themeLogo + '" style="max-height:46px;max-width:150px;">'
+        ? '<img src="' + esc(_themeLogo) + '" style="max-height:46px;max-width:150px;">'
         : '<div style="width:110px;height:40px;border:1px dashed #bbb;display:flex;' +
         'align-items:center;justify-content:center;color:#999;font-size:9px;">Your logo</div>';
 
@@ -9726,11 +9738,19 @@ function rgbToHex(rgb) {
 }
 
 function previewThemedPDF() {
+    // The renderer reads the saved theme. Here we want what is on screen, so
+    // lend it the unsaved form and put the saved one back afterwards.
+    var saved = _brandTheme;
     try {
+        var form = readThemeForm();
+        form.logo_data = _themeLogo;
+        _brandTheme = form;
         var doc = generateInvoicePDF(true, 'invoice');
-        openPdfPreview(doc, 'Branding preview');
+        openPdfPreview(doc, 'Branding preview (unsaved)');
     } catch (e) {
         showToast('Could not build the preview: ' + e.message, 'error');
+    } finally {
+        _brandTheme = saved;
     }
 }
 window.previewThemedPDF = previewThemedPDF;

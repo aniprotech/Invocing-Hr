@@ -112,6 +112,20 @@ def test_a_logo_must_be_an_image(tenant):
     assert "image" in res.json()["detail"].lower()
 
 
+@pytest.mark.parametrize("logo", [
+    # A valid-looking prefix with markup smuggled in after it. This string ends
+    # up inside an <img src> and inside a PDF.
+    'data:image/png;base64,AAA" onerror="alert(1)',
+    "data:image/png;base64,AAA'><script>alert(1)</script>",
+    "data:image/png,<svg onload=alert(1)>",
+    "data:image/png;base64,",
+])
+def test_a_logo_is_checked_in_full_not_just_its_prefix(tenant, logo):
+    theme = make(tenant)
+    res = tenant.put(f"/api/branding-themes/{theme['id']}", json={"logo_data": logo})
+    assert res.status_code == 400, f"accepted {logo!r}"
+
+
 def test_a_real_image_is_accepted(tenant):
     theme = make(tenant)
     res = tenant.put(f"/api/branding-themes/{theme['id']}", json={"logo_data": PIXEL})

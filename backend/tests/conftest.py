@@ -105,3 +105,15 @@ def make_invoice(tenant, line_items=None, **overrides):
     res = tenant.post("/api/invoices", json=payload)
     assert res.status_code == 200, res.text
     return res.json()
+
+
+def work_every_day(tenant):
+    """Treat every day as a working day for this tenant.
+
+    Signing in only starts a shift on a working day, which is the intended
+    behaviour - somebody opening the portal on a Sunday to check a document is
+    not at work. A test about the clock-in mechanics must not also depend on
+    which day the suite happens to run, or it goes red every weekend.
+    """
+    res = tenant.put("/api/attendance/settings", json={"working_days": "1,2,3,4,5,6,7"})
+    assert res.status_code == 200, res.text

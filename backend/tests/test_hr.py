@@ -1,7 +1,7 @@
 """HR portal: employee lifecycle, leave rules and attendance maths."""
 import pytest
 
-from conftest import make_employee
+from conftest import make_employee, work_every_day
 from main import working_days_between
 
 
@@ -165,6 +165,7 @@ def test_deleting_a_department_detaches_employees(tenant):
 def test_login_clocks_in_and_clock_out_records_hours(client, tenant):
     """Logging into the employee portal clocks you in automatically, so a
     second explicit clock-in is a duplicate."""
+    work_every_day(tenant)
     emp = make_employee(tenant, password="EmpPass123")
     login = client.post("/api/employee/auth/login", json={
         "email": emp["email"], "password": "EmpPass123",
@@ -184,6 +185,7 @@ def test_login_clocks_in_and_clock_out_records_hours(client, tenant):
 
 
 def test_clock_out_after_already_clocking_out_is_refused(client, tenant):
+    work_every_day(tenant)
     emp = make_employee(tenant, password="EmpPass123")
     client.post("/api/employee/auth/login", json={"email": emp["email"], "password": "EmpPass123"})
     assert client.post("/api/employee/attendance/clock-out").status_code == 200
