@@ -343,6 +343,9 @@ function showView(viewId) {
     if (viewId === 'quotes-view' && typeof fetchQuotes === 'function') fetchQuotes();
     if (viewId === 'sales-pipeline-view' && typeof loadSalesPipeline === 'function') loadSalesPipeline();
     if (viewId === 'recurring-view' && typeof loadRecurring === 'function') loadRecurring();
+    // Dates and currency are filled before the number is fetched, because the
+    // due date is worked out from the issue date and the tenant's terms.
+    if (viewId === 'create-invoice-view' && typeof prepareNewInvoiceForm === 'function') prepareNewInvoiceForm();
     if (viewId === 'create-invoice-view' && typeof fetchNextInvoiceNumber === 'function') fetchNextInvoiceNumber();
     if (viewId === 'create-invoice-view' && typeof setupContactAutocomplete === 'function') setupContactAutocomplete();
     if (viewId === 'settings-view' && typeof loadGmailStatus === 'function') loadGmailStatus();
@@ -700,6 +703,32 @@ document.addEventListener('click', function(e) {
     if (!e.target.closest('.search-bar')) hideSearchResults();
 });
 window.handleGlobalSearch = handleGlobalSearch;
+
+// Saving an invoice calls form.reset(), which blanks the dates and the
+// currency. They were only ever filled once, at page load, so the first
+// invoice of a session came out right and every one after it opened empty and
+// had to be typed by hand. Filling them whenever the form is opened covers
+// both that reset and ordinary navigation.
+function prepareNewInvoiceForm() {
+    var issueEl = document.getElementById('inv-issue-date');
+    var dueEl = document.getElementById('inv-due-date');
+    if (issueEl && !issueEl.value) issueEl.value = localDate(new Date());
+    if (dueEl && !dueEl.value) {
+        // A fortnight stands in until fetchNextInvoiceNumber returns the
+        // tenant's real payment terms and overwrites it.
+        dueEl.value = localDate(new Date(Date.now() + 14 * 86400000));
+    }
+
+    var curEl = document.getElementById('inv-currency');
+    if (curEl && !curEl.value && typeof _appCurrency !== 'undefined' && _appCurrency) {
+        curEl.value = _appCurrency;
+        if (typeof setCurrencyPickerDisplay === 'function' &&
+            typeof _curPickers !== 'undefined' && _curPickers['invCurrency']) {
+            setCurrencyPickerDisplay('invCurrency', _appCurrency);
+        }
+    }
+}
+window.prepareNewInvoiceForm = prepareNewInvoiceForm;
 
 async function fetchNextInvoiceNumber() {
     try {
