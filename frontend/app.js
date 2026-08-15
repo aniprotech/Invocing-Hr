@@ -752,24 +752,58 @@ async function fetchNextInvoiceNumber() {
 window.fetchNextInvoiceNumber = fetchNextInvoiceNumber;
 
 // --- Logo ---
-function loadSavedLogo() {
-    var savedLogo = localStorage.getItem('company_logo');
-    if (savedLogo) {
-        var el = document.getElementById('logo-img-create');
-        if (el) { el.src = savedLogo; el.style.display = 'block'; }
-        var txt = document.getElementById('logo-upload-text');
-        if (txt) txt.style.display = 'none';
+// There are two places a logo can live: the account-wide one, which predates
+// branding themes, and the theme's own. The PDF prefers the theme, so every
+// screen has to prefer the theme as well - otherwise the invoice page shows a
+// logo the customer will never receive.
+function activeLogo() {
+    if (typeof _brandTheme !== 'undefined' && _brandTheme && _brandTheme.logo_data) {
+        return _brandTheme.logo_data;
     }
-    fetch('/api/client/logo').then(function(r) { return r.json(); }).then(function(data) {
-        if (data.logo_url) {
-            localStorage.setItem('company_logo', data.logo_url);
-            var el = document.getElementById('logo-img-create');
-            if (el) { el.src = data.logo_url; el.style.display = 'block'; }
-            var txt = document.getElementById('logo-upload-text');
-            if (txt) txt.style.display = 'none';
-        }
-    }).catch(function() {});
+    return localStorage.getItem('company_logo') || '';
 }
+window.activeLogo = activeLogo;
+
+function showInvoiceLogo(src) {
+    var el = document.getElementById('logo-img-create');
+    if (el && src) { el.src = src; el.style.display = 'block'; }
+    var txt = document.getElementById('logo-upload-text');
+    if (txt && src) txt.style.display = 'none';
+}
+window.showInvoiceLogo = showInvoiceLogo;
+
+function loadSavedLogo() {
+    showInvoiceLogo(activeLogo());
+    fetch('/api/client/logo').then(function (r) { return r.json(); }).then(function (data) {
+        if (!data.logo_url) return;
+        localStorage.setItem('company_logo', data.logo_url);
+        // Only paint the account logo if no theme logo has taken the slot.
+        // This used to overwrite unconditionally, which is why the invoice
+        // page showed one logo while the PDF carried another.
+        showInvoiceLogo(activeLogo());
+    }).catch(function () { });
+}
+
+// Push a logo uploaded from one of the older places into the default branding
+// theme, which is what the PDF actually reads. Silent on failure: the account
+// logo has already been saved, so this is a best-effort sync rather than the
+// user's action succeeding or failing.
+async function adoptLogoIntoTheme(dataUri) {
+    try {
+        if (typeof _brandTheme === 'undefined' || !_brandTheme || !_brandTheme.id) {
+            if (typeof loadBrandTheme === 'function') await loadBrandTheme();
+        }
+        if (!_brandTheme || !_brandTheme.id) return;
+        var res = await fetch('/api/branding-themes/' + _brandTheme.id, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ logo_data: dataUri })
+        });
+        if (res.ok) _brandTheme = await res.json();
+    } catch (e) { /* the account logo still applies as the fallback */ }
+}
+window.adoptLogoIntoTheme = adoptLogoIntoTheme;
 
 function setupLogoUpload() {
     var logoUpload = document.getElementById('logo-upload');
@@ -786,10 +820,12 @@ function setupLogoUpload() {
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ logo_url: b64 })
                     }).catch(function() {});
-                    var img = document.getElementById('logo-img-create');
-                    if (img) { img.src = b64; img.style.display = 'block'; }
-                    var txt = document.getElementById('logo-upload-text');
-                    if (txt) txt.style.display = 'none';
+                    // The PDF takes its logo from the branding theme, so a logo
+                    // dropped here has to reach the theme too. Without this the
+                    // upload appears to work and the invoice still goes out
+                    // carrying the old artwork.
+                    adoptLogoIntoTheme(b64);
+                    showInvoiceLogo(b64);
                 };
                 reader.readAsDataURL(file);
             }
@@ -1225,6 +1261,10 @@ async function loadBrandTheme() {
         var res = await fetch('/api/branding-themes/default', { credentials: 'same-origin' });
         if (res.ok) _brandTheme = await res.json();
     } catch (e) { /* the defaults above still render a correct invoice */ }
+    // The theme arrives after the page has already painted a logo, so repaint
+    // here rather than relying on this having loaded first. Without it the
+    // invoice page keeps whichever logo won the race.
+    if (typeof showInvoiceLogo === 'function') showInvoiceLogo(activeLogo());
 }
 window.loadBrandTheme = loadBrandTheme;
 
@@ -2457,11 +2497,15 @@ function handleSettingsLogoUpload(e) {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ logo_url: b64 })
-        }).then(function() {
-            showToast('Logo saved!', 'success');
+        }).then(function (res) {
+            if (res && res.ok === false) { showToast('Could not save the logo', 'error'); return; }
+            showToast('Logo saved', 'success');
         }).catch(function() {
-            showToast('Failed to save logo', 'error');
+            showToast('Could not save the logo', 'error');
         });
+        // Keep the branding theme, which is what the PDF reads, in step.
+        adoptLogoIntoTheme(b64);
+        showInvoiceLogo(b64);
         var img = document.getElementById('settings-logo-img');
         var txt = document.getElementById('settings-logo-text');
         if (img) { img.src = b64; img.style.display = 'block'; }
@@ -9727,6 +9771,9 @@ async function saveBrandingTheme() {
         if (!res.ok) { showToast(data.detail || 'Could not save the theme', 'error'); return; }
         showToast('Theme saved', 'success');
         await loadBrandTheme();
+        // The invoice page shows the theme's logo, so it has to be repainted
+        // when the theme changes rather than waiting for a reload.
+        showInvoiceLogo(activeLogo());
         await loadBrandingThemes();
     } catch (e) { showToast('Could not save the theme', 'error'); }
 }
