@@ -1326,8 +1326,13 @@ function generateInvoicePDF(isDummy, kind) {
     // ════════════════════════════════════════════════════════
     y = 45;
 
-    // ── Right column: Logo ──
+    // ── Logo ──
+    // The header is three columns: heading on the left, dates in the middle,
+    // logo and company details on the right. A logo moved off the right lands
+    // on top of one of the other two, so it gets a band of its own and the
+    // columns start underneath it.
     var logoW = 65, logoH = 65, logoY = y - 5;
+    var logoOffRight = (th.logo_position === 'left' || th.logo_position === 'center');
     var logoX = mr - logoW;
     if (th.logo_position === 'left') logoX = ml;
     else if (th.logo_position === 'center') logoX = (w - logoW) / 2;
@@ -1343,9 +1348,13 @@ function generateInvoicePDF(isDummy, kind) {
         doc.text('LOGO', logoX + logoW/2, logoY + logoH/2 + 3, { align:'center' });
     }
 
+    // With the logo in its own band, everything below it starts lower. With the
+    // logo on the right, the company details tuck under it as before.
+    if (logoOffRight) y += logoH + 12;
+
     // ── Right column: Company details (below logo) ──
     var compX = logoX;
-    var compRightY = logoY + logoH + 8;
+    var compRightY = logoOffRight ? y : (logoY + logoH + 8);
     var compLines = [];
     if (company) compLines.push(company);
     if (compAddr) compAddr.split('\n').forEach(function(l) { if(l.trim()) compLines.push(l.trim()); });
