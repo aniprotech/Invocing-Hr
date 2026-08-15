@@ -9,7 +9,21 @@
        Sticky headers and footers must not be see-through, or the
        content scrolling underneath shows straight through them. */
     --surface-solid: #161f2d;
+    /* Form controls and menus. Referenced in several places but never defined,
+       so every one of them was falling back to transparent. */
+    --bg-card: #1b2436;
     --text-primary: #f8fafc;
+
+    /* Short names used across the markup that were never declared. A colour
+       that resolves to nothing is not a fallback - the whole declaration is
+       dropped, so the element silently keeps whatever it inherited. These are
+       aliases of the names above, not new colours. */
+    --primary: var(--primary-color);
+    --accent-cyan: var(--primary-color);
+    --accent-success: var(--success-color);
+    --accent-danger: var(--danger-color);
+    --text-color: var(--text-primary);
+    --radius-sm: 8px;
     --text-secondary: #94a3b8;
     --border-color: rgba(255, 255, 255, 0.1);
     --success-color: #39ff14;
@@ -818,10 +832,37 @@ textarea.table-input.item-desc {
     .views-container { max-width: 1560px; margin: 0 auto; width: 100%; }
 }
 
-/* Users who prefer a light OS theme still get readable form controls, since
-   the app renders its own dark surface. */
-@media (prefers-color-scheme: light) {
-    input, select, textarea { color-scheme: dark; }
+/* The app renders its own dark surface whatever the OS is set to, so the form
+   controls are told the same thing unconditionally rather than only when the
+   OS happens to be light. */
+input, select, textarea { color-scheme: dark; }
+
+/* An open <select> is drawn by the operating system, not by the page, so it
+   ignores the colours set on the select itself. Left alone the list came out
+   white text on a white popup - readable only by guessing. Every option is
+   given its colours explicitly. */
+select option,
+select optgroup {
+    background-color: var(--bg-card);
+    color: var(--text-primary);
+}
+select option:checked,
+select option:hover {
+    background-color: var(--primary-color);
+    color: #0b0f19;
+}
+
+/* Referenced by markup across the app but never defined, so those buttons drew
+   as bare text. Matches .btn-outline, which is what they were meant to be. */
+.btn-secondary {
+    background-color: transparent;
+    border-color: var(--border-color);
+    color: var(--text-primary);
+}
+.btn-secondary:hover:not(:disabled) {
+    background-color: rgba(255, 255, 255, 0.05);
+    border-color: var(--primary-color);
+    color: var(--primary-color);
 }
 
 /* ===== PRINT ===== */
@@ -1271,9 +1312,15 @@ body::after {
     padding: 7px 6px;
     border-bottom: 1.5px solid currentColor;
     font-size: 0.92em;
+    /* Column headings broke mid-word into "Quantit y" once several numeric
+       columns were on. They never wrap; the description column absorbs the
+       remaining width instead. */
+    white-space: nowrap;
 }
 .bp-paper td { padding: 7px 6px; border-bottom: 1px solid #e6e6e6; }
-.bp-paper .num { text-align: right; }
+.bp-paper .num { text-align: right; white-space: nowrap; }
+.bp-paper th:first-child,
+.bp-paper td:first-child { width: 99%; white-space: normal; }
 
 @media (max-width: 900px) {
     .branding-editor { grid-template-columns: 1fr; }
