@@ -1026,15 +1026,27 @@ function renderTemplateBuilder() {
 }
 window.initTemplateBuilder = initTemplateBuilder;
 
-function saveTemplateLayout() {
+async function saveTemplateLayout() {
     var layoutStr = JSON.stringify(window._invoiceLayout);
-    fetch('/api/settings', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ invoice_layout: layoutStr })
-    }).then(r => r.json()).then(data => {
-        showToast('Template layout saved!', 'success');
-    }).catch(err => showToast('Failed to save layout', 'error'));
+    try {
+        var res = await fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ invoice_layout: layoutStr })
+        });
+        var data = await res.json().catch(function () { return {}; });
+        // This used to report success on any reply at all, so a refusal - a
+        // read-only account, an expired session - still said "saved" and the
+        // layout was quietly lost on the next reload.
+        if (!res.ok) {
+            showToast(data.detail || 'Could not save the layout', 'error');
+            return;
+        }
+        showToast('Template layout saved', 'success');
+    } catch (err) {
+        showToast('Could not save the layout', 'error');
+    }
 }
 window.saveTemplateLayout = saveTemplateLayout;
 
@@ -2788,12 +2800,20 @@ async function submitNewEmployee() {
         if (res.ok) {
             showToast(data.message || 'Employee created', 'success');
             if (window._aiOnboardingItems && window._aiOnboardingItems.length && data.id) {
+                // The employee is already saved, so a failure here is partial:
+                // they exist with an empty checklist. Say so, rather than
+                // logging to a console nobody has open and reporting success.
                 try {
-                    await fetch('/api/employees/' + data.id + '/onboarding/bulk', {
+                    var onbRes = await fetch('/api/employees/' + data.id + '/onboarding/bulk', {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ items: window._aiOnboardingItems })
                     });
-                } catch(e) { console.error('Failed to save AI onboarding items:', e); }
+                    if (!onbRes.ok) throw new Error('HTTP ' + onbRes.status);
+                } catch (e) {
+                    console.error('Failed to save AI onboarding items:', e);
+                    showToast('Employee saved, but the onboarding checklist did not. '
+                        + 'Add it from their profile.', 'warning');
+                }
                 window._aiOnboardingItems = null;
             }
             closeAddEmployeeModal();
@@ -3805,8 +3825,18 @@ async function sendPayslipEmail() {
     var pdfB64 = '';
     try {
         var doc = generatePayslipPDF();
-        pdfB64 = doc.output('datauristring').split('base64,')[1];
-    } catch (e) { console.error('PDF generation failed:', e); }
+        pdfB64 = doc.output('datauristring').split('base64,')[1] || '';
+    } catch (e) {
+        console.error('PDF generation failed:', e);
+        pdfB64 = '';
+    }
+    // This used to log the failure and carry on, so the employee received a
+    // payslip email with no payslip on it and the sender was told it worked.
+    // The invoice and quote paths both stop here; this one now does too.
+    if (!pdfB64) {
+        showToast('Could not build the payslip PDF, so nothing was sent.', 'error');
+        return;
+    }
     try {
         var res = await fetch('/api/payslips/' + currentPayslipId + '/send', {
             method: 'POST',
@@ -6471,19 +6501,31 @@ function saveLegalSettings() {
     // Save locally
     localStorage.setItem('company_terms', terms);
     
-    // Save to backend
-    fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify([
-            { key: 'company_terms', value: terms }
-        ])
-    }).then(res => res.json()).then(data => {
-        showToast('Legal settings saved successfully', 'success');
-    }).catch(err => {
+    // Save to backend.
+    // This posted an array of {key, value} pairs, but the endpoint takes a
+    // plain object of key to value - so every save came back 422 and the terms
+    // never left this browser, while the toast said they had been saved.
+    saveLegalTermsToServer(terms);
+}
+
+async function saveLegalTermsToServer(terms) {
+    try {
+        var res = await fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ company_terms: terms })
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) {
+            showToast(data.detail || 'Could not save the legal settings', 'error');
+            return;
+        }
+        showToast('Legal settings saved', 'success');
+    } catch (err) {
         console.error(err);
-        showToast('Failed to save legal settings', 'error');
-    });
+        showToast('Could not save the legal settings', 'error');
+    }
 }
 
 // ==========================================================================

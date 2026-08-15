@@ -121,6 +121,46 @@ try {
     console.log('FAIL  quote: ' + e.message);
 }
 
+// The payslip has its own generator and its own email path, and reads a very
+// different object. It broke nobody's day yet only because nothing ran it.
+const PAYSLIP = {
+    number: 'PS-0007', period_start: '2026-08-01', period_end: '2026-08-31',
+    pay_date: '2026-08-31', basic_salary: 80000, bonus: 1000, allowances: 500,
+    overtime_hours: 4, overtime_pay: 900, hours_worked: 160,
+    gross_pay: 82400, tax_amount: 20375, insurance: 90, retirement: 60,
+    other_deductions: 30, standing_deduction: 200, total_deductions: 20755,
+    net_pay: 61645, notes: 'Includes August overtime.',
+    employee: {
+        full_name: 'Sarah Daley', employee_id: 'EMP-014', job_title: 'Care Lead',
+        department_name: 'Operations', level: 'L3', pay_frequency: 'monthly',
+        bank_name: 'Barclays', bank_account: '****6345', tax_id: 'QQ123456C',
+    },
+    company: { name: 'aniprotech', address: '53 Newbridge Cres' },
+    ytd: { gross: 500000, tax: 120000, net: 380000 },
+};
+
+for (const [label, value] of [
+    ['a full payslip', PAYSLIP],
+    // A payslip opened before its detail arrives, and one with the optional
+    // blocks absent - the generator defaults to {} and must still produce a page.
+    ['an empty payslip', {}],
+    ['a payslip with no employee block', Object.assign({}, PAYSLIP, { employee: undefined, ytd: undefined })],
+]) {
+    checked++;
+    try {
+        w._payslipFixture = value;
+        w.eval('_currentPayslip = window._payslipFixture;');
+        const doc = w.eval('generatePayslipPDF()');
+        const b64 = doc.output('datauristring').split('base64,')[1] || '';
+        if (!b64) throw new Error('no base64 - the payslip email would attach nothing');
+        const bytes = Buffer.from(b64, 'base64');
+        if (bytes.slice(0, 4).toString() !== '%PDF') throw new Error('output is not a PDF');
+    } catch (e) {
+        failures++;
+        console.log(`FAIL  payslip (${label}): ${e.message}`);
+    }
+}
+
 console.log(failures
     ? `\n${failures} of ${checked} failed`
     : `\nall ${checked} PDFs generated, each a real %PDF with base64 for the email attachment`);
