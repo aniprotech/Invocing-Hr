@@ -351,6 +351,10 @@ function showView(viewId) {
     };
     var navId = navMap[viewId];
     if (navId) { var navEl = document.getElementById(navId); if (navEl) navEl.classList.add('active'); }
+    // The active item may now live inside a menu, so its heading has to
+    // show the state instead.
+    if (typeof syncNavGroupState === 'function') syncNavGroupState();
+    if (typeof closeNavGroups === 'function') closeNavGroups();
     if (viewId === 'invoices-view' && typeof fetchInvoices === 'function') fetchInvoices();
     if (viewId === 'quotes-view' && typeof fetchQuotes === 'function') fetchQuotes();
     if (viewId === 'sales-pipeline-view' && typeof loadSalesPipeline === 'function') loadSalesPipeline();
@@ -364,6 +368,7 @@ function showView(viewId) {
     if (viewId === 'settings-view' && typeof loadSettings === 'function') loadSettings();
     if (viewId === 'settings-view' && typeof loadTaxRates === 'function') loadTaxRates();
     if (viewId === 'settings-view' && typeof loadTeam === 'function') loadTeam();
+    if (viewId === 'settings-view' && typeof buildSettingsSections === 'function') buildSettingsSections();
     if (viewId === 'settings-view' && typeof loadBrandingThemes === 'function') loadBrandingThemes();
     if (viewId === 'settings-view' && typeof loadAuditLogs === 'function') loadAuditLogs();
     if (viewId === 'reports-view' && typeof loadReports === 'function') loadReports();
@@ -4750,6 +4755,9 @@ document.addEventListener('DOMContentLoaded', async function() {
     
     // Enforce portal separation based on the physical file
     enforcePortalSeparation();
+    // Grouping runs after the portal filter, so a menu never contains an
+    // item belonging to the other portal.
+    buildGroupedNav();
 
     // Set initial view based on physical file
     if (window.location.pathname.includes('hr.html')) {
@@ -9889,3 +9897,149 @@ function previewThemedPDF() {
     }
 }
 window.previewThemedPDF = previewThemedPDF;
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  NAVIGATION GROUPING AND SETTINGS SECTIONS
+//
+//  The header carried every view as its own tab - ten on the invoicing side,
+//  nine on HR - and Settings stacked a dozen unrelated panels down one page.
+//  Both are built here from what is already in the markup, so adding a view
+//  means adding one nav item, not rewriting a menu.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Only things a person would look for in the same place are grouped. A group
+// with fewer than two visible members is left alone rather than becoming a
+// menu with one thing in it.
+var NAV_GROUPS = [
+    { label: 'Sales', items: ['nav-invoices', 'nav-quotes', 'nav-pipeline', 'nav-recurring'] },
+    { label: 'Money', items: ['nav-bills', 'nav-wallet'] },
+    { label: 'People', items: ['nav-people', 'nav-org', 'nav-leave', 'nav-goals'] },
+    { label: 'Hiring', items: ['nav-recruitment', 'nav-onboarding'] }
+];
+
+function buildGroupedNav() {
+    var nav = document.getElementById('main-nav');
+    if (!nav || nav.getAttribute('data-grouped') === '1') return;
+
+    NAV_GROUPS.forEach(function (group) {
+        var members = group.items
+            .map(function (id) { return document.getElementById(id); })
+            .filter(function (el) {
+                // enforcePortalSeparation has already hidden the other
+                // portal's items; those must not be pulled into a menu.
+                return el && el.style.display !== 'none';
+            });
+        if (members.length < 2) return;
+
+        var wrap = document.createElement('div');
+        wrap.className = 'nav-group';
+        wrap.setAttribute('data-nav-group', group.label);
+
+        var toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'nav-item nav-group-toggle';
+        toggle.textContent = group.label;
+        toggle.setAttribute('aria-expanded', 'false');
+
+        var menu = document.createElement('div');
+        menu.className = 'nav-group-menu';
+
+        nav.insertBefore(wrap, members[0]);
+        members.forEach(function (el) { menu.appendChild(el); });
+        wrap.appendChild(toggle);
+        wrap.appendChild(menu);
+
+        toggle.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            var wasOpen = wrap.classList.contains('open');
+            closeNavGroups();
+            if (!wasOpen) {
+                wrap.classList.add('open');
+                toggle.setAttribute('aria-expanded', 'true');
+            }
+        });
+    });
+
+    nav.setAttribute('data-grouped', '1');
+    syncNavGroupState();
+}
+window.buildGroupedNav = buildGroupedNav;
+
+function closeNavGroups() {
+    document.querySelectorAll('.nav-group.open').forEach(function (g) {
+        g.classList.remove('open');
+        var t = g.querySelector('.nav-group-toggle');
+        if (t) t.setAttribute('aria-expanded', 'false');
+    });
+}
+window.closeNavGroups = closeNavGroups;
+
+// A group whose member is the current view is marked active, so the header
+// still shows where you are once the item itself is inside a menu.
+function syncNavGroupState() {
+    document.querySelectorAll('.nav-group').forEach(function (g) {
+        var active = g.querySelector('.nav-item.active');
+        var toggle = g.querySelector('.nav-group-toggle');
+        if (toggle) toggle.classList.toggle('active', !!active);
+    });
+}
+window.syncNavGroupState = syncNavGroupState;
+
+document.addEventListener('click', function (e) {
+    if (!e.target.closest || !e.target.closest('.nav-group')) closeNavGroups();
+});
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeNavGroups();
+});
+
+// --- Settings, one section at a time -----------------------------------------
+
+var _settingsSection = null;
+
+// Reads whatever panels the page happens to have, so the two portals get
+// their own list without either being hard-coded here.
+function buildSettingsSections() {
+    var panels = document.getElementById('settings-panels');
+    var rail = document.getElementById('settings-rail');
+    if (!panels || !rail) return;
+
+    var sections = Array.prototype.slice.call(
+        panels.querySelectorAll(':scope > [data-settings-section]'));
+    if (!sections.length) return;
+
+    rail.innerHTML = '';
+    sections.forEach(function (panel) {
+        var key = panel.getAttribute('data-settings-section');
+        var label = panel.getAttribute('data-settings-label') || key;
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = label;
+        btn.setAttribute('data-settings-target', key);
+        btn.addEventListener('click', function () { showSettingsSection(key); });
+        rail.appendChild(btn);
+    });
+
+    showSettingsSection(_settingsSection || sections[0].getAttribute('data-settings-section'));
+}
+window.buildSettingsSections = buildSettingsSections;
+
+function showSettingsSection(key) {
+    var panels = document.getElementById('settings-panels');
+    var rail = document.getElementById('settings-rail');
+    if (!panels || !rail) return;
+
+    var found = false;
+    panels.querySelectorAll(':scope > [data-settings-section]').forEach(function (p) {
+        var mine = p.getAttribute('data-settings-section') === key;
+        p.classList.toggle('is-active', mine);
+        if (mine) found = true;
+    });
+    if (!found) return;
+
+    rail.querySelectorAll('button').forEach(function (b) {
+        b.classList.toggle('is-active', b.getAttribute('data-settings-target') === key);
+    });
+    _settingsSection = key;
+}
+window.showSettingsSection = showSettingsSection;

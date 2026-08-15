@@ -1354,3 +1354,82 @@ body::after {
     .branding-controls { max-height: none; }
     .branding-preview { position: static; }
 }
+
+/* ── Grouped navigation ───────────────────────────────────────────────────
+   Ten or more top-level tabs is more than a header can carry. Related views
+   sit under a single heading and open on click, so the bar stays short and
+   nothing is pushed off the edge. */
+.nav-group { position: relative; display: flex; }
+.nav-group-toggle {
+    background: none; border: none; font: inherit; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px;
+}
+.nav-group-toggle::after {
+    content: ''; width: 0; height: 0;
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-top: 4px solid currentColor; opacity: 0.55;
+    transition: transform 0.15s ease;
+}
+.nav-group.open > .nav-group-toggle::after { transform: rotate(180deg); }
+
+.nav-group-menu {
+    display: none; position: absolute; top: calc(100% + 6px); left: 0;
+    min-width: 190px; flex-direction: column; gap: 2px;
+    background: var(--surface-solid);
+    border: 1px solid var(--border-color); border-radius: var(--radius-md);
+    padding: 6px; box-shadow: var(--shadow-lg); z-index: 210;
+}
+.nav-group.open > .nav-group-menu { display: flex; }
+.nav-group-menu .nav-item { width: 100%; white-space: nowrap; }
+
+/* Inside the drawer there is nothing to drop down into, so a group becomes a
+   labelled section with its items listed under it. */
+@media (max-width: 1024px) {
+    .nav-group { flex-direction: column; width: 100%; }
+    .nav-group-toggle {
+        width: 100%; justify-content: space-between; cursor: default;
+        font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase;
+        color: var(--text-secondary); padding: 14px 16px 6px;
+    }
+    .nav-group-toggle::after { display: none; }
+    .nav-group-menu {
+        display: flex; position: static; min-width: 0;
+        background: none; border: none; box-shadow: none;
+        padding: 0 0 0 8px;
+    }
+}
+
+/* ── Settings sections ────────────────────────────────────────────────────
+   Settings stacked a dozen unrelated panels on one page. They are now pages
+   of their own, reached from a rail, with one shown at a time. */
+.settings-layout {
+    display: grid; grid-template-columns: minmax(180px, 220px) 1fr;
+    gap: 24px; align-items: start;
+}
+.settings-rail {
+    display: flex; flex-direction: column; gap: 2px;
+    position: sticky; top: 12px;
+}
+.settings-rail button {
+    text-align: left; background: none; border: none; font: inherit;
+    color: var(--text-secondary); cursor: pointer;
+    padding: 11px 14px; border-radius: var(--radius-md);
+    min-height: 44px;
+}
+.settings-rail button:hover { background: rgba(255, 255, 255, 0.05); color: var(--text-primary); }
+.settings-rail button.is-active {
+    background: rgba(0, 240, 255, 0.12);
+    color: var(--primary-color); font-weight: 600;
+}
+.settings-panels > [data-settings-section] { display: none; }
+.settings-panels > [data-settings-section].is-active { display: block; }
+
+@media (max-width: 900px) {
+    .settings-layout { grid-template-columns: 1fr; }
+    .settings-rail {
+        position: static; flex-direction: row; overflow-x: auto;
+        gap: 6px; padding-bottom: 6px; scrollbar-width: none;
+    }
+    .settings-rail::-webkit-scrollbar { display: none; }
+    .settings-rail button { white-space: nowrap; }
+}

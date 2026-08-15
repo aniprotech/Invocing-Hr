@@ -10,8 +10,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>A</text></svg>">
-    <link rel="stylesheet" href="styles.css?v=50">
-    <link rel="stylesheet" href="mobile.css?v=50">
+    <link rel="stylesheet" href="styles.css?v=51">
+    <link rel="stylesheet" href="mobile.css?v=51">
 </head>
 <body>
     <a class="skip-link" href="#main-content-region">Skip to main content</a>
@@ -958,7 +958,11 @@
                     </div>
                     <!-- Branding themes: controls on the left, a live preview on
                          the right, so every change is visible before it is saved. -->
-                    <div class="glass-widget" style="margin-bottom:24px;">
+                                        <div class="settings-layout">
+                        <nav class="settings-rail" id="settings-rail" aria-label="Settings sections"></nav>
+                        <div class="settings-panels" id="settings-panels">
+                    <section data-settings-section="branding" data-settings-label="Branding">
+                        <div class="glass-widget" style="margin-bottom:24px;">
                         <div class="widget-header" style="flex-wrap:wrap;gap:12px;">
                             <div>
                                 <h3>Invoice branding</h3>
@@ -1082,7 +1086,9 @@
                             </div>
                         </div>
                     </div>
-                    <div class="glass-widget" style="margin-bottom:24px;">
+                    </section>
+                    <section data-settings-section="email" data-settings-label="Email">
+                        <div class="glass-widget" style="margin-bottom:24px;">
                         <div class="widget-header">
                             <h3>Gmail API Connection</h3>
                             <span id="gmail-status" style="font-size:0.85rem;color:var(--text-secondary);">Loading...</span>
@@ -1107,7 +1113,24 @@
                             </div>
                         </div>
                     </div>
-                    <div class="glass-widget" style="margin-bottom:24px;">
+                        <div class="glass-widget" id="demo-email-section" style="display:none;">
+                        <div class="widget-header"><h3>Send Demo Emails</h3></div>
+                        <div class="widget-content">
+                            <p style="color:var(--text-secondary);margin-bottom:16px;">Send test invoice emails via Gmail API.</p>
+                            <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+                                <div class="form-group" style="flex:1;min-width:250px;">
+                                    <label>Recipient Email</label>
+                                    <input type="email" id="demo-email" class="form-control" value="udayyyv@gmail.com">
+                                </div>
+                                <button class="btn btn-outline" onclick="testGmailSend()">Send 1</button>
+                                <button class="btn btn-outline" onclick="sendDemoEmail(5)">Send 5</button>
+                                <button class="btn btn-primary" id="send-demo-btn" onclick="sendDemoEmail(10)">Send 10</button>
+                            </div>
+                        </div>
+                    </div>
+                    </section>
+                    <section data-settings-section="company" data-settings-label="Company">
+                        <div class="glass-widget" style="margin-bottom:24px;">
                         <div class="widget-header"><h3>Company Logo</h3></div>
                         <div class="widget-content">
                             <div style="display:flex;align-items:center;gap:24px;">
@@ -1124,7 +1147,7 @@
                             </div>
                         </div>
                     </div>
-                    <div class="glass-widget" style="margin-bottom:24px;">
+                        <div class="glass-widget" style="margin-bottom:24px;">
                         <div class="widget-header"><h3>Company Details</h3></div>
                         <div class="widget-content">
                             <div class="grid-2 gap-16">
@@ -1156,7 +1179,9 @@
                             <button class="btn btn-primary" onclick="saveCompanyDetails()" style="margin-top:16px;">Save Details</button>
                         </div>
                     </div>
-                    <div class="glass-widget" style="margin-bottom:24px;">
+                    </section>
+                    <section data-settings-section="team" data-settings-label="Team">
+                        <div class="glass-widget" style="margin-bottom:24px;">
                         <div class="widget-header">
                             <h3>Team</h3>
                             <button class="btn btn-outline btn-sm" id="team-invite-btn" onclick="inviteTeamMember()">+ Invite</button>
@@ -1183,8 +1208,9 @@
                             </div>
                         </div>
                     </div>
-
-                    <div class="glass-widget" style="margin-bottom:24px;">
+                    </section>
+                    <section data-settings-section="tax-rates" data-settings-label="Tax Rates">
+                        <div class="glass-widget" style="margin-bottom:24px;">
                         <div class="widget-header">
                             <h3>Tax Rates</h3>
                             <button class="btn btn-outline btn-sm" onclick="addTaxRateRow()">+ Add Tax</button>
@@ -1213,23 +1239,9 @@
                             <button class="btn btn-primary" onclick="saveTaxRates()" style="margin-top:16px;">Save Tax Rates</button>
                         </div>
                     </div>
-
-                    <div class="glass-widget" id="demo-email-section" style="display:none;">
-                        <div class="widget-header"><h3>Send Demo Emails</h3></div>
-                        <div class="widget-content">
-                            <p style="color:var(--text-secondary);margin-bottom:16px;">Send test invoice emails via Gmail API.</p>
-                            <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
-                                <div class="form-group" style="flex:1;min-width:250px;">
-                                    <label>Recipient Email</label>
-                                    <input type="email" id="demo-email" class="form-control" value="udayyyv@gmail.com">
-                                </div>
-                                <button class="btn btn-outline" onclick="testGmailSend()">Send 1</button>
-                                <button class="btn btn-outline" onclick="sendDemoEmail(5)">Send 5</button>
-                                <button class="btn btn-primary" id="send-demo-btn" onclick="sendDemoEmail(10)">Send 10</button>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="glass-widget" style="margin-bottom:24px;">
+                    </section>
+                    <section data-settings-section="activity-log" data-settings-label="Activity Log">
+                        <div class="glass-widget" style="margin-bottom:24px;">
                         <div class="widget-header">
                             <h3>Activity Log</h3>
                             <button class="btn btn-outline btn-sm" onclick="loadAuditLogs()">Refresh</button>
@@ -1238,6 +1250,10 @@
                             <div style="text-align:center;padding:20px;color:var(--text-secondary);">Loading activity log...</div>
                         </div>
                     </div>
+                    </section>
+                        </div>
+                    </div>
+
                 </div>
 
                 <!-- ========== EMPLOYEES / PEOPLE ========== -->
@@ -2632,7 +2648,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="app.js?v=50"></script>
+    <script src="app.js?v=51"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
