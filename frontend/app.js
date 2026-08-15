@@ -278,6 +278,18 @@ function toggleMobileMenu() {
 }
 window.toggleMobileMenu = toggleMobileMenu;
 
+// Picking something from the drawer has to close it. It used to stay open over
+// the view it had just navigated to, so the nav looked like it had done
+// nothing and the page underneath could not be reached.
+function closeMobileMenu() {
+    var nav = document.getElementById('main-nav');
+    var overlay = document.getElementById('mobile-overlay');
+    if (nav) nav.classList.remove('mobile-open');
+    if (overlay) overlay.classList.remove('active');
+    document.body.classList.remove('no-scroll');
+}
+window.closeMobileMenu = closeMobileMenu;
+
 // A YYYY-MM-DD string for a date as the user sees it.
 // toISOString() prints in UTC, so anywhere east of Greenwich a local midnight
 // becomes the previous day. Every date the app shows or submits is a calendar
@@ -355,12 +367,10 @@ function showView(viewId) {
     if (viewId === 'settings-view' && typeof loadBrandingThemes === 'function') loadBrandingThemes();
     if (viewId === 'settings-view' && typeof loadAuditLogs === 'function') loadAuditLogs();
     if (viewId === 'reports-view' && typeof loadReports === 'function') loadReports();
-    // Close mobile menu
-    var mainNav = document.getElementById('main-nav');
-    var mobileOverlay = document.getElementById('mobile-overlay');
-    if (mainNav) mainNav.classList.remove('mobile-open');
-    if (mobileOverlay) mobileOverlay.classList.remove('active');
-    document.body.classList.remove('no-scroll');
+    // Every route into a view comes through here, so this is where the drawer
+    // gets out of the way. It was the same three lines written out again;
+    // closeMobileMenu is the one implementation.
+    closeMobileMenu();
 }
 window.showView = showView;
 

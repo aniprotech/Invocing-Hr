@@ -174,7 +174,10 @@ h1, h2, h3, h4, p, td, th, li, .stat-value { overflow-wrap: anywhere; }
 .hamburger:hover { background: rgba(255,255,255,0.1); }
 
 /* Nav */
-.top-nav-menu { display: flex; align-items: center; gap: 2px; overflow-x: auto; flex-shrink: 1; min-width: 0; scrollbar-width: none; -webkit-mask-image: linear-gradient(to right, black 85%, transparent 100%); mask-image: linear-gradient(to right, black 85%, transparent 100%); }
+/* The fade hints that the bar scrolls sideways. It used to start at 85%, which
+   is wide enough to cover a whole menu item and make it look disabled; it now
+   only softens the last few pixels. */
+.top-nav-menu { display: flex; align-items: center; gap: 2px; overflow-x: auto; flex-shrink: 1; min-width: 0; scrollbar-width: none; -webkit-mask-image: linear-gradient(to right, black calc(100% - 24px), transparent 100%); mask-image: linear-gradient(to right, black calc(100% - 24px), transparent 100%); }
 .top-nav-menu::-webkit-scrollbar { display: none; }
 .nav-item {
     display: flex; align-items: center; padding: 8px 12px; color: #9CA3AF;
@@ -772,6 +775,30 @@ textarea.table-input.item-desc {
 }
 
 /* Mobile portrait */
+/* The header carries eleven items. They stop fitting a long way above the
+   phone breakpoint, and once the bar overflows the scroll fade sits over a
+   real menu item - which reads as disabled rather than as "scroll for more".
+   That is the dimmed, unclickable header. Anything narrower than a wide
+   desktop gets the drawer, which has none of those problems. */
+@media (max-width: 1024px) {
+    .hamburger { display: flex; }
+    .top-nav-menu {
+        position: fixed; top: var(--topbar-height); left: 0; right: 0;
+        background: rgba(11, 15, 25, 0.98); backdrop-filter: blur(16px);
+        flex-direction: column; padding: 16px; gap: 4px;
+        border-bottom: 1px solid var(--border-color);
+        transform: translateY(-120%); transition: transform 0.3s ease;
+        z-index: 200;
+        max-height: calc(100vh - var(--topbar-height));
+        overflow-y: auto; overflow-x: hidden;
+        /* A horizontal fade over a vertical drawer washes out every item. */
+        -webkit-mask-image: none;
+        mask-image: none;
+    }
+    .top-nav-menu.mobile-open { transform: translateY(0); }
+    .nav-item { width: 100%; padding: 14px 16px; border-radius: 8px; min-height: 44px; }
+}
+
 @media (max-width: 480px) {
     .topbar-right { gap: 6px; }
     .btn { padding: 9px 14px; font-size: 0.85rem; }
