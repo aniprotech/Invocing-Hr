@@ -1246,16 +1246,9 @@ function generateInvoicePDF(isDummy, kind) {
         return block ? block.visible !== false : true;
     }
 
-    function drawTableHeader() {
-        doc.setFontSize(8.5); doc.setFont('helvetica','bold'); doc.setTextColor(0,0,0);
-        lh(ml, mr, y, 0.8); y += 8;
-        doc.text('Description',            col.desc,  y + 10);
-        doc.text('Quantity',               col.qty,   y + 10, { align:'right' });
-        doc.text('Unit Price',             col.price, y + 10, { align:'right' });
-        doc.text('Amount ' + currLabel,    col.amt,   y + 10, { align:'right' });
-        y += 14;
-        lh(ml, mr, y, 0.8); y += 6;
-    }
+    // A second drawTableHeader is declared further down and wins, so this one
+    // never ran - it was left behind still referencing col.qty and col.price,
+    // which no longer exist. Removed rather than left as a trap.
 
     function checkPageBreak(need) {
         if (y + need > pageBottom) {
@@ -1613,12 +1606,17 @@ function generateInvoicePDF(isDummy, kind) {
     //  TOTALS — right-aligned
     // ════════════════════════════════════════════════════════
     checkPageBreak(70);
-    var tLabelX = col.price;
+    // Totals hang off the last numeric column so they line up however many
+    // columns the theme is showing. This used to read col.price, which stopped
+    // existing when the columns became dynamic - the label x went undefined and
+    // jsPDF threw, taking every PDF down with it, preview and email alike.
+    var lastCol = numCols[numCols.length - 1];
+    var tLabelX = lastCol ? lastCol.x - 6 : mr - 120;
     var tValX   = mr;
 
     function tRow(label, val, bold) {
         doc.setFontSize(8.5);
-        doc.setFont('helvetica', bold ? 'bold' : 'normal');
+        doc.setFont(TF, bold ? 'bold' : 'normal');
         doc.setTextColor(0,0,0);
         doc.text(label, tLabelX, y + 10, { align:'right' });
         doc.text(val,   tValX,   y + 10, { align:'right' });

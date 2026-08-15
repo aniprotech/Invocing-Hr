@@ -1,0 +1,13 @@
+{
+  "name": "aniprotech-frontend-tests",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Checks for the parts of the frontend that only fail at runtime. The Python suite covers the API; this covers the PDF generator, which is where a removed variable turns into a thrown exception that takes the invoice preview and the email attachment down together.",
+  "scripts": {
+    "test": "node frontend/tests/pdf-smoke.js"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0",
+    "jspdf": "^2.5.1"
+  }
+}

@@ -36,3 +36,24 @@ jobs:
           DATABASE_URL: sqlite:///./ci-test.db
           SECRET_KEY: ci-secret-key-not-used-anywhere-else
         run: python -m pytest -q
+
+  # The PDF generator only fails at runtime, and when it throws it takes the
+  # invoice preview and the emailed attachment down together - both call it.
+  # Nothing in the Python suite touches it.
+  pdf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Generate a PDF for every theme
+        run: npm test

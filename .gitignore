@@ -20,3 +20,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Node dependencies for the frontend PDF smoke test
+node_modules/
