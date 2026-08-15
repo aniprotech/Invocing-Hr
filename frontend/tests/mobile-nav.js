@@ -64,11 +64,20 @@ const widths = drawerBlocks
 check('the drawer starts at 1024px or wider', Math.max(...widths, 0) >= 1024,
     `widest drawer breakpoint is ${Math.max(...widths, 0)}px, but the bar overflows well above that`);
 
-// The desktop fade must be a hint, not a whole item's width.
 const baseRule = (css.match(/^\.top-nav-menu \{[^}]*\}/m) || [''])[0];
-check('the desktop fade only softens the edge',
-    /calc\(100% - \d+px\)/.test(baseRule),
-    'a percentage-based fade covers a whole menu item on a narrow window');
+
+// The group menus are absolutely positioned against the nav. An overflow
+// container clips anything positioned inside it, so scrolling the bar
+// sideways makes every menu open where nobody can see it.
+check('the header does not clip its dropdowns',
+    !/overflow(-x)?:\s*(auto|scroll|hidden)/.test(baseRule),
+    'an overflow container hides the group menus completely');
+
+// If a fade is ever reinstated it must not be wide enough to cover an item.
+const fade = baseRule.match(/mask-image:[^;]*/);
+check('no fade covers a whole menu item',
+    !fade || /calc\(100% - \d+px\)/.test(fade[0]),
+    'a percentage-based fade washes out the last item');
 
 // --- the behaviour ----------------------------------------------------------
 

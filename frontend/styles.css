@@ -174,10 +174,13 @@ h1, h2, h3, h4, p, td, th, li, .stat-value { overflow-wrap: anywhere; }
 .hamburger:hover { background: rgba(255,255,255,0.1); }
 
 /* Nav */
-/* The fade hints that the bar scrolls sideways. It used to start at 85%, which
-   is wide enough to cover a whole menu item and make it look disabled; it now
-   only softens the last few pixels. */
-.top-nav-menu { display: flex; align-items: center; gap: 2px; overflow-x: auto; flex-shrink: 1; min-width: 0; scrollbar-width: none; -webkit-mask-image: linear-gradient(to right, black calc(100% - 24px), transparent 100%); mask-image: linear-gradient(to right, black calc(100% - 24px), transparent 100%); }
+/* Grouping cut the bar to seven entries, so it no longer needs to scroll
+   sideways - and it must not. A dropdown is positioned against this element,
+   and an overflow container clips anything absolutely positioned inside it, so
+   `overflow-x: auto` here made every group menu open invisibly. The mask went
+   with it: with nothing scrolling there is nothing to hint at, and the fade
+   only ever washed out the last item. */
+.top-nav-menu { display: flex; align-items: center; gap: 2px; overflow: visible; flex-shrink: 1; min-width: 0; flex-wrap: nowrap; }
 .top-nav-menu::-webkit-scrollbar { display: none; }
 .nav-item {
     display: flex; align-items: center; padding: 8px 12px; color: #9CA3AF;

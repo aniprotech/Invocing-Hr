@@ -99,6 +99,30 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
                     !groups[0].classList.contains('open') && groups[1].classList.contains('open'));
             }
 
+            // The whole point of a menu: the item inside it must navigate to
+            // its own view, not merely leave some view on screen.
+            const inner = nav.querySelector('.nav-group-menu .nav-item');
+            const wanted = (inner.getAttribute('onclick') || '').match(/showView\('([^']+)'\)/);
+            check('the menu item is wired to a view', !!wanted, inner.id + ' has no showView call');
+            if (wanted) {
+                w.eval("showView('dashboard-view')");   // somewhere else first
+                // jsdom does not execute inline onclick attributes unless
+                // scripts run dangerously, so the handler is invoked exactly as
+                // written instead. This still proves the attribute survived
+                // being moved into a menu, which is what could break.
+                w.eval('(function (event) { ' + inner.getAttribute('onclick') +
+                    ' }).call(document.getElementById("' + inner.id + '"), ' +
+                    '{ preventDefault: function () {} })');
+                const shown = d.querySelector('.view-section.active');
+                check('an item inside a menu opens its own view',
+                    shown && shown.id === wanted[1],
+                    `clicked ${inner.id}, wanted ${wanted[1]}, got ${shown && shown.id}`);
+                check('the group heading shows where you are',
+                    !!nav.querySelector('.nav-group .nav-group-toggle.active') ||
+                    !!nav.querySelector('.nav-group .nav-item.active'),
+                    'nothing in the header marks the current view');
+            }
+
             w.eval("showView('settings-view')");
             check('choosing a view closes the menus',
                 !nav.querySelector('.nav-group.open'));
