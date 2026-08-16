@@ -208,7 +208,8 @@ def test_it_names_who_is_on_leave_today(client, tenant, account, me):
     tenant.post(f"/api/leave/requests/{lid}/action", json={"action": "approve"})
 
     ctx = context_for(me)
-    assert "On approved leave today: Rina Patel" in ctx
+    leave_line = next(l for l in ctx.splitlines() if l.startswith("- Off today"))
+    assert "Rina Patel" in leave_line, leave_line
 
 
 def test_somebody_on_leave_is_not_also_reported_absent(client, tenant, account, me):
@@ -236,3 +237,18 @@ def test_somebody_on_leave_is_not_also_reported_absent(client, tenant, account, 
     absent_line = next(l for l in context_for(me).split("\n")
                        if l.startswith("- Active employees with no clock-in"))
     assert "Rina Patel" not in absent_line
+
+
+def test_nobody_off_today_is_stated_as_a_fact(tenant, me):
+    """An empty answer is still an answer. The assistant used to say it did not
+    have the information when the context plainly said nobody."""
+    make_employee(tenant, first_name="Present", last_name="Person")
+    ctx = context_for(me)
+    assert "Off today / on approved leave today" in ctx
+    assert "nobody is off today" in ctx
+
+
+def test_the_prompt_forbids_pleading_ignorance_about_an_empty_result(tenant):
+    """The instruction that makes the line above usable."""
+    assert "An empty answer is still an answer" in main.ASSISTANT_SYSTEM
+    assert "do NOT say you lack the information" in main.ASSISTANT_SYSTEM

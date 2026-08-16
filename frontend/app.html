@@ -10,8 +10,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>A</text></svg>">
-    <link rel="stylesheet" href="styles.css?v=52">
-    <link rel="stylesheet" href="mobile.css?v=52">
+    <link rel="stylesheet" href="styles.css?v=53">
+    <link rel="stylesheet" href="mobile.css?v=53">
 </head>
 <body>
     <a class="skip-link" href="#main-content-region">Skip to main content</a>
@@ -1083,6 +1083,11 @@
                                 </details>
 
                                 <details>
+                                    <summary>Sections on the document</summary>
+                                    <p class="bt-note">Turn off anything you do not want printed.</p>
+                                    <div id="bt-blocks"></div>
+                                </details>
+                                <details>
                                     <summary>Printing</summary>
                                     <label class="bfield">Customer address position
                                         <select id="bt-address_position" onchange="renderThemePreview()">
@@ -1109,28 +1114,7 @@
                             </div>
                         </div>
                     </div>
-                        <div class="glass-widget" style="margin-bottom:24px;">
-                        <div class="widget-header" style="display:flex; justify-content:space-between; align-items:center;">
-                            <h3>Invoice Template Builder</h3>
-                            <div style="display:flex; gap:8px;">
-                                <button class="btn btn-outline btn-sm" onclick="openAITemplateModal()" style="display:flex; align-items:center; gap:6px;">
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg> Generate with AI
-                                </button>
-                                <button class="btn btn-outline btn-sm" onclick="previewInvoiceTemplate()" style="display:flex; align-items:center; gap:6px;">
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg> Preview
-                                </button>
-                            </div>
-                        </div>
-                        <div class="widget-content">
-                            <p style="color:var(--text-secondary);font-size:0.85rem;margin-bottom:16px;">Drag and drop the blocks below to customize your invoice layout. Toggle the eye icon to hide a section.</p>
-                            
-                            <div id="invoice-builder-container" style="display:flex;flex-direction:column;gap:8px;background:rgba(0,0,0,0.1);padding:12px;border-radius:var(--radius-md);min-height:200px;">
-                                <!-- Blocks injected by JS -->
-                            </div>
-                            
-                            <button class="btn btn-primary" onclick="saveTemplateLayout()" style="margin-top:16px;">Save Template</button>
-                        </div>
-                    </div>
+                        
                     </section>
                     <section data-settings-section="email" data-settings-label="Email">
                         <div class="glass-widget" style="margin-bottom:24px;">
@@ -2668,7 +2652,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="app.js?v=52"></script>
+    <script src="app.js?v=53"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
@@ -2701,26 +2685,7 @@
     <div style="position:fixed;bottom:16px;right:16px;font-size:0.75rem;color:var(--text-secondary);opacity:0.6;pointer-events:none;z-index:9999;">Powered by Aniprotech</div>
 
     <!-- AI Template Modal -->
-    <div class="modal-overlay" id="ai-template-modal" style="display:none;">
-        <div class="modal" style="max-width:500px;">
-            <div class="modal-header">
-                <h2>Generate Template with AI</h2>
-                <button class="btn-icon" onclick="closeAITemplateModal()">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
-                </button>
-            </div>
-            <div class="modal-body">
-                <p style="font-size:0.9rem;color:var(--text-secondary);margin-bottom:16px;">Describe how you want your invoice to look, and our AI will automatically configure the layout for you.</p>
-                <div class="form-group">
-                    <textarea id="ai-template-prompt" class="form-control" rows="4" placeholder="e.g., 'Put the bank details at the very top, hide the company info, and put the signature at the bottom.'"></textarea>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-outline" onclick="closeAITemplateModal()">Cancel</button>
-                <button class="btn btn-primary" id="ai-template-btn" onclick="generateTemplateWithAI()">Generate</button>
-            </div>
-        </div>
-    </div>
+    
 
 
     <!-- Job requisition modal -->

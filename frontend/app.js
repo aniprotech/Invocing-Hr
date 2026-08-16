@@ -1028,82 +1028,37 @@ function initTemplateBuilder(layoutData) {
     if (!Array.isArray(window._invoiceLayout)) {
         window._invoiceLayout = JSON.parse(JSON.stringify(defaultInvoiceLayout));
     }
-    renderTemplateBuilder();
+    renderDocumentSections();
 }
+window.loadInvoiceLayout = initTemplateBuilder;
 
-function renderTemplateBuilder() {
-    var container = document.getElementById('invoice-builder-container');
-    if (!container) return;
-    container.innerHTML = '';
-    
-    window._invoiceLayout.forEach(function(block, index) {
-        var el = document.createElement('div');
-        el.className = 'builder-block';
-        el.style.display = 'flex';
-        el.style.alignItems = 'center';
-        el.style.justifyContent = 'space-between';
-        el.style.padding = '12px 16px';
-        el.style.background = 'rgba(255,255,255,0.05)';
-        el.style.border = '1px solid var(--border-color)';
-        el.style.borderRadius = 'var(--radius-md)';
-        el.style.cursor = 'grab';
-        el.draggable = true;
-        el.dataset.id = block.id;
-        el.dataset.index = index;
-        
-        var leftDiv = document.createElement('div');
-        leftDiv.style.display = 'flex';
-        leftDiv.style.alignItems = 'center';
-        leftDiv.style.gap = '12px';
-        
-        var dragIcon = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:#cbd5e1;"><circle cx="9" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="19" r="1"/></svg>';
-        leftDiv.innerHTML = dragIcon + '<span style="font-weight:500;color:var(--text-primary);' + (!block.visible ? 'text-decoration:line-through;opacity:0.5;' : '') + '">' + block.label + '</span>';
-        
-        var rightDiv = document.createElement('div');
-        var eyeIcon = block.visible ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>' : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>';
-        
-        var toggleBtn = document.createElement('button');
-        toggleBtn.className = 'btn-icon';
-        toggleBtn.style.color = block.visible ? 'var(--primary)' : 'var(--text-secondary)';
-        toggleBtn.innerHTML = eyeIcon;
-        toggleBtn.onclick = function() {
-            block.visible = !block.visible;
-            renderTemplateBuilder();
-        };
-        rightDiv.appendChild(toggleBtn);
-        
-        el.appendChild(leftDiv);
-        el.appendChild(rightDiv);
-        
-        // Drag events
-        el.addEventListener('dragstart', function(e) {
-            e.dataTransfer.setData('text/plain', index);
-            setTimeout(function() { el.style.opacity = '0.4'; }, 0);
-        });
-        el.addEventListener('dragend', function(e) {
-            el.style.opacity = '1';
-        });
-        el.addEventListener('dragover', function(e) {
-            e.preventDefault();
-            el.style.border = '2px dashed var(--primary)';
-        });
-        el.addEventListener('dragleave', function(e) {
-            el.style.border = '1px solid var(--border-color)';
-        });
-        el.addEventListener('drop', function(e) {
-            e.preventDefault();
-            el.style.border = '1px solid var(--border-color)';
-            var fromIndex = parseInt(e.dataTransfer.getData('text/plain'));
-            var toIndex = index;
-            if (fromIndex === toIndex) return;
-            var moved = window._invoiceLayout.splice(fromIndex, 1)[0];
-            window._invoiceLayout.splice(toIndex, 0, moved);
-            renderTemplateBuilder();
-        });
-        
-        container.appendChild(el);
-    });
+// The four blocks a business actually chooses to hide. This replaces a
+// drag-and-drop list that sat beside the branding editor doing a job the
+// branding editor should own, and reappeared on every refresh.
+var HIDEABLE_BLOCKS = ['bank_details', 'terms_conditions', 'signature', 'payment_stub'];
+
+function renderDocumentSections() {
+    var host = document.getElementById('bt-blocks');
+    if (!host || !Array.isArray(window._invoiceLayout)) return;
+    host.innerHTML = window._invoiceLayout
+        .filter(function (b) { return HIDEABLE_BLOCKS.indexOf(b.id) >= 0; })
+        .map(function (b) {
+            return '<label class="bcheck"><input type="checkbox" data-block="' + b.id + '"' +
+                (b.visible !== false ? ' checked' : '') +
+                ' onchange="toggleDocumentSection(this)"> ' + esc(b.label || b.id) + '</label>';
+        }).join('');
 }
+window.renderDocumentSections = renderDocumentSections;
+
+function toggleDocumentSection(input) {
+    var id = input.getAttribute('data-block');
+    (window._invoiceLayout || []).forEach(function (b) {
+        if (b.id === id) b.visible = input.checked;
+    });
+    saveTemplateLayout();
+}
+window.toggleDocumentSection = toggleDocumentSection;
+
 window.initTemplateBuilder = initTemplateBuilder;
 
 async function saveTemplateLayout() {
@@ -1129,60 +1084,9 @@ async function saveTemplateLayout() {
     }
 }
 window.saveTemplateLayout = saveTemplateLayout;
-
-function openAITemplateModal() {
-    document.getElementById('ai-template-modal').style.display = 'flex';
-}
-window.openAITemplateModal = openAITemplateModal;
-
-function closeAITemplateModal() {
-    document.getElementById('ai-template-modal').style.display = 'none';
-}
-window.closeAITemplateModal = closeAITemplateModal;
-
-function generateTemplateWithAI() {
-    var prompt = document.getElementById('ai-template-prompt').value.toLowerCase();
-    if (!prompt) return;
-    var btn = document.getElementById('ai-template-btn');
-    btn.innerHTML = 'Generating...';
-    btn.disabled = true;
-    
-    // Simple local simulated AI logic
-    setTimeout(function() {
-        // Reset visibility
-        window._invoiceLayout.forEach(b => b.visible = true);
-        
-        if (prompt.includes('hide company') || prompt.includes('no company')) {
-            var b = window._invoiceLayout.find(x => x.id === 'company_info');
-            if (b) b.visible = false;
-        }
-        if (prompt.includes('bank details at the top') || prompt.includes('bank details top')) {
-            var idx = window._invoiceLayout.findIndex(x => x.id === 'bank_details');
-            if (idx > -1) {
-                var b = window._invoiceLayout.splice(idx, 1)[0];
-                window._invoiceLayout.splice(0, 0, b);
-            }
-        }
-        if (prompt.includes('signature at the bottom') || prompt.includes('signature bottom')) {
-            var idx = window._invoiceLayout.findIndex(x => x.id === 'signature');
-            if (idx > -1) {
-                var b = window._invoiceLayout.splice(idx, 1)[0];
-                window._invoiceLayout.push(b);
-            }
-        }
-        if (prompt.includes('hide stub') || prompt.includes('no stub')) {
-            var b = window._invoiceLayout.find(x => x.id === 'payment_stub');
-            if (b) b.visible = false;
-        }
-        
-        renderTemplateBuilder();
-        btn.innerHTML = 'Generate';
-        btn.disabled = false;
-        closeAITemplateModal();
-        showToast('AI layout generated successfully!', 'success');
-    }, 1500);
-}
-window.generateTemplateWithAI = generateTemplateWithAI;
+
+
+
 
 // Open a generated PDF in a new tab.
 //
@@ -1210,17 +1114,7 @@ function openPdfPreview(doc, title) {
     setTimeout(function () { URL.revokeObjectURL(url); }, 120000);
 }
 window.openPdfPreview = openPdfPreview;
-
-function previewInvoiceTemplate() {
-    // Sample data, so the tenant can see their template before issuing anything.
-    try {
-        openPdfPreview(generateInvoicePDF(true), 'Template preview');
-    } catch (e) {
-        console.error('previewInvoiceTemplate error:', e);
-        showToast('Preview failed: ' + e.message, 'error');
-    }
-}
-window.previewInvoiceTemplate = previewInvoiceTemplate;
+
 
 // --- DYNAMIC GENERATE INVOICE PDF ---
 // Currency sanitizer shared by the invoice and payslip PDFs. jsPDF's built-in
@@ -9502,6 +9396,9 @@ function fillThemeForm(theme) {
         });
 
     renderColumnToggles(theme);
+    // Which document blocks print is stored separately from the theme,
+    // so it is redrawn here too rather than only at page load.
+    if (typeof renderDocumentSections === 'function') renderDocumentSections();
     renderLogoPreview();
     renderThemePreview();
 }

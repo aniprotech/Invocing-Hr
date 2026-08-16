@@ -12065,7 +12065,10 @@ def build_business_context(db, client):
         f"- Employees: {len(employees)} ({len(active)} active, {len(onboarding)} onboarding)",
         f"- Departments: {db.query(models.DBDepartment).filter(models.DBDepartment.client_id == client.id).count()}",
         f"- Pending leave requests: {len(pending_leave)}",
-        f"- On approved leave today: {', '.join(on_leave_today) if on_leave_today else 'nobody'}",
+        # Worded the way the question gets asked - "who is off today" did not
+        # match a line that only said "on approved leave".
+        f"- Off today / on approved leave today ({today.isoformat()}): "
+        f"{', '.join(on_leave_today) if on_leave_today else 'nobody is off today'}",
         f"- Payslips: {len(payslips)} total, {len(unpaid_payslips)} not yet marked paid",
         f"- Onboarding documents outstanding: {outstanding_docs}, awaiting HR review: {awaiting_review}",
     ]
@@ -12191,8 +12194,11 @@ ASSISTANT_SYSTEM = (
     "particular invoice, quote, bill, customer or person, a MATCHED RECORDS section "
     "with the detail of exactly those. Prefer the matched records when answering "
     "about one thing. "
-    "Never invent numbers, names, dates or totals. If the answer is not in the context, "
-    "say plainly that you do not have that information and name the screen where the user can find it "
+    "Never invent numbers, names, dates or totals. "
+    "An empty answer is still an answer: if the context says nobody, none, or zero, "
+    "say so directly - 'nobody is off today' - and do NOT say you lack the information. "
+    "Only say you do not have something when the context genuinely has no line about it, "
+    "and then name the screen where the user can find it "
     "(Invoices, Employees, Leave, Payroll, Recruitment, Wallet). "
     "Be brief and concrete: two or three sentences, or a short list. Quote figures exactly as given. "
     "Do not give legal, tax or financial advice; suggest a qualified professional instead."
