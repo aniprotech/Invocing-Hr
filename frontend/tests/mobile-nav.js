@@ -92,6 +92,25 @@ for (const b of drawerGroupBlocks) {
         'every group renders expanded, so the drawer is a flat list again');
 }
 
+// The overlay must sit below the header. The header sets backdrop-filter,
+// which makes it a stacking context, so the drawer inside it cannot climb above
+// the header's own z-index no matter what its own is. An overlay above that
+// number covers the open menu: every item dimmed, every tap swallowed.
+function zOf(selector) {
+    const at = css.indexOf(selector + ' {');
+    if (at < 0) return null;
+    const rule = css.slice(at, css.indexOf('}', at));
+    const z = rule.match(/z-index:\s*(\d+)/);
+    return z ? Number(z[1]) : null;
+}
+const topbarZ = zOf('.enterprise-topbar');
+const overlayZ = zOf('.mobile-overlay');
+check('the header and the overlay both declare a stacking order',
+    topbarZ !== null && overlayZ !== null, `topbar ${topbarZ}, overlay ${overlayZ}`);
+check('the overlay sits below the header, not over it',
+    overlayZ < topbarZ,
+    `overlay ${overlayZ} covers the header at ${topbarZ}, so the open drawer is dimmed and untappable`);
+
 // --- the behaviour ----------------------------------------------------------
 
 (async () => {

@@ -213,9 +213,15 @@ h1, h2, h3, h4, p, td, th, li, .stat-value { overflow-wrap: anywhere; }
 .user-name { font-weight: 500; font-size: 0.85rem; color: white; max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
 
 /* Mobile overlay */
+/* Below the header, deliberately.
+   .enterprise-topbar sets backdrop-filter, which makes it a stacking context,
+   so the drawer inside it cannot rise above the header's own z-index however
+   high its own is set. At 199 this overlay therefore covered the open menu -
+   dimming every item and swallowing every tap - which read as the header
+   greying out and going dead. It only ever needs to dim the page behind. */
 .mobile-overlay {
     display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
-    z-index: 199; backdrop-filter: blur(4px);
+    z-index: 90; backdrop-filter: blur(4px);
 }
 .mobile-overlay.active { display: block; }
 
