@@ -11819,6 +11819,154 @@ async def meeting_websocket(websocket: WebSocket, room_id: str):
 # ============================================================================
 
 
+# ---------------------------------------------------------------------------
+# Assistant retrieval
+#
+# The standing context is a summary: totals, and the top few of anything. Ask
+# about one invoice, one customer or one person and it genuinely was not there,
+# so the assistant answered "I do not have that information" about data sitting
+# in the database. This looks up whatever the question actually names and puts
+# the records in front of the model.
+#
+# Every query is scoped to the tenant. There is no path here by which one
+# business can be shown another's records.
+# ---------------------------------------------------------------------------
+
+DOC_NUMBER_RE = re.compile(r"\b((?:INV|QUO|BILL|PS)[-\s]?\d{1,8})\b", re.I)
+LOOKUP_LIMIT = 6            # records of each kind, to keep the prompt small
+NAME_MIN = 3                # shorter words match far too much
+
+
+def _norm_doc_number(raw: str) -> str:
+    return re.sub(r"[\s-]+", "-", (raw or "").strip().upper())
+
+
+def money_by_currency(rows, amount, base: str) -> str:
+    """Totals per currency, never added together - the same rule the reports
+    follow, because an assistant quoting one figure across currencies is
+    quoting a number that does not exist."""
+    buckets = {}
+    for r in rows:
+        code = ((getattr(r, "currency", "") or "") or base).upper() or base
+        buckets[code] = buckets.get(code, 0) + (amount(r) or 0)
+    if not buckets:
+        return f"{currency_symbol(base)}0.00"
+    return ", ".join(
+        f"{currency_symbol(code)}{value:.2f} {code}"
+        for code, value in sorted(buckets.items(), key=lambda kv: -abs(kv[1]))
+    )
+
+
+def _words_in(question: str):
+    """Words worth matching a name against."""
+    stop = {
+        "the", "and", "for", "with", "what", "when", "who", "how", "much", "many",
+        "does", "did", "has", "have", "was", "are", "is", "owe", "owes", "owed",
+        "invoice", "invoices", "quote", "quotes", "bill", "bills", "employee",
+        "employees", "customer", "customers", "about", "show", "tell", "list",
+        "status", "from", "this", "that", "their", "them", "our", "any", "all",
+    }
+    words = re.findall(r"[A-Za-z][A-Za-z'&.]{2,}", question or "")
+    return [w for w in words if len(w) >= NAME_MIN and w.lower() not in stop]
+
+
+def assistant_lookup(db: Session, client, question: str) -> str:
+    """Records this question appears to be about, or an empty string."""
+    blocks = []
+    sym = currency_symbol(client.currency or "GBP")
+    base = (client.currency or "GBP").upper()
+
+    # --- documents named outright ------------------------------------------
+    numbers = {_norm_doc_number(m) for m in DOC_NUMBER_RE.findall(question or "")}
+    for number in list(numbers)[:LOOKUP_LIMIT]:
+        inv = db.query(models.DBInvoice).filter(
+            models.DBInvoice.client_id == client.id,
+            models.DBInvoice.number == number).first()
+        if inv:
+            sub, tax, total = compute_invoice_totals(inv.line_items, inv.tax_type)
+            cur = currency_symbol((inv.currency or base))
+            days = invoice_overdue_days(inv, datetime.now().date())
+            blocks.append(
+                f"INVOICE {inv.number} for {inv.to_contact or 'unnamed customer'}\n"
+                f"  status {inv.status}, issued {inv.issue_date}, due {inv.due_date}\n"
+                f"  total {cur}{total:.2f}, paid {cur}{inv.paid or 0:.2f}, "
+                f"outstanding {cur}{inv.due or 0:.2f}"
+                + (f", {days} days overdue" if days > 0 else "")
+                + "\n  lines: " + "; ".join(
+                    f"{li.description} x{li.qty} at {cur}{li.price:.2f}"
+                    for li in (inv.line_items or [])[:8]))
+            continue
+
+        quote = db.query(models.DBQuote).filter(
+            models.DBQuote.client_id == client.id,
+            models.DBQuote.number == number).first()
+        if quote:
+            sub, tax, total = compute_invoice_totals(quote.line_items, quote.tax_type)
+            cur = currency_symbol((quote.currency or base))
+            blocks.append(
+                f"QUOTE {quote.number} for {quote.to_contact or 'unnamed customer'}\n"
+                f"  status {quote_display_status(quote)}, issued {quote.issue_date}, "
+                f"expires {quote.expiry_date}, total {cur}{total:.2f}")
+            continue
+
+        bill = db.query(models.DBBill).filter(
+            models.DBBill.client_id == client.id,
+            models.DBBill.number == number).first()
+        if bill:
+            blocks.append(
+                f"BILL {bill.number} from {bill.vendor_name or 'unnamed supplier'}\n"
+                f"  status {bill.status}, due {bill.due_date}, total {sym}{bill.total or 0:.2f}, "
+                f"paid {sym}{bill.amount_paid or 0:.2f}")
+
+    words = _words_in(question)
+    if not words:
+        return "\n\n".join(blocks)
+
+    # --- people named in the question ---------------------------------------
+    employees = db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client.id).all()
+    for emp in employees:
+        full = f"{emp.first_name or ''} {emp.last_name or ''}".strip()
+        if not full:
+            continue
+        if not any(w.lower() in full.lower() for w in words):
+            continue
+        leave = db.query(models.DBLeaveRequest).filter(
+            models.DBLeaveRequest.client_id == client.id,
+            models.DBLeaveRequest.employee_id == emp.id).all()
+        pending = [l for l in leave if l.status == "pending"]
+        blocks.append(
+            f"EMPLOYEE {full}\n"
+            f"  {emp.job_title or 'no job title'}, status {emp.status}, "
+            f"started {emp.start_date or 'unknown'}\n"
+            f"  email {emp.email or 'none'}, leave requests {len(leave)} "
+            f"({len(pending)} pending)")
+        if len(blocks) >= LOOKUP_LIMIT * 2:
+            break
+
+    # --- customers named in the question ------------------------------------
+    invoices = db.query(models.DBInvoice).filter(
+        models.DBInvoice.client_id == client.id).all()
+    names = {}
+    for inv in invoices:
+        if not inv.to_contact:
+            continue
+        if any(w.lower() in inv.to_contact.lower() for w in words):
+            names.setdefault(inv.to_contact, []).append(inv)
+    for name, rows in list(names.items())[:LOOKUP_LIMIT]:
+        open_rows = [i for i in rows if i.status in OPEN_INVOICE_STATUSES]
+        blocks.append(
+            f"CUSTOMER {name}\n"
+            f"  {len(rows)} invoice(s), {len(open_rows)} still open\n"
+            f"  outstanding {money_by_currency(open_rows, lambda i: i.due or 0, base)}\n"
+            f"  paid to date {money_by_currency(rows, lambda i: i.paid or 0, base)}\n"
+            f"  most recent: " + ", ".join(
+                f"{i.number} ({i.status})" for i in sorted(
+                    rows, key=lambda x: x.issue_date or "", reverse=True)[:5]))
+
+    return "\n\n".join(blocks)
+
+
 def build_business_context(db, client):
     """A compact, factual snapshot of this tenant. Everything the assistant is
     allowed to reason about."""
@@ -11889,8 +12037,8 @@ def build_business_context(db, client):
         "INVOICING",
         f"- Invoices: {len(invoices)} total, {sum(1 for i in invoices if i.status == 'Paid')} paid, "
         f"{sum(1 for i in invoices if i.status == 'Draft')} draft",
-        f"- Outstanding: {sym}{outstanding:.2f}",
-        f"- Collected all time: {sym}{collected:.2f}",
+        f"- Outstanding: {money_by_currency([i for i in invoices if i.status in OPEN_INVOICE_STATUSES], lambda i: i.due or 0, client.currency or 'GBP')}",
+        f"- Collected all time: {money_by_currency(invoices, lambda i: i.paid or 0, client.currency or 'GBP')}",
         f"- Overdue: {len(overdue)} invoice(s), {sym}{sum(i.due or 0 for i in overdue):.2f}",
     ]
     for i in sorted(overdue, key=lambda x: invoice_overdue_days(x, today), reverse=True)[:5]:
@@ -11927,10 +12075,55 @@ def build_business_context(db, client):
     for j in open_jobs[:5]:
         lines.append(f"  - {j.reference} {j.title} ({j.location or 'no location set'})")
 
+    # Money the business owes, which the assistant could not see at all.
+    bills = db.query(models.DBBill).filter(models.DBBill.client_id == client.id).all()
+    unpaid_bills = [b for b in bills if (b.total or 0) > (b.amount_paid or 0)]
+    contacts = db.query(models.DBContact).filter(
+        models.DBContact.client_id == client.id).count()
+
+    # Who owes the most, which is the question people actually ask.
+    owed_by = {}
+    for i in invoices:
+        if i.status in OPEN_INVOICE_STATUSES and i.to_contact:
+            owed_by[i.to_contact] = owed_by.get(i.to_contact, 0) + (i.due or 0)
+    top_debtors = sorted(owed_by.items(), key=lambda kv: -kv[1])[:5]
+
+    team = db.query(models.DBTeamMember).filter(
+        models.DBTeamMember.client_id == client.id,
+        models.DBTeamMember.is_active == True,      # noqa: E712
+    ).all()
+    tax_rates = db.query(models.DBTaxRate).filter(
+        models.DBTaxRate.client_id == client.id
+    ).order_by(models.DBTaxRate.sort_order.asc()).all()
+
+    clocked_in = db.query(models.DBAttendance).filter(
+        models.DBAttendance.client_id == client.id,
+        models.DBAttendance.date == today.isoformat(),
+        models.DBAttendance.clock_in != "",
+    ).count()
+
     lines += [
+        "",
+        "MONEY OUT",
+        f"- Bills: {len(bills)} total, {len(unpaid_bills)} unpaid "
+        f"({sym}{sum((b.total or 0) - (b.amount_paid or 0) for b in unpaid_bills):.2f})",
+        "",
+        "CUSTOMERS",
+        f"- Contacts on file: {contacts}",
+    ]
+    for name, amount in top_debtors:
+        lines.append(f"  - {name} owes {sym}{amount:.2f}")
+
+    lines += [
+        "",
+        "ATTENDANCE",
+        f"- Clocked in today: {clocked_in} of {len(active)} active employees",
         "",
         "ACCOUNT",
         f"- Wallet balance: {currency_symbol(wallet.currency)}{to_major(wallet.balance_minor, wallet.currency):.2f}",
+        f"- Team members with a login: {len(team)}",
+        f"- Tax rates set up: " + (", ".join(
+            f"{t.name} {t.percent}%" for t in tax_rates) or "none"),
     ]
     return "\n".join(lines)
 
@@ -11959,6 +12152,10 @@ def as_list(value):
 ASSISTANT_SYSTEM = (
     "You are the assistant inside a combined invoicing and HR platform. "
     "Answer using ONLY the CONTEXT below, which contains this company's real, current data. "
+    "CONTEXT has a summary of the whole business, and where the question named a "
+    "particular invoice, quote, bill, customer or person, a MATCHED RECORDS section "
+    "with the detail of exactly those. Prefer the matched records when answering "
+    "about one thing. "
     "Never invent numbers, names, dates or totals. If the answer is not in the context, "
     "say plainly that you do not have that information and name the screen where the user can find it "
     "(Invoices, Employees, Leave, Payroll, Recruitment, Wallet). "
@@ -11984,6 +12181,13 @@ def ai_assistant(body: AssistantQuery, request: Request, db: Session = Depends(g
     ensure_can_afford(db, client.id, "ai_assistant")
 
     context = build_business_context(db, client)
+    # Whatever the question names is fetched and put in front of the model, so
+    # a question about one invoice is not answered from a summary that only
+    # carries totals.
+    matched = assistant_lookup(db, client, question)
+    if matched:
+        context = f"{context}\n\nMATCHED RECORDS\n{matched}"
+
     answer = llm_chat([
         {"role": "system", "content": ASSISTANT_SYSTEM},
         {"role": "user", "content": f"CONTEXT:\n{context}\n\nQUESTION: {question}"},
