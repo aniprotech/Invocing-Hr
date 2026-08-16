@@ -9820,7 +9820,12 @@ var NAV_GROUPS = [
 
 function buildGroupedNav() {
     var nav = document.getElementById('main-nav');
-    if (!nav || nav.getAttribute('data-grouped') === '1') return;
+    if (!nav) return;
+    // The markup ships already grouped, so the browser paints the finished
+    // header before this file has even downloaded. All that is left is to make
+    // the headings clickable. The building below stays for any page that has
+    // not been converted.
+    if (nav.getAttribute('data-grouped') === '1') { wireNavGroupToggles(); return; }
 
     NAV_GROUPS.forEach(function (group) {
         var members = group.items
@@ -9863,9 +9868,33 @@ function buildGroupedNav() {
     });
 
     nav.setAttribute('data-grouped', '1');
+    wireNavGroupToggles();
     syncNavGroupState();
 }
 window.buildGroupedNav = buildGroupedNav;
+
+// Attaches the open/close behaviour to whichever headings do not have it yet,
+// whether they came from the markup or were built above.
+function wireNavGroupToggles() {
+    document.querySelectorAll('.nav-group-toggle').forEach(function (toggle) {
+        if (toggle.getAttribute('data-wired') === '1') return;
+        toggle.setAttribute('data-wired', '1');
+        toggle.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            var wrap = toggle.closest('.nav-group');
+            if (!wrap) return;
+            var wasOpen = wrap.classList.contains('open');
+            closeNavGroups();
+            if (!wasOpen) {
+                wrap.classList.add('open');
+                toggle.setAttribute('aria-expanded', 'true');
+            }
+        });
+    });
+    syncNavGroupState();
+}
+window.wireNavGroupToggles = wireNavGroupToggles;
 
 function closeNavGroups() {
     document.querySelectorAll('.nav-group.open').forEach(function (g) {

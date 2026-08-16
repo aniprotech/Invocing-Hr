@@ -56,6 +56,21 @@ const check = (label, ok, detail) => {
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
+// The header must already be grouped in the markup. app.js is half a megabyte,
+// and until it has downloaded and run the browser paints whatever the HTML
+// says - so if the groups are built by script, every load shows the ungrouped
+// header first. That is what kept being reported as the old tabs returning.
+for (const page of ['app.html', 'hr.html']) {
+    const raw = fs.readFileSync(path.join(ROOT, page), 'utf8');
+    const nav = raw.slice(raw.indexOf('id="main-nav"'), raw.indexOf('</nav>'));
+    const groups = (nav.match(/class="nav-group"/g) || []).length;
+    check(`${page} ships its header already grouped`, groups >= 2,
+        `${groups} groups in the markup, so the browser paints a flat header until app.js runs`);
+    check(`${page} marks the header as pre-grouped`,
+        /id="main-nav"[^>]*data-grouped="1"/.test(raw),
+        'the runtime would rebuild what is already there');
+}
+
 (async () => {
     for (const page of ['app.html', 'hr.html']) {
         console.log(`\n-- ${page} --`);
@@ -77,9 +92,11 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
             `${allItems.length} items`);
 
         // The bar itself has to be short.
+        // Only what is actually on screen counts. A group belonging to the
+        // other portal is present in the markup but hidden.
         const topLevel = Array.from(nav.children).filter(el =>
-            el.classList.contains('nav-group') ||
-            (el.classList.contains('nav-item') && visible(el)));
+            visible(el) &&
+            (el.classList.contains('nav-group') || el.classList.contains('nav-item')));
         check('the header shows at most seven top-level entries',
             topLevel.length <= 7, `${topLevel.length} entries`);
         check('grouping actually moved items into menus', inMenus.length >= 2,
