@@ -157,3 +157,62 @@ def test_the_portal_is_told_whether_today_is_a_working_day(client, tenant, staff
     tenant.put("/api/attendance/settings", json={"working_days": "1"})
     body = client.get("/api/employee/attendance/today").json()
     assert body["is_working_day"] == (date.today().isoweekday() == 1)
+
+
+# --- leave is counted in the tenant's working days, not a fixed Mon-Fri -------
+
+def test_leave_uses_the_businesss_own_working_days():
+    """A six-day business is normal in plenty of places. Counting leave against
+    a hardcoded Monday to Friday made Saturday leave impossible to book at all,
+    and every count wrong for them."""
+    from datetime import date
+
+    class S:
+        def __init__(self, wd):
+            self.working_days = wd
+
+    saturday, sunday = date(2026, 8, 15), date(2026, 8, 16)
+
+    six_day = S("1,2,3,4,5,6")
+    assert main.working_days_between(saturday.isoformat(), saturday.isoformat(), six_day) == 1.0
+    assert main.working_days_between(sunday.isoformat(), sunday.isoformat(), six_day) == 0.0
+
+    mon_fri = S("1,2,3,4,5")
+    assert main.working_days_between(saturday.isoformat(), saturday.isoformat(), mon_fri) == 0.0
+
+    every_day = S("1,2,3,4,5,6,7")
+    assert main.working_days_between(saturday.isoformat(), sunday.isoformat(), every_day) == 2.0
+
+
+def test_a_full_week_counts_only_working_days():
+    from datetime import date
+
+    class S:
+        working_days = "1,2,3,4,5"
+
+    monday, sunday = date(2026, 8, 17), date(2026, 8, 23)
+    assert main.working_days_between(monday.isoformat(), sunday.isoformat(), S()) == 5.0
+
+
+def test_without_settings_it_still_defaults_to_weekdays():
+    """Nothing configured behaves as it always did."""
+    from datetime import date
+    assert main.working_days_between(date(2026, 8, 15).isoformat(),
+                                     date(2026, 8, 15).isoformat()) == 0.0
+    assert main.working_days_between(date(2026, 8, 17).isoformat(),
+                                     date(2026, 8, 17).isoformat()) == 1.0
+
+
+def test_a_saturday_business_can_book_saturday_leave(client, tenant):
+    """End to end: the request the API used to refuse outright."""
+    from datetime import date
+    tenant.put("/api/attendance/settings", json={"working_days": "1,2,3,4,5,6,7"})
+    emp = make_employee(tenant, password="EmpPass123")
+    client.post("/api/employee/auth/login",
+                json={"email": emp["email"], "password": "EmpPass123"})
+
+    saturday = date(2026, 8, 15).isoformat()
+    res = client.post("/api/employee/leave", json={
+        "leave_type": "annual", "start_date": saturday, "end_date": saturday})
+    assert res.status_code == 200, res.text
+    assert res.json().get("days") == 1.0 or res.json().get("request", {}).get("days") == 1.0

@@ -163,3 +163,76 @@ def test_the_summary_is_per_tenant(client, tenant, me):
     with main.SessionLocal() as db:
         ctx = main.build_business_context(db, client_row(other))
     assert "My Private Customer" not in ctx
+
+
+# --- "who", not "how many" ----------------------------------------------------
+
+def test_it_names_who_clocked_in_today(client, tenant, me):
+    """The question that exposed this: "who logged in today" was answered from
+    a bare count, so the assistant said it did not know."""
+    tenant.put("/api/attendance/settings", json={"working_days": "1,2,3,4,5,6,7"})
+    emp = make_employee(tenant, first_name="Sarah", last_name="Daley",
+                        password="EmpPass123")
+    res = client.post("/api/employee/auth/login",
+                      json={"email": emp["email"], "password": "EmpPass123"})
+    assert res.json()["clock_in"], "the fixture must actually clock in"
+
+    ctx = context_for(me)
+    assert "Who clocked in today" in ctx
+    assert "Sarah Daley" in ctx.split("ATTENDANCE")[1]
+
+
+def test_it_says_plainly_when_nobody_has_clocked_in(tenant, me):
+    make_employee(tenant, first_name="Nobody", last_name="Here")
+    ctx = context_for(me)
+    assert "nobody has clocked in today" in ctx
+
+
+def test_it_names_who_is_on_leave_today(client, tenant, account, me):
+    """The other half of the same question."""
+    from datetime import date, timedelta
+    today = date.today()
+    emp = make_employee(tenant, first_name="Rina", last_name="Patel",
+                        password="EmpPass123")
+    client.post("/api/employee/auth/login",
+                json={"email": emp["email"], "password": "EmpPass123"})
+    client.post("/api/employee/leave", json={
+        "leave_type": "annual",
+        "start_date": (today - timedelta(days=1)).isoformat(),
+        "end_date": (today + timedelta(days=1)).isoformat()})
+    client.post("/api/employee/auth/logout")
+    main.rate_limiter._hits.clear()
+    client.post("/api/client/login", json={"email": account["email"],
+                                           "password": account["password"]})
+    lid = tenant.get("/api/leave/requests").json()[0]["id"]
+    tenant.post(f"/api/leave/requests/{lid}/action", json={"action": "approve"})
+
+    ctx = context_for(me)
+    assert "On approved leave today: Rina Patel" in ctx
+
+
+def test_somebody_on_leave_is_not_also_reported_absent(client, tenant, account, me):
+    """Otherwise the same person is listed as unaccounted for and on holiday."""
+    from datetime import date, timedelta
+    today = date.today()
+    # Every day counts as a working day here, or a request landing on a
+    # weekend is worth zero days and never gets created - which made this
+    # pass Monday to Friday and fail at the weekend.
+    tenant.put("/api/attendance/settings", json={"working_days": "1,2,3,4,5,6,7"})
+    emp = make_employee(tenant, first_name="Rina", last_name="Patel",
+                        password="EmpPass123")
+    client.post("/api/employee/auth/login",
+                json={"email": emp["email"], "password": "EmpPass123"})
+    client.post("/api/employee/leave", json={
+        "leave_type": "annual", "start_date": today.isoformat(),
+        "end_date": today.isoformat()})
+    client.post("/api/employee/auth/logout")
+    main.rate_limiter._hits.clear()
+    client.post("/api/client/login", json={"email": account["email"],
+                                           "password": account["password"]})
+    lid = tenant.get("/api/leave/requests").json()[0]["id"]
+    tenant.post(f"/api/leave/requests/{lid}/action", json={"action": "approve"})
+
+    absent_line = next(l for l in context_for(me).split("\n")
+                       if l.startswith("- Active employees with no clock-in"))
+    assert "Rina Patel" not in absent_line

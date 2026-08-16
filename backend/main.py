@@ -10818,9 +10818,15 @@ def mark_all_notifications_read(request: Request, db: Session = Depends(get_db))
     return {"message": "All notifications marked as read"}
 
 
-def working_days_between(start_date, end_date) -> float:
-    """Inclusive weekday count. Leave is booked in working days, so a Mon-Fri
-    request is 5 days, not the 7 a raw date subtraction would give."""
+def working_days_between(start_date, end_date, settings=None) -> float:
+    """Inclusive count of the tenant's own working days.
+
+    Leave is booked in working days, so a Mon-Fri request is 5 days, not the 7
+    a raw date subtraction would give. This used to hardcode Monday to Friday
+    and ignore the working days the business had configured, so anyone open on
+    a Saturday could not book Saturday leave at all - it came back as a range
+    containing no working days - and every count was wrong for them.
+    """
     start = _parse_date(start_date)
     end = _parse_date(end_date)
     if not start or not end or end < start:
@@ -10829,7 +10835,7 @@ def working_days_between(start_date, end_date) -> float:
     days = 0
     cursor = start
     while cursor <= end:
-        if cursor.weekday() < 5:
+        if is_working_day(settings, cursor):
             days += 1
         cursor += timedelta(days=1)
     return float(days)
@@ -10895,7 +10901,10 @@ def request_leave(request: Request, body: dict, db: Session = Depends(get_db)):
     if end < start:
         raise HTTPException(status_code=400, detail="End date cannot be before the start date")
 
-    days = working_days_between(start_date, end_date)
+    # Counted against this business's own working days, not a fixed Mon-Fri.
+    att_settings = db.query(models.DBAttendanceSettings).filter(
+        models.DBAttendanceSettings.client_id == emp.client_id).first()
+    days = working_days_between(start_date, end_date, att_settings)
     if days <= 0:
         raise HTTPException(status_code=400, detail="That range contains no working days")
 
@@ -12096,11 +12105,33 @@ def build_business_context(db, client):
         models.DBTaxRate.client_id == client.id
     ).order_by(models.DBTaxRate.sort_order.asc()).all()
 
-    clocked_in = db.query(models.DBAttendance).filter(
+    # By name, with the time. "Who is in today" was answered with a bare count,
+    # which is not an answer to "who".
+    todays_attendance = db.query(models.DBAttendance).filter(
         models.DBAttendance.client_id == client.id,
         models.DBAttendance.date == today.isoformat(),
         models.DBAttendance.clock_in != "",
-    ).count()
+    ).all()
+    by_id = {e.id: e for e in employees}
+    present, still_in = [], []
+    for a in todays_attendance:
+        emp = by_id.get(a.employee_id)
+        if not emp:
+            continue
+        name = f"{emp.first_name or ''} {emp.last_name or ''}".strip() or emp.email
+        present.append(f"{name} (in {a.clock_in}"
+                       + (f", out {a.clock_out}" if a.clock_out else ", still in")
+                       + ")")
+        if not a.clock_out:
+            still_in.append(name)
+    on_leave_names = set(on_leave_today)
+    absent = [
+        f"{e.first_name or ''} {e.last_name or ''}".strip()
+        for e in active
+        if e.id not in {a.employee_id for a in todays_attendance}
+        and f"{e.first_name or ''} {e.last_name or ''}".strip() not in on_leave_names
+    ]
+    clocked_in = len(todays_attendance)
 
     lines += [
         "",
@@ -12117,7 +12148,11 @@ def build_business_context(db, client):
     lines += [
         "",
         "ATTENDANCE",
-        f"- Clocked in today: {clocked_in} of {len(active)} active employees",
+        f"- Clocked in today ({today.isoformat()}): {clocked_in} of {len(active)} active employees",
+        f"- Who clocked in today: {'; '.join(present[:25]) if present else 'nobody has clocked in today'}",
+        f"- Still clocked in right now: {', '.join(still_in[:25]) if still_in else 'nobody'}",
+        f"- Active employees with no clock-in and not on leave: "
+        f"{', '.join(absent[:25]) if absent else 'none'}",
         "",
         "ACCOUNT",
         f"- Wallet balance: {currency_symbol(wallet.currency)}{to_major(wallet.balance_minor, wallet.currency):.2f}",
