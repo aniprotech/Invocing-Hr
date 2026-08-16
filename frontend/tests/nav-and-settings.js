@@ -17,7 +17,10 @@ const { jsPDF } = require('jspdf');
 
 const ROOT = path.resolve(__dirname, '..');
 
-function boot(page) {
+function boot(page, opts) {
+    opts = opts || {};
+    // Nothing else in this file needs a second window, so it is left unclosed
+    // for the same reason as the others - pending callbacks.
     const html = fs.readFileSync(path.join(ROOT, page), 'utf8')
         .replace(/<script[^>]*src=[^>]*><\/script>/g, '');
     const dom = new JSDOM(html, {
@@ -31,6 +34,7 @@ function boot(page) {
     w.URL.revokeObjectURL = () => { };
     w.fetch = (url) => {
         const p = String(url).split('?')[0];
+        if (opts.failAuth) return Promise.reject(new Error('offline'));
         const body = p === '/api/client/me' ? { id: 1, email: 'me@example.com' }
             : p === '/api/auth/me' ? { user: { email: 'me@example.com' } }
                 : (p.endsWith('s') ? [] : {});
@@ -127,6 +131,16 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
             check('choosing a view closes the menus',
                 !nav.querySelector('.nav-group.open'));
         }
+
+        // The header must not wait on the network. It used to be grouped only
+        // after the session check, so every refresh showed the old flat tabs
+        // until that returned - and never grouped at all if it failed.
+        const dead = boot(page, { failAuth: true });
+        await wait(400);
+        const deadNav = dead.window.document.getElementById('main-nav');
+        check('the header is grouped even when the session check fails',
+            deadNav.querySelectorAll('.nav-group').length > 0,
+            'grouping depends on a network call');
 
         // --- settings, one section at a time ---
         const rail = d.getElementById('settings-rail');

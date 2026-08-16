@@ -175,7 +175,6 @@ function getCurrencySymbol(code) {
     code = code || _viewCurrency || _appCurrency || 'GBP';
     return getCurrencyInfo(code).symbol;
 }
-function formatMoney(val) { return getCurrencySymbol() + parseFloat(val || 0).toFixed(2); }
 
 // --- Searchable Currency Picker ---
 var _curPickers = {};
@@ -4601,6 +4600,16 @@ async function requireAuth() {
 window.requireAuth = requireAuth;
 
 document.addEventListener('DOMContentLoaded', async function() {
+    // The header is built from markup alone, so it is done before anything
+    // is awaited. It used to run after the session check, which meant a
+    // network round-trip of the old ungrouped tabs on every refresh - and
+    // none at all if that check failed.
+    enforcePortalSeparation();
+    buildGroupedNav();
+    // Settings is markup too, so it is ready before anyone navigates to it
+    // rather than being assembled on arrival.
+    buildSettingsSections();
+
     // Nothing else runs until we know there is a session, so the page
     // never renders an empty shell behind a redirect.
     if (!(await requireAuth())) return;
@@ -4647,11 +4656,6 @@ document.addEventListener('DOMContentLoaded', async function() {
     var dueDate = localDate(new Date(Date.now() + 14 * 86400000));    
     var urlParams = new URLSearchParams(window.location.search);
     
-    // Enforce portal separation based on the physical file
-    enforcePortalSeparation();
-    // Grouping runs after the portal filter, so a menu never contains an
-    // item belonging to the other portal.
-    buildGroupedNav();
 
     // Set initial view based on physical file
     if (window.location.pathname.includes('hr.html')) {
