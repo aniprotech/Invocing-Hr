@@ -79,6 +79,19 @@ check('no fade covers a whole menu item',
     !fade || /calc\(100% - \d+px\)/.test(fade[0]),
     'a percentage-based fade washes out the last item');
 
+// A group in the drawer must be collapsed until tapped. Rendering them all
+// expanded lists every item flat under a label, which is the ungrouped header
+// again wearing a hat.
+const drawerGroupBlocks = blocks.filter(b => b.body.includes('.nav-group-menu'));
+check('some breakpoint styles groups inside the drawer', drawerGroupBlocks.length > 0);
+for (const b of drawerGroupBlocks) {
+    const menu = b.body.match(/\.nav-group-menu\s*\{[^}]*\}/);
+    check(`the drawer at ${b.query} keeps groups closed until opened`,
+        !!menu && /display:\s*none/.test(menu[0]) &&
+        /\.nav-group\.open\s*>\s*\.nav-group-menu/.test(b.body),
+        'every group renders expanded, so the drawer is a flat list again');
+}
+
 // --- the behaviour ----------------------------------------------------------
 
 (async () => {

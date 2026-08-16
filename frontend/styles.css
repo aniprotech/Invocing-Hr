@@ -1385,21 +1385,23 @@ body::after {
 .nav-group.open > .nav-group-menu { display: flex; }
 .nav-group-menu .nav-item { width: 100%; white-space: nowrap; }
 
-/* Inside the drawer there is nothing to drop down into, so a group becomes a
-   labelled section with its items listed under it. */
+/* Inside the drawer a group is a heading you tap to open, the same as on the
+   desktop. It used to render every group expanded, which listed every item
+   flat under a small grey label - indistinguishable from the ungrouped header
+   it replaced, and reported as the old tabs coming back. */
 @media (max-width: 1024px) {
     .nav-group { flex-direction: column; width: 100%; }
     .nav-group-toggle {
-        width: 100%; justify-content: space-between; cursor: default;
-        font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase;
-        color: var(--text-secondary); padding: 14px 16px 6px;
+        width: 100%; justify-content: space-between; cursor: pointer;
+        padding: 14px 16px; min-height: 44px;
     }
-    .nav-group-toggle::after { display: none; }
+    .nav-group-toggle::after { display: block; }
     .nav-group-menu {
-        display: flex; position: static; min-width: 0;
+        display: none; position: static; min-width: 0;
         background: none; border: none; box-shadow: none;
-        padding: 0 0 0 8px;
+        padding: 0 0 6px 12px;
     }
+    .nav-group.open > .nav-group-menu { display: flex; }
 }
 
 /* ── Settings sections ────────────────────────────────────────────────────
