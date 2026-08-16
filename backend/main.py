@@ -483,6 +483,16 @@ async def security_middleware(request: Request, call_next):
     if path.endswith(".html") or path == "/":
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
+    elif path.endswith((".js", ".css")):
+        # Scripts and styles carried no cache policy at all, so browsers applied
+        # their own guess. A stale copy of these is indistinguishable from the
+        # application having reverted. A ?v= URL changes whenever the file does,
+        # so those can be kept forever; anything unversioned must be revalidated
+        # every time rather than guessed at.
+        if request.query_params.get("v"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
