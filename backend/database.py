@@ -1167,5 +1167,16 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 41: {sys.exc_info()[1]}")
 
+            # Who sent a notification. Everything used to be system-generated,
+            # so there was nobody to name; now HR can send one directly and an
+            # employee should see who it came from.
+            try:
+                conn.execute(text(
+                    "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS "
+                    "sent_by VARCHAR DEFAULT ''"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 42: {sys.exc_info()[1]}")
+
     except Exception as e:
         print(f"Column check skipped: {e}")

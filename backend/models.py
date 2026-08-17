@@ -852,6 +852,8 @@ class DBNotification(Base):
     title = Column(String, nullable=False)
     message = Column(String, default="")
     type = Column(String, default="info")
+    # Empty when the system raised it, which is most of them.
+    sent_by = Column(String, default="")
     is_read = Column(Boolean, default=False)
     link = Column(String, default="")
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))

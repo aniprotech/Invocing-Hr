@@ -10903,7 +10903,7 @@ def get_employee_notifications(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Not authenticated")
     notes = db.query(models.DBNotification).filter(models.DBNotification.employee_id == emp_id).order_by(models.DBNotification.created_at.desc()).limit(50).all()
     unread = db.query(models.DBNotification).filter(models.DBNotification.employee_id == emp_id, models.DBNotification.is_read == False).count()
-    return {"notifications": [{"id": n.id, "title": n.title, "message": n.message, "type": n.type, "is_read": n.is_read, "link": n.link, "created_at": n.created_at} for n in notes], "unread_count": unread}
+    return {"notifications": [{"id": n.id, "title": n.title, "message": n.message, "type": n.type, "is_read": n.is_read, "link": n.link, "created_at": n.created_at, "sent_by": n.sent_by or ""} for n in notes], "unread_count": unread}
 
 
 @app.patch("/api/employee/notifications/{note_id}/read")
@@ -12590,6 +12590,150 @@ def ai_describe_item(request: Request, body: dict = None, db: Session = Depends(
         return {"available": False, "description": ""}
     charge_after_success(db, client.id, "ai_describe_item", 1, rough[:40])
     return {"available": True, "description": answer.strip().strip('"')}
+
+
+
+# ============================================================================
+# HR TO EMPLOYEE MESSAGES
+#
+# Every notification an employee saw was raised by the system - a goal
+# assigned, a document reviewed, leave actioned. HR had no way to say anything
+# themselves, so anything that did not fit one of those events happened over
+# email and left no trace in the portal.
+#
+# These reuse the notification the portal already renders rather than adding a
+# second inbox next to it.
+# ============================================================================
+
+ANNOUNCEMENT_AUDIENCES = ("everyone", "department", "employee", "onboarding")
+
+
+def notify_employee(db: Session, emp, title: str, message: str,
+                    kind: str = "info", link: str = "", sent_by: str = ""):
+    """One notification, for one person. Everything that talks to an employee
+    goes through here so a new caller cannot forget the tenant id."""
+    note = models.DBNotification(
+        client_id=emp.client_id, employee_id=emp.id,
+        title=title[:200], message=message[:2000], type=kind,
+        link=link, sent_by=sent_by[:120],
+    )
+    db.add(note)
+    return note
+
+
+def announcement_recipients(db: Session, client_id: int, audience: str,
+                            department_id=None, employee_id=None):
+    """Who a message is for. Nobody terminated: they cannot sign in, so a
+    notification for them is one nobody will ever read."""
+    q = db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client_id,
+        models.DBEmployee.status != "terminated",
+    )
+    if audience == "employee":
+        q = q.filter(models.DBEmployee.id == employee_id)
+    elif audience == "department":
+        q = q.filter(models.DBEmployee.department_id == department_id)
+    elif audience == "onboarding":
+        q = q.filter(models.DBEmployee.status == "onboarding")
+    return q.all()
+
+
+@app.post("/api/hr/announcements")
+def send_announcement(request: Request, body: dict = None,
+                      db: Session = Depends(get_db)):
+    """HR writes to one person, a department, everyone still onboarding, or
+    the whole company."""
+    client = get_client_user(request, db)
+    body = body or {}
+
+    title = (body.get("title") or "").strip()
+    message = (body.get("message") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Give the message a subject")
+    if not message:
+        raise HTTPException(status_code=400, detail="Write something to send")
+
+    audience = (body.get("audience") or "everyone").strip().lower()
+    if audience not in ANNOUNCEMENT_AUDIENCES:
+        raise HTTPException(
+            status_code=400,
+            detail="Send to everyone, a department, one employee, or those onboarding")
+    if audience == "employee" and not body.get("employee_id"):
+        raise HTTPException(status_code=400, detail="Choose who to send it to")
+    if audience == "department" and not body.get("department_id"):
+        raise HTTPException(status_code=400, detail="Choose a department")
+
+    people = announcement_recipients(
+        db, client.id, audience,
+        department_id=body.get("department_id"),
+        employee_id=body.get("employee_id"))
+    if not people:
+        # Said plainly rather than reporting that nothing was sent to nobody.
+        raise HTTPException(status_code=400,
+                            detail="Nobody matches that - the message was not sent")
+
+    sender = client.company_name or client.contact_name or "HR"
+    for emp in people:
+        notify_employee(db, emp, title, message, kind="announcement",
+                        sent_by=sender)
+    log_audit(db, client.id, "announcement_sent", "notification", None,
+              title, f"{len(people)} recipient(s)", request)
+    db.commit()
+    return {"sent": len(people), "audience": audience,
+            "recipients": [f"{e.first_name} {e.last_name}".strip() for e in people[:25]]}
+
+
+@app.post("/api/hr/employees/{employee_id}/chase-documents")
+def chase_outstanding_documents(employee_id: int, request: Request,
+                                body: dict = None, db: Session = Depends(get_db)):
+    """Ask one employee for the paperwork still missing, naming it.
+
+    A general "please send your documents" makes somebody go and work out which
+    ones. This lists exactly what is outstanding and what was rejected, with
+    the reason it was rejected, so the reply can be right first time.
+    """
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == employee_id,
+        models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    outstanding = db.query(models.DBDocumentRequest).filter(
+        models.DBDocumentRequest.employee_id == emp.id,
+        models.DBDocumentRequest.client_id == client.id,
+        models.DBDocumentRequest.status.in_(["pending", "rejected"]),
+    ).all()
+    if not outstanding:
+        raise HTTPException(status_code=400,
+                            detail="Nothing is outstanding for this employee")
+
+    lines = []
+    for row in outstanding:
+        bit = row.name
+        if row.is_mandatory:
+            bit += " (required)"
+        if row.due_date:
+            bit += f", due {row.due_date}"
+        if row.status == "rejected" and row.review_note:
+            bit += f" - returned: {row.review_note}"
+        elif row.status == "rejected":
+            bit += " - returned, please send another"
+        lines.append(bit)
+
+    note = (body or {}).get("note", "").strip()
+    message = "Still needed:\n- " + "\n- ".join(lines)
+    if note:
+        message += f"\n\n{note}"
+
+    sender = client.company_name or client.contact_name or "HR"
+    notify_employee(db, emp, f"{len(outstanding)} document(s) still needed",
+                    message, kind="warning", link="/employee-dashboard.html",
+                    sent_by=sender)
+    db.commit()
+    return {"sent": True, "outstanding": len(outstanding),
+            "documents": [r.name for r in outstanding]}
+
 
 # Serve frontend
 frontend_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")

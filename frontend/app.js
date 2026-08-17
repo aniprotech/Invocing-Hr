@@ -9973,3 +9973,118 @@ function showSettingsSection(key) {
     _settingsSection = key;
 }
 window.showSettingsSection = showSettingsSection;
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  MESSAGING STAFF
+//
+//  Every notification an employee saw was raised by the system - a goal
+//  assigned, a document reviewed, leave actioned. Anything else went by email
+//  and left no trace in their portal.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function openAnnounceModal() {
+    var modal = document.getElementById('announce-modal');
+    if (!modal) return;
+    modal.style.display = 'flex';
+    document.getElementById('announce-note').textContent = '';
+    fillAnnounceLists();
+}
+window.openAnnounceModal = openAnnounceModal;
+
+function closeAnnounceModal() {
+    var modal = document.getElementById('announce-modal');
+    if (modal) modal.style.display = 'none';
+}
+window.closeAnnounceModal = closeAnnounceModal;
+
+function announceAudienceChanged() {
+    var who = document.getElementById('announce-audience').value;
+    var dept = document.getElementById('announce-dept-wrap');
+    var emp = document.getElementById('announce-emp-wrap');
+    if (dept) dept.style.display = who === 'department' ? '' : 'none';
+    if (emp) emp.style.display = who === 'employee' ? '' : 'none';
+}
+window.announceAudienceChanged = announceAudienceChanged;
+
+async function fillAnnounceLists() {
+    try {
+        var res = await fetch('/api/employees', { credentials: 'same-origin' });
+        var people = res.ok ? await res.json() : [];
+        var sel = document.getElementById('announce-employee');
+        if (sel) {
+            sel.innerHTML = (people || []).map(function (p) {
+                return '<option value="' + p.id + '">' +
+                    esc((p.first_name || '') + ' ' + (p.last_name || '')) + '</option>';
+            }).join('');
+        }
+    } catch (e) { /* the other audiences still work */ }
+
+    try {
+        var dres = await fetch('/api/departments', { credentials: 'same-origin' });
+        var depts = dres.ok ? await dres.json() : [];
+        var dsel = document.getElementById('announce-department');
+        if (dsel) {
+            dsel.innerHTML = (depts || []).map(function (d) {
+                return '<option value="' + d.id + '">' + esc(d.name || '') + '</option>';
+            }).join('');
+        }
+    } catch (e) { /* likewise */ }
+}
+
+async function sendAnnouncement() {
+    var note = document.getElementById('announce-note');
+    var body = {
+        audience: document.getElementById('announce-audience').value,
+        title: document.getElementById('announce-title').value.trim(),
+        message: document.getElementById('announce-message').value.trim()
+    };
+    if (body.audience === 'department') {
+        body.department_id = parseInt(document.getElementById('announce-department').value, 10);
+    }
+    if (body.audience === 'employee') {
+        body.employee_id = parseInt(document.getElementById('announce-employee').value, 10);
+    }
+
+    try {
+        var res = await fetch('/api/hr/announcements', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(body)
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) {
+            if (note) note.textContent = data.detail || 'Could not send that.';
+            return;
+        }
+        showToast('Sent to ' + data.sent + ' ' + (data.sent === 1 ? 'person' : 'people'), 'success');
+        document.getElementById('announce-title').value = '';
+        document.getElementById('announce-message').value = '';
+        closeAnnounceModal();
+    } catch (e) {
+        if (note) note.textContent = 'Could not send that.';
+    }
+}
+window.sendAnnouncement = sendAnnouncement;
+
+// Asks one employee for the paperwork still missing, naming each document and
+// repeating why anything was returned - so the reply can be right first time.
+async function chaseDocuments(employeeId) {
+    if (!employeeId) return;
+    var extra = prompt('Anything to add? (optional)') || '';
+    try {
+        var res = await fetch('/api/hr/employees/' + employeeId + '/chase-documents', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ note: extra })
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) { showToast(data.detail || 'Could not send the reminder', 'error'); return; }
+        showToast('Asked for ' + data.outstanding + ' document(s)', 'success');
+    } catch (e) {
+        showToast('Could not send the reminder', 'error');
+    }
+}
+window.chaseDocuments = chaseDocuments;
