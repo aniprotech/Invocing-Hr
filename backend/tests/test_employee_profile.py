@@ -3,6 +3,17 @@ answer every question about them from a single call."""
 import pytest
 
 from conftest import make_employee, work_every_day
+import main
+
+def back_as_owner(client, account):
+    """Signing in as an employee drops the account holder's session, which is
+    the point of it. These tests share one client between both roles, so the
+    owner is signed back in before anything that needs their access."""
+    main.rate_limiter._hits.clear()
+    res = client.post("/api/client/login", json={
+        "email": account["email"], "password": account["password"]})
+    assert res.status_code == 200, res.text
+
 
 
 @pytest.fixture
@@ -19,12 +30,13 @@ def test_profile_returns_every_section(tenant, person):
         assert key in d, f"missing {key}"
 
 
-def test_profile_leave_balance_tracks_requests(client, tenant, person):
+def test_profile_leave_balance_tracks_requests(client, tenant, person, account):
     client.post("/api/employee/auth/login", json={"email": person["email"], "password": "EmpPass123"})
     client.post("/api/employee/leave", json={
         "leave_type": "annual", "start_date": "2026-09-07", "end_date": "2026-09-11",
     })
     client.post("/api/employee/auth/logout")
+    back_as_owner(client, account)
 
     d = tenant.get(f"/api/employees/{person['id']}").json()
     assert d["leave_balance"]["annual_pending"] == 5.0
@@ -54,20 +66,22 @@ def test_profile_reflects_approval_without_a_separate_call(client, account):
     assert d["leave_requests"][0]["status"] == "approved"
 
 
-def test_profile_shows_someone_currently_clocked_in(client, tenant, person):
+def test_profile_shows_someone_currently_clocked_in(client, tenant, person, account):
     # Logging in clocks the employee in; they stay clocked in until logout.
     work_every_day(tenant)
     client.post("/api/employee/auth/login", json={"email": person["email"], "password": "EmpPass123"})
+    back_as_owner(client, account)
     a = tenant.get(f"/api/employees/{person['id']}").json()["attendance_summary"]
     assert a["days_present"] == 1
     assert a["clocked_in_today"] is True
     assert a["today_clock_in"]
 
 
-def test_profile_shows_a_completed_day(client, tenant, person):
+def test_profile_shows_a_completed_day(client, tenant, person, account):
     work_every_day(tenant)
     client.post("/api/employee/auth/login", json={"email": person["email"], "password": "EmpPass123"})
     client.post("/api/employee/auth/logout")   # logout clocks them out
+    back_as_owner(client, account)
     a = tenant.get(f"/api/employees/{person['id']}").json()["attendance_summary"]
     assert a["days_present"] == 1
     assert a["clocked_in_today"] is False

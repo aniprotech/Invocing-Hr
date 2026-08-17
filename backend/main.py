@@ -2161,6 +2161,85 @@ async def login(request: Request, role: str = "client", portal: str = None):
         redirect_uri = redirect_uri.replace('http://', 'https://', 1)
     return await oauth.google.authorize_redirect(request, redirect_uri, access_type='offline', prompt='consent')
 
+def auto_clock_in_on_sign_in(db: Session, emp, request, lat=0.0, lng=0.0,
+                             device="", loc_label=""):
+    """Start a shift if signing in should start one.
+
+    Returns the attendance row it created, or None. Signing in only starts a
+    shift on a working day, and only once - opening the portal twice in a
+    morning is not two shifts. Shared so Google sign-in and password sign-in
+    record attendance the same way.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    existing = db.query(models.DBAttendance).filter(
+        models.DBAttendance.employee_id == emp.id,
+        models.DBAttendance.date == today,
+        models.DBAttendance.client_id == emp.client_id,
+    ).first()
+    if existing and existing.clock_in:
+        return None
+
+    settings = attendance_settings_for(db, emp.client_id)
+    if not should_auto_clock_in(settings):
+        return None
+
+    check_type = "remote"
+    if lat and lng and settings and settings.office_lat and settings.office_lng:
+        from math import radians, cos, sin, asin, sqrt
+        dlat = radians(lat - settings.office_lat)
+        dlng = radians(lng - settings.office_lng)
+        a = sin(dlat / 2) ** 2 + cos(radians(settings.office_lat)) * cos(radians(lat)) * sin(dlng / 2) ** 2
+        dist = 2 * 6371000 * asin(sqrt(a))
+        check_type = "office" if dist <= settings.geofence_radius else "field"
+
+    att = models.DBAttendance(
+        client_id=emp.client_id, employee_id=emp.id, date=today,
+        clock_in=datetime.now().strftime("%H:%M:%S"), status="present",
+        check_type=check_type,
+        ip_address=request.client.host if request and request.client else "",
+        device_info=device, location_lat=lat, location_lng=lng,
+        location_label=loc_label,
+    )
+    db.add(att)
+    return att
+
+
+def employee_by_email(db: Session, email: str):
+    """The employee whose record carries this address, if any.
+
+    HR types the address on the employee's record; that is the whole
+    enrolment. Matching is case-insensitive because nobody types their own
+    address the same way twice, and a terminated employee is not a match -
+    their access ends when their employment does.
+    """
+    if not email:
+        return None
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.email.ilike(email.strip())).first()
+    if emp and emp.status == "terminated":
+        return None
+    return emp
+
+
+def start_employee_session(request: Request, emp, replace_other_sessions=False):
+    """Everything that makes a request count as this employee.
+
+    Kept in one place so signing in with Google lands in exactly the same
+    state as signing in with a password, rather than a near-copy that drifts.
+
+    `replace_other_sessions` is for Google, where the person has just told us
+    who they are: arriving as an employee should not leave an account holder's
+    session lying underneath. Password sign-in leaves other sessions alone,
+    because that has never been how it behaved and quietly signing somebody out
+    of their own business is worse than the shared-browser case it would fix.
+    """
+    request.session['employee_id'] = emp.id
+    request.session['employee_client_id'] = emp.client_id
+    if replace_other_sessions:
+        for key in ('client_id', 'member_id', 'superadmin_id'):
+            request.session.pop(key, None)
+
+
 @app.get("/api/auth/callback")
 async def auth_callback(request: Request, db: Session = Depends(get_db)):
     try:
@@ -2199,6 +2278,22 @@ async def auth_callback(request: Request, db: Session = Depends(get_db)):
                 sa_check = db.query(models.DBSuperAdmin).filter(models.DBSuperAdmin.email == google_email).first()
                 if sa_check:
                     return RedirectResponse(url="/superadmin-login.html")
+
+                # An address HR put on an employee record goes to the employee
+                # portal, whichever sign-in page it started from. This is what
+                # enrolment means here: no password to set, no invitation to
+                # accept, no second account. It is checked before the client
+                # lookup so that signing in never silently creates a business
+                # account for a member of staff.
+                emp = employee_by_email(db, google_email)
+                if emp:
+                    start_employee_session(request, emp, replace_other_sessions=True)
+                    log_login(db, emp.client_id, google_email, "employee",
+                              "google", request, "success")
+                    auto_clock_in_on_sign_in(db, emp, request)
+                    db.commit()
+                    return RedirectResponse(url="/employee-dashboard.html")
+
                 existing_client = db.query(models.DBClient).filter(models.DBClient.email == google_email).first()
                 if existing_client:
                     client_id = existing_client.id
@@ -7087,27 +7182,30 @@ def employee_login(request: Request, body: dict = None, db: Session = Depends(ge
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if emp.status in ("terminated",):
         raise HTTPException(status_code=403, detail="Account deactivated")
-    request.session['employee_id'] = emp.id
-    request.session['employee_client_id'] = emp.client_id
+    start_employee_session(request, emp)
+
     today = datetime.now().strftime("%Y-%m-%d")
-    now_str = datetime.now().strftime("%H:%M:%S")
-    ip = request.client.host if request and request.client else ""
-    device = body.get("device_info", "")
-    lat = body.get("latitude", 0.0)
-    lng = body.get("longitude", 0.0)
-    loc_label = body.get("location_label", "")
+    who = {"id": emp.id, "name": f"{emp.first_name} {emp.last_name}", "email": emp.email}
     existing = db.query(models.DBAttendance).filter(
         models.DBAttendance.employee_id == emp.id,
         models.DBAttendance.date == today,
         models.DBAttendance.client_id == emp.client_id,
     ).first()
-    who = {"id": emp.id, "name": f"{emp.first_name} {emp.last_name}", "email": emp.email}
     if existing and existing.clock_in:
-        return {"message": "Already clocked in today", "employee": who, "clock_in": existing.clock_in}
+        return {"message": "Already clocked in today", "employee": who,
+                "clock_in": existing.clock_in}
 
     settings = attendance_settings_for(db, emp.client_id)
     working_day = is_working_day(settings)
-    if not should_auto_clock_in(settings):
+
+    # The same helper the Google callback uses, so both ways of signing in
+    # record attendance identically instead of drifting apart.
+    att = auto_clock_in_on_sign_in(
+        db, emp, request,
+        lat=body.get("latitude", 0.0), lng=body.get("longitude", 0.0),
+        device=body.get("device_info", ""),
+        loc_label=body.get("location_label", ""))
+    if not att:
         # Opening the portal on a day off - to read a payslip or upload a
         # document - is not a shift. The Clock In button is still there for
         # anyone who really is working.
@@ -7116,30 +7214,11 @@ def employee_login(request: Request, body: dict = None, db: Session = Depends(ge
             "auto_clock_in": False, "is_working_day": working_day,
         }
 
-    check_type = "remote"
-    if lat and lng:
-        if settings and settings.office_lat and settings.office_lng:
-            from math import radians, cos, sin, asin, sqrt
-            dlat = radians(lat - settings.office_lat)
-            dlng = radians(lng - settings.office_lng)
-            a = sin(dlat/2)**2 + cos(radians(settings.office_lat)) * cos(radians(lat)) * sin(dlng/2)**2
-            dist = 2 * 6371000 * asin(sqrt(a))
-            if dist <= settings.geofence_radius:
-                check_type = "office"
-            else:
-                check_type = "field"
-    att = models.DBAttendance(
-        client_id=emp.client_id, employee_id=emp.id, date=today,
-        clock_in=now_str, status="present", check_type=check_type,
-        ip_address=ip, device_info=device,
-        location_lat=lat, location_lng=lng, location_label=loc_label,
-    )
-    db.add(att)
     db.commit()
     return {
         "message": "Clocked in automatically",
         "employee": who,
-        "clock_in": now_str, "check_type": check_type,
+        "clock_in": att.clock_in, "check_type": att.check_type,
         "auto_clock_in": True, "is_working_day": working_day,
     }
 

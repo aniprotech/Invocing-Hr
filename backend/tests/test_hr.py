@@ -1,6 +1,7 @@
 """HR portal: employee lifecycle, leave rules and attendance maths."""
 import pytest
 
+import main
 from conftest import make_employee, work_every_day
 from main import working_days_between
 
@@ -123,7 +124,7 @@ def test_leave_entitlement_is_configurable(tenant):
 
 # --- employee lifecycle ----------------------------------------------------
 
-def test_employee_with_history_can_be_deleted(client, tenant):
+def test_employee_with_history_can_be_deleted(client, tenant, account):
     """Deleting anyone who had clocked in, booked leave or had a payslip used to
     fail on a foreign key violation."""
     emp = make_employee(tenant, password="EmpPass123")
@@ -140,6 +141,10 @@ def test_employee_with_history_can_be_deleted(client, tenant):
         "leave_type": "annual", "start_date": "2026-09-07", "end_date": "2026-09-08",
     })
     client.post("/api/employee/auth/logout")
+    # Signing in as staff drops the owner session on this shared client.
+    main.rate_limiter._hits.clear()
+    client.post("/api/client/login", json={"email": account["email"],
+                                          "password": account["password"]})
 
     res = tenant.delete(f"/api/employees/{emp['id']}")
     assert res.status_code == 200, res.text
