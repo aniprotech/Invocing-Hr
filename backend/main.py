@@ -2240,6 +2240,28 @@ def start_employee_session(request: Request, emp, replace_other_sessions=False):
             request.session.pop(key, None)
 
 
+def employee_signing_in(db: Session, email: str, portal: str):
+    """The employee this Google sign-in should become, or None.
+
+    Somebody who is only an employee lands in the employee portal from any
+    sign-in page - that is the whole point of HR just saving their address.
+
+    One address can be both, though: an owner who also keeps an employee record
+    for their own payslips and leave. Routing them to the employee portal every
+    time would shut them out of their own business, so when both exist the page
+    they started from decides, and only the employee page means "as an
+    employee".
+    """
+    emp = employee_by_email(db, email)
+    if not emp:
+        return None
+    owns_an_account = db.query(models.DBClient).filter(
+        models.DBClient.email == email).first()
+    if owns_an_account and portal != 'employee':
+        return None
+    return emp
+
+
 @app.get("/api/auth/callback")
 async def auth_callback(request: Request, db: Session = Depends(get_db)):
     try:
@@ -2285,7 +2307,7 @@ async def auth_callback(request: Request, db: Session = Depends(get_db)):
                 # accept, no second account. It is checked before the client
                 # lookup so that signing in never silently creates a business
                 # account for a member of staff.
-                emp = employee_by_email(db, google_email)
+                emp = employee_signing_in(db, google_email, oauth_portal)
                 if emp:
                     start_employee_session(request, emp, replace_other_sessions=True)
                     log_login(db, emp.client_id, google_email, "employee",

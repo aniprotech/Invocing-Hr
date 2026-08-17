@@ -153,3 +153,45 @@ def test_no_password_is_needed_on_the_record(client, tenant):
                       json={"email": emp["email"], "password": "anything"})
     assert res.status_code == 401, (
         "a record with no password must not accept one")
+
+
+# --- when one address is both an owner and an employee ------------------------
+
+def target(email, portal):
+    with main.SessionLocal() as db:
+        return main.employee_signing_in(db, email, portal)
+
+
+def test_a_plain_employee_lands_in_the_portal_from_any_page(tenant):
+    """The requirement: HR saves the address, and it works wherever they
+    start."""
+    emp = make_employee(tenant)
+    for portal in ("employee", "hr", "invoicing", "", None):
+        assert target(emp["email"], portal) is not None, portal
+
+
+def test_an_owner_who_is_also_an_employee_keeps_their_business(client, account):
+    """Adding yourself as an employee must not shut you out of your own
+    account. Signing in from the business pages goes to the business."""
+    main.rate_limiter._hits.clear()
+    emp = make_employee(client, email=account["email"])
+    assert emp["email"].lower() == account["email"].lower()
+
+    assert target(account["email"], "invoicing") is None
+    assert target(account["email"], "hr") is None
+
+
+def test_and_can_still_reach_their_own_employee_portal(client, account):
+    """From the employee page, the same person is an employee - so an owner who
+    keeps a record for their own payslips can still read them."""
+    main.rate_limiter._hits.clear()
+    make_employee(client, email=account["email"])
+    found = target(account["email"], "employee")
+    assert found is not None
+    assert found.email.lower() == account["email"].lower()
+
+
+def test_an_employee_address_that_owns_nothing_is_unaffected(tenant):
+    """The tie-break must only apply to the person who is genuinely both."""
+    emp = make_employee(tenant)
+    assert target(emp["email"], "invoicing") is not None
