@@ -1732,7 +1732,7 @@ Powered by Aniprotech"""
               </div>
 
               <!-- View and Pay Online -->
-              <p style="margin-top: 20px;"><a href="{request.base_url}login.html" style="color: #0ea5e9; font-size: 14px; font-weight: 600;">View and pay online &rarr;</a></p>
+              <p style="margin-top: 20px;"><a href="{request.base_url}invoice.html?id={inv.tracking_id}" style="color: #0ea5e9; font-size: 14px; font-weight: 600;">View this invoice online &rarr;</a></p>
             </div>
 
             <!-- Footer -->
@@ -12974,6 +12974,92 @@ def close_staff_request(req_id: int, request: Request, db: Session = Depends(get
     db.commit()
     db.refresh(req)
     return staff_request_to_dict(req, with_messages=False)
+
+
+
+
+# ============================================================================
+# THE INVOICE THE CUSTOMER SEES
+#
+# Until now an invoice left as a PDF attached to an email. If that mail was
+# missed the customer had nothing, and there was no page to put a pay button
+# on. This is that page: a public URL carrying one invoice.
+#
+# The URL is the invoice's tracking id, a uuid4 that already existed for open
+# tracking. Nothing here takes an invoice number or a customer name, so a
+# guessed address gets nothing, and no session is involved at all - the person
+# looking at it does not have an account and never will.
+# ============================================================================
+
+def public_invoice_payload(db: Session, inv, client):
+    """Exactly what the customer is entitled to see, and nothing else.
+
+    Built field by field rather than reusing the internal serialiser, because
+    that one grows over time and would eventually leak something - the tenant
+    id, an internal status, another customer's name on a shared field.
+    """
+    sub, tax, total = compute_invoice_totals(inv.line_items, inv.tax_type)
+    currency = (inv.currency or client.currency or "GBP").upper()
+    theme = default_theme_for(db, client.id)
+    today = datetime.now().date()
+
+    return {
+        "number": inv.number,
+        "title": (theme.approved_invoice_title if theme else "") or "TAX INVOICE",
+        "status": inv.status,
+        "issue_date": inv.issue_date,
+        "due_date": inv.due_date,
+        "reference": inv.ref or "",
+        "days_overdue": invoice_overdue_days(inv, today),
+        "currency": currency,
+        "currency_symbol": currency_symbol(currency),
+        "subtotal": money(sub),
+        "tax": money(tax),
+        "total": money(total),
+        "paid": money(inv.paid or 0),
+        "amount_due": money(inv.due or 0),
+        "is_settled": inv.status == "Paid" or (inv.due or 0) <= 0,
+        "line_items": [
+            {"description": li.description or "", "qty": li.qty,
+             "price": money(li.price), "amount": money((li.qty or 0) * (li.price or 0))}
+            for li in (inv.line_items or [])
+        ],
+        "from": {
+            "company": client.company_name or "",
+            "address": client.address or "",
+            "email": client.email or "",
+            "phone": client.phone_number or "",
+        },
+        "to": {"name": inv.to_contact or ""},
+        "bank_details": inv.bank_details or "",
+        "payment_terms": (theme.payment_terms if theme else "") or "",
+        "footer_note": (theme.footer_note if theme else "") or "",
+        "brand_color": (theme.brand_color if theme else "") or "#4f46e5",
+        "logo": (theme.logo_data if theme else "") or client.logo_url or "",
+    }
+
+
+@app.get("/api/public/invoices/{tracking_id}")
+def public_invoice(tracking_id: str, request: Request, db: Session = Depends(get_db)):
+    """One invoice, for the person it was sent to. No session, no account."""
+    inv = db.query(models.DBInvoice).filter(
+        models.DBInvoice.tracking_id == tracking_id).first()
+    # A draft has not been issued to anybody, and a void one has been withdrawn.
+    # Neither should be readable from a link that may have been forwarded.
+    if not inv or inv.status in ("Draft", "Void"):
+        raise HTTPException(status_code=404, detail="That invoice is not available")
+
+    client = db.query(models.DBClient).filter(
+        models.DBClient.id == inv.client_id).first()
+    if not client:
+        raise HTTPException(status_code=404, detail="That invoice is not available")
+
+    # Opening the page counts the same as opening the email did.
+    inv.open_count = (inv.open_count or 0) + 1
+    inv.last_opened = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    db.commit()
+
+    return public_invoice_payload(db, inv, client)
 
 
 # Serve frontend

@@ -894,6 +894,7 @@ async function viewInvoice(number) {
         if (!response.ok) throw new Error('Failed');
         var inv = await response.json();
         _viewCurrency = inv.currency || '';
+        _viewTrackingId = inv.tracking_id || '';
         _viewOutstanding = inv.due || 0;
         renderInvoicePayments(inv);
         document.getElementById('view-inv-title').textContent = 'Invoice ' + inv.number;
@@ -10187,3 +10188,28 @@ async function replyToStaffRequest(id, close) {
     } catch (e) { showToast('Could not send that', 'error'); }
 }
 window.replyToStaffRequest = replyToStaffRequest;
+
+
+// The page the customer opens. An invoice used to leave only as an attachment,
+// so if the mail was missed there was nothing to point them at.
+var _viewTrackingId = '';
+
+function invoiceCustomerLink() {
+    if (!_viewTrackingId) return '';
+    return window.location.origin + '/invoice.html?id=' + encodeURIComponent(_viewTrackingId);
+}
+window.invoiceCustomerLink = invoiceCustomerLink;
+
+async function copyInvoiceLink() {
+    var url = invoiceCustomerLink();
+    if (!url) { showToast('Open an invoice first', 'error'); return; }
+    try {
+        await navigator.clipboard.writeText(url);
+        showToast('Link copied - send it to your customer', 'success');
+    } catch (e) {
+        // Clipboard is blocked on insecure origins and in some browsers, so
+        // show the link rather than failing silently.
+        window.prompt('Copy this link for your customer:', url);
+    }
+}
+window.copyInvoiceLink = copyInvoiceLink;

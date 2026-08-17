@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Invoice</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+  <style>
+    /* The customer has no account and no stake in this product, so the page is
+       plain paper: their invoice, legible, printable, and nothing else. */
+    :root {
+      --ink: #14161d;
+      --muted: #5b6070;
+      --line: #e4e6ec;
+      --paper: #ffffff;
+      --ground: #f4f5f8;
+      --brand: #4f46e5;
+      --good: #0f6b4f;
+      --late: #a6332166;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--ground); color: var(--ink);
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      line-height: 1.55; -webkit-font-smoothing: antialiased;
+    }
+    .sheet {
+      max-width: 780px; margin: 32px auto; background: var(--paper);
+      border-radius: 14px; padding: 40px;
+      box-shadow: 0 1px 2px rgba(20,22,29,.06), 0 12px 40px -20px rgba(20,22,29,.3);
+    }
+    @media (max-width: 640px) { .sheet { margin: 0; border-radius: 0; padding: 22px; } }
+
+    .top { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+    .title { font-size: 1.7rem; font-weight: 700; letter-spacing: .4px; margin: 0; }
+    .logo { max-height: 56px; max-width: 190px; }
+    .muted { color: var(--muted); }
+    .small { font-size: .85rem; }
+
+    .banner {
+      margin: 22px 0; padding: 14px 16px; border-radius: 10px;
+      background: #f6f7fa; border-left: 3px solid var(--brand);
+      display: flex; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+      align-items: baseline;
+    }
+    .banner.settled { border-left-color: var(--good); }
+    .banner.late { border-left-color: #a63321; }
+    .due { font-size: 1.5rem; font-weight: 700; }
+
+    .cols { display: flex; gap: 28px; flex-wrap: wrap; margin: 22px 0; }
+    .cols > div { flex: 1 1 200px; }
+    .label {
+      font-size: .72rem; letter-spacing: .1em; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 4px;
+    }
+
+    .scroll { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: .93rem; }
+    th {
+      text-align: left; padding: 9px 8px; border-bottom: 2px solid var(--ink);
+      font-size: .74rem; letter-spacing: .08em; text-transform: uppercase;
+    }
+    td { padding: 10px 8px; border-bottom: 1px solid var(--line); }
+    .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+    .totals { margin-left: auto; margin-top: 16px; max-width: 300px; }
+    .totals div { display: flex; justify-content: space-between; padding: 4px 0; }
+    .totals .grand {
+      border-top: 2px solid var(--ink); margin-top: 6px; padding-top: 9px;
+      font-weight: 700; font-size: 1.05rem;
+    }
+
+    .pay { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--line); }
+    .pay pre {
+      font-family: inherit; white-space: pre-wrap; margin: 6px 0 0;
+      background: #f6f7fa; padding: 12px; border-radius: 8px;
+    }
+    .actions { margin-top: 22px; display: flex; gap: 10px; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+      padding: 11px 18px; border-radius: 10px; font: inherit; font-weight: 600;
+      border: 1px solid var(--line); background: #fff; color: var(--ink);
+      text-decoration: none;
+    }
+    .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+    .foot { text-align: center; color: var(--muted); font-size: .85rem; margin: 22px 0 40px; }
+    #state { max-width: 780px; margin: 60px auto; text-align: center; color: var(--muted); }
+
+    @media print {
+      body { background: #fff; }
+      .sheet { box-shadow: none; margin: 0; max-width: none; }
+      .actions { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="state">Loading your invoice...</div>
+  <div id="sheet" class="sheet" hidden></div>
+  <p class="foot" id="foot" hidden></p>
+
+  <script>
+    function esc(v) {
+      return String(v == null ? '' : v)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+    function money(sym, n) {
+      return sym + Number(n || 0).toFixed(2);
+    }
+
+    // The link is the whole address: /invoice.html?id=<tracking id>
+    var id = new URLSearchParams(location.search).get('id') || '';
+
+    (async function () {
+      var state = document.getElementById('state');
+      if (!id) { state.textContent = 'This link is missing its invoice.'; return; }
+
+      var inv;
+      try {
+        var res = await fetch('/api/public/invoices/' + encodeURIComponent(id));
+        if (res.status === 404) {
+          state.textContent = 'This invoice is no longer available. '
+            + 'If you think that is wrong, reply to the email it came from.';
+          return;
+        }
+        if (!res.ok) throw new Error('http ' + res.status);
+        inv = await res.json();
+      } catch (e) {
+        state.textContent = 'Could not load this invoice. Please try again shortly.';
+        return;
+      }
+
+      var sym = inv.currency_symbol || '';
+      var late = !inv.is_settled && inv.days_overdue > 0;
+      var rows = (inv.line_items || []).map(function (li) {
+        return '<tr><td>' + esc(li.description) + '</td>' +
+          '<td class="num">' + esc(li.qty) + '</td>' +
+          '<td class="num">' + money(sym, li.price) + '</td>' +
+          '<td class="num">' + money(sym, li.amount) + '</td></tr>';
+      }).join('');
+
+      document.title = inv.number + ' - ' + (inv.from.company || 'Invoice');
+
+      document.getElementById('sheet').innerHTML =
+        '<div class="top">' +
+          '<div>' +
+            '<h1 class="title" style="color:' + esc(inv.brand_color) + ';">' + esc(inv.title) + '</h1>' +
+            '<p class="muted small" style="margin:4px 0 0;">' + esc(inv.number) +
+            (inv.reference ? ' &middot; ' + esc(inv.reference) : '') + '</p>' +
+          '</div>' +
+          '<div style="text-align:right;">' +
+            (inv.logo ? '<img class="logo" src="' + esc(inv.logo) + '" alt="">' : '') +
+            '<p class="small" style="margin:6px 0 0;"><strong>' + esc(inv.from.company) + '</strong><br>' +
+            esc(inv.from.address).replace(/\n/g, '<br>') +
+            (inv.from.email ? '<br>' + esc(inv.from.email) : '') +
+            (inv.from.phone ? '<br>' + esc(inv.from.phone) : '') + '</p>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="banner' + (inv.is_settled ? ' settled' : (late ? ' late' : '')) + '">' +
+          '<div>' +
+            '<div class="label">' + (inv.is_settled ? 'Paid in full' : 'Amount due') + '</div>' +
+            '<div class="due">' + money(sym, inv.is_settled ? inv.total : inv.amount_due) + '</div>' +
+          '</div>' +
+          '<div style="text-align:right;">' +
+            '<div class="label">' + (inv.is_settled ? 'Status' : 'Due') + '</div>' +
+            '<div>' + (inv.is_settled ? 'Thank you' : esc(inv.due_date)) + '</div>' +
+            (late ? '<div class="small" style="color:#a63321;">' +
+              inv.days_overdue + ' days overdue</div>' : '') +
+          '</div>' +
+        '</div>' +
+
+        '<div class="cols">' +
+          '<div><div class="label">Billed to</div>' + esc(inv.to.name) + '</div>' +
+          '<div><div class="label">Issued</div>' + esc(inv.issue_date) + '</div>' +
+          '<div><div class="label">Due</div>' + esc(inv.due_date) + '</div>' +
+        '</div>' +
+
+        '<div class="scroll"><table><thead><tr>' +
+          '<th>Description</th><th class="num">Qty</th>' +
+          '<th class="num">Price</th><th class="num">Amount</th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+
+        '<div class="totals">' +
+          '<div><span>Subtotal</span><span>' + money(sym, inv.subtotal) + '</span></div>' +
+          '<div><span>Tax</span><span>' + money(sym, inv.tax) + '</span></div>' +
+          (inv.paid ? '<div><span>Paid</span><span>-' + money(sym, inv.paid) + '</span></div>' : '') +
+          '<div class="grand"><span>' + (inv.is_settled ? 'Total' : 'Amount due') + '</span>' +
+          '<span>' + money(sym, inv.is_settled ? inv.total : inv.amount_due) + '</span></div>' +
+        '</div>' +
+
+        (!inv.is_settled && (inv.bank_details || inv.payment_terms)
+          ? '<div class="pay">' +
+            '<div class="label">How to pay</div>' +
+            (inv.payment_terms ? '<p style="margin:6px 0 0;">' + esc(inv.payment_terms) + '</p>' : '') +
+            (inv.bank_details ? '<pre>' + esc(inv.bank_details) + '</pre>' : '') +
+            '</div>'
+          : '') +
+
+        '<div class="actions">' +
+          '<button class="btn primary" onclick="window.print()">Print or save as PDF</button>' +
+        '</div>';
+
+      document.getElementById('state').hidden = true;
+      document.getElementById('sheet').hidden = false;
+
+      var foot = document.getElementById('foot');
+      if (inv.footer_note) {
+        foot.textContent = inv.footer_note;
+        foot.hidden = false;
+      }
+    })();
+  </script>
+</body>
+</html>
