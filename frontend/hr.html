@@ -10,8 +10,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>A</text></svg>">
-    <link rel="stylesheet" href="styles.css?v=59">
-    <link rel="stylesheet" href="mobile.css?v=59">
+    <link rel="stylesheet" href="styles.css?v=60">
+    <link rel="stylesheet" href="mobile.css?v=60">
 </head>
 <body>
     <a class="skip-link" href="#main-content-region">Skip to main content</a>
@@ -59,6 +59,7 @@
                             <a href="#" class="nav-item" id="nav-org" onclick="event.preventDefault();showView('orgchart-view')" data-portal="hr">Org Chart</a>
                             <a href="#" class="nav-item" id="nav-leave" onclick="event.preventDefault();showView('leave-view')" data-portal="hr">Leave</a>
                             <a href="#" class="nav-item" id="nav-goals" onclick="event.preventDefault();showView('goals-view')" data-portal="hr">Goals</a>
+                            <a href="#" class="nav-item" id="nav-staff-requests" onclick="event.preventDefault();showView('staff-requests-view')" data-portal="hr">Requests</a>
                         </div>
                     </div>
                     <div class="nav-group" data-nav-group="Hiring">
@@ -1320,6 +1321,27 @@
                             <button class="btn btn-primary" onclick="sendAnnouncement()">Send</button>
                         </div>
                     </div>
+                </div>
+
+                <!-- Requests staff have raised. Before this, anything that was
+                     not leave happened over email. -->
+                <div id="staff-requests-view" class="view-section dashboard" style="display:none;">
+                    <div class="invoices-header-area">
+                        <div>
+                            <h1>Staff requests</h1>
+                            <p class="subtitle">Questions and requests from your team</p>
+                        </div>
+                        <div class="invoices-actions">
+                            <select id="req-filter" onchange="loadStaffRequestQueue()"
+                                    style="background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border-color);border-radius:8px;padding:8px 12px;">
+                                <option value="">All</option>
+                                <option value="open" selected>Open</option>
+                                <option value="answered">Answered</option>
+                                <option value="closed">Closed</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="staff-requests-list"></div>
                 </div>
                 <div id="employees-view" class="view-section active dashboard">
                     <div class="invoices-header-area">
@@ -2713,7 +2735,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="app.js?v=59"></script>
+    <script src="app.js?v=60"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">

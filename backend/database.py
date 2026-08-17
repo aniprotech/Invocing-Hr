@@ -1178,5 +1178,43 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 42: {sys.exc_info()[1]}")
 
+            # Two-way conversation between an employee and HR, and the way to
+            # raise anything that is not leave.
+            try:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS staff_requests (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        employee_id INTEGER REFERENCES employees(id) NOT NULL,
+                        subject VARCHAR NOT NULL,
+                        category VARCHAR DEFAULT 'question',
+                        status VARCHAR DEFAULT 'open',
+                        about_document_id INTEGER REFERENCES document_requests(id),
+                        created_at VARCHAR DEFAULT (NOW()::TEXT),
+                        updated_at VARCHAR DEFAULT (NOW()::TEXT),
+                        closed_at VARCHAR DEFAULT ''
+                    )
+                """))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS staff_messages (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        request_id INTEGER REFERENCES staff_requests(id) NOT NULL,
+                        author VARCHAR DEFAULT 'employee',
+                        author_name VARCHAR DEFAULT '',
+                        body TEXT NOT NULL,
+                        created_at VARCHAR DEFAULT (NOW()::TEXT)
+                    )
+                """))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_staff_requests_emp "
+                    "ON staff_requests (employee_id)"))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_staff_messages_req "
+                    "ON staff_messages (request_id)"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 43: {sys.exc_info()[1]}")
+
     except Exception as e:
         print(f"Column check skipped: {e}")

@@ -45,7 +45,7 @@
     .notification-badge { animation: notifPulse 2s infinite; }
     @keyframes notifPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.1); } }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=59">
+    <link rel="stylesheet" href="mobile.css?v=60">
 </head>
 <body class="bg-gray-50 min-h-screen">
 
@@ -126,6 +126,11 @@
         <button onclick="switchTab('team')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="team">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
           Team
+        </button>
+        <button onclick="switchTab('requests')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="requests">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+          Ask HR
+          <span id="requestsBadge" class="hidden ml-1 px-1.5 py-0.5 rounded-full bg-brand-500 text-white text-[10px]">0</span>
         </button>
         <button onclick="switchTab('profile')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="profile">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
@@ -425,6 +430,35 @@
     <!-- Tab: Team -->
     <div id="tab-team" class="tab-panel hidden fade-in">
       <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4" id="teamGrid"></div>
+    </div>
+
+    <!-- Ask HR: the portal used to talk one way only, and leave was the only
+         thing anybody could raise. -->
+    <div id="tab-requests" class="tab-panel hidden fade-in">
+      <div class="bg-white rounded-2xl border border-gray-100 p-5 mb-4">
+        <h3 class="font-semibold text-gray-900 mb-1">Ask HR something</h3>
+        <p class="text-sm text-gray-500 mb-4">Anything at all - a payslip that looks wrong, a document you are unsure about, equipment, a change of address.</p>
+        <div class="grid sm:grid-cols-2 gap-3 mb-3">
+          <select id="reqCategory" class="px-3 py-2.5 rounded-xl border border-gray-200 text-sm">
+            <option value="question">General question</option>
+            <option value="document">About a document</option>
+            <option value="payroll">Pay or payslip</option>
+            <option value="equipment">Equipment</option>
+            <option value="personal_details">My details</option>
+            <option value="other">Something else</option>
+          </select>
+          <input id="reqSubject" type="text" maxlength="200" placeholder="Subject"
+                 class="px-3 py-2.5 rounded-xl border border-gray-200 text-sm">
+        </div>
+        <textarea id="reqMessage" rows="3" maxlength="4000" placeholder="What do you need?"
+                  class="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm mb-3"></textarea>
+        <div class="flex items-center gap-3">
+          <button onclick="submitStaffRequest()" class="px-4 py-2.5 rounded-xl bg-brand-600 text-white text-sm font-semibold hover:bg-brand-700 transition-colors">Send to HR</button>
+          <span id="reqError" class="text-sm text-red-600"></span>
+        </div>
+      </div>
+
+      <div id="requestsList" class="space-y-3"></div>
     </div>
 
     <!-- Tab: Profile -->
@@ -746,6 +780,123 @@
       if (tab === 'documents') { loadDocuments(); loadDocumentRequests(); }
       if (tab === 'team') loadTeamPresence();
       if (tab === 'profile') loadProfileTab();
+      if (tab === 'requests') loadStaffRequests();
+    }
+
+    // --- Ask HR ------------------------------------------------------------
+    // The portal only ever talked at people: they could read that a document
+    // was returned but not ask why, and leave was the only thing they could
+    // raise at all.
+
+    function escText(t) {
+      return String(t == null ? '' : t)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    async function submitStaffRequest() {
+      var err = document.getElementById('reqError');
+      err.textContent = '';
+      var body = {
+        category: document.getElementById('reqCategory').value,
+        subject: document.getElementById('reqSubject').value.trim(),
+        message: document.getElementById('reqMessage').value.trim()
+      };
+      try {
+        var res = await fetch('/api/employee/requests', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin', body: JSON.stringify(body)
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) { err.textContent = data.detail || 'Could not send that.'; return; }
+        document.getElementById('reqSubject').value = '';
+        document.getElementById('reqMessage').value = '';
+        loadStaffRequests();
+      } catch (e) { err.textContent = 'Could not send that.'; }
+    }
+
+    async function loadStaffRequests() {
+      var host = document.getElementById('requestsList');
+      if (!host) return;
+      try {
+        var res = await fetch('/api/employee/requests', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        var rows = (await res.json()).requests || [];
+        var waiting = rows.filter(function (r) { return r.status === 'answered'; }).length;
+        var badge = document.getElementById('requestsBadge');
+        if (badge) {
+          badge.textContent = waiting;
+          badge.classList.toggle('hidden', waiting === 0);
+        }
+        if (!rows.length) {
+          host.innerHTML = '<p class="text-sm text-gray-500 text-center py-6">' +
+            'Nothing raised yet.</p>';
+          return;
+        }
+        host.innerHTML = rows.map(function (r) {
+          var tone = r.status === 'open' ? 'bg-amber-100 text-amber-700'
+            : r.status === 'answered' ? 'bg-emerald-100 text-emerald-700'
+              : 'bg-gray-100 text-gray-500';
+          return '<button type="button" onclick="openStaffRequest(' + r.id + ')" ' +
+            'class="w-full text-left bg-white rounded-2xl border border-gray-100 p-4 hover:border-brand-300 transition-colors">' +
+            '<div class="flex items-center justify-between gap-3">' +
+            '<span class="font-medium text-gray-900">' + escText(r.subject) + '</span>' +
+            '<span class="text-[11px] px-2 py-0.5 rounded-full ' + tone + '">' + escText(r.status) + '</span>' +
+            '</div>' +
+            (r.last_message ? '<p class="text-sm text-gray-500 mt-1 truncate">' +
+              (r.last_message.author === 'hr' ? 'HR: ' : 'You: ') +
+              escText(r.last_message.body) + '</p>' : '') +
+            '<p class="text-xs text-gray-400 mt-1">' + escText(r.updated_at) + '</p>' +
+            '</button>';
+        }).join('');
+      } catch (e) { /* the tab still renders the form */ }
+    }
+
+    async function openStaffRequest(id) {
+      var host = document.getElementById('requestsList');
+      try {
+        var res = await fetch('/api/employee/requests/' + id, { credentials: 'same-origin' });
+        if (!res.ok) return;
+        var r = await res.json();
+        var thread = (r.messages || []).map(function (m) {
+          var mine = m.author === 'employee';
+          return '<div class="' + (mine ? 'text-right' : '') + '">' +
+            '<div class="inline-block max-w-[85%] px-3 py-2 rounded-2xl text-sm ' +
+            (mine ? 'bg-brand-600 text-white' : 'bg-gray-100 text-gray-800') + '">' +
+            escText(m.body) + '</div>' +
+            '<p class="text-[11px] text-gray-400 mt-0.5">' +
+            escText(m.author_name || (mine ? 'You' : 'HR')) + ' - ' + escText(m.created_at) +
+            '</p></div>';
+        }).join('');
+
+        host.innerHTML =
+          '<div class="bg-white rounded-2xl border border-gray-100 p-4">' +
+          '<div class="flex items-center justify-between mb-3">' +
+          '<h4 class="font-semibold text-gray-900">' + escText(r.subject) + '</h4>' +
+          '<button onclick="loadStaffRequests()" class="text-sm text-gray-500 hover:text-gray-700">Back</button>' +
+          '</div>' +
+          '<div class="space-y-3 mb-4">' + thread + '</div>' +
+          (r.status === 'closed'
+            ? '<p class="text-sm text-gray-500">This request is closed. Raise a new one if you still need help.</p>'
+            : '<div class="flex gap-2">' +
+            '<input id="replyBox" type="text" maxlength="4000" placeholder="Reply..." ' +
+            'class="flex-1 px-3 py-2.5 rounded-xl border border-gray-200 text-sm">' +
+            '<button onclick="replyToHr(' + r.id + ')" class="px-4 py-2.5 rounded-xl bg-brand-600 text-white text-sm font-semibold">Send</button>' +
+            '</div>') +
+          '</div>';
+      } catch (e) { /* leave the list as it was */ }
+    }
+
+    async function replyToHr(id) {
+      var box = document.getElementById('replyBox');
+      if (!box || !box.value.trim()) return;
+      try {
+        var res = await fetch('/api/employee/requests/' + id + '/reply', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ message: box.value.trim() })
+        });
+        if (res.ok) openStaffRequest(id);
+      } catch (e) { /* nothing sent, nothing changed */ }
     }
 
     function updateClock() {

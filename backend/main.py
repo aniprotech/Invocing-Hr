@@ -12735,6 +12735,247 @@ def chase_outstanding_documents(employee_id: int, request: Request,
             "documents": [r.name for r in outstanding]}
 
 
+
+
+# ============================================================================
+# STAFF REQUESTS
+#
+# The portal only ever talked at an employee: they could read that a document
+# had been returned, but not ask why. And leave was the only thing they could
+# raise, so a payslip query or a broken laptop happened somewhere this system
+# never saw.
+#
+# One thread covers both. A reply is a message on an existing thread; anything
+# new is a thread of its own.
+# ============================================================================
+
+REQUEST_CATEGORIES = ("question", "document", "payroll", "equipment",
+                      "personal_details", "other")
+REQUEST_STATUSES = ("open", "answered", "closed")
+MAX_MESSAGE = 4000
+
+
+def current_employee(request: Request, db: Session):
+    emp_id = request.session.get('employee_id')
+    if not emp_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    emp = db.query(models.DBEmployee).filter(models.DBEmployee.id == emp_id).first()
+    if not emp:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return emp
+
+
+def staff_message_to_dict(m):
+    return {"id": m.id, "author": m.author, "author_name": m.author_name or "",
+            "body": m.body, "created_at": m.created_at}
+
+
+def staff_request_to_dict(req, employee=None, with_messages=False):
+    out = {
+        "id": req.id, "subject": req.subject, "category": req.category,
+        "status": req.status, "created_at": req.created_at,
+        "updated_at": req.updated_at, "closed_at": req.closed_at or "",
+        "about_document_id": req.about_document_id,
+        "message_count": len(req.messages or []),
+    }
+    if employee is not None:
+        out["employee"] = {
+            "id": employee.id,
+            "name": f"{employee.first_name or ''} {employee.last_name or ''}".strip(),
+            "email": employee.email or "",
+        }
+    if with_messages:
+        out["messages"] = [staff_message_to_dict(m) for m in
+                           sorted(req.messages or [], key=lambda x: x.id)]
+    else:
+        # The queue shows enough to triage without loading every thread.
+        last = max(req.messages or [], key=lambda x: x.id, default=None)
+        out["last_message"] = staff_message_to_dict(last) if last else None
+    return out
+
+
+def add_staff_message(db: Session, req, author: str, name: str, body: str):
+    body = (body or "").strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="Write a message first")
+    msg = models.DBStaffMessage(
+        client_id=req.client_id, request_id=req.id, author=author,
+        author_name=name[:120], body=body[:MAX_MESSAGE])
+    db.add(msg)
+    req.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return msg
+
+
+# --- the employee's side -----------------------------------------------------
+
+@app.post("/api/employee/requests")
+def raise_staff_request(request: Request, body: dict = None,
+                        db: Session = Depends(get_db)):
+    """Ask HR something, about anything."""
+    emp = current_employee(request, db)
+    body = body or {}
+
+    subject = (body.get("subject") or "").strip()
+    message = (body.get("message") or "").strip()
+    if not subject:
+        raise HTTPException(status_code=400, detail="Give your request a subject")
+    if not message:
+        raise HTTPException(status_code=400, detail="Say what you need")
+
+    category = (body.get("category") or "question").strip().lower()
+    if category not in REQUEST_CATEGORIES:
+        category = "other"
+
+    about = body.get("about_document_id")
+    if about:
+        # Only a document of their own, so a guessed id cannot attach a thread
+        # to somebody else's paperwork.
+        owns = db.query(models.DBDocumentRequest).filter(
+            models.DBDocumentRequest.id == about,
+            models.DBDocumentRequest.employee_id == emp.id).first()
+        if not owns:
+            about = None
+
+    req = models.DBStaffRequest(
+        client_id=emp.client_id, employee_id=emp.id, subject=subject[:200],
+        category=category, status="open", about_document_id=about)
+    db.add(req)
+    db.flush()
+    add_staff_message(db, req, "employee",
+                      f"{emp.first_name or ''} {emp.last_name or ''}".strip(), message)
+    db.commit()
+    db.refresh(req)
+    return staff_request_to_dict(req, employee=emp, with_messages=True)
+
+
+@app.get("/api/employee/requests")
+def list_my_requests(request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    rows = db.query(models.DBStaffRequest).filter(
+        models.DBStaffRequest.employee_id == emp.id
+    ).order_by(models.DBStaffRequest.updated_at.desc()).limit(100).all()
+    return {"requests": [staff_request_to_dict(r) for r in rows],
+            "categories": list(REQUEST_CATEGORIES)}
+
+
+@app.get("/api/employee/requests/{req_id}")
+def read_my_request(req_id: int, request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    req = db.query(models.DBStaffRequest).filter(
+        models.DBStaffRequest.id == req_id,
+        models.DBStaffRequest.employee_id == emp.id).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+    return staff_request_to_dict(req, employee=emp, with_messages=True)
+
+
+@app.post("/api/employee/requests/{req_id}/reply")
+def reply_as_employee(req_id: int, request: Request, body: dict = None,
+                      db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    req = db.query(models.DBStaffRequest).filter(
+        models.DBStaffRequest.id == req_id,
+        models.DBStaffRequest.employee_id == emp.id).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if req.status == "closed":
+        raise HTTPException(status_code=409,
+                            detail="This request is closed. Raise a new one.")
+
+    add_staff_message(db, req, "employee",
+                      f"{emp.first_name or ''} {emp.last_name or ''}".strip(),
+                      (body or {}).get("message", ""))
+    # Their reply reopens it, or an answered thread would sit closed-looking
+    # while somebody is still waiting.
+    req.status = "open"
+    db.commit()
+    db.refresh(req)
+    return staff_request_to_dict(req, employee=emp, with_messages=True)
+
+
+# --- HR's side ---------------------------------------------------------------
+
+@app.get("/api/hr/requests")
+def list_staff_requests(request: Request, status: str = "", db: Session = Depends(get_db)):
+    """The queue. Open first, because that is what needs doing."""
+    client = get_client_user(request, db)
+    q = db.query(models.DBStaffRequest).filter(
+        models.DBStaffRequest.client_id == client.id)
+    if status and status in REQUEST_STATUSES:
+        q = q.filter(models.DBStaffRequest.status == status)
+    rows = q.order_by(models.DBStaffRequest.updated_at.desc()).limit(200).all()
+
+    people = {e.id: e for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client.id).all()}
+    out = [staff_request_to_dict(r, employee=people.get(r.employee_id)) for r in rows]
+    return {
+        "requests": out,
+        "open_count": sum(1 for r in rows if r.status == "open"),
+        "categories": list(REQUEST_CATEGORIES),
+    }
+
+
+@app.get("/api/hr/requests/{req_id}")
+def read_staff_request(req_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    req = db.query(models.DBStaffRequest).filter(
+        models.DBStaffRequest.id == req_id,
+        models.DBStaffRequest.client_id == client.id).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == req.employee_id).first()
+    return staff_request_to_dict(req, employee=emp, with_messages=True)
+
+
+@app.post("/api/hr/requests/{req_id}/reply")
+def reply_as_hr(req_id: int, request: Request, body: dict = None,
+                db: Session = Depends(get_db)):
+    """Answering marks the thread answered and tells the employee, so a reply
+    is not something they have to go and look for."""
+    client = get_client_user(request, db)
+    req = db.query(models.DBStaffRequest).filter(
+        models.DBStaffRequest.id == req_id,
+        models.DBStaffRequest.client_id == client.id).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    sender = client.company_name or client.contact_name or "HR"
+    add_staff_message(db, req, "hr", sender, (body or {}).get("message", ""))
+    if (body or {}).get("close"):
+        req.status = "closed"
+        req.closed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        req.status = "answered"
+
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == req.employee_id).first()
+    if emp:
+        notify_employee(db, emp, f"Reply: {req.subject}",
+                        (body or {}).get("message", "")[:300],
+                        kind="info", link="/employee-dashboard.html",
+                        sent_by=sender)
+    db.commit()
+    db.refresh(req)
+    return staff_request_to_dict(req, employee=emp, with_messages=True)
+
+
+@app.post("/api/hr/requests/{req_id}/close")
+def close_staff_request(req_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    req = db.query(models.DBStaffRequest).filter(
+        models.DBStaffRequest.id == req_id,
+        models.DBStaffRequest.client_id == client.id).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+    req.status = "closed"
+    req.closed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    req.updated_at = req.closed_at
+    db.commit()
+    db.refresh(req)
+    return staff_request_to_dict(req, with_messages=False)
+
+
 # Serve frontend
 frontend_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 if os.path.exists(frontend_path):

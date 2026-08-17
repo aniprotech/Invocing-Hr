@@ -1163,3 +1163,55 @@ class DBBrandingTheme(Base):
 
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     updated_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBStaffRequest(Base):
+    """A conversation between one employee and HR.
+
+    Two gaps, one shape. Everything the portal sent an employee was one-way -
+    they could read that a document was returned but not ask why. And leave was
+    the only thing they could raise at all, so anything else (a payslip query,
+    a broken laptop, a change of address) happened somewhere this system never
+    saw.
+
+    A thread carries its own status so HR can work a queue rather than
+    remembering what they have answered.
+    """
+    __tablename__ = "staff_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+
+    subject = Column(String, nullable=False)
+    # question | document | payroll | equipment | personal_details | other
+    category = Column(String, default="question", index=True)
+    # open | answered | closed
+    status = Column(String, default="open", index=True)
+
+    # Set when the thread was started from something the portal showed them, so
+    # HR can see what they were looking at.
+    about_document_id = Column(Integer, ForeignKey("document_requests.id"), nullable=True)
+
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    updated_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    closed_at = Column(String, default="")
+
+    messages = relationship("DBStaffMessage", back_populates="request",
+                            cascade="all, delete-orphan")
+
+
+class DBStaffMessage(Base):
+    """One message in a thread, from either side."""
+    __tablename__ = "staff_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    request_id = Column(Integer, ForeignKey("staff_requests.id"), nullable=False, index=True)
+
+    author = Column(String, default="employee")   # employee | hr
+    author_name = Column(String, default="")
+    body = Column(Text, nullable=False)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    request = relationship("DBStaffRequest", back_populates="messages")

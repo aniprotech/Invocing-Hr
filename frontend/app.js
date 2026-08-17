@@ -367,6 +367,7 @@ function showView(viewId) {
     if (viewId === 'settings-view' && typeof loadSettings === 'function') loadSettings();
     if (viewId === 'settings-view' && typeof loadTaxRates === 'function') loadTaxRates();
     if (viewId === 'settings-view' && typeof loadTeam === 'function') loadTeam();
+    if (viewId === 'staff-requests-view' && typeof loadStaffRequestQueue === 'function') loadStaffRequestQueue();
     if (viewId === 'settings-view' && typeof buildSettingsSections === 'function') buildSettingsSections();
     if (viewId === 'settings-view' && typeof loadBrandingThemes === 'function') loadBrandingThemes();
     if (viewId === 'settings-view' && typeof loadAuditLogs === 'function') loadAuditLogs();
@@ -10088,3 +10089,101 @@ async function chaseDocuments(employeeId) {
     }
 }
 window.chaseDocuments = chaseDocuments;
+
+
+// --- Staff requests, HR side -------------------------------------------------
+// Employees can now raise anything, not just leave, and answer back. This is
+// the queue that lands in.
+
+async function loadStaffRequestQueue() {
+    var host = document.getElementById('staff-requests-list');
+    if (!host) return;
+    var filterEl = document.getElementById('req-filter');
+    var status = filterEl ? filterEl.value : '';
+    try {
+        var res = await fetch('/api/hr/requests' + (status ? '?status=' + status : ''),
+            { credentials: 'same-origin' });
+        if (!res.ok) { host.innerHTML = '<p class="bt-note">Could not load requests.</p>'; return; }
+        var rows = (await res.json()).requests || [];
+        if (!rows.length) {
+            host.innerHTML = '<div class="glass-widget"><div class="widget-content">' +
+                '<p class="bt-note">Nothing here.</p></div></div>';
+            return;
+        }
+        host.innerHTML = rows.map(function (r) {
+            return '<div class="glass-widget" style="margin-bottom:12px;">' +
+                '<div class="widget-content">' +
+                '<div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;flex-wrap:wrap;">' +
+                '<strong>' + esc(r.subject) + '</strong>' +
+                '<span class="status-pill status-' + esc(r.status) + '">' + esc(r.status) + '</span>' +
+                '</div>' +
+                '<p class="bt-note" style="margin:4px 0;">' +
+                esc((r.employee && r.employee.name) || 'Unknown') + ' &middot; ' +
+                esc(r.category) + ' &middot; ' + esc(r.updated_at) + '</p>' +
+                (r.last_message ? '<p style="margin:6px 0;">' +
+                    (r.last_message.author === 'hr' ? 'You: ' : 'They said: ') +
+                    esc(r.last_message.body) + '</p>' : '') +
+                '<button class="btn btn-outline" onclick="openStaffRequestThread(' + r.id + ')">Open</button>' +
+                '</div></div>';
+        }).join('');
+    } catch (e) {
+        host.innerHTML = '<p class="bt-note">Could not load requests.</p>';
+    }
+}
+window.loadStaffRequestQueue = loadStaffRequestQueue;
+
+async function openStaffRequestThread(id) {
+    var host = document.getElementById('staff-requests-list');
+    if (!host) return;
+    try {
+        var res = await fetch('/api/hr/requests/' + id, { credentials: 'same-origin' });
+        if (!res.ok) return;
+        var r = await res.json();
+        var thread = (r.messages || []).map(function (m) {
+            var fromHr = m.author === 'hr';
+            return '<div style="margin-bottom:10px;' + (fromHr ? 'text-align:right;' : '') + '">' +
+                '<div style="display:inline-block;max-width:80%;padding:8px 12px;border-radius:12px;' +
+                (fromHr ? 'background:var(--primary-color);color:#0b0f19;' :
+                    'background:rgba(255,255,255,0.06);') + '">' + esc(m.body) + '</div>' +
+                '<div class="bt-note" style="margin:2px 0 0;">' +
+                esc(m.author_name || (fromHr ? 'You' : 'Them')) + ' &middot; ' + esc(m.created_at) +
+                '</div></div>';
+        }).join('');
+
+        host.innerHTML = '<div class="glass-widget"><div class="widget-content">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">' +
+            '<h3 style="margin:0;">' + esc(r.subject) + '</h3>' +
+            '<button class="btn btn-outline" onclick="loadStaffRequestQueue()">Back</button>' +
+            '</div>' +
+            '<p class="bt-note">' + esc((r.employee && r.employee.name) || '') + '</p>' +
+            '<div style="margin:14px 0;">' + thread + '</div>' +
+            (r.status === 'closed'
+                ? '<p class="bt-note">This request is closed.</p>'
+                : '<textarea id="hr-reply-box" rows="3" placeholder="Reply to them..." ' +
+                'style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border-color);' +
+                'background:var(--bg-card);color:var(--text-primary);font-family:inherit;"></textarea>' +
+                '<div style="display:flex;gap:8px;margin-top:10px;">' +
+                '<button class="btn btn-primary" onclick="replyToStaffRequest(' + r.id + ', false)">Send reply</button>' +
+                '<button class="btn btn-outline" onclick="replyToStaffRequest(' + r.id + ', true)">Reply and close</button>' +
+                '</div>') +
+            '</div></div>';
+    } catch (e) { /* the queue is still behind it */ }
+}
+window.openStaffRequestThread = openStaffRequestThread;
+
+async function replyToStaffRequest(id, close) {
+    var box = document.getElementById('hr-reply-box');
+    if (!box || !box.value.trim()) { showToast('Write a reply first', 'error'); return; }
+    try {
+        var res = await fetch('/api/hr/requests/' + id + '/reply', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ message: box.value.trim(), close: !!close })
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) { showToast(data.detail || 'Could not send that', 'error'); return; }
+        showToast(close ? 'Replied and closed' : 'Reply sent', 'success');
+        openStaffRequestThread(id);
+    } catch (e) { showToast('Could not send that', 'error'); }
+}
+window.replyToStaffRequest = replyToStaffRequest;
