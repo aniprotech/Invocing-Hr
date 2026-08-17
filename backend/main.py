@@ -13035,6 +13035,12 @@ def public_invoice_payload(db: Session, inv, client):
         "payment_terms": (theme.payment_terms if theme else "") or "",
         "footer_note": (theme.footer_note if theme else "") or "",
         "brand_color": (theme.brand_color if theme else "") or "#4f46e5",
+        # Whether a Pay button can be shown, and the public half of the
+        # key it needs. The secret never leaves the server.
+        "payment": ({
+            "provider": gw.provider, "key_id": gw.public_key,
+        } if (gw := active_client_gateway(db, client.id)) and
+             not (inv.status == "Paid" or (inv.due or 0) <= 0) else None),
         "logo": (theme.logo_data if theme else "") or client.logo_url or "",
     }
 
@@ -13060,6 +13066,284 @@ def public_invoice(tracking_id: str, request: Request, db: Session = Depends(get
     db.commit()
 
     return public_invoice_payload(db, inv, client)
+
+
+
+
+# ============================================================================
+# A BUSINESS'S OWN PAYMENT KEYS
+#
+# Two separate things, kept apart on purpose:
+#   - the platform's keys, in the environment, which take wallet top-ups.
+#     That is money paid to us.
+#   - these, which belong to the tenant and take invoice payments. That is
+#     money paid to them, into their account.
+#
+# Mixing them would route a customer's payment to the wrong business.
+# ============================================================================
+
+CLIENT_PROVIDERS = ("razorpay", "stripe", "paypal")
+
+PROVIDER_LABELS = {
+    "razorpay": "Razorpay (UPI, cards, netbanking)",
+    "stripe": "Stripe (cards)",
+    "paypal": "PayPal",
+}
+
+
+def mask_secret(value: str) -> str:
+    """Enough to recognise which key is saved, never enough to use it."""
+    v = value or ""
+    if not v:
+        return ""
+    return ("*" * max(0, len(v) - 4)) + v[-4:] if len(v) > 4 else "****"
+
+
+def client_gateway_to_dict(g):
+    return {
+        "provider": g.provider,
+        "label": PROVIDER_LABELS.get(g.provider, g.provider.title()),
+        "public_key": g.public_key or "",
+        # Never the real thing. This endpoint is read by a browser.
+        "secret_key": mask_secret(g.secret_key),
+        "has_secret": bool(g.secret_key),
+        "webhook_secret": mask_secret(g.webhook_secret),
+        "is_active": bool(g.is_active),
+        "is_live": bool(g.is_live),
+        "updated_at": g.updated_at or "",
+    }
+
+
+def active_client_gateway(db: Session, client_id: int):
+    """The one a customer will be offered. Razorpay first because it is the
+    only one wired end to end."""
+    rows = db.query(models.DBClientGateway).filter(
+        models.DBClientGateway.client_id == client_id,
+        models.DBClientGateway.is_active == True,      # noqa: E712
+    ).all()
+    by_provider = {r.provider: r for r in rows if r.public_key and r.secret_key}
+    for provider in CLIENT_PROVIDERS:
+        if provider in by_provider:
+            return by_provider[provider]
+    return None
+
+
+@app.get("/api/payment-gateways")
+def list_client_gateways(request: Request, db: Session = Depends(get_db)):
+    """What this business has set up to collect with."""
+    client = get_client_user(request, db)
+    rows = db.query(models.DBClientGateway).filter(
+        models.DBClientGateway.client_id == client.id).all()
+    saved = {r.provider: client_gateway_to_dict(r) for r in rows}
+    return {
+        "gateways": [
+            saved.get(p, {
+                "provider": p, "label": PROVIDER_LABELS[p], "public_key": "",
+                "secret_key": "", "has_secret": False, "webhook_secret": "",
+                "is_active": False, "is_live": False, "updated_at": "",
+            })
+            for p in CLIENT_PROVIDERS
+        ],
+        # Said plainly so nobody wires their own keys expecting wallet credit.
+        "note": "These collect money from your customers into your own account. "
+                "Topping up your aniprotech wallet is separate and always goes "
+                "through us.",
+    }
+
+
+@app.put("/api/payment-gateways/{provider}")
+def save_client_gateway(provider: str, request: Request, body: dict = None,
+                        db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    provider = (provider or "").strip().lower()
+    if provider not in CLIENT_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Unknown payment provider")
+
+    body = body or {}
+    row = db.query(models.DBClientGateway).filter(
+        models.DBClientGateway.client_id == client.id,
+        models.DBClientGateway.provider == provider).first()
+    if not row:
+        row = models.DBClientGateway(client_id=client.id, provider=provider)
+        db.add(row)
+
+    if "public_key" in body:
+        row.public_key = (body.get("public_key") or "").strip()[:200]
+    # An empty secret means "leave the saved one alone", because the browser
+    # only ever received a masked version and would otherwise send it back and
+    # overwrite the real key with asterisks.
+    secret = (body.get("secret_key") or "").strip()
+    if secret and not secret.startswith("*"):
+        row.secret_key = secret[:300]
+    hook = (body.get("webhook_secret") or "").strip()
+    if hook and not hook.startswith("*"):
+        row.webhook_secret = hook[:300]
+
+    if "is_active" in body:
+        row.is_active = bool(body["is_active"])
+    if "is_live" in body:
+        row.is_live = bool(body["is_live"])
+    row.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if row.is_active and not (row.public_key and row.secret_key):
+        raise HTTPException(
+            status_code=400,
+            detail="Both keys are needed before this can take payments")
+
+    log_audit(db, client.id, "payment_gateway_saved", "gateway", None,
+              provider, "live" if row.is_live else "test", request)
+    db.commit()
+    db.refresh(row)
+    return client_gateway_to_dict(row)
+
+
+@app.delete("/api/payment-gateways/{provider}")
+def remove_client_gateway(provider: str, request: Request,
+                          db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = db.query(models.DBClientGateway).filter(
+        models.DBClientGateway.client_id == client.id,
+        models.DBClientGateway.provider == (provider or "").lower()).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Nothing saved for that provider")
+    db.delete(row)
+    db.commit()
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Paying an invoice
+# ---------------------------------------------------------------------------
+
+def record_invoice_payment(db: Session, inv, amount: float, method: str,
+                           reference: str, note: str = ""):
+    """Put a receipt in the ledger and move the invoice's running totals.
+
+    Returns False if this reference has already been recorded, so a webhook
+    arriving twice - or a customer refreshing the confirmation - cannot pay the
+    same invoice twice.
+    """
+    if reference:
+        already = db.query(models.DBPayment).filter(
+            models.DBPayment.invoice_id == inv.id,
+            models.DBPayment.reference == reference).first()
+        if already:
+            return False
+
+    amount = money(amount)
+    db.add(models.DBPayment(
+        client_id=inv.client_id, invoice_id=inv.id, amount=amount,
+        paid_on=datetime.now().strftime("%Y-%m-%d"), method=method,
+        reference=reference[:120], note=note[:200]))
+
+    inv.paid = money((inv.paid or 0) + amount)
+    sub, tax, total = compute_invoice_totals(inv.line_items, inv.tax_type)
+    inv.due = money(max(0.0, total - inv.paid))
+    if inv.due <= 0:
+        inv.status = "Paid"
+    return True
+
+
+def payable_invoice(db: Session, tracking_id: str):
+    """The invoice behind a payment link, if it can still be paid."""
+    inv = db.query(models.DBInvoice).filter(
+        models.DBInvoice.tracking_id == tracking_id).first()
+    if not inv or inv.status in ("Draft", "Void"):
+        raise HTTPException(status_code=404, detail="That invoice is not available")
+    return inv
+
+
+@app.post("/api/public/invoices/{tracking_id}/pay/razorpay/order")
+def start_invoice_payment(tracking_id: str, request: Request,
+                          db: Session = Depends(get_db)):
+    """Open a Razorpay order against the business's own account."""
+    inv = payable_invoice(db, tracking_id)
+    if inv.status == "Paid" or (inv.due or 0) <= 0:
+        raise HTTPException(status_code=409, detail="This invoice is already paid")
+
+    gw = db.query(models.DBClientGateway).filter(
+        models.DBClientGateway.client_id == inv.client_id,
+        models.DBClientGateway.provider == "razorpay",
+        models.DBClientGateway.is_active == True,      # noqa: E712
+    ).first()
+    if not gw or not (gw.public_key and gw.secret_key):
+        raise HTTPException(status_code=503,
+                            detail="Online payment is not set up for this invoice")
+
+    currency = (inv.currency or "INR").upper()
+    amount_minor = int(round(money(inv.due or 0) * 100))
+    if amount_minor <= 0:
+        raise HTTPException(status_code=409, detail="Nothing left to pay")
+
+    try:
+        resp = httpx.post(
+            "https://api.razorpay.com/v1/orders",
+            auth=(gw.public_key, gw.secret_key),
+            json={"amount": amount_minor, "currency": currency,
+                  "receipt": inv.number[:40],
+                  "notes": {"invoice": inv.number}},
+            timeout=20.0)
+        resp.raise_for_status()
+        order = resp.json()
+    except Exception as exc:
+        logger.exception("Razorpay order failed for invoice %s", inv.number)
+        raise HTTPException(
+            status_code=502,
+            detail="Could not start the payment. Please try again shortly.")
+
+    return {
+        "order_id": order.get("id"),
+        "key_id": gw.public_key,          # public half only
+        "amount": amount_minor,
+        "currency": currency,
+        "invoice_number": inv.number,
+        "description": f"Invoice {inv.number}",
+    }
+
+
+@app.post("/api/public/invoices/{tracking_id}/pay/razorpay/verify")
+def confirm_invoice_payment(tracking_id: str, request: Request,
+                            body: dict = None, db: Session = Depends(get_db)):
+    """Mark it paid, but only against a signature we can verify ourselves.
+
+    The browser tells us a payment happened. That claim is worth nothing on its
+    own - anyone can post to this. Razorpay signs order_id|payment_id with the
+    secret only the two of us hold, so recomputing it here is what makes the
+    claim true.
+    """
+    body = body or {}
+    inv = payable_invoice(db, tracking_id)
+
+    gw = db.query(models.DBClientGateway).filter(
+        models.DBClientGateway.client_id == inv.client_id,
+        models.DBClientGateway.provider == "razorpay").first()
+    if not gw or not gw.secret_key:
+        raise HTTPException(status_code=503, detail="Online payment is not set up")
+
+    order_id = (body.get("razorpay_order_id") or "").strip()
+    payment_id = (body.get("razorpay_payment_id") or "").strip()
+    signature = (body.get("razorpay_signature") or "").strip()
+    if not (order_id and payment_id and signature):
+        raise HTTPException(status_code=400, detail="Incomplete payment details")
+
+    expected = hmac.new(
+        gw.secret_key.encode(), f"{order_id}|{payment_id}".encode(),
+        hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        logger.warning("Rejected an unverified payment claim for %s", inv.number)
+        raise HTTPException(status_code=400, detail="That payment could not be verified")
+
+    recorded = record_invoice_payment(
+        db, inv, inv.due or 0, "razorpay", payment_id,
+        note="Paid online by the customer")
+    db.commit()
+
+    return {
+        "paid": True,
+        "already_recorded": not recorded,
+        "invoice_number": inv.number,
+        "status": inv.status,
+    }
 
 
 # Serve frontend

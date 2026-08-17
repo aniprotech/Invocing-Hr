@@ -92,6 +92,7 @@
       .actions { display: none; }
     }
   </style>
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
 </head>
 <body>
   <div id="state">Loading your invoice...</div>
@@ -198,8 +199,13 @@
           : '') +
 
         '<div class="actions">' +
-          '<button class="btn primary" onclick="window.print()">Print or save as PDF</button>' +
-        '</div>';
+          (inv.payment
+            ? '<button class="btn primary" id="payBtn" onclick="payNow()">Pay ' +
+              money(sym, inv.amount_due) + ' now</button>'
+            : '') +
+          '<button class="btn" onclick="window.print()">Print or save as PDF</button>' +
+        '</div>' +
+        '<p class="small muted" id="payNote" style="margin-top:10px;"></p>';
 
       document.getElementById('state').hidden = true;
       document.getElementById('sheet').hidden = false;
@@ -209,6 +215,62 @@
         foot.textContent = inv.footer_note;
         foot.hidden = false;
       }
+
+      // Paying. The browser opens the checkout, but nothing here decides that
+      // the invoice is paid - the server refuses anything it cannot verify
+      // against the business's own secret.
+      window.payNow = async function () {
+        var note = document.getElementById('payNote');
+        var btn = document.getElementById('payBtn');
+        note.textContent = '';
+        if (typeof Razorpay === 'undefined') {
+          note.textContent = 'The payment window could not load. Check your connection and try again.';
+          return;
+        }
+        btn.disabled = true;
+        var order;
+        try {
+          var r = await fetch('/api/public/invoices/' + encodeURIComponent(id) + '/pay/razorpay/order',
+            { method: 'POST' });
+          order = await r.json();
+          if (!r.ok) throw new Error(order.detail || 'could not start');
+        } catch (e) {
+          note.textContent = e.message || 'Could not start the payment.';
+          btn.disabled = false;
+          return;
+        }
+
+        var rzp = new Razorpay({
+          key: order.key_id,
+          order_id: order.order_id,
+          amount: order.amount,
+          currency: order.currency,
+          name: inv.from.company || 'Invoice',
+          description: order.description,
+          handler: async function (resp) {
+            note.textContent = 'Confirming your payment...';
+            try {
+              var v = await fetch('/api/public/invoices/' + encodeURIComponent(id) + '/pay/razorpay/verify', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(resp)
+              });
+              var out = await v.json();
+              if (!v.ok) throw new Error(out.detail || 'could not confirm');
+              location.reload();
+            } catch (e) {
+              note.textContent = 'Your payment went through but we could not ' +
+                'record it. Please contact ' + (inv.from.email || 'the sender') + '.';
+            }
+          },
+          modal: {
+            ondismiss: function () {
+              btn.disabled = false;
+              note.textContent = 'Payment cancelled - nothing was charged.';
+            }
+          }
+        });
+        rzp.open();
+      };
     })();
   </script>
 </body>

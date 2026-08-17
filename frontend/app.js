@@ -369,6 +369,7 @@ function showView(viewId) {
     if (viewId === 'settings-view' && typeof loadTeam === 'function') loadTeam();
     if (viewId === 'staff-requests-view' && typeof loadStaffRequestQueue === 'function') loadStaffRequestQueue();
     if (viewId === 'settings-view' && typeof buildSettingsSections === 'function') buildSettingsSections();
+    if (viewId === 'settings-view' && typeof loadPaymentGateways === 'function') loadPaymentGateways();
     if (viewId === 'settings-view' && typeof loadBrandingThemes === 'function') loadBrandingThemes();
     if (viewId === 'settings-view' && typeof loadAuditLogs === 'function') loadAuditLogs();
     if (viewId === 'reports-view' && typeof loadReports === 'function') loadReports();
@@ -10213,3 +10214,84 @@ async function copyInvoiceLink() {
     }
 }
 window.copyInvoiceLink = copyInvoiceLink;
+
+
+// --- Getting paid ------------------------------------------------------------
+// The business's own keys, collecting into the business's own account. The
+// platform's keys are separate and take wallet top-ups; these two must never
+// be confused or a customer's payment lands in the wrong place.
+
+var GATEWAY_HINTS = {
+    razorpay: { public: 'Key ID (rzp_...)', secret: 'Key Secret', ready: true },
+    stripe: { public: 'Publishable key (pk_...)', secret: 'Secret key (sk_...)', ready: false },
+    paypal: { public: 'Client ID', secret: 'Secret', ready: false }
+};
+
+async function loadPaymentGateways() {
+    var host = document.getElementById('gateway-list');
+    if (!host) return;
+    try {
+        var res = await fetch('/api/payment-gateways', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        var rows = (await res.json()).gateways || [];
+        host.innerHTML = rows.map(function (g) {
+            var hint = GATEWAY_HINTS[g.provider] || {};
+            return '<details style="border:1px solid var(--border-color);border-radius:10px;' +
+                'padding:0 14px;margin-bottom:10px;">' +
+                '<summary style="cursor:pointer;padding:12px 0;font-weight:600;">' +
+                esc(g.label) +
+                (g.is_active ? ' <span class="status-pill status-paid">on</span>' : '') +
+                (hint.ready === false ? ' <span class="bt-note">(keys stored, checkout not wired yet)</span>' : '') +
+                '</summary>' +
+                '<label class="bfield">' + esc(hint.public || 'Public key') +
+                '<input type="text" id="gw-pub-' + g.provider + '" value="' + esc(g.public_key) + '"></label>' +
+                '<label class="bfield">' + esc(hint.secret || 'Secret') +
+                '<input type="password" id="gw-sec-' + g.provider + '" ' +
+                'placeholder="' + (g.has_secret ? 'Saved - leave blank to keep it' : 'Paste your secret') + '"></label>' +
+                '<label class="bcheck"><input type="checkbox" id="gw-live-' + g.provider + '"' +
+                (g.is_live ? ' checked' : '') + '> These are live keys, not test keys</label>' +
+                '<label class="bcheck"><input type="checkbox" id="gw-on-' + g.provider + '"' +
+                (g.is_active ? ' checked' : '') + '> Offer this on my invoices</label>' +
+                '<div style="display:flex;gap:8px;margin:10px 0 14px;">' +
+                '<button class="btn btn-primary" onclick="savePaymentGateway(\'' + g.provider + '\')">Save</button>' +
+                (g.has_secret ? '<button class="btn btn-outline" onclick="removePaymentGateway(\'' + g.provider + '\')">Remove</button>' : '') +
+                '</div>' +
+                '</details>';
+        }).join('');
+    } catch (e) { /* the rest of settings still works */ }
+}
+window.loadPaymentGateways = loadPaymentGateways;
+
+async function savePaymentGateway(provider) {
+    var body = {
+        public_key: (document.getElementById('gw-pub-' + provider) || {}).value || '',
+        // Blank means keep what is stored; the browser only ever saw a mask.
+        secret_key: (document.getElementById('gw-sec-' + provider) || {}).value || '',
+        is_live: !!(document.getElementById('gw-live-' + provider) || {}).checked,
+        is_active: !!(document.getElementById('gw-on-' + provider) || {}).checked
+    };
+    try {
+        var res = await fetch('/api/payment-gateways/' + provider, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin', body: JSON.stringify(body)
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) { showToast(data.detail || 'Could not save those keys', 'error'); return; }
+        showToast('Payment keys saved', 'success');
+        loadPaymentGateways();
+    } catch (e) { showToast('Could not save those keys', 'error'); }
+}
+window.savePaymentGateway = savePaymentGateway;
+
+async function removePaymentGateway(provider) {
+    if (!confirm('Remove these keys? Invoices will stop offering online payment.')) return;
+    try {
+        var res = await fetch('/api/payment-gateways/' + provider, {
+            method: 'DELETE', credentials: 'same-origin'
+        });
+        if (!res.ok) { showToast('Could not remove those keys', 'error'); return; }
+        showToast('Removed', 'success');
+        loadPaymentGateways();
+    } catch (e) { showToast('Could not remove those keys', 'error'); }
+}
+window.removePaymentGateway = removePaymentGateway;

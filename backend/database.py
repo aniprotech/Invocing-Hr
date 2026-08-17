@@ -1216,5 +1216,27 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 43: {sys.exc_info()[1]}")
 
+            # A business's own payment credentials, for collecting from its
+            # customers. Separate from the platform keys, which live in the
+            # environment and take wallet top-ups.
+            try:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS client_gateways (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        provider VARCHAR NOT NULL,
+                        public_key VARCHAR DEFAULT '',
+                        secret_key VARCHAR DEFAULT '',
+                        webhook_secret VARCHAR DEFAULT '',
+                        is_active BOOLEAN DEFAULT TRUE,
+                        is_live BOOLEAN DEFAULT FALSE,
+                        updated_at VARCHAR DEFAULT (NOW()::TEXT),
+                        CONSTRAINT uq_client_gateway UNIQUE (client_id, provider)
+                    )
+                """))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 44: {sys.exc_info()[1]}")
+
     except Exception as e:
         print(f"Column check skipped: {e}")

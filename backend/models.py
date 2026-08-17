@@ -1215,3 +1215,35 @@ class DBStaffMessage(Base):
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     request = relationship("DBStaffRequest", back_populates="messages")
+
+
+class DBClientGateway(Base):
+    """A business's own payment credentials, for collecting from its customers.
+
+    Deliberately separate from the platform's keys. The platform's live in the
+    environment and take wallet top-ups - money paid to us. These belong to the
+    tenant and take invoice payments - money paid to them. Mixing the two would
+    route a customer's payment into the wrong account.
+
+    Secrets are stored so a payment can be verified server-side. They are never
+    returned to any browser; the read endpoint masks them.
+    """
+    __tablename__ = "client_gateways"
+    __table_args__ = (
+        UniqueConstraint('client_id', 'provider', name='uq_client_gateway'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    provider = Column(String, nullable=False)        # stripe | razorpay | paypal
+
+    # The half that is safe in a browser - Razorpay's key id, Stripe's
+    # publishable key, PayPal's client id.
+    public_key = Column(String, default="")
+    # The half that never leaves the server.
+    secret_key = Column(String, default="")
+    webhook_secret = Column(String, default="")
+
+    is_active = Column(Boolean, default=True, index=True)
+    is_live = Column(Boolean, default=False)         # false while using test keys
+    updated_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))

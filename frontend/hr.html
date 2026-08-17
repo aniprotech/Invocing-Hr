@@ -10,8 +10,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>A</text></svg>">
-    <link rel="stylesheet" href="styles.css?v=61">
-    <link rel="stylesheet" href="mobile.css?v=61">
+    <link rel="stylesheet" href="styles.css?v=62">
+    <link rel="stylesheet" href="mobile.css?v=62">
 </head>
 <body>
     <a class="skip-link" href="#main-content-region">Skip to main content</a>
@@ -1204,6 +1204,23 @@
                             <button class="btn btn-primary" onclick="saveCompanyDetails()" style="margin-top:16px;">Save Details</button>
                         </div>
                     </div>
+                    </section>
+                    <section data-settings-section="payments" data-settings-label="Payments">
+                        <div class="glass-widget" style="margin-bottom:24px;">
+                            <div class="widget-header">
+                                <h3>Getting paid</h3>
+                            </div>
+                            <div class="widget-content">
+                                <p class="bt-note">
+                                    Your own keys, collecting into your own account. Once these are
+                                    saved, every invoice you send carries a Pay button and marks
+                                    itself paid when the money arrives.
+                                    Topping up your aniprotech wallet is separate and always goes
+                                    through us.
+                                </p>
+                                <div id="gateway-list"></div>
+                            </div>
+                        </div>
                     </section>
                     <section data-settings-section="team" data-settings-label="Team">
                         <div class="glass-widget" style="margin-bottom:24px;">
@@ -2735,7 +2752,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="app.js?v=61"></script>
+    <script src="app.js?v=62"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
