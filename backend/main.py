@@ -9217,6 +9217,57 @@ def wallet_history(client_id: int, request: Request, limit: int = 40,
     }
 
 
+@app.put("/api/superadmin/wallets/{client_id}/currency")
+def set_wallet_currency(client_id: int, request: Request, body: dict = None,
+                        db: Session = Depends(get_db)):
+    """Change which currency a wallet is denominated in.
+
+    Only while it is empty. A balance is a number of minor units of one
+    currency, so relabelling GBP as INR would either restate the balance at a
+    rate nobody chose or quietly change what it is worth. This app does not
+    invent exchange rates anywhere else and will not start here: take the
+    balance to zero first, switch, then put it back.
+    """
+    require_superadmin(request)
+    code = ((body or {}).get("currency") or "").strip().upper()
+    if len(code) != 3 or not code.isalpha():
+        raise HTTPException(status_code=400, detail="Use a three letter currency code")
+
+    client = db.query(models.DBClient).filter(
+        models.DBClient.id == client_id).first()
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    wallet = get_wallet(db, client_id)
+    if wallet.currency == code:
+        return {"currency": wallet.currency, "balance": 0.0, "changed": False}
+
+    if (wallet.balance_minor or 0) != 0:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"This wallet holds {to_major(wallet.balance_minor, wallet.currency)} "
+                    f"{wallet.currency}. Adjust it to zero first - converting it "
+                    "would need an exchange rate, and a made-up one is worse "
+                    "than asking."))
+
+    previous = wallet.currency
+    wallet.currency = code
+    wallet.low_balance_minor = to_minor(
+        to_major(wallet.low_balance_minor or 0, previous), code)
+    wallet.auto_topup_threshold_minor = 0
+    wallet.auto_topup_amount_minor = 0
+    wallet.auto_topup_enabled = False
+    wallet.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    log_audit(db, client_id, "wallet_currency_changed", "wallet", client_id,
+              client.company_name or client.email, f"{previous} to {code}",
+              request, user_type="superadmin", user_name="superadmin")
+    db.commit()
+    return {"currency": wallet.currency, "balance": 0.0, "changed": True,
+            "previous": previous,
+            "note": "Auto top-up was switched off - the amounts were in the old currency."}
+
+
 @app.get("/api/superadmin/revenue")
 def platform_revenue(request: Request, months: int = 6, db: Session = Depends(get_db)):
     """What the platform has actually earned, by month and by action."""
@@ -9424,6 +9475,33 @@ def _create_stripe_checkout(order, client, request):
     return {"provider": "stripe", "checkout_url": data.get("url", ""), "session_id": data.get("id", "")}
 
 
+def razorpay_complaint(resp, currency="") -> str:
+    """Turn a Razorpay rejection into something the person reading it can act on.
+
+    The reason was being logged and thrown away, so every failure looked
+    identical: "Razorpay rejected the payment request." The most common one by
+    far is the currency - a test account, and most Indian accounts, will only
+    take INR - so that gets named outright rather than left to be guessed.
+    """
+    description = ""
+    try:
+        description = (resp.json().get("error", {}).get("description") or "").strip()
+    except Exception:      # noqa: BLE001 - a non-JSON body is still a rejection
+        description = ""
+
+    haystack = f"{description} {(resp.text or '')[:300]}".lower()
+    if "currency" in haystack or "international" in haystack:
+        return (f"Razorpay would not take {currency or 'that currency'}. "
+                "Razorpay accounts take INR unless international payments are "
+                "enabled, so set the amount in INR or enable them on the account.")
+    if "authentication" in haystack or resp.status_code in (401, 403):
+        return ("Razorpay rejected the keys. Check RAZORPAY_KEY_ID and "
+                "RAZORPAY_KEY_SECRET are the pair from the same account and mode.")
+    if description:
+        return f"Razorpay refused it: {description}"
+    return "Razorpay rejected the payment request."
+
+
 def _create_razorpay_order(order, client):
     cfg = gateway_config()["razorpay"]
     missing = [k for k, v in (("RAZORPAY_KEY_ID", cfg["key_id"]), ("RAZORPAY_KEY_SECRET", cfg["key_secret"])) if not v]
@@ -9442,7 +9520,9 @@ def _create_razorpay_order(order, client):
     )
     if resp.status_code >= 400:
         logger.error("Razorpay order failed: %s", resp.text[:400])
-        raise HTTPException(status_code=502, detail="Razorpay rejected the payment request.")
+        raise HTTPException(
+            status_code=502,
+            detail=razorpay_complaint(resp, order.currency.upper()))
     data = resp.json()
     order.provider_order_id = data.get("id", "")
     return {
@@ -13337,13 +13417,21 @@ def start_invoice_payment(tracking_id: str, request: Request,
                   "receipt": inv.number[:40],
                   "notes": {"invoice": inv.number}},
             timeout=20.0)
-        resp.raise_for_status()
-        order = resp.json()
-    except Exception as exc:
-        logger.exception("Razorpay order failed for invoice %s", inv.number)
+    except Exception:
+        logger.exception("Razorpay unreachable for invoice %s", inv.number)
         raise HTTPException(
             status_code=502,
-            detail="Could not start the payment. Please try again shortly.")
+            detail="Could not reach the payment provider. Please try again shortly.")
+
+    if resp.status_code >= 400:
+        # The customer is not the one who can fix a misconfigured account, but
+        # they should not be told a blank "something went wrong" either - and
+        # the business needs the reason in the log to act on.
+        logger.error("Razorpay order failed for invoice %s: %s",
+                     inv.number, resp.text[:400])
+        raise HTTPException(status_code=502,
+                            detail=razorpay_complaint(resp, currency))
+    order = resp.json()
 
     return {
         "order_id": order.get("id"),
