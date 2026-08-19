@@ -4,14 +4,15 @@
   "version": "1.0.0",
   "description": "Checks for the parts of the frontend that only fail at runtime. The Python suite covers the API; this covers the PDF generator, which is where a removed variable turns into a thrown exception that takes the invoice preview and the email attachment down together.",
   "scripts": {
-    "test": "npm run test:pdf && npm run test:pagination && npm run test:logo && npm run test:form && npm run test:logosync && npm run test:mobilenav && npm run test:nav",
+    "test": "npm run test:pdf && npm run test:pagination && npm run test:logo && npm run test:form && npm run test:logosync && npm run test:mobilenav && npm run test:nav && npm run test:layering",
     "test:form": "node frontend/tests/invoice-form-defaults.js",
     "test:pdf": "node frontend/tests/pdf-smoke.js",
     "test:pagination": "node frontend/tests/pdf-pagination.js",
     "test:logo": "node frontend/tests/pdf-logo-position.js",
     "test:logosync": "node frontend/tests/logo-single-source.js",
     "test:mobilenav": "node frontend/tests/mobile-nav.js",
-    "test:nav": "node frontend/tests/nav-and-settings.js"
+    "test:nav": "node frontend/tests/nav-and-settings.js",
+    "test:layering": "node frontend/tests/layering.js"
   },
   "devDependencies": {
     "jsdom": "^24.0.0",

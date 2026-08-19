@@ -100,8 +100,14 @@ function zOf(selector) {
     const at = css.indexOf(selector + ' {');
     if (at < 0) return null;
     const rule = css.slice(at, css.indexOf('}', at));
-    const z = rule.match(/z-index:\s*(\d+)/);
-    return z ? Number(z[1]) : null;
+    const z = rule.match(/z-index: *([^;]+)/);
+    if (!z) return null;
+    // These are named layers now, declared once at the top of the stylesheet,
+    // so follow the variable rather than expecting a bare number.
+    const named = z[1].match(/--layer-([a-z]+)/);
+    if (!named) return Number(z[1].trim());
+    const decl = css.match(new RegExp('--layer-' + named[1] + ': *([0-9]+)'));
+    return decl ? Number(decl[1]) : null;
 }
 const topbarZ = zOf('.enterprise-topbar');
 const overlayZ = zOf('.mobile-overlay');

@@ -237,6 +237,7 @@ function toggleCurrencyPicker(name, ev) {
     closeAllCurrencyPickers();
     if (!wasOpen) {
         list.style.display = 'block';
+        placeDropdown(list);
         var search = list.querySelector('.currency-search');
         if (search) { search.value = ''; renderCurrencyItems(name, ''); }
     }
@@ -2479,6 +2480,7 @@ function setupContactAutocomplete(inputId, dropdownId, emailId, phoneId) {
                         dropdown.appendChild(newDiv);
                     }
                     dropdown.classList.add('show');
+                    placeDropdown(dropdown);
                 });
         }, 200);
     });
@@ -10295,3 +10297,27 @@ async function removePaymentGateway(provider) {
     } catch (e) { showToast('Could not remove those keys', 'error'); }
 }
 window.removePaymentGateway = removePaymentGateway;
+
+
+// A dropdown lives inside .main-content, which scrolls - so anything hanging
+// below a field near the bottom is cut off at the container's edge rather than
+// spilling onto the page. Opening upward when there is no room below is what
+// stops that.
+function placeDropdown(el) {
+    if (!el) return;
+    el.classList.remove('drops-up');
+    var host = el.offsetParent || el.parentElement;
+    if (!host) return;
+    var box = host.getBoundingClientRect();
+    var scroller = el.closest('.main-content') || document.documentElement;
+    var limit = scroller.getBoundingClientRect
+        ? scroller.getBoundingClientRect().bottom
+        : window.innerHeight;
+    var needed = el.offsetHeight || 260;
+    // Only flip when flipping actually helps - a field with no room either way
+    // is better left opening downward.
+    if (box.bottom + needed > limit && box.top - needed > 0) {
+        el.classList.add('drops-up');
+    }
+}
+window.placeDropdown = placeDropdown;
