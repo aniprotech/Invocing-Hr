@@ -164,3 +164,41 @@ def test_a_nonsense_code_is_refused(client, superadmin):
 def test_only_the_operator_can_change_it(tenant):
     assert tenant.put("/api/superadmin/wallets/1/currency",
                       json={"currency": "INR"}).status_code in (401, 403)
+
+
+# --- PayPal says its useful part somewhere else --------------------------------
+
+def paypal_complaint(payload=None, text="", status=400, currency="GBP"):
+    return main.paypal_complaint(FakeResponse(payload, text, status), currency)
+
+
+def test_paypal_currency_rejection_names_the_currency():
+    msg = paypal_complaint({
+        "name": "UNPROCESSABLE_ENTITY",
+        "details": [{"issue": "CURRENCY_NOT_SUPPORTED"}]}, currency="GBP")
+    assert "GBP" in msg
+
+
+def test_paypal_bad_credentials_mention_the_mode():
+    """Sandbox keys against live is the mistake that looks like a wrong key."""
+    msg = paypal_complaint({"error": "invalid_client"}, status=401)
+    assert "PAYPAL_MODE" in msg
+    assert "sandbox" in msg
+
+
+def test_paypal_reads_the_nested_issue_not_the_vague_top_line():
+    """"Request is not well-formed" says nothing; the issue says which field."""
+    msg = paypal_complaint({
+        "name": "INVALID_REQUEST",
+        "message": "Request is not well-formed, syntactically incorrect",
+        "details": [{"issue": "MISSING_REQUIRED_PARAMETER"}]})
+    assert "MISSING_REQUIRED_PARAMETER" in msg
+
+
+def test_paypal_falls_back_to_the_message_when_there_is_no_issue():
+    msg = paypal_complaint({"message": "Payee account is restricted"})
+    assert "Payee account is restricted" in msg
+
+
+def test_paypal_never_returns_nothing():
+    assert paypal_complaint(None, text="<html>bad gateway</html>", status=502)

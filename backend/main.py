@@ -9639,6 +9639,38 @@ def _paypal_token():
     return resp.json().get("access_token", "")
 
 
+def paypal_complaint(resp, currency="") -> str:
+    """Turn a PayPal rejection into something actionable.
+
+    PayPal nests the useful part under details[].issue, so the top-level
+    message alone ("Request is not well-formed") says almost nothing.
+    """
+    name, message, issues = "", "", []
+    try:
+        data = resp.json()
+        name = (data.get("name") or "").strip()
+        message = (data.get("message") or "").strip()
+        issues = [d.get("issue", "") for d in (data.get("details") or [])]
+    except Exception:      # noqa: BLE001 - a non-JSON body is still a rejection
+        pass
+
+    haystack = f"{name} {message} {' '.join(issues)} {(resp.text or '')[:300]}".upper()
+
+    if "CURRENCY_NOT_SUPPORTED" in haystack or "CURRENCY" in haystack:
+        return (f"PayPal does not take {currency or 'that currency'} on this "
+                "account. PayPal supports GBP, USD, EUR and INR among others, "
+                "but the account has to be set up for the one being charged.")
+    if "AUTHENTICATION" in haystack or resp.status_code in (401, 403):
+        return ("PayPal rejected the credentials. Check PAYPAL_CLIENT_ID and "
+                "PAYPAL_SECRET are from the same app, and that PAYPAL_MODE "
+                "matches where they came from - sandbox keys do not work live.")
+    if issues:
+        return f"PayPal refused it: {issues[0]}"
+    if message:
+        return f"PayPal refused it: {message}"
+    return "PayPal rejected the payment request."
+
+
 def _create_paypal_order(order, client, request):
     cfg = gateway_config()["paypal"]
     missing = [k for k, v in (("PAYPAL_CLIENT_ID", cfg["client_id"]), ("PAYPAL_SECRET", cfg["secret"])) if not v]
@@ -9669,7 +9701,8 @@ def _create_paypal_order(order, client, request):
     )
     if resp.status_code >= 400:
         logger.error("PayPal order failed: %s", resp.text[:400])
-        raise HTTPException(status_code=502, detail="PayPal rejected the payment request.")
+        raise HTTPException(status_code=502,
+                            detail=paypal_complaint(resp, order.currency.upper()))
     data = resp.json()
     order.provider_order_id = data.get("id", "")
     approve = next((l.get("href") for l in data.get("links", []) if l.get("rel") == "approve"), "")
