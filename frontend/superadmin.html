@@ -317,7 +317,7 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=67">
+    <link rel="stylesheet" href="mobile.css?v=68">
 </head>
 <body>
     <div class="admin-header">
@@ -381,7 +381,10 @@
         <div class="section-header" style="margin-top:32px;">
             <h2>Billing &amp; Wallets</h2>
             <span style="font-size:0.78rem;color:#64748b;" id="gateway-status"></span>
+            <button class="action-btn" onclick="checkRazorpayKeys()"
+                    style="margin-left:auto;">Test Razorpay keys</button>
         </div>
+        <div id="razorpay-check" style="font-size:0.78rem;color:#64748b;margin-top:6px;"></div>
         <div class="stats-grid" id="revenue-grid"></div>
 
         <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:20px;">
@@ -657,6 +660,41 @@
                     : 'No payment gateway configured - add keys to accept top-ups';
                 el.style.color = live.length ? '#39ff14' : '#fcd34d';
             } catch (e) { /* informational */ }
+        }
+
+        // Whether a key pair works is a question Razorpay can answer directly,
+        // with a call that moves no money. Finding out through a failed top-up
+        // means guessing at which of several things went wrong.
+        async function checkRazorpayKeys() {
+            var host = document.getElementById('razorpay-check');
+            host.style.color = '#64748b';
+            host.textContent = 'Asking Razorpay...';
+            var d;
+            try {
+                d = await (await fetch('/api/superadmin/razorpay-check')).json();
+            } catch (e) {
+                host.style.color = '#ff003c';
+                host.textContent = 'Could not run the check.';
+                return;
+            }
+
+            var shape = d.shape || {};
+            // Describes the keys without ever showing them - enough to spot a
+            // mismatched pair, a test id with a live secret, a stray space.
+            var about = [
+                shape.mode ? shape.mode + ' keys' : '',
+                shape.key_id_tail ? 'id ending ' + shape.key_id_tail : '',
+                shape.secret_length ? 'secret ' + shape.secret_length + ' characters' : '',
+            ].filter(Boolean).join(' &middot; ');
+
+            host.style.color = d.ok ? '#39ff14' : '#ff003c';
+            host.innerHTML = esc(d.reason || '') +
+                (about ? '<div style="color:#64748b;margin-top:4px;">' + about + '</div>' : '') +
+                ((shape.notes || []).length
+                    ? '<div style="color:#fcd34d;margin-top:4px;">' +
+                      shape.notes.map(esc).join('<br>') + '</div>' : '') +
+                (d.hint ? '<div style="color:#64748b;margin-top:4px;">' + esc(d.hint) + '</div>' : '') +
+                (d.next ? '<div style="color:#64748b;margin-top:4px;">' + esc(d.next) + '</div>' : '');
         }
 
         async function loadPricing() {

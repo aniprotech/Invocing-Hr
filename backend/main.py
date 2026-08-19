@@ -9509,6 +9509,12 @@ def razorpay_key_shape(key_id: str, key_secret: str):
     if key_secret.startswith("rzp_"):
         notes.append("The secret looks like a key id. These two are different "
                      "values and the secret is shown only once, when generated.")
+    # Razorpay secrets are 24 characters. A different length usually means a
+    # partial paste or the wrong value entirely, and looks identical to a wrong
+    # key from the outside.
+    if key_secret and len(key_secret) != 24:
+        notes.append(f"The secret is {len(key_secret)} characters; Razorpay "
+                     "secrets are 24. Check the whole value was pasted.")
     return {
         "mode": ("test" if key_id.startswith("rzp_test_")
                  else "live" if key_id.startswith("rzp_live_") else "unknown"),

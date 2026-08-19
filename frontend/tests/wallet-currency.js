@@ -46,6 +46,12 @@ function boot(wallet, opts) {
                 }),
             });
         }
+        if (p.endsWith('/razorpay-check')) {
+            return Promise.resolve({
+                ok: true, status: 200,
+                json: () => Promise.resolve(opts.check || { ok: true, reason: 'These test keys work.' }),
+            });
+        }
         if (p.endsWith('/currency')) {
             const bad = opts.refuse;
             return Promise.resolve({
@@ -146,6 +152,40 @@ function boot(wallet, opts) {
             !sent.some(r => r.method === 'PUT'));
         check('and says so',
             /already/i.test(w.document.getElementById('wallet-currency-note').textContent));
+    }
+
+    // --- the key check, on a button rather than a URL ------------------------
+    {
+        const { w } = boot({ balance: 0, currency: 'INR' }, {
+            check: {
+                ok: false, status: 401,
+                reason: 'Razorpay rejected the keys. Check RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.',
+                shape: { mode: 'test', key_id_tail: 'NCj', secret_length: 20,
+                         notes: ['The secret is 20 characters; Razorpay secrets are 24.'] },
+                hint: 'Regenerating a key replaces both halves.',
+            },
+        });
+        await w.checkRazorpayKeys();
+        await wait(20);
+
+        const out = w.document.getElementById('razorpay-check').textContent;
+        check('a rejection says what Razorpay said', out.includes('rejected the keys'), out);
+        check('the keys are described without being shown',
+            out.includes('test keys') && out.includes('NCj') && !out.includes('rzp_test_'), out);
+        check('a suspicious secret length is called out', /24/.test(out), out);
+        check('and the rotation trap is spelled out', /both halves/.test(out), out);
+    }
+
+    {
+        const { w } = boot({ balance: 0, currency: 'INR' }, {
+            check: { ok: true, reason: 'These test keys work.',
+                     shape: { mode: 'test', key_id_tail: 'NCj', secret_length: 24, notes: [] } },
+        });
+        await w.checkRazorpayKeys();
+        await wait(20);
+        const el = w.document.getElementById('razorpay-check');
+        check('working keys say so plainly', /work/.test(el.textContent), el.textContent);
+        check('and are not coloured as a failure', el.style.color !== 'rgb(255, 0, 60)', el.style.color);
     }
 
     console.log(failures ? `\n${failures} failed` : '\nall good');

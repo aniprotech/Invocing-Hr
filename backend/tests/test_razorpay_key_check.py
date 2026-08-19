@@ -148,3 +148,20 @@ def test_an_unreachable_gateway_is_not_a_crash(superadmin, monkeypatch):
 
 def test_it_is_operator_only(tenant):
     assert tenant.get("/api/superadmin/razorpay-check").status_code in (401, 403)
+
+def test_a_secret_of_the_wrong_length_is_called_out():
+    """A half-pasted secret is indistinguishable from a wrong one at the
+    gateway - both come back 401 - but the length is knowable here."""
+    shape = main.razorpay_key_shape("rzp_test_abcdefghij", "tooshort")
+    assert any("24" in n for n in shape["notes"]), shape["notes"]
+
+
+def test_a_secret_of_the_right_length_passes_without_comment():
+    shape = main.razorpay_key_shape("rzp_test_abcdefghij", "x" * 24)
+    assert not any("24" in n for n in shape["notes"]), shape["notes"]
+
+
+def test_no_secret_at_all_is_not_reported_as_a_length_problem():
+    """Missing and mistyped are different failures with different fixes."""
+    shape = main.razorpay_key_shape("rzp_test_abcdefghij", "")
+    assert not any("24" in n for n in shape["notes"]), shape["notes"]
