@@ -9433,6 +9433,53 @@ def enabled_providers():
     }
 
 
+# Which provider will take which currency. Offering one that will not is how
+# a top-up gets as far as the gateway before failing - which is exactly what
+# happened with a GBP wallet and a Razorpay account.
+#
+# PayPal publishes a fixed list of balance currencies; INR is not one of them.
+# Razorpay settles in INR and takes nothing else unless the account has
+# international payments turned on. Stripe takes far more than anyone here is
+# likely to bill in, so it is treated as open.
+PAYPAL_CURRENCIES = {
+    "AUD", "BRL", "CAD", "CNY", "CZK", "DKK", "EUR", "HKD", "HUF", "ILS",
+    "JPY", "MYR", "MXN", "TWD", "NZD", "NOK", "PHP", "PLN", "GBP", "RUB",
+    "SGD", "SEK", "CHF", "THB", "USD",
+}
+RAZORPAY_CURRENCIES = {"INR"}
+
+# Set when the Razorpay account has international payments enabled, which lets
+# it charge in other currencies while still settling in INR.
+RAZORPAY_INTERNATIONAL = os.getenv("RAZORPAY_INTERNATIONAL", "").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
+def provider_takes_currency(provider: str, currency: str) -> bool:
+    code = (currency or "").upper()
+    if provider == "stripe":
+        return True
+    if provider == "paypal":
+        return code in PAYPAL_CURRENCIES
+    if provider == "razorpay":
+        return RAZORPAY_INTERNATIONAL or code in RAZORPAY_CURRENCIES
+    return False
+
+
+def why_not_available(provider: str, currency: str, configured: bool) -> str:
+    """One short sentence a person can act on, or empty when it is usable."""
+    if not configured:
+        return "Not set up on this server yet."
+    if provider_takes_currency(provider, currency):
+        return ""
+    code = (currency or "").upper()
+    if provider == "razorpay":
+        return (f"Razorpay accounts take INR. Set the wallet to INR, or turn on "
+                f"international payments and set RAZORPAY_INTERNATIONAL=true.")
+    if provider == "paypal":
+        return f"PayPal does not hold balances in {code}."
+    return f"Does not take {code}."
+
+
 @app.get("/api/wallet/providers")
 def wallet_providers(request: Request, db: Session = Depends(get_db)):
     """What the top-up screen should offer. Being explicit about what is not
@@ -9442,21 +9489,44 @@ def wallet_providers(request: Request, db: Session = Depends(get_db)):
     db.commit()
     enabled = enabled_providers()
     cfg = gateway_config()
+    currency = wallet.currency
+
+    def entry(key, label, extra=None):
+        configured = enabled[key]
+        usable = configured and provider_takes_currency(key, currency)
+        row = {
+            "key": key, "label": label,
+            "enabled": usable,
+            "configured": configured,
+            "takes_currency": provider_takes_currency(key, currency),
+            # Empty when it can be used, so the page has nothing to explain.
+            "unavailable_because": why_not_available(key, currency, configured),
+        }
+        # A key is only handed over for a provider that can actually be used.
+        if usable and extra:
+            row.update(extra)
+        return row
+
+    providers = [
+        entry("stripe", "Card (Stripe)",
+              {"publishable_key": cfg["stripe"]["publishable"]}),
+        entry("razorpay", "Razorpay (UPI, cards, netbanking)",
+              {"key_id": cfg["razorpay"]["key_id"]}),
+        entry("paypal", "PayPal"),
+    ]
     return {
-        "currency": wallet.currency,
-        "symbol": currency_symbol(wallet.currency),
+        "currency": currency,
+        "symbol": currency_symbol(currency),
         "min_amount": TOPUP_MIN_MAJOR,
         "max_amount": TOPUP_MAX_MAJOR,
         "suggested": [10, 25, 50, 100, 250],
-        "providers": [
-            {"key": "stripe", "label": "Card (Stripe)", "enabled": enabled["stripe"],
-             "publishable_key": cfg["stripe"]["publishable"] if enabled["stripe"] else ""},
-            {"key": "razorpay", "label": "Razorpay (UPI, cards, netbanking)",
-             "enabled": enabled["razorpay"],
-             "key_id": cfg["razorpay"]["key_id"] if enabled["razorpay"] else ""},
-            {"key": "paypal", "label": "PayPal", "enabled": enabled["paypal"]},
-        ],
-        "any_enabled": any(enabled.values()),
+        "providers": providers,
+        "any_enabled": any(p["enabled"] for p in providers),
+        # Said once rather than three times, when nothing can take this money.
+        "none_take_currency": (
+            f"Nothing set up here takes {currency}."
+            if any(p["configured"] for p in providers)
+            and not any(p["enabled"] for p in providers) else ""),
     }
 
 
@@ -9494,6 +9564,13 @@ def create_topup(body: TopUpIn, request: Request, db: Session = Depends(get_db))
     provider = (body.provider or "").strip().lower()
     if provider not in ("stripe", "razorpay", "paypal"):
         raise HTTPException(status_code=400, detail="Choose Stripe, Razorpay or PayPal")
+
+    # Checked here as well as on the page, because a tab left open across a
+    # currency change would otherwise start a payment certain to be refused.
+    if not provider_takes_currency(provider, wallet.currency):
+        raise HTTPException(
+            status_code=400,
+            detail=why_not_available(provider, wallet.currency, configured=True))
 
     order = models.DBTopUpOrder(
         client_id=client.id, provider=provider, amount_minor=amount_minor,

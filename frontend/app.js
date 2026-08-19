@@ -7797,16 +7797,26 @@ async function openTopUpModal() {
 
     var host = document.getElementById('topup-providers');
     if (host) {
-        host.innerHTML = (_walletProviders.providers || []).map(function (p, i) {
-            // A provider without keys is shown but disabled, so it is obvious
-            // why it cannot be used rather than failing on click.
+        // The first usable one is preselected, which is not necessarily the
+        // first in the list once currency is taken into account.
+        var firstUsable = (_walletProviders.providers || [])
+            .filter(function (p) { return p.enabled; })[0];
+
+        host.innerHTML = (_walletProviders.providers || []).map(function (p) {
+            // A provider that cannot be used says which of the two reasons it
+            // is - no keys, or it will not take this currency - because those
+            // are fixed in completely different places.
             return '<label style="display:flex;align-items:center;gap:10px;padding:10px 12px;' +
                    'border:1px solid var(--border-color);border-radius:8px;' +
                    (p.enabled ? 'cursor:pointer;' : 'opacity:0.5;cursor:not-allowed;') + '">' +
                 '<input type="radio" name="topup-provider" value="' + esc(p.key) + '"' +
-                    (p.enabled ? '' : ' disabled') + (p.enabled && i === 0 ? ' checked' : '') + '>' +
+                    (p.enabled ? '' : ' disabled') +
+                    (firstUsable && p.key === firstUsable.key ? ' checked' : '') + '>' +
                 '<span style="flex:1;">' + esc(p.label) + '</span>' +
-                (p.enabled ? '' : '<span style="font-size:0.72rem;color:var(--text-secondary);">not configured</span>') +
+                (p.enabled ? ''
+                    : '<span style="font-size:0.72rem;color:var(--text-secondary);' +
+                      'text-align:right;max-width:52%;">' +
+                      esc(p.unavailable_because || 'not available') + '</span>') +
             '</label>';
         }).join('');
     }
@@ -7814,8 +7824,11 @@ async function openTopUpModal() {
     var note = document.getElementById('topup-note');
     var go = document.getElementById('topup-go');
     if (!_walletProviders.any_enabled) {
-        if (note) note.textContent = 'No payment provider is configured on this server yet. ' +
-            'Add the gateway keys, or ask an administrator to credit your wallet manually.';
+        if (note) note.textContent = _walletProviders.none_take_currency
+            ? _walletProviders.none_take_currency +
+              ' Change the wallet currency, or ask an administrator to credit it manually.'
+            : 'No payment provider is configured on this server yet. ' +
+              'Add the gateway keys, or ask an administrator to credit your wallet manually.';
         if (go) { go.disabled = true; go.style.opacity = '0.5'; }
     } else {
         if (note) note.textContent = 'Minimum ' + _walletProviders.symbol + _walletProviders.min_amount +
