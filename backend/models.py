@@ -1023,6 +1023,13 @@ class DBWallet(Base):
     balance_minor = Column(Integer, default=0)
     currency = Column(String, default="GBP")
     low_balance_minor = Column(Integer, default=500)      # warn under this
+
+    # Topping itself up rather than waiting to be noticed. Off until a
+    # business sets it up, because charging somebody unasked is worse than
+    # an empty wallet.
+    auto_topup_enabled = Column(Boolean, default=False)
+    auto_topup_threshold_minor = Column(Integer, default=0)
+    auto_topup_amount_minor = Column(Integer, default=0)
     is_suspended = Column(Boolean, default=False)
     lifetime_topped_up_minor = Column(Integer, default=0)
     lifetime_spent_minor = Column(Integer, default=0)
@@ -1275,3 +1282,79 @@ class DBSettlement(Base):
     # The gateway payment this came from, so it can be traced both ways.
     gateway = Column(String, default="razorpay")
     gateway_payment_id = Column(String, default="", index=True)
+
+
+class DBPaymentMandate(Base):
+    """Standing permission to charge somebody without them being present.
+
+    Two different payers use the same shape:
+
+      payer_type 'customer' - a customer of one of our businesses authorised
+                              their invoices to be paid automatically.
+      payer_type 'tenant'   - a business authorised its own wallet to top
+                              itself up when it runs low.
+
+    The token is what the gateway gives back after an authorised payment; it
+    stands in for the card or UPI id, which we never hold. A mandate carries
+    its own ceiling, because "you may charge me" is not "you may charge me
+    anything".
+    """
+    __tablename__ = "payment_mandates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+
+    payer_type = Column(String, default="customer", index=True)   # customer | tenant
+    # Which customer of this business, matched the way invoices are.
+    payer_ref = Column(String, default="", index=True)
+
+    provider = Column(String, default="razorpay")
+    token_id = Column(String, default="", index=True)
+    customer_id = Column(String, default="")
+    method = Column(String, default="")        # card | upi | emandate
+    masked = Column(String, default="")        # last four, or the vpa
+
+    # active | cancelled | failed
+    status = Column(String, default="active", index=True)
+    max_amount_minor = Column(Integer, default=0)
+    currency = Column(String, default="INR")
+
+    created_from_invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=True)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    last_used_at = Column(String, default="")
+    cancelled_at = Column(String, default="")
+    failure_reason = Column(String, default="")
+
+
+class DBAutoCharge(Base):
+    """One attempt to charge a mandate, kept whether it worked or not.
+
+    Every attempt is written before the gateway is called, so a crash midway
+    leaves a record rather than a silent gap, and the same thing is never
+    charged twice for the same reason.
+    """
+    __tablename__ = "auto_charges"
+    __table_args__ = (
+        UniqueConstraint('idempotency_key', name='uq_auto_charge_key'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    mandate_id = Column(Integer, ForeignKey("payment_mandates.id"), nullable=False, index=True)
+
+    # invoice | wallet_topup
+    purpose = Column(String, default="invoice", index=True)
+    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=True, index=True)
+
+    amount_minor = Column(Integer, default=0)
+    currency = Column(String, default="INR")
+
+    # What makes a retry safe: one key per thing-being-paid-for.
+    idempotency_key = Column(String, nullable=False, index=True)
+
+    # pending | succeeded | failed
+    status = Column(String, default="pending", index=True)
+    gateway_payment_id = Column(String, default="")
+    failure_reason = Column(String, default="")
+    attempted_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    settled_at = Column(String, default="")

@@ -1264,5 +1264,66 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 45: {sys.exc_info()[1]}")
 
+            # Standing permission to charge, and every attempt made against it.
+            try:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS payment_mandates (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        payer_type VARCHAR DEFAULT 'customer',
+                        payer_ref VARCHAR DEFAULT '',
+                        provider VARCHAR DEFAULT 'razorpay',
+                        token_id VARCHAR DEFAULT '',
+                        customer_id VARCHAR DEFAULT '',
+                        method VARCHAR DEFAULT '',
+                        masked VARCHAR DEFAULT '',
+                        status VARCHAR DEFAULT 'active',
+                        max_amount_minor INTEGER DEFAULT 0,
+                        currency VARCHAR DEFAULT 'INR',
+                        created_from_invoice_id INTEGER REFERENCES invoices(id),
+                        created_at VARCHAR DEFAULT (NOW()::TEXT),
+                        last_used_at VARCHAR DEFAULT '',
+                        cancelled_at VARCHAR DEFAULT '',
+                        failure_reason VARCHAR DEFAULT ''
+                    )
+                """))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS auto_charges (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        mandate_id INTEGER REFERENCES payment_mandates(id) NOT NULL,
+                        purpose VARCHAR DEFAULT 'invoice',
+                        invoice_id INTEGER REFERENCES invoices(id),
+                        amount_minor INTEGER DEFAULT 0,
+                        currency VARCHAR DEFAULT 'INR',
+                        idempotency_key VARCHAR NOT NULL,
+                        status VARCHAR DEFAULT 'pending',
+                        gateway_payment_id VARCHAR DEFAULT '',
+                        failure_reason VARCHAR DEFAULT '',
+                        attempted_at VARCHAR DEFAULT (NOW()::TEXT),
+                        settled_at VARCHAR DEFAULT '',
+                        CONSTRAINT uq_auto_charge_key UNIQUE (idempotency_key)
+                    )
+                """))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_mandates_payer "
+                    "ON payment_mandates (client_id, payer_type, status)"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 46: {sys.exc_info()[1]}")
+
+            # Wallet auto top-up settings live on the wallet itself.
+            for col, ddl in (
+                ("auto_topup_enabled", "BOOLEAN DEFAULT FALSE"),
+                ("auto_topup_threshold_minor", "INTEGER DEFAULT 0"),
+                ("auto_topup_amount_minor", "INTEGER DEFAULT 0"),
+            ):
+                try:
+                    conn.execute(text(
+                        f"ALTER TABLE wallets ADD COLUMN IF NOT EXISTS {col} {ddl}"))
+                    conn.commit()
+                except Exception:
+                    MIGRATION_ERRORS.append(f"migration step 47 ({col}): {sys.exc_info()[1]}")
+
     except Exception as e:
         print(f"Column check skipped: {e}")

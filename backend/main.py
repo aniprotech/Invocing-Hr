@@ -13586,6 +13586,405 @@ def mark_settlement_paid(settlement_id: int, request: Request,
     return {"id": row.id, "status": row.status, "paid_out_at": row.paid_out_at}
 
 
+
+
+# ============================================================================
+# CHARGING WITHOUT THE PAYER PRESENT
+#
+# Two payers, one mechanism:
+#   a customer authorises their invoices to be paid automatically
+#   a business authorises its own wallet to top itself up when it runs low
+#
+# Everything here is arranged so the only untestable part is the single HTTP
+# call to the gateway. What decides whether to charge, how much, and whether
+# it has already happened is all ordinary code with tests behind it.
+# ============================================================================
+
+MANDATE_STATUSES = ("active", "cancelled", "failed")
+
+
+def mandate_for_customer(db: Session, client_id: int, contact: str):
+    """The standing permission covering this customer, if they gave one."""
+    if not contact:
+        return None
+    return db.query(models.DBPaymentMandate).filter(
+        models.DBPaymentMandate.client_id == client_id,
+        models.DBPaymentMandate.payer_type == "customer",
+        models.DBPaymentMandate.status == "active",
+        models.DBPaymentMandate.payer_ref.ilike(contact.strip()),
+    ).first()
+
+
+def mandate_for_tenant(db: Session, client_id: int):
+    """A business's permission to have its own wallet topped up."""
+    return db.query(models.DBPaymentMandate).filter(
+        models.DBPaymentMandate.client_id == client_id,
+        models.DBPaymentMandate.payer_type == "tenant",
+        models.DBPaymentMandate.status == "active",
+    ).first()
+
+
+def mandate_allows(mandate, amount_minor: int) -> bool:
+    """A ceiling is the difference between "you may charge me" and "you may
+    charge me anything". Zero means no ceiling was set."""
+    if not mandate or mandate.status != "active":
+        return False
+    if mandate.max_amount_minor and amount_minor > mandate.max_amount_minor:
+        return False
+    return amount_minor > 0
+
+
+def invoice_charge_key(inv) -> str:
+    """One key per invoice per outstanding amount.
+
+    Including the amount means a part-paid invoice can be charged for the
+    remainder later, while charging the same balance twice is refused by the
+    unique index rather than by remembering to check.
+    """
+    return f"invoice:{inv.id}:{int(round(money(inv.due or 0) * 100))}"
+
+
+def topup_charge_key(wallet, on_date) -> str:
+    """One automatic top-up per wallet per day, so a wallet that stays below
+    its threshold is not charged every time the job runs."""
+    return f"topup:{wallet.client_id}:{on_date}"
+
+
+def already_attempted(db: Session, key: str):
+    return db.query(models.DBAutoCharge).filter(
+        models.DBAutoCharge.idempotency_key == key).first()
+
+
+def charge_mandate(mandate, amount_minor: int, currency: str, description: str,
+                   key_id: str, key_secret: str):
+    """Ask the gateway to take money against a saved token.
+
+    The one part of this that cannot be tested without a live account and a
+    real mandate. Kept to a single call with everything decided by the time it
+    is reached, so a failure here is a gateway problem and never a logic one.
+
+    Returns (payment_id, error). Exactly one of them is set.
+    """
+    try:
+        resp = httpx.post(
+            "https://api.razorpay.com/v1/payments/createRecurringPayment",
+            auth=(key_id, key_secret),
+            json={
+                "email": "", "contact": "",
+                "amount": amount_minor,
+                "currency": (currency or "INR").upper(),
+                "order_id": None,
+                "customer_id": mandate.customer_id,
+                "token": mandate.token_id,
+                "recurring": "1",
+                "description": description[:120],
+            },
+            timeout=30.0)
+        if resp.status_code in (200, 201):
+            return (resp.json().get("razorpay_payment_id")
+                    or resp.json().get("id") or ""), None
+        return None, f"{resp.status_code}: {(resp.text or '')[:160]}"
+    except Exception as exc:      # noqa: BLE001
+        return None, str(exc)[:160]
+
+
+def run_auto_charge(db: Session, mandate, amount_minor: int, currency: str,
+                    purpose: str, key: str, description: str,
+                    invoice=None, key_id="", key_secret=""):
+    """Attempt one charge, recording it whatever happens.
+
+    The row is written and committed before the gateway is called, so a crash
+    partway leaves evidence rather than a silent gap.
+    """
+    if already_attempted(db, key):
+        return None, "already_attempted"
+    if not mandate_allows(mandate, amount_minor):
+        return None, "not_permitted"
+    if not (key_id and key_secret):
+        return None, "no_gateway_keys"
+
+    attempt = models.DBAutoCharge(
+        client_id=mandate.client_id, mandate_id=mandate.id, purpose=purpose,
+        invoice_id=invoice.id if invoice is not None else None,
+        amount_minor=amount_minor, currency=(currency or "INR").upper(),
+        idempotency_key=key, status="pending")
+    db.add(attempt)
+    db.commit()
+
+    payment_id, error = charge_mandate(
+        mandate, amount_minor, currency, description, key_id, key_secret)
+
+    if error:
+        attempt.status = "failed"
+        attempt.failure_reason = error
+        # A rejected token will keep being rejected, so stop using it rather
+        # than failing against the same mandate every night.
+        if "token" in error.lower() or "mandate" in error.lower():
+            mandate.status = "failed"
+            mandate.failure_reason = error[:200]
+        db.commit()
+        return None, error
+
+    attempt.status = "succeeded"
+    attempt.gateway_payment_id = payment_id or ""
+    attempt.settled_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    mandate.last_used_at = attempt.settled_at
+    db.commit()
+    return attempt, None
+
+
+# --- what is due to be charged ------------------------------------------------
+
+def invoices_due_for_autopay(db: Session, on_date=None):
+    """Issued, still owed, due today or already past it, and covered by a
+    mandate. A draft has not been agreed and a future invoice is not yet owed.
+    """
+    on_date = on_date or datetime.now().date()
+    out = []
+    rows = db.query(models.DBInvoice).filter(
+        models.DBInvoice.status.in_(list(OPEN_INVOICE_STATUSES))).all()
+    for inv in rows:
+        if (inv.due or 0) <= 0:
+            continue
+        due = _parse_date(inv.due_date)
+        if not due or due > on_date:
+            continue
+        mandate = mandate_for_customer(db, inv.client_id, inv.to_contact or "")
+        if not mandate:
+            continue
+        amount_minor = int(round(money(inv.due or 0) * 100))
+        if not mandate_allows(mandate, amount_minor):
+            continue
+        if already_attempted(db, invoice_charge_key(inv)):
+            continue
+        out.append((inv, mandate, amount_minor))
+    return out
+
+
+def wallets_due_for_topup(db: Session, on_date=None):
+    """Below the line the business set, with permission to fix it."""
+    on_date = on_date or datetime.now().date()
+    out = []
+    rows = db.query(models.DBWallet).filter(
+        models.DBWallet.auto_topup_enabled == True,      # noqa: E712
+    ).all()
+    for wallet in rows:
+        if wallet.is_suspended:
+            continue
+        if (wallet.balance_minor or 0) > (wallet.auto_topup_threshold_minor or 0):
+            continue
+        amount = wallet.auto_topup_amount_minor or 0
+        if amount <= 0:
+            continue
+        mandate = mandate_for_tenant(db, wallet.client_id)
+        if not mandate_allows(mandate, amount):
+            continue
+        if already_attempted(db, topup_charge_key(wallet, on_date.isoformat())):
+            continue
+        out.append((wallet, mandate, amount))
+    return out
+
+
+
+
+@scheduled_job("invoice_autopay")
+def job_invoice_autopay(db, now):
+    """Collect invoices whose customer agreed to be charged.
+
+    Runs after the overdue reminders so an invoice about to be paid
+    automatically is not chased on the same morning.
+    """
+    charged, failed = 0, 0
+    for inv, mandate, amount_minor in invoices_due_for_autopay(db, now.date()):
+        key_id, key_secret, mode = collecting_keys(db, inv.client_id)
+        attempt, error = run_auto_charge(
+            db, mandate, amount_minor, inv.currency or mandate.currency,
+            "invoice", invoice_charge_key(inv),
+            f"Invoice {inv.number}", invoice=inv,
+            key_id=key_id, key_secret=key_secret)
+        if error:
+            failed += 1
+            continue
+
+        recorded = record_invoice_payment(
+            db, inv, money(amount_minor / 100.0), "razorpay",
+            attempt.gateway_payment_id, note="Paid automatically")
+        if recorded and mode == "platform":
+            record_settlement(db, inv, amount_minor,
+                              inv.currency or "INR", attempt.gateway_payment_id)
+        charged += 1
+    db.commit()
+    return {"charged": charged, "failed": failed}
+
+
+@scheduled_job("wallet_auto_topup")
+def job_wallet_auto_topup(db, now):
+    """Top up a wallet that has fallen below the line its owner set."""
+    topped, failed = 0, 0
+    cfg = gateway_config()["razorpay"]
+    for wallet, mandate, amount_minor in wallets_due_for_topup(db, now.date()):
+        attempt, error = run_auto_charge(
+            db, mandate, amount_minor, wallet.currency, "wallet_topup",
+            topup_charge_key(wallet, now.date().isoformat()),
+            "Wallet top-up",
+            key_id=cfg["key_id"], key_secret=cfg["key_secret"])
+        if error:
+            failed += 1
+            continue
+        credit_wallet(db, wallet.client_id, amount_minor,
+                      "Automatic top-up",
+                      reference=attempt.gateway_payment_id,
+                      performed_by="autopay", action_key="topup")
+        topped += 1
+    db.commit()
+    return {"topped_up": topped, "failed": failed}
+
+
+# --- setting it up ------------------------------------------------------------
+
+def mandate_to_dict(m):
+    return {
+        "id": m.id, "payer_type": m.payer_type, "payer_ref": m.payer_ref or "",
+        "method": m.method or "", "masked": m.masked or "",
+        "status": m.status, "currency": m.currency,
+        "max_amount": to_major(m.max_amount_minor, m.currency) if m.max_amount_minor else None,
+        "created_at": m.created_at, "last_used_at": m.last_used_at or "",
+        "failure_reason": m.failure_reason or "",
+    }
+
+
+@app.post("/api/public/invoices/{tracking_id}/autopay")
+def authorise_invoice_autopay(tracking_id: str, request: Request,
+                              body: dict = None, db: Session = Depends(get_db)):
+    """A customer agreeing that future invoices may be charged.
+
+    Only reachable with a token the gateway issued for a payment that has just
+    been verified, so agreeing to this is something the payer did at the
+    checkout rather than something anyone can post.
+    """
+    body = body or {}
+    inv = payable_invoice(db, tracking_id)
+
+    token_id = (body.get("token_id") or "").strip()
+    customer_id = (body.get("customer_id") or "").strip()
+    payment_id = (body.get("razorpay_payment_id") or "").strip()
+    signature = (body.get("razorpay_signature") or "").strip()
+    order_id = (body.get("razorpay_order_id") or "").strip()
+    if not (token_id and customer_id and payment_id and signature and order_id):
+        raise HTTPException(status_code=400, detail="Incomplete authorisation")
+
+    key_id, key_secret, mode = collecting_keys(db, inv.client_id)
+    if not key_secret:
+        raise HTTPException(status_code=503, detail="Payment is not set up")
+
+    expected = hmac.new(key_secret.encode(),
+                        f"{order_id}|{payment_id}".encode(),
+                        hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        logger.warning("Rejected an unverified autopay authorisation for %s", inv.number)
+        raise HTTPException(status_code=400,
+                            detail="That authorisation could not be verified")
+
+    ceiling = body.get("max_amount")
+    max_minor = int(round(float(ceiling) * 100)) if ceiling else 0
+
+    existing = mandate_for_customer(db, inv.client_id, inv.to_contact or "")
+    if existing:
+        existing.status = "cancelled"
+        existing.cancelled_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    mandate = models.DBPaymentMandate(
+        client_id=inv.client_id, payer_type="customer",
+        payer_ref=(inv.to_contact or "").strip(),
+        token_id=token_id, customer_id=customer_id,
+        method=(body.get("method") or "")[:20],
+        masked=(body.get("masked") or "")[:40],
+        currency=(inv.currency or "INR").upper(),
+        max_amount_minor=max_minor,
+        created_from_invoice_id=inv.id)
+    db.add(mandate)
+    db.commit()
+    db.refresh(mandate)
+    return mandate_to_dict(mandate)
+
+
+@app.get("/api/autopay/mandates")
+def list_mandates(request: Request, db: Session = Depends(get_db)):
+    """Who has agreed to be charged, and the business's own arrangement."""
+    client = get_client_user(request, db)
+    rows = db.query(models.DBPaymentMandate).filter(
+        models.DBPaymentMandate.client_id == client.id
+    ).order_by(models.DBPaymentMandate.id.desc()).limit(200).all()
+    return {
+        "customers": [mandate_to_dict(m) for m in rows if m.payer_type == "customer"],
+        "own": next((mandate_to_dict(m) for m in rows
+                     if m.payer_type == "tenant" and m.status == "active"), None),
+    }
+
+
+@app.delete("/api/autopay/mandates/{mandate_id}")
+def cancel_mandate(mandate_id: int, request: Request,
+                   db: Session = Depends(get_db)):
+    """Stopping is immediate and needs no reason."""
+    client = get_client_user(request, db)
+    m = db.query(models.DBPaymentMandate).filter(
+        models.DBPaymentMandate.id == mandate_id,
+        models.DBPaymentMandate.client_id == client.id).first()
+    if not m:
+        raise HTTPException(status_code=404, detail="Not found")
+    m.status = "cancelled"
+    m.cancelled_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    db.commit()
+    return {"id": m.id, "status": m.status}
+
+
+@app.get("/api/wallet/auto-topup")
+def read_auto_topup(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    wallet = get_wallet(db, client.id)
+    mandate = mandate_for_tenant(db, client.id)
+    return {
+        "enabled": bool(wallet.auto_topup_enabled),
+        "threshold": to_major(wallet.auto_topup_threshold_minor or 0, wallet.currency),
+        "amount": to_major(wallet.auto_topup_amount_minor or 0, wallet.currency),
+        "currency": wallet.currency,
+        "balance": to_major(wallet.balance_minor, wallet.currency),
+        "has_mandate": mandate is not None,
+        "mandate": mandate_to_dict(mandate) if mandate else None,
+    }
+
+
+@app.put("/api/wallet/auto-topup")
+def set_auto_topup(request: Request, body: dict = None,
+                   db: Session = Depends(get_db)):
+    """Turning it on needs a threshold, an amount, and permission to charge -
+    otherwise it is a setting that quietly does nothing."""
+    client = get_client_user(request, db)
+    body = body or {}
+    wallet = get_wallet(db, client.id)
+
+    enabled = bool(body.get("enabled"))
+    if "threshold" in body:
+        wallet.auto_topup_threshold_minor = to_minor(
+            abs(float(body.get("threshold") or 0)), wallet.currency)
+    if "amount" in body:
+        wallet.auto_topup_amount_minor = to_minor(
+            abs(float(body.get("amount") or 0)), wallet.currency)
+
+    if enabled:
+        if (wallet.auto_topup_amount_minor or 0) <= 0:
+            raise HTTPException(status_code=400,
+                                detail="Set how much to top up by")
+        if not mandate_for_tenant(db, client.id):
+            raise HTTPException(
+                status_code=400,
+                detail="Authorise a payment method before turning this on")
+    wallet.auto_topup_enabled = enabled
+    wallet.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    db.commit()
+    return read_auto_topup(request, db)
+
+
 # Serve frontend
 frontend_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 if os.path.exists(frontend_path):
