@@ -9318,24 +9318,109 @@ TOPUP_MIN_MAJOR = float(os.getenv("TOPUP_MIN", "5"))
 TOPUP_MAX_MAJOR = float(os.getenv("TOPUP_MAX", "5000"))
 
 
+def _env_key(name: str) -> str:
+    """A key as pasted, minus the whitespace that comes with pasting.
+
+    A trailing space or newline in a dashboard variable is invisible and makes
+    basic auth fail as surely as a wrong key, which is indistinguishable from
+    the outside: both come back 401.
+    """
+    return (os.getenv(name, "") or "").strip()
+
+
 def gateway_config():
     """Which providers are usable right now, based on the keys present."""
     return {
         "stripe": {
-            "secret": os.getenv("STRIPE_SECRET_KEY", ""),
-            "publishable": os.getenv("STRIPE_PUBLISHABLE_KEY", ""),
-            "webhook_secret": os.getenv("STRIPE_WEBHOOK_SECRET", ""),
+            "secret": _env_key("STRIPE_SECRET_KEY"),
+            "publishable": _env_key("STRIPE_PUBLISHABLE_KEY"),
+            "webhook_secret": _env_key("STRIPE_WEBHOOK_SECRET"),
         },
         "razorpay": {
-            "key_id": os.getenv("RAZORPAY_KEY_ID", ""),
-            "key_secret": os.getenv("RAZORPAY_KEY_SECRET", ""),
-            "webhook_secret": os.getenv("RAZORPAY_WEBHOOK_SECRET", ""),
+            "key_id": _env_key("RAZORPAY_KEY_ID"),
+            "key_secret": _env_key("RAZORPAY_KEY_SECRET"),
+            "webhook_secret": _env_key("RAZORPAY_WEBHOOK_SECRET"),
         },
         "paypal": {
-            "client_id": os.getenv("PAYPAL_CLIENT_ID", ""),
-            "secret": os.getenv("PAYPAL_SECRET", ""),
-            "mode": os.getenv("PAYPAL_MODE", "sandbox"),
+            "client_id": _env_key("PAYPAL_CLIENT_ID"),
+            "secret": _env_key("PAYPAL_SECRET"),
+            "mode": (os.getenv("PAYPAL_MODE", "sandbox") or "sandbox").strip(),
         },
+    }
+
+
+def razorpay_key_shape(key_id: str, key_secret: str):
+    """What can be said about a key pair without asking Razorpay.
+
+    Never returns the values. The point is to describe them well enough to spot
+    the common mistakes - a mismatched pair after a rotation, a test id with a
+    live secret, whitespace that survived the paste.
+    """
+    raw_id = os.getenv("RAZORPAY_KEY_ID", "") or ""
+    raw_secret = os.getenv("RAZORPAY_KEY_SECRET", "") or ""
+    notes = []
+    if raw_id != raw_id.strip() or raw_secret != raw_secret.strip():
+        notes.append("There was whitespace around a value; it is being trimmed, "
+                     "but tidy it in the dashboard too.")
+    if key_id and not key_id.startswith(("rzp_test_", "rzp_live_")):
+        notes.append("The key id does not start with rzp_test_ or rzp_live_, "
+                     "so it may not be a key id.")
+    if key_secret.startswith("rzp_"):
+        notes.append("The secret looks like a key id. These two are different "
+                     "values and the secret is shown only once, when generated.")
+    return {
+        "mode": ("test" if key_id.startswith("rzp_test_")
+                 else "live" if key_id.startswith("rzp_live_") else "unknown"),
+        "key_id_tail": key_id[-4:] if key_id else "",
+        "secret_length": len(key_secret),
+        "notes": notes,
+    }
+
+
+@app.get("/api/superadmin/razorpay-check")
+def razorpay_check(request: Request):
+    """Ask Razorpay whether these credentials work, and say what it answered.
+
+    Finding out through a failed top-up means guessing at which of several
+    things went wrong. This asks directly, with a call that moves no money.
+    """
+    require_superadmin(request)
+    cfg = gateway_config()["razorpay"]
+    shape = razorpay_key_shape(cfg["key_id"], cfg["key_secret"])
+
+    if not (cfg["key_id"] and cfg["key_secret"]):
+        return {
+            "ok": False,
+            "reason": "Both RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET must be set.",
+            "shape": shape,
+        }
+
+    try:
+        # Reading a page of orders touches nothing and needs the same auth a
+        # payment would.
+        resp = httpx.get("https://api.razorpay.com/v1/orders?count=1",
+                         auth=(cfg["key_id"], cfg["key_secret"]), timeout=20)
+    except Exception as exc:      # noqa: BLE001
+        return {"ok": False,
+                "reason": f"Could not reach Razorpay: {str(exc)[:160]}",
+                "shape": shape}
+
+    if resp.status_code == 200:
+        return {
+            "ok": True,
+            "reason": f"These {shape['mode']} keys work.",
+            "shape": shape,
+            "next": ("Razorpay accounts take INR unless international payments "
+                     "are enabled, so keep the wallet and invoices in INR."),
+        }
+
+    return {
+        "ok": False,
+        "status": resp.status_code,
+        "reason": razorpay_complaint(resp),
+        "shape": shape,
+        "hint": ("Regenerating a key replaces both halves. Using a new id with "
+                 "the previous secret fails exactly like a wrong key."),
     }
 
 
