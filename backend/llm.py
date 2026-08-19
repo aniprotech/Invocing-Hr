@@ -7,7 +7,39 @@ logger = logging.getLogger(__name__)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-MODEL = "llama-3.1-8b-instant"
+
+# The model is a setting, because hosted models get retired and the last one
+# did. Changing GROQ_MODEL in the environment is a restart; changing a constant
+# in here is a deploy, and the difference matters when the AI is already down.
+# available_models() lists what the key can actually use, so the replacement
+# does not have to be guessed.
+DEFAULT_MODEL = "llama-3.3-70b-versatile"
+MODEL = os.getenv("GROQ_MODEL", "").strip() or DEFAULT_MODEL
+
+
+def available_models():
+    """Model ids this key may use, newest listing first, or an empty list.
+
+    Used by the operator page so a retired model can be replaced with one that
+    exists rather than one that sounds right.
+    """
+    if not GROQ_API_KEY:
+        return []
+    try:
+        resp = httpx.get(
+            f"{GROQ_BASE_URL}/models",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return []
+        rows = resp.json().get("data", [])
+        return sorted(
+            [r.get("id", "") for r in rows if r.get("id")],
+            key=lambda name: (not name.startswith("llama"), name))
+    except Exception as exc:      # noqa: BLE001 - reported, never raised
+        logger.warning("Could not list Groq models: %s", exc)
+        return []
 
 
 def llm_configured() -> bool:
@@ -42,7 +74,13 @@ def llm_chat(messages, temperature=0.3, max_tokens=1024):
         if resp.status_code == 200:
             LAST_ERROR["reason"] = ""
             return resp.json()["choices"][0]["message"]["content"].strip()
-        LAST_ERROR["reason"] = {
+        body = (resp.text or "")[:400].lower()
+        retired = (
+            resp.status_code == 404
+            or "decommission" in body or "deprecat" in body
+            or "model_not_found" in body or "does not exist" in body
+        )
+        LAST_ERROR["reason"] = "model_gone" if retired else {
             401: "bad_key", 403: "bad_key", 429: "rate_limited",
         }.get(resp.status_code, "upstream_error")
         logger.error("Groq API error %d: %s", resp.status_code, resp.text[:200])
@@ -63,6 +101,8 @@ LLM_MESSAGES = {
     "timeout": "The AI took too long to answer. Try again.",
     "network_error": "Could not reach the AI service.",
     "upstream_error": "The AI service returned an error.",
+    "model_gone": ("The AI model this is set to no longer exists. Set GROQ_MODEL "
+                   "to a current one - the AI status page lists what the key can use."),
 }
 
 

@@ -1247,3 +1247,31 @@ class DBClientGateway(Base):
     is_active = Column(Boolean, default=True, index=True)
     is_live = Column(Boolean, default=False)         # false while using test keys
     updated_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBSettlement(Base):
+    """Money collected on a tenant's behalf, and whether it has reached them.
+
+    When the platform takes invoice payments into its own account, the customer
+    has paid and the tenant has not been paid. Without a record of that, the
+    money is simply missing from the tenant's point of view. Every collection
+    writes a row here, and it stays owed until somebody says it went out.
+    """
+    __tablename__ = "settlements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=True, index=True)
+
+    amount_minor = Column(Integer, default=0)
+    currency = Column(String, default="INR")
+
+    # owed | paid_out
+    status = Column(String, default="owed", index=True)
+    collected_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    paid_out_at = Column(String, default="")
+    payout_reference = Column(String, default="")
+
+    # The gateway payment this came from, so it can be traced both ways.
+    gateway = Column(String, default="razorpay")
+    gateway_payment_id = Column(String, default="", index=True)

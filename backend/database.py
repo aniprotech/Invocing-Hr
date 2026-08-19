@@ -1238,5 +1238,31 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 44: {sys.exc_info()[1]}")
 
+            # What the platform has collected on a tenant's behalf and not yet
+            # paid out. Without this, money taken into the platform account is
+            # simply missing from the tenant's point of view.
+            try:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS settlements (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        invoice_id INTEGER REFERENCES invoices(id),
+                        amount_minor INTEGER DEFAULT 0,
+                        currency VARCHAR DEFAULT 'INR',
+                        status VARCHAR DEFAULT 'owed',
+                        collected_at VARCHAR DEFAULT (NOW()::TEXT),
+                        paid_out_at VARCHAR DEFAULT '',
+                        payout_reference VARCHAR DEFAULT '',
+                        gateway VARCHAR DEFAULT 'razorpay',
+                        gateway_payment_id VARCHAR DEFAULT ''
+                    )
+                """))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_settlements_client "
+                    "ON settlements (client_id, status)"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 45: {sys.exc_info()[1]}")
+
     except Exception as e:
         print(f"Column check skipped: {e}")

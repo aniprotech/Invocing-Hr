@@ -8995,13 +8995,28 @@ def ai_status(request: Request):
         try:
             probe = llm.llm_chat([{"role": "user", "content": "ping"}], max_tokens=5)
             reachable = probe is not None
-            detail = "Model responded" if reachable else "Key set but the API call failed - check the key and quota"
+            if reachable:
+                detail = "Model responded"
+            elif llm.llm_last_error() == "model_gone":
+                # The one failure an operator can fix in a minute, so it says
+                # exactly that instead of "the API call failed".
+                detail = llm.llm_error_message()
+            else:
+                detail = "Key set but the API call failed - check the key and quota"
         except Exception as exc:
             detail = f"Call failed: {exc}"[:160]
+
+    # Hosted models get retired. Listing what this key can actually use means
+    # the replacement is chosen from reality rather than from memory.
+    models = llm.available_models() if configured else []
 
     return {
         "provider": "groq",
         "model": llm.MODEL,
+        "model_default": llm.DEFAULT_MODEL,
+        "model_is_available": (llm.MODEL in models) if models else None,
+        "available_models": models[:40],
+        "model_env_var": "GROQ_MODEL",
         "configured": configured,
         "key_format_ok": looks_valid,
         "reachable": reachable,
@@ -13078,9 +13093,11 @@ def public_invoice_payload(db: Session, inv, client):
         "brand_color": (theme.brand_color if theme else "") or "#4f46e5",
         # Whether a Pay button can be shown, and the public half of the
         # key it needs. The secret never leaves the server.
+        # Either the business's own keys or the platform's, depending on how
+        # the operator has set collection up. The customer sees no difference.
         "payment": ({
-            "provider": gw.provider, "key_id": gw.public_key,
-        } if (gw := active_client_gateway(db, client.id)) and
+            "provider": "razorpay", "key_id": _pay_key,
+        } if (_pay_key := collecting_keys(db, client.id)[0]) and
              not (inv.status == "Paid" or (inv.due or 0) <= 0) else None),
         "logo": (theme.logo_data if theme else "") or client.logo_url or "",
     }
@@ -13302,12 +13319,8 @@ def start_invoice_payment(tracking_id: str, request: Request,
     if inv.status == "Paid" or (inv.due or 0) <= 0:
         raise HTTPException(status_code=409, detail="This invoice is already paid")
 
-    gw = db.query(models.DBClientGateway).filter(
-        models.DBClientGateway.client_id == inv.client_id,
-        models.DBClientGateway.provider == "razorpay",
-        models.DBClientGateway.is_active == True,      # noqa: E712
-    ).first()
-    if not gw or not (gw.public_key and gw.secret_key):
+    key_id, key_secret, mode = collecting_keys(db, inv.client_id)
+    if not (key_id and key_secret):
         raise HTTPException(status_code=503,
                             detail="Online payment is not set up for this invoice")
 
@@ -13319,7 +13332,7 @@ def start_invoice_payment(tracking_id: str, request: Request,
     try:
         resp = httpx.post(
             "https://api.razorpay.com/v1/orders",
-            auth=(gw.public_key, gw.secret_key),
+            auth=(key_id, key_secret),
             json={"amount": amount_minor, "currency": currency,
                   "receipt": inv.number[:40],
                   "notes": {"invoice": inv.number}},
@@ -13334,7 +13347,7 @@ def start_invoice_payment(tracking_id: str, request: Request,
 
     return {
         "order_id": order.get("id"),
-        "key_id": gw.public_key,          # public half only
+        "key_id": key_id,                 # public half only
         "amount": amount_minor,
         "currency": currency,
         "invoice_number": inv.number,
@@ -13355,10 +13368,8 @@ def confirm_invoice_payment(tracking_id: str, request: Request,
     body = body or {}
     inv = payable_invoice(db, tracking_id)
 
-    gw = db.query(models.DBClientGateway).filter(
-        models.DBClientGateway.client_id == inv.client_id,
-        models.DBClientGateway.provider == "razorpay").first()
-    if not gw or not gw.secret_key:
+    key_id, key_secret, mode = collecting_keys(db, inv.client_id)
+    if not key_secret:
         raise HTTPException(status_code=503, detail="Online payment is not set up")
 
     order_id = (body.get("razorpay_order_id") or "").strip()
@@ -13368,15 +13379,22 @@ def confirm_invoice_payment(tracking_id: str, request: Request,
         raise HTTPException(status_code=400, detail="Incomplete payment details")
 
     expected = hmac.new(
-        gw.secret_key.encode(), f"{order_id}|{payment_id}".encode(),
+        key_secret.encode(), f"{order_id}|{payment_id}".encode(),
         hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature):
         logger.warning("Rejected an unverified payment claim for %s", inv.number)
         raise HTTPException(status_code=400, detail="That payment could not be verified")
 
+    amount = money(inv.due or 0)
     recorded = record_invoice_payment(
-        db, inv, inv.due or 0, "razorpay", payment_id,
+        db, inv, amount, "razorpay", payment_id,
         note="Paid online by the customer")
+
+    # Taken into the platform's account, so the customer has paid and the
+    # business has not. Recorded once, alongside the receipt.
+    if recorded and mode == "platform":
+        record_settlement(db, inv, int(round(amount * 100)),
+                          (inv.currency or "INR"), payment_id)
     db.commit()
 
     return {
@@ -13385,6 +13403,187 @@ def confirm_invoice_payment(tracking_id: str, request: Request,
         "invoice_number": inv.number,
         "status": inv.status,
     }
+
+
+
+
+# ============================================================================
+# WHERE INVOICE MONEY LANDS
+#
+# Two arrangements, one switch, held by the operator:
+#
+#   direct     - each business uses its own Razorpay keys and the money goes
+#                straight to them. Nothing is owed to anybody.
+#   platform   - every business collects through the platform's own Razorpay
+#                account. The customer has paid and the tenant has not been
+#                paid, so each collection writes a settlement that stays owed
+#                until it is paid out. Holding other people's money is a
+#                commitment, not a shortcut, and this is the record of it.
+# ============================================================================
+
+COLLECTION_MODES = ("direct", "platform")
+COLLECTION_SETTING = "INVOICE_COLLECTION_MODE"
+
+
+def collection_mode(db: Session) -> str:
+    """How invoice payments are routed right now. Platform-wide, not per tenant,
+    because a customer paying an invoice cannot be asked which arrangement
+    their supplier is on."""
+    row = db.query(models.DBSettings).filter(
+        models.DBSettings.key == COLLECTION_SETTING,
+        models.DBSettings.client_id == None,        # noqa: E711
+    ).first()
+    value = (row.value if row else "") or "direct"
+    return value if value in COLLECTION_MODES else "direct"
+
+
+def collecting_keys(db: Session, client_id: int):
+    """(key_id, key_secret, mode) for taking a payment on this invoice.
+
+    In platform mode the tenant's own keys are ignored entirely - otherwise a
+    business that had set up its own would quietly keep collecting directly
+    while the operator believed everything came through one account.
+    """
+    mode = collection_mode(db)
+    if mode == "platform":
+        cfg = gateway_config()["razorpay"]
+        return cfg["key_id"], cfg["key_secret"], "platform"
+
+    gw = db.query(models.DBClientGateway).filter(
+        models.DBClientGateway.client_id == client_id,
+        models.DBClientGateway.provider == "razorpay",
+        models.DBClientGateway.is_active == True,      # noqa: E712
+    ).first()
+    if gw:
+        return gw.public_key, gw.secret_key, "direct"
+    return "", "", "direct"
+
+
+def record_settlement(db: Session, inv, amount_minor: int, currency: str,
+                      payment_id: str):
+    """Money taken into the platform account belongs to the tenant."""
+    db.add(models.DBSettlement(
+        client_id=inv.client_id, invoice_id=inv.id,
+        amount_minor=amount_minor, currency=(currency or "INR").upper(),
+        status="owed", gateway="razorpay",
+        gateway_payment_id=payment_id[:120]))
+
+
+@app.get("/api/superadmin/collection-mode")
+def read_collection_mode(request: Request, db: Session = Depends(get_db)):
+    require_superadmin(request)
+    mode = collection_mode(db)
+    cfg = gateway_config()["razorpay"]
+    owed = db.query(models.DBSettlement).filter(
+        models.DBSettlement.status == "owed").all()
+
+    by_currency = {}
+    for s in owed:
+        by_currency[s.currency] = by_currency.get(s.currency, 0) + (s.amount_minor or 0)
+
+    return {
+        "mode": mode,
+        "modes": list(COLLECTION_MODES),
+        "platform_keys_ready": bool(cfg["key_id"] and cfg["key_secret"]),
+        "platform_key_env": ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"],
+        "owed_to_tenants": [
+            {"currency": c, "amount": to_major(v, c)} for c, v in sorted(by_currency.items())
+        ],
+        "owed_count": len(owed),
+        "note": ("In platform mode every customer payment lands in the platform's "
+                 "Razorpay account, so each one is money owed to the business that "
+                 "raised the invoice until it is paid out."),
+    }
+
+
+@app.put("/api/superadmin/collection-mode")
+def set_collection_mode(request: Request, body: dict = None,
+                        db: Session = Depends(get_db)):
+    require_superadmin(request)
+    mode = ((body or {}).get("mode") or "").strip().lower()
+    if mode not in COLLECTION_MODES:
+        raise HTTPException(status_code=400,
+                            detail="Mode must be direct or platform")
+
+    if mode == "platform":
+        cfg = gateway_config()["razorpay"]
+        if not (cfg["key_id"] and cfg["key_secret"]):
+            raise HTTPException(
+                status_code=400,
+                detail="Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET before "
+                       "collecting into the platform account")
+
+    row = db.query(models.DBSettings).filter(
+        models.DBSettings.key == COLLECTION_SETTING,
+        models.DBSettings.client_id == None,        # noqa: E711
+    ).first()
+    if row:
+        row.value = mode
+    else:
+        db.add(models.DBSettings(key=COLLECTION_SETTING, value=mode, client_id=None))
+    db.commit()
+    return {"mode": mode}
+
+
+@app.get("/api/superadmin/settlements")
+def list_settlements(request: Request, status: str = "owed",
+                     db: Session = Depends(get_db)):
+    """What is owed to whom, so it can actually be paid out."""
+    require_superadmin(request)
+    q = db.query(models.DBSettlement)
+    if status in ("owed", "paid_out"):
+        q = q.filter(models.DBSettlement.status == status)
+    rows = q.order_by(models.DBSettlement.id.desc()).limit(500).all()
+
+    clients = {c.id: c for c in db.query(models.DBClient).all()}
+    invoices = {i.id: i for i in db.query(models.DBInvoice).filter(
+        models.DBInvoice.id.in_([r.invoice_id for r in rows] or [0])).all()}
+
+    return {
+        "settlements": [{
+            "id": r.id,
+            "client_id": r.client_id,
+            "business": (clients.get(r.client_id).company_name
+                         if clients.get(r.client_id) else "") or "",
+            "invoice_number": (invoices.get(r.invoice_id).number
+                               if invoices.get(r.invoice_id) else ""),
+            "amount": to_major(r.amount_minor, r.currency),
+            "currency": r.currency,
+            "status": r.status,
+            "collected_at": r.collected_at,
+            "paid_out_at": r.paid_out_at or "",
+            "payout_reference": r.payout_reference or "",
+            "gateway_payment_id": r.gateway_payment_id or "",
+        } for r in rows],
+    }
+
+
+@app.post("/api/superadmin/settlements/{settlement_id}/paid-out")
+def mark_settlement_paid(settlement_id: int, request: Request,
+                         body: dict = None, db: Session = Depends(get_db)):
+    """Record that this money has reached the business it belongs to."""
+    require_superadmin(request)
+    row = db.query(models.DBSettlement).filter(
+        models.DBSettlement.id == settlement_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Settlement not found")
+    if row.status == "paid_out":
+        raise HTTPException(status_code=409, detail="Already marked paid out")
+
+    reference = ((body or {}).get("reference") or "").strip()
+    if not reference:
+        raise HTTPException(
+            status_code=400,
+            detail="Give the payout reference - this is the proof it was sent")
+
+    row.status = "paid_out"
+    row.paid_out_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    row.payout_reference = reference[:120]
+    log_audit(db, row.client_id, "settlement_paid_out", "settlement", row.id,
+              reference, f"{to_major(row.amount_minor, row.currency)} {row.currency}",
+              request, user_type="superadmin", user_name="superadmin")
+    db.commit()
+    return {"id": row.id, "status": row.status, "paid_out_at": row.paid_out_at}
 
 
 # Serve frontend
