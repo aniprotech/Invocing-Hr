@@ -9161,6 +9161,47 @@ def adjust_wallet(client_id: int, request: Request, body: dict = None,
     }
 
 
+@app.get("/api/superadmin/wallets/{client_id}/transactions")
+def wallet_history(client_id: int, request: Request, limit: int = 40,
+                   db: Session = Depends(get_db)):
+    """What this tenant's wallet has actually done.
+
+    Crediting an account without seeing why it is empty is how a mistake gets
+    repeated, so the operator can read the ledger from the same screen they
+    top up from.
+    """
+    require_superadmin(request)
+    client = db.query(models.DBClient).filter(
+        models.DBClient.id == client_id).first()
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    wallet = get_wallet(db, client_id)
+    rows = db.query(models.DBWalletTransaction).filter(
+        models.DBWalletTransaction.client_id == client_id
+    ).order_by(models.DBWalletTransaction.id.desc()).limit(max(1, min(limit, 200))).all()
+
+    return {
+        "client": {"id": client.id,
+                   "name": client.company_name or client.email,
+                   "email": client.email},
+        "balance": to_major(wallet.balance_minor, wallet.currency),
+        "currency": wallet.currency,
+        "transactions": [{
+            "id": t.id,
+            "direction": t.direction,
+            "amount": to_major(t.amount_minor, t.currency),
+            "balance_after": to_major(t.balance_after_minor, t.currency),
+            "description": t.description or "",
+            "action_key": t.action_key or "",
+            "module": t.module or "",
+            "reference": t.reference or "",
+            "performed_by": t.performed_by or "",
+            "created_at": t.created_at or "",
+        } for t in rows],
+    }
+
+
 @app.get("/api/superadmin/revenue")
 def platform_revenue(request: Request, months: int = 6, db: Session = Depends(get_db)):
     """What the platform has actually earned, by month and by action."""
