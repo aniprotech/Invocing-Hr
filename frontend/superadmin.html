@@ -728,6 +728,13 @@
         // sight of why the wallet was empty. The ledger now sits beside the
         // form, because crediting blind is how the same mistake gets made twice.
         var walletPanelFor = null;
+        var walletPanelCurrency = '';
+        var walletPanelBalance = 0;
+
+        // The currencies a gateway here will actually take. Razorpay settles in
+        // INR, so a wallet that wants to be topped up through it has to be INR
+        // too unless the account has international payments turned on.
+        var WALLET_CURRENCIES = ['INR', 'GBP', 'USD', 'EUR', 'AED', 'AUD', 'CAD', 'SGD'];
 
         function setWalletAmount(n) {
             var el = document.getElementById('wallet-amount');
@@ -741,6 +748,8 @@
 
         async function adjustWallet(clientId) {
             walletPanelFor = clientId;
+            walletPanelCurrency = '';
+            walletPanelBalance = 0;
             var panel = document.getElementById('wallet-panel');
             var body = document.getElementById('wallet-panel-body');
             panel.style.display = 'flex';
@@ -755,6 +764,9 @@
                 body.innerHTML = '<p style="color:#ff003c;font-size:0.8rem;">Could not load this wallet.</p>';
                 return;
             }
+
+            walletPanelCurrency = data.currency || '';
+            walletPanelBalance = Number(data.balance) || 0;
 
             var rows = (data.transactions || []).map(function (t) {
                 var credit = t.direction === 'credit';
@@ -780,6 +792,7 @@
                 '<div style="margin-top:8px;font-size:1.4rem;font-weight:700;">' +
                 Number(data.balance).toFixed(2) +
                 ' <span style="font-size:0.8rem;color:#64748b;">' + esc(data.currency) + '</span></div>' +
+                currencyControl(data.currency, Number(data.balance) || 0) +
                 '</div>' +
                 '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">' + presets + '</div>' +
                 '<label style="display:block;font-size:0.75rem;color:#94a3b8;margin-bottom:4px;">Amount - negative takes it back</label>' +
@@ -796,6 +809,59 @@
                     '<div style="max-height:220px;overflow:auto;"><table style="width:100%;border-collapse:collapse;">' +
                     rows + '</table></div>'
                     : '<p style="margin-top:16px;font-size:0.75rem;color:#64748b;">Nothing has moved through this wallet yet.</p>');
+        }
+
+        // A wallet can only change currency while it is empty - a balance is a
+        // count of minor units of one currency, and converting it would need an
+        // exchange rate this app does not have. So the control says that plainly
+        // rather than letting the server refuse after the fact.
+        function currencyControl(current, balance) {
+            var options = WALLET_CURRENCIES.map(function (c) {
+                return '<option value="' + c + '"' +
+                       (c === current ? ' selected' : '') + '>' + c + '</option>';
+            }).join('');
+
+            if (balance !== 0) {
+                return '<div style="margin-top:10px;font-size:0.72rem;color:#64748b;">' +
+                       'Currency is fixed at ' + esc(current) + ' while the wallet holds ' +
+                       'money. Adjust the balance to zero to change it.</div>';
+            }
+            return '<div style="margin-top:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">' +
+                '<label style="font-size:0.72rem;color:#94a3b8;">Currency</label>' +
+                '<select id="wallet-currency" style="padding:6px 8px;border-radius:6px;' +
+                'border:1px solid rgba(255,255,255,0.1);background:#0b0f19;color:#f8fafc;' +
+                'font-size:0.78rem;">' + options + '</select>' +
+                '<button class="action-btn" onclick="applyWalletCurrency()">Change</button>' +
+                '<span id="wallet-currency-note" style="font-size:0.7rem;color:#64748b;"></span>' +
+                '</div>';
+        }
+
+        async function applyWalletCurrency() {
+            var note = document.getElementById('wallet-currency-note');
+            var code = document.getElementById('wallet-currency').value;
+            if (code === walletPanelCurrency) {
+                note.textContent = 'Already ' + code + '.';
+                return;
+            }
+            note.style.color = '#64748b';
+            note.textContent = 'Changing...';
+            try {
+                var res = await fetch('/api/superadmin/wallets/' + walletPanelFor + '/currency', {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ currency: code })
+                });
+                var d = await res.json();
+                if (!res.ok) {
+                    note.style.color = '#ff003c';
+                    note.textContent = d.detail || 'That did not go through.';
+                    return;
+                }
+                loadWallets();
+                adjustWallet(walletPanelFor);   // reopen, showing the new currency
+            } catch (e) {
+                note.style.color = '#ff003c';
+                note.textContent = 'That did not go through.';
+            }
         }
 
         async function applyWalletAdjustment() {
