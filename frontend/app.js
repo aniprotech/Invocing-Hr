@@ -323,6 +323,7 @@ function showView(viewId) {
     document.querySelectorAll('.nav-item').forEach(function(el) { el.classList.remove('active'); });
     var navMap = {
         'dashboard-view': 'nav-dashboard',
+        'hr-dashboard-view': 'nav-hr-dashboard',
         'invoices-view': 'nav-invoices',
         'create-invoice-view': 'nav-invoices',
         'view-invoice-view': 'nav-invoices',
@@ -369,6 +370,7 @@ function showView(viewId) {
     if (viewId === 'settings-view' && typeof loadTaxRates === 'function') loadTaxRates();
     if (viewId === 'settings-view' && typeof loadTeam === 'function') loadTeam();
     if (viewId === 'staff-requests-view' && typeof loadStaffRequestQueue === 'function') loadStaffRequestQueue();
+    if (viewId === 'hr-dashboard-view' && typeof loadHrDashboard === 'function') loadHrDashboard();
     if (viewId === 'settings-view' && typeof buildSettingsSections === 'function') buildSettingsSections();
     if (viewId === 'settings-view' && typeof loadPaymentGateways === 'function') loadPaymentGateways();
     if (viewId === 'settings-view' && typeof loadBrandingThemes === 'function') loadBrandingThemes();
@@ -380,6 +382,135 @@ function showView(viewId) {
     closeMobileMenu();
 }
 window.showView = showView;
+
+// --- HR dashboard ---------------------------------------------------------
+// The HR portal opened on the employee list, which says who exists but not
+// what needs doing. Every figure here is counted server-side at the moment it
+// is asked for, and every one of them is a link to the page that clears it -
+// a count nobody can act on is just a number.
+
+function hrDashGreeting() {
+    var h = new Date().getHours();
+    return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+}
+
+function hrDashLine(text, muted) {
+    return '<div style="padding:6px 0;font-size:0.85rem;' +
+        (muted ? 'color:var(--text-secondary);' : '') + '">' + text + '</div>';
+}
+
+async function loadHrDashboard() {
+    var waitingHost = document.getElementById('hr-dash-waiting');
+    if (!waitingHost) return;   // the invoicing portal shares this file
+
+    var data;
+    try {
+        var res = await fetch('/api/hr/dashboard');
+        if (!res.ok) throw new Error('nope');
+        data = await res.json();
+    } catch (e) {
+        var sub = document.getElementById('hr-dash-subtitle');
+        if (sub) sub.textContent = 'Could not load the summary.';
+        return;
+    }
+
+    var greeting = document.getElementById('hr-dash-greeting');
+    var subtitle = document.getElementById('hr-dash-subtitle');
+    if (greeting) greeting.textContent = hrDashGreeting();
+    if (subtitle) {
+        subtitle.textContent = data.waiting_total
+            ? data.waiting_total + (data.waiting_total === 1 ? ' thing is' : ' things are') +
+              ' waiting on you.'
+            : 'Nothing is waiting on you.';
+    }
+
+    // A queue at zero is still shown, dimmed - leaving it out would read as the
+    // queue not existing rather than as it being clear.
+    waitingHost.innerHTML = (data.waiting_on_you || []).map(function (w) {
+        var idle = !w.count;
+        return '<button type="button" class="stat-card" onclick="showView(&quot;' +
+            esc(w.view) + '&quot;)" aria-label="' + esc(w.label) + '"' +
+            (idle ? ' style="opacity:0.55;"' : '') + '>' +
+            '<span class="stat-label">' + esc(w.label) + '</span>' +
+            '<span class="stat-value"' +
+            (idle ? '' : ' style="color:var(--warning-color);"') + '>' + w.count + '</span>' +
+            '</button>';
+    }).join('');
+
+    // --- who is in -----------------------------------------------------------
+    var t = data.today || {};
+    var todayHost = document.getElementById('hr-dash-today');
+    if (todayHost) {
+        if (!t.expected) {
+            todayHost.innerHTML = hrDashLine('Nobody on the books yet.', true);
+        } else {
+            var parts = [
+                hrDashLine('<strong>' + t.clocked_in + '</strong> of ' + t.expected +
+                           ' clocked in'),
+            ];
+            if ((t.on_leave || []).length) {
+                parts.push(hrDashLine('<strong>' + t.on_leave.length + '</strong> on leave: ' +
+                    t.on_leave.map(function (p) {
+                        return esc(p.name) + ' <span style="color:var(--text-secondary);">(' +
+                               esc(p.type) + ' to ' + esc(p.until) + ')</span>';
+                    }).join(', ')));
+            }
+            if (t.unaccounted_count) {
+                // Deliberately not "absent" - nobody has said they are, only
+                // that nothing has been recorded either way.
+                var names = (t.unaccounted_for || []).map(esc).join(', ');
+                var more = t.unaccounted_count - (t.unaccounted_for || []).length;
+                parts.push(hrDashLine('<strong style="color:var(--warning-color);">' +
+                    t.unaccounted_count + '</strong> not accounted for: ' + names +
+                    (more > 0 ? ' and ' + more + ' more' : '')));
+            }
+            parts.push('<div style="margin-top:10px;"><button class="btn btn-secondary btn-sm" ' +
+                'onclick="showView(&quot;attendance-view&quot;)">Open attendance</button></div>');
+            todayHost.innerHTML = parts.join('');
+        }
+    }
+
+    // --- what lands soon -----------------------------------------------------
+    var c = data.coming_up || {};
+    var upHost = document.getElementById('hr-dash-upcoming');
+    if (upHost) {
+        var rows = [];
+        (c.starting || []).forEach(function (p) {
+            rows.push(hrDashLine(esc(p.name) + ' starts ' + esc(p.date) +
+                (p.title ? ' as ' + esc(p.title) : '')));
+        });
+        (c.interviews || []).forEach(function (i) {
+            rows.push(hrDashLine(esc(i.round) + ' - ' + esc(i.at) +
+                (i.interviewer ? ' with ' + esc(i.interviewer) : '')));
+        });
+        (c.expiring_documents || []).forEach(function (d) {
+            rows.push(hrDashLine(esc(d.name) +
+                (d.employee ? ' for ' + esc(d.employee) : '') +
+                ' expires ' + esc(d.expires_on)));
+        });
+        upHost.innerHTML = rows.length ? rows.join('')
+            : hrDashLine('Nothing in the next two weeks.', true);
+    }
+
+    // --- headcount last, because it changes least ---------------------------
+    var h = data.headcount || {};
+    var headHost = document.getElementById('hr-dash-headcount');
+    if (headHost) {
+        headHost.innerHTML = [
+            ['Total staff', h.total, '', 'employees-view'],
+            ['Active', h.active, 'var(--success-color)', 'employees-view'],
+            ['Onboarding', h.onboarding, 'var(--warning-color)', 'onboarding-hub-view'],
+            ['Offboarding', h.offboarding, 'var(--danger-color)', 'employees-view'],
+        ].map(function (row) {
+            return '<button type="button" class="stat-card is-centered" ' +
+                'onclick="showView(&quot;' + row[3] + '&quot;)">' +
+                '<span class="stat-value lg"' +
+                (row[2] ? ' style="color:' + row[2] + ';"' : '') + '>' + (row[1] || 0) + '</span>' +
+                '<span class="stat-label">' + row[0] + '</span></button>';
+        }).join('');
+    }
+}
+window.loadHrDashboard = loadHrDashboard;
 
 // --- Dashboard drill-down -------------------------------------------------
 // Every headline figure on the dashboard is a question ("who owes me?"), so
@@ -4664,7 +4795,7 @@ document.addEventListener('DOMContentLoaded', async function() {
 
     // Set initial view based on physical file
     if (window.location.pathname.includes('hr.html')) {
-        showView('employees-view');
+        showView('hr-dashboard-view');
     } else {
         showView('dashboard-view');
     }

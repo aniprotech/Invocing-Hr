@@ -6852,6 +6852,147 @@ def get_hr_stats(request: Request, db: Session = Depends(get_db)):
         "pending_payroll": round(float(pending_payroll), 2),
     }
 
+@app.get("/api/hr/dashboard")
+def get_hr_dashboard(request: Request, db: Session = Depends(get_db)):
+    """The HR portal had no landing page - it opened on the employee list, so
+    anything waiting on a decision was only found by going looking for it.
+
+    Built around what is outstanding rather than what is impressive: who is
+    missing today, and what queues have somebody waiting at the other end.
+    """
+    client = get_client_user(request, db)
+    cid = client.id
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+
+    def emps(*statuses):
+        q = db.query(models.DBEmployee).filter(models.DBEmployee.client_id == cid)
+        return q.filter(models.DBEmployee.status.in_(statuses)) if statuses else q
+
+    def name_of(emp):
+        return f"{emp.first_name} {emp.last_name}".strip() or emp.email or "Unknown"
+
+    headcount = {
+        "total": emps().count(),
+        "active": emps("active").count(),
+        "onboarding": emps("onboarding").count(),
+        "offboarding": emps("offboarding").count(),
+    }
+
+    # --- today ---------------------------------------------------------------
+    expected = emps("active", "onboarding").all()
+    present_ids = {
+        a.employee_id for a in db.query(models.DBAttendance).filter(
+            models.DBAttendance.client_id == cid,
+            models.DBAttendance.date == today,
+            models.DBAttendance.clock_in != "",
+        ).all() if a.clock_in
+    }
+    # A leave that straddles today counts, not only one that starts on it.
+    on_leave = db.query(models.DBLeaveRequest).filter(
+        models.DBLeaveRequest.client_id == cid,
+        models.DBLeaveRequest.status == "approved",
+        models.DBLeaveRequest.start_date <= today,
+        models.DBLeaveRequest.end_date >= today,
+    ).all()
+    leave_ids = {lv.employee_id for lv in on_leave}
+    by_id = {e.id: e for e in expected}
+
+    unaccounted = [name_of(e) for e in expected
+                   if e.id not in present_ids and e.id not in leave_ids]
+
+    today_block = {
+        "date": today,
+        "expected": len(expected),
+        "clocked_in": len([e for e in expected if e.id in present_ids]),
+        "on_leave": [
+            {"name": name_of(by_id[lv.employee_id]), "type": lv.leave_type,
+             "until": lv.end_date}
+            for lv in on_leave if lv.employee_id in by_id
+        ],
+        # Not called "absent" - nobody has said they are, only that nothing has
+        # been recorded either way.
+        "unaccounted_for": unaccounted[:8],
+        "unaccounted_count": len(unaccounted),
+    }
+
+    # --- queues with somebody waiting ---------------------------------------
+    pending_leave = db.query(models.DBLeaveRequest).filter(
+        models.DBLeaveRequest.client_id == cid,
+        models.DBLeaveRequest.status == "pending").count()
+    open_requests = db.query(models.DBStaffRequest).filter(
+        models.DBStaffRequest.client_id == cid,
+        models.DBStaffRequest.status == "open").count()
+    docs_to_review = db.query(models.DBDocumentRequest).filter(
+        models.DBDocumentRequest.client_id == cid,
+        models.DBDocumentRequest.status == "submitted").count()
+    docs_outstanding = db.query(models.DBDocumentRequest).filter(
+        models.DBDocumentRequest.client_id == cid,
+        models.DBDocumentRequest.status == "pending").count()
+    unpaid = db.query(models.DBPayslip).filter(
+        models.DBPayslip.client_id == cid,
+        models.DBPayslip.status != "Paid").all()
+
+    waiting = [
+        {"key": "leave", "label": "Leave requests to decide", "count": pending_leave,
+         "view": "leave-view"},
+        {"key": "requests", "label": "Staff requests unanswered", "count": open_requests,
+         "view": "staff-requests-view"},
+        {"key": "documents", "label": "Documents to review", "count": docs_to_review,
+         "view": "onboarding-hub-view"},
+        {"key": "chasing", "label": "Documents not sent in yet", "count": docs_outstanding,
+         "view": "onboarding-hub-view"},
+        {"key": "payroll", "label": "Payslips not paid", "count": len(unpaid),
+         "view": "payroll-view"},
+    ]
+
+    # --- what lands soon -----------------------------------------------------
+    in_14 = (now + timedelta(days=14)).strftime("%Y-%m-%d")
+    in_7 = (now + timedelta(days=7)).strftime("%Y-%m-%d %H:%M")
+    in_30 = (now + timedelta(days=30)).strftime("%Y-%m-%d")
+
+    starting = db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == cid,
+        models.DBEmployee.start_date >= today,
+        models.DBEmployee.start_date <= in_14,
+    ).order_by(models.DBEmployee.start_date).limit(5).all()
+
+    interviews = db.query(models.DBInterview).filter(
+        models.DBInterview.client_id == cid,
+        models.DBInterview.status == "scheduled",
+        models.DBInterview.scheduled_at >= now.strftime("%Y-%m-%d %H:%M"),
+        models.DBInterview.scheduled_at <= in_7,
+    ).order_by(models.DBInterview.scheduled_at).limit(5).all()
+
+    expiring = db.query(models.DBDocumentRequest).filter(
+        models.DBDocumentRequest.client_id == cid,
+        models.DBDocumentRequest.expires_on != "",
+        models.DBDocumentRequest.expires_on >= today,
+        models.DBDocumentRequest.expires_on <= in_30,
+    ).order_by(models.DBDocumentRequest.expires_on).limit(5).all()
+
+    all_emp = {e.id: e for e in emps().all()}
+    coming_up = {
+        "starting": [{"name": name_of(e), "date": e.start_date,
+                      "title": e.job_title or ""} for e in starting],
+        "interviews": [{"round": i.round_name, "at": i.scheduled_at,
+                        "interviewer": i.interviewer_name or ""} for i in interviews],
+        "expiring_documents": [
+            {"name": d.name, "expires_on": d.expires_on,
+             "employee": name_of(all_emp[d.employee_id]) if d.employee_id in all_emp else ""}
+            for d in expiring],
+    }
+
+    return {
+        "headcount": headcount,
+        "today": today_block,
+        "waiting_on_you": waiting,
+        # Summed here so the page does not have to know which ones count.
+        "waiting_total": sum(w["count"] for w in waiting),
+        "coming_up": coming_up,
+    }
+
+
 # --- Attendance API ---
 
 @app.post("/api/attendance/clock-in")
