@@ -71,6 +71,51 @@ for (const page of ['app.html', 'hr.html']) {
         'the runtime would rebuild what is already there');
 }
 
+// Every view has to have a way in. The employee list had none: it was reachable
+// only because the HR portal opened on it, so the day something else became the
+// landing page it became unreachable, with the markup for it still sitting
+// there. A view nothing routes to is invisible, and looks like a missing
+// feature rather than a missing link.
+{
+    const appJs = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+    const targets = text => new Set(
+        [...text.matchAll(/showView\(\s*(?:'|"|&quot;)([a-z0-9-]+-view)(?:'|"|&quot;)\s*\)/g)]
+            .map(m => m[1]));
+    const fromJs = targets(appJs);
+
+    for (const page of ['app.html', 'hr.html']) {
+        const raw = fs.readFileSync(path.join(ROOT, page), 'utf8');
+        const dom = new JSDOM(raw.replace(/<script[^>]*src=[^>]*><\/script>/g, ''));
+        const d = dom.window.document;
+
+        const nav = d.getElementById('main-nav');
+        const fromNav = targets(nav.innerHTML);
+        const fromPage = targets(raw);
+        const reachable = new Set([...fromNav, ...fromPage, ...fromJs]);
+
+        const views = [...d.querySelectorAll('.view-section')].map(el => el.id).filter(Boolean);
+        const stranded = views.filter(v => !reachable.has(v));
+        check(`${page}: every view has a way in`, stranded.length === 0,
+            stranded.join(', '));
+
+        // And the reverse - a link to a view that is not on the page is a dead
+        // tab that silently does nothing.
+        const dead = [...fromNav].filter(v => !d.getElementById(v));
+        check(`${page}: no nav item points at a view that is not there`,
+            dead.length === 0, dead.join(', '));
+    }
+
+    // The one that broke, named outright, because "reachable from somewhere" is
+    // not the same as "in the menu where somebody would look for it".
+    const hr = new JSDOM(fs.readFileSync(path.join(ROOT, 'hr.html'), 'utf8')
+        .replace(/<script[^>]*src=[^>]*><\/script>/g, '')).window.document;
+    const hrNav = hr.getElementById('main-nav').innerHTML;
+    check('HR has an Employees link in its header',
+        /showView\('employees-view'\)/.test(hrNav));
+    check('and it sits in the People menu',
+        /data-nav-group="People"[\s\S]*?employees-view[\s\S]*?<\/div>\s*<\/div>/.test(hrNav));
+}
+
 (async () => {
     for (const page of ['app.html', 'hr.html']) {
         console.log(`\n-- ${page} --`);
