@@ -29,7 +29,12 @@ function boot(page, opts) {
     });
     const w = dom.window;
     w.jspdf = { jsPDF };
+    // Shaped like the real Chart.js: the app sets Chart.defaults before drawing,
+    // and a stub without it turns every run into a page of noise that a real
+    // error could hide in.
     w.Chart = function () { this.destroy = () => { }; this.update = () => { }; };
+    w.Chart.defaults = { color: '', font: {}, plugins: {} };
+    w.Chart.register = () => { };
     w.URL.createObjectURL = () => 'blob:stub';
     w.URL.revokeObjectURL = () => { };
     w.fetch = (url) => {

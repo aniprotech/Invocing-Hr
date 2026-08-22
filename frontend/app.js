@@ -3311,7 +3311,9 @@ async function loadOnboardingHub() {
     try {
         var res = await fetch('/api/onboarding/hub');
         if (!res.ok) throw new Error('Failed');
-        onboardingHubData = await res.json();
+        var payload = await res.json();
+        // An error body is an object, and .filter on an object throws.
+        onboardingHubData = Array.isArray(payload) ? payload : [];
         renderOnboardingHub();
     } catch (e) { console.error('Onboarding hub error:', e); }
 }
@@ -4509,7 +4511,9 @@ async function loadLiveAttendance() {
     try {
         var res = await fetch('/api/attendance/live');
         if (!res.ok) return;
-        var data = await res.json();
+        var payload = await res.json();
+        // An error body is an object, and .map on an object throws.
+        var data = Array.isArray(payload) ? payload : [];
         var grid = document.getElementById('live-attendance-grid');
         if (!grid) return;
         var colors = { present: '#10b981', absent: '#ef4444', completed: '#3b82f6' };
@@ -7797,6 +7801,14 @@ window.reportApiError = reportApiError;
 var _wallet = null;
 var _walletProviders = null;
 
+// A figure that may not have arrived. Money is rendered from fields the server
+// sends, and reading .toFixed off an absent one throws rather than showing a
+// gap - which takes down everything queued behind it.
+function walletAmount(value) {
+    var n = Number(value);
+    return isFinite(n) ? n.toFixed(2) : '0.00';
+}
+
 async function loadWallet() {
     try {
         var res = await fetch('/api/wallet');
@@ -7804,13 +7816,14 @@ async function loadWallet() {
         _wallet = await res.json();
     } catch (e) { return; }
 
+    _wallet = _wallet || {};
     var sym = _wallet.symbol || '';
     var tiles = [
-        ['Balance', sym + _wallet.balance.toFixed(2), _wallet.is_empty ? 'var(--danger-color)'
+        ['Balance', sym + walletAmount(_wallet.balance), _wallet.is_empty ? 'var(--danger-color)'
             : (_wallet.is_low ? 'var(--warning-color)' : 'var(--success-color)')],
-        ['Spent all time', sym + _wallet.lifetime_spent.toFixed(2), ''],
-        ['Topped up all time', sym + _wallet.lifetime_topped_up.toFixed(2), ''],
-        ['Low balance at', sym + _wallet.low_balance.toFixed(2), '']
+        ['Spent all time', sym + walletAmount(_wallet.lifetime_spent), ''],
+        ['Topped up all time', sym + walletAmount(_wallet.lifetime_topped_up), ''],
+        ['Low balance at', sym + walletAmount(_wallet.low_balance), '']
     ];
     var stats = document.getElementById('wallet-stats');
     if (stats) {
