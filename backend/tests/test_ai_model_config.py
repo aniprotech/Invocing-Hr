@@ -52,10 +52,16 @@ def test_there_is_a_default_when_nothing_is_set(monkeypatch):
     assert llm.MODEL, "something has to be asked for"
 
 
-def test_the_retired_model_is_not_the_default(monkeypatch):
-    """The whole point of this change."""
+# Two have now been retired under this app. Both are named, because the second
+# one became the default as the fix for the first.
+RETIRED = ("llama-3.1-8b-instant", "llama-3.3-70b-versatile")
+
+
+@pytest.mark.parametrize("gone", RETIRED)
+def test_a_retired_model_is_not_the_default(monkeypatch, gone):
+    """The whole point of this change, twice over."""
     llm = reloaded(monkeypatch)
-    assert llm.DEFAULT_MODEL != "llama-3.1-8b-instant"
+    assert llm.DEFAULT_MODEL != gone
 
 
 def test_blank_falls_back_rather_than_asking_for_nothing(monkeypatch):
@@ -99,3 +105,54 @@ def test_listing_models_without_a_key_is_empty_not_an_error(monkeypatch):
     import llm
     monkeypatch.setattr(llm, "GROQ_API_KEY", "")
     assert llm.available_models() == []
+
+# --- reasoning traces are not the answer --------------------------------------
+# Everything Groq still offers is a reasoning model, and several wrap the answer
+# in a <think> block. One of them put a trace straight into a chat reply while
+# the replacement model was being chosen.
+
+def test_a_reasoning_trace_is_not_shown_to_anybody():
+    import llm
+    assert llm.strip_reasoning(
+        "<think>weighing it up</think>Two are overdue.") == "Two are overdue."
+
+
+def test_the_tags_are_matched_whatever_they_are_called():
+    import llm
+    for tag in ("think", "thinking", "reasoning"):
+        assert llm.strip_reasoning(f"<{tag}>x</{tag}>Answer.") == "Answer."
+
+
+def test_the_case_of_the_tag_does_not_matter():
+    import llm
+    assert llm.strip_reasoning("<THINK>x</THINK> Answer.") == "Answer."
+
+
+def test_an_answer_with_no_trace_is_left_alone():
+    import llm
+    for text in ("Two are overdue.", '{"ok": true}', ""):
+        assert llm.strip_reasoning(text) == text.strip()
+
+
+def test_a_trace_cut_off_by_the_token_budget_leaves_nothing():
+    """No closing tag means the budget ran out mid-thought, so there is no
+    answer after it to keep - and half a thought is not an answer."""
+    import llm
+    assert llm.strip_reasoning("<think>ran out of room mid-thou") == ""
+
+
+def test_a_brace_inside_the_reasoning_does_not_become_the_json():
+    """llm_json falls back to the first { it finds. Before stripping, that was
+    whichever one the model mentioned while thinking."""
+    import llm
+    cleaned = llm.strip_reasoning(
+        '<think>maybe {"wrong": 1} would do</think>{"right": 2}')
+    assert cleaned == '{"right": 2}'
+
+
+def test_thinking_the_whole_budget_away_is_reported_not_swallowed():
+    """A 200 with nothing left to say is a failure like any other, and it used
+    to come back as a silent None."""
+    import llm
+    assert "empty_answer" in llm.LLM_MESSAGES
+    assert llm.LLM_MESSAGES["empty_answer"]

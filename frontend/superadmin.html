@@ -317,7 +317,7 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=69">
+    <link rel="stylesheet" href="mobile.css?v=70">
 </head>
 <body>
     <div class="admin-header">
@@ -399,6 +399,12 @@
                 <div id="wallets-list"></div>
             </div>
         </div>
+
+        <div class="section-header" style="margin-top:32px;">
+            <h2>AI</h2>
+            <button class="action-btn" onclick="checkAi()" style="margin-left:auto;">Check AI</button>
+        </div>
+        <div id="ai-status" style="font-size:0.8rem;color:#64748b;">Not checked yet.</div>
 
         <div class="section-header" style="margin-top:32px;">
             <h2>6-Month Trends</h2>
@@ -695,6 +701,57 @@
                       shape.notes.map(esc).join('<br>') + '</div>' : '') +
                 (d.hint ? '<div style="color:#64748b;margin-top:4px;">' + esc(d.hint) + '</div>' : '') +
                 (d.next ? '<div style="color:#64748b;margin-top:4px;">' + esc(d.next) + '</div>' : '');
+        }
+
+        // The check makes one real call to the model, so a pass means the
+        // feature works rather than that the settings look plausible.
+        async function checkAi() {
+            var host = document.getElementById('ai-status');
+            host.style.color = '#64748b';
+            host.textContent = 'Asking the model...';
+
+            var d;
+            try {
+                d = await (await fetch('/api/superadmin/ai-status')).json();
+            } catch (e) {
+                host.style.color = '#ff003c';
+                host.textContent = 'Could not run the check.';
+                return;
+            }
+
+            var parts = ['<div>' + esc(d.detail || '') + '</div>'];
+            parts.push('<div style="color:#64748b;margin-top:4px;">Model: ' +
+                esc(d.model || '(none)') +
+                (d.model === d.model_default ? ' (the built-in default)' : '') + '</div>');
+
+            // The one failure that is fixable in a minute, and the only way to
+            // fix it correctly is to pick from what the key can really use -
+            // a model that sounds right is how this broke in the first place.
+            if (d.model_is_available === false) {
+                parts.push('<div style="color:#fcd34d;margin-top:4px;">' +
+                    'This key cannot use ' + esc(d.model) + '. Set ' +
+                    esc(d.model_env_var || 'GROQ_MODEL') + ' to one of the below and restart.</div>');
+            }
+            if ((d.available_models || []).length) {
+                parts.push('<div style="color:#64748b;margin-top:6px;">Models this key can use:</div>' +
+                    '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;">' +
+                    d.available_models.map(function (m) {
+                        return '<code style="background:rgba(255,255,255,0.06);padding:3px 7px;' +
+                               'border-radius:5px;font-size:0.72rem;' +
+                               (m === d.model ? 'color:#39ff14;' : 'color:#94a3b8;') + '">' +
+                               esc(m) + '</code>';
+                    }).join('') + '</div>');
+            } else if (d.configured) {
+                parts.push('<div style="color:#64748b;margin-top:4px;">' +
+                    'Could not list the models, which usually means the key itself was refused.</div>');
+            }
+            if (!d.configured) {
+                parts.push('<div style="color:#64748b;margin-top:4px;">' +
+                    esc(d.key_hint || '') + '</div>');
+            }
+
+            host.style.color = d.reachable ? '#39ff14' : '#ff003c';
+            host.innerHTML = parts.join('');
         }
 
         async function loadPricing() {

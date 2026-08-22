@@ -1,6 +1,8 @@
 import os
 import json
 import logging
+import re
+
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -8,12 +10,15 @@ logger = logging.getLogger(__name__)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
-# The model is a setting, because hosted models get retired and the last one
-# did. Changing GROQ_MODEL in the environment is a restart; changing a constant
-# in here is a deploy, and the difference matters when the AI is already down.
-# available_models() lists what the key can actually use, so the replacement
-# does not have to be guessed.
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
+# The model is a setting, because hosted models get retired and two now have.
+# Changing GROQ_MODEL in the environment is a restart; changing this constant is
+# a deploy, and the difference matters when the AI is already down.
+# available_models() lists what the key can actually use, so a replacement is
+# picked from what exists rather than from what sounds current - which is how
+# llama-3.3-70b-versatile came to be the default after it had been retired.
+# This one was checked against the live API: a chat call and a JSON call, at the
+# token budgets this app actually uses.
+DEFAULT_MODEL = "openai/gpt-oss-120b"
 MODEL = os.getenv("GROQ_MODEL", "").strip() or DEFAULT_MODEL
 
 
@@ -60,6 +65,23 @@ def llm_last_error() -> str:
     return LAST_ERROR["reason"]
 
 
+# Everything Groq still offers is a reasoning model, and several wrap the
+# answer in a <think> block. Left in, it reaches the customer - one of them put
+# a reasoning trace straight into a chat reply in testing - and it breaks the
+# JSON parse, because the first { the parser meets is inside the reasoning
+# rather than in the answer.
+THINK_BLOCK = re.compile(r"<(think|thinking|reasoning)>.*?</\1>",
+                         re.DOTALL | re.IGNORECASE)
+# An unclosed one means the token budget ran out mid-thought; there is no answer
+# after it to keep.
+OPEN_THINK = re.compile(r"<(think|thinking|reasoning)>.*\Z",
+                        re.DOTALL | re.IGNORECASE)
+
+
+def strip_reasoning(text: str) -> str:
+    return OPEN_THINK.sub("", THINK_BLOCK.sub("", text or "")).strip()
+
+
 def llm_chat(messages, temperature=0.3, max_tokens=1024):
     if not GROQ_API_KEY:
         LAST_ERROR["reason"] = "no_key"
@@ -73,7 +95,14 @@ def llm_chat(messages, temperature=0.3, max_tokens=1024):
         )
         if resp.status_code == 200:
             LAST_ERROR["reason"] = ""
-            return resp.json()["choices"][0]["message"]["content"].strip()
+            answer = strip_reasoning(
+                resp.json()["choices"][0]["message"]["content"])
+            if not answer:
+                # A 200 whose whole budget went on reasoning is a failure like
+                # any other, and saying nothing is worse than saying why.
+                LAST_ERROR["reason"] = "empty_answer"
+                return None
+            return answer
         body = (resp.text or "")[:400].lower()
         retired = (
             resp.status_code == 404
@@ -101,6 +130,8 @@ LLM_MESSAGES = {
     "timeout": "The AI took too long to answer. Try again.",
     "network_error": "Could not reach the AI service.",
     "upstream_error": "The AI service returned an error.",
+    "empty_answer": ("The AI thought about it for too long and ran out of room "
+                     "to answer. Try a shorter question."),
     "model_gone": ("The AI model this is set to no longer exists. Set GROQ_MODEL "
                    "to a current one - the AI status page lists what the key can use."),
 }

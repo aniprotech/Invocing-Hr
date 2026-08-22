@@ -78,11 +78,26 @@ def test_assistant_answers_from_context(tenant, monkeypatch):
 
 
 def test_assistant_degrades_when_the_model_is_down(tenant, monkeypatch):
+    """A model that will not answer is not an error the caller has to handle -
+    the question was valid and the app is working. So it comes back 200 with
+    available false and something to read.
+
+    What that something says is no longer fixed here. It used to be one
+    sentence for all six failures, which is what made "an administrator needs
+    to configure the AI key" the answer to a retired model. Which reason it was
+    is checked in test_ai_says_why.
+    """
+    import llm
+
     monkeypatch.setattr(main, "llm_chat", lambda *a, **k: None)
+    llm.LAST_ERROR["reason"] = "model_gone"
+
     res = tenant.post("/api/ai/assistant", json={"question": "How much am I owed?"})
     assert res.status_code == 200
-    assert res.json()["available"] is False
-    assert "not available" in res.json()["answer"].lower()
+    body = res.json()
+    assert body["available"] is False
+    assert body["answer"].strip(), "silence is the one thing it must not do"
+    llm.LAST_ERROR["reason"] = ""
 
 
 @pytest.mark.parametrize("question,code", [

@@ -11917,6 +11917,7 @@ def upload_document(emp_id: int, request: Request, body: dict = None, db: Sessio
 # AI ENDPOINTS (Groq / Llama 3.3)
 # ============================================================================
 
+import llm
 from llm import llm_chat, llm_json, llm_configured, llm_error_message
 
 
@@ -11929,9 +11930,17 @@ def ai_status(request: Request, db: Session = Depends(get_db)):
     """
     get_client_user(request, db)
     configured = llm_configured()
+    # A key being set is not the same as the AI working - a retired model looks
+    # identical from here. So the reason the last call failed is carried too,
+    # rather than probing the model on every page load.
+    last = llm.llm_last_error()
     return {
         "configured": configured,
         "message": "" if configured else llm_error_message(),
+        # Set when something has actually failed since the last restart, so the
+        # page can say which of the six it was instead of guessing at the key.
+        "last_error": last,
+        "last_error_message": llm_error_message() if last else "",
     }
 
 
@@ -11953,7 +11962,9 @@ def screen_resume(request: Request, body: dict = None, db: Session = Depends(get
     ]
     result = llm_json(messages)
     if not result:
-        return {"score": 0, "summary": "AI service unavailable.", "strengths": [], "weaknesses": [], "recommendation": "Unable to screen at this time."}
+        return {"score": 0, "summary": llm_error_message(), "strengths": [],
+                "weaknesses": [], "recommendation": "Unable to screen at this time.",
+                "available": False, "reason": llm.llm_last_error()}
     charge_after_success(db, client.id, "ai_resume_screen", 1, candidate_name)
     return {
         "score": result.get("score", 0),
@@ -12824,11 +12835,10 @@ def ai_assistant(body: AssistantQuery, request: Request, db: Session = Depends(g
     ], temperature=0.2, max_tokens=400)
 
     if not answer:
-        return {
-            "answer": "The AI assistant is not available right now. "
-                      "An administrator needs to configure the AI key.",
-            "available": False,
-        }
+        # Whichever of the six it was. Telling somebody to configure a key that
+        # is already configured is worse than saying nothing.
+        return {"answer": llm_error_message(), "available": False,
+                "reason": llm.llm_last_error()}
     charge_after_success(db, client.id, "ai_assistant", 1, question[:60])
     return {"answer": answer, "available": True}
 
@@ -12886,7 +12896,8 @@ def ai_insights(request: Request, db: Session = Depends(get_db)):
         {"role": "user", "content": context},
     ])
     if not result:
-        return {"available": False, "headline": "", "actions": []}
+        return {"available": False, "headline": "", "actions": [],
+                "message": llm_error_message(), "reason": llm.llm_last_error()}
     charge_after_success(db, client.id, "ai_insights")
     return {
         "available": True,

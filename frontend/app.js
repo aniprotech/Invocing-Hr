@@ -9044,17 +9044,37 @@ async function loadAiStatus() {
 window.loadAiStatus = loadAiStatus;
 
 function applyAiStatus() {
-    if (!_aiStatus || _aiStatus.configured) return;
-    document.querySelectorAll('[data-ai]').forEach(function (el) {
-        el.disabled = true;
-        el.title = _aiStatus.message || 'AI is not set up yet.';
-    });
+    if (!_aiStatus) return;
+    // A missing key means the buttons cannot work at all, so they are turned
+    // off. Anything else - a retired model, a rate limit - may well clear on
+    // its own, so the button stays live and only carries the reason.
+    if (!_aiStatus.configured) {
+        document.querySelectorAll('[data-ai]').forEach(function (el) {
+            el.disabled = true;
+            el.title = _aiStatus.message || 'AI is not set up yet.';
+        });
+        return;
+    }
+    if (_aiStatus.last_error_message) {
+        document.querySelectorAll('[data-ai]').forEach(function (el) {
+            el.title = _aiStatus.last_error_message;
+        });
+    }
 }
 
 // One message for every AI failure, so "not configured" does not read the same
 // as "the service is busy".
-function aiUnavailableText() {
+function aiUnavailableText(payload) {
+    // What the server said about this call beats anything worked out here: it
+    // knows whether the model is retired, the key was refused, or it simply
+    // timed out, and those are fixed in three different places.
+    if (payload && (payload.message || payload.answer) && payload.available === false) {
+        return payload.message || payload.answer;
+    }
     if (_aiStatus && !_aiStatus.configured) return _aiStatus.message || 'AI is not set up yet.';
+    // Something has failed since the server started, and the reason survives
+    // even when a key is present - which is the case a retired model produces.
+    if (_aiStatus && _aiStatus.last_error_message) return _aiStatus.last_error_message;
     return 'The AI is unavailable right now. Try again in a moment.';
 }
 window.aiUnavailableText = aiUnavailableText;
