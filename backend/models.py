@@ -1208,6 +1208,36 @@ class DBStaffRequest(Base):
                             cascade="all, delete-orphan")
 
 
+class DBProfileChange(Base):
+    """One field an employee wants changed, waiting on HR.
+
+    Most of a person's own record is theirs to correct - a new phone number is
+    not HR's business and making them ask for it is why the numbers on file go
+    stale. Bank details are different: whatever is stored here is where the
+    money goes, so a change to one is a change to where somebody's wages land.
+    That gets a second pair of eyes, and the old value is kept so the person
+    approving can see what it is moving from.
+
+    Rejecting leaves the record untouched; approving writes the value across.
+    Either way nothing is applied by the request itself.
+    """
+    __tablename__ = "profile_changes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+
+    field = Column(String, nullable=False)       # bank_name | bank_account | tax_id
+    old_value = Column(String, default="")
+    new_value = Column(String, nullable=False)
+
+    status = Column(String, default="pending", index=True)   # pending|approved|rejected
+    note = Column(String, default="")            # why HR turned it down
+    decided_by = Column(String, default="")
+    decided_at = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
 class DBStaffMessage(Base):
     """One message in a thread, from either side."""
     __tablename__ = "staff_messages"

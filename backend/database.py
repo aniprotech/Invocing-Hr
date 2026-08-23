@@ -1325,5 +1325,30 @@ def ensure_columns():
                 except Exception:
                     MIGRATION_ERRORS.append(f"migration step 47 ({col}): {sys.exc_info()[1]}")
 
+            # A change to a person's own record that HR has to agree to. Only
+            # the fields that decide where wages land go through here.
+            try:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS profile_changes (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        employee_id INTEGER REFERENCES employees(id) NOT NULL,
+                        field VARCHAR NOT NULL,
+                        old_value VARCHAR DEFAULT '',
+                        new_value VARCHAR NOT NULL,
+                        status VARCHAR DEFAULT 'pending',
+                        note VARCHAR DEFAULT '',
+                        decided_by VARCHAR DEFAULT '',
+                        decided_at VARCHAR DEFAULT '',
+                        created_at VARCHAR DEFAULT (NOW()::TEXT)
+                    )
+                """))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_profile_changes_queue "
+                    "ON profile_changes (client_id, status)"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 48: {sys.exc_info()[1]}")
+
     except Exception as e:
         print(f"Column check skipped: {e}")

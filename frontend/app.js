@@ -370,6 +370,7 @@ function showView(viewId) {
     if (viewId === 'settings-view' && typeof loadTaxRates === 'function') loadTaxRates();
     if (viewId === 'settings-view' && typeof loadTeam === 'function') loadTeam();
     if (viewId === 'staff-requests-view' && typeof loadStaffRequestQueue === 'function') loadStaffRequestQueue();
+    if (viewId === 'staff-requests-view' && typeof loadBankChanges === 'function') loadBankChanges();
     if (viewId === 'hr-dashboard-view' && typeof loadHrDashboard === 'function') loadHrDashboard();
     if (viewId === 'settings-view' && typeof buildSettingsSections === 'function') buildSettingsSections();
     if (viewId === 'settings-view' && typeof loadPaymentGateways === 'function') loadPaymentGateways();
@@ -382,6 +383,76 @@ function showView(viewId) {
     closeMobileMenu();
 }
 window.showView = showView;
+
+// --- Bank detail changes waiting on a decision -----------------------------
+// An employee can correct their own contact details outright, but not where
+// their wages are paid. Those are proposed and land here. Both values are shown
+// because the decision is "is this move right", which needs the one it is
+// moving from.
+
+async function loadBankChanges() {
+    var host = document.getElementById('bank-changes-panel');
+    if (!host) return;
+    var rows;
+    try {
+        var res = await fetch('/api/hr/profile-changes?status=pending');
+        if (!res.ok) { host.style.display = 'none'; return; }
+        rows = await res.json();
+    } catch (e) { host.style.display = 'none'; return; }
+
+    if (!Array.isArray(rows) || !rows.length) {
+        host.style.display = 'none';
+        host.innerHTML = '';
+        return;
+    }
+
+    host.style.display = 'block';
+    host.innerHTML =
+        '<div class="widget" style="border-left:3px solid var(--warning-color);">' +
+        '<div class="widget-header"><h3>Bank details waiting on you (' + rows.length + ')</h3></div>' +
+        '<div style="padding:4px 0;">' +
+        rows.map(function (r) {
+            return '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;' +
+                'padding:10px 0;border-bottom:1px solid var(--border-color);">' +
+                '<div style="flex:1;min-width:200px;">' +
+                    '<div style="font-weight:600;font-size:0.88rem;">' + esc(r.employee.name) +
+                    ' <span style="color:var(--text-secondary);font-weight:400;">wants to change ' +
+                    esc(r.field.replace(/_/g, " ")) + '</span></div>' +
+                    '<div style="font-size:0.78rem;color:var(--text-secondary);margin-top:2px;">' +
+                    (r.old_value ? esc(r.old_value) + ' &rarr; ' : 'now: ') +
+                    '<strong style="color:var(--text-primary);">' + esc(r.new_value) + '</strong>' +
+                    ' &middot; asked ' + esc(r.created_at) + '</div>' +
+                '</div>' +
+                '<button class="btn btn-sm btn-primary" onclick="decideBankChange(' + r.id + ', &quot;approve&quot;)">Approve</button>' +
+                '<button class="btn btn-sm btn-outline" onclick="decideBankChange(' + r.id + ', &quot;reject&quot;)">Reject</button>' +
+            '</div>';
+        }).join('') +
+        '</div></div>';
+}
+window.loadBankChanges = loadBankChanges;
+
+async function decideBankChange(id, decision) {
+    // A rejection without a reason leaves somebody guessing at what to fix, so
+    // it is asked for - and only for the rejection.
+    var note = '';
+    if (decision === 'reject') {
+        note = prompt('Why is this being turned down? The employee sees this.') || '';
+        if (!note.trim()) return;
+    }
+    try {
+        var res = await fetch('/api/hr/profile-changes/' + id + '/decide', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ decision: decision, note: note })
+        });
+        var d = await res.json();
+        if (!res.ok) { showToast(d.detail || 'That did not go through.', 'error'); return; }
+        showToast(decision === 'approve' ? 'Applied and the employee told.'
+                                         : 'Turned down and the employee told.', 'success');
+        loadBankChanges();
+        if (typeof loadHrDashboard === 'function') loadHrDashboard();
+    } catch (e) { showToast('That did not go through.', 'error'); }
+}
+window.decideBankChange = decideBankChange;
 
 // --- HR dashboard ---------------------------------------------------------
 // The HR portal opened on the employee list, which says who exists but not
@@ -7998,7 +8069,12 @@ async function startTopUp() {
     try {
         var res = await fetch('/api/wallet/topup', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ amount: amount, provider: picked.value })
+            // PayPal sends the buyer back to a page we name, and both portals
+            // run the same API - without this an HR user lands in invoicing.
+            body: JSON.stringify({
+                amount: amount, provider: picked.value,
+                return_page: window.location.pathname.split('/').pop() || 'app.html'
+            })
         });
         var data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Could not start the payment');
@@ -8045,14 +8121,35 @@ function openRazorpayCheckout(data) {
 async function finishPayPalReturn() {
     var params = new URLSearchParams(window.location.search);
     if (params.get('topup') !== 'success') return;
+
+    // The order id travels back with the redirect. Falling back to the newest
+    // pending one is only for a link that lost it: with two payments in flight
+    // a guess captures the wrong one.
+    var orderId = params.get('order');
+    if (!orderId) {
+        try {
+            var orders = await (await fetch('/api/wallet/topups?limit=5')).json();
+            var pending = (Array.isArray(orders) ? orders : []).filter(function (o) {
+                return o.provider === 'paypal' && o.status === 'pending';
+            })[0];
+            if (!pending) return;
+            orderId = pending.id;
+        } catch (e) { return; }
+    }
+
     try {
-        var orders = await (await fetch('/api/wallet/topups?limit=5')).json();
-        var pending = orders.filter(function (o) { return o.provider === 'paypal' && o.status === 'pending'; })[0];
-        if (!pending) return;
-        var res = await fetch('/api/wallet/topup/' + pending.id + '/capture-paypal', { method: 'POST' });
+        var res = await fetch('/api/wallet/topup/' + orderId + '/capture-paypal',
+                              { method: 'POST' });
         var data = await res.json();
-        if (res.ok && data.credited) showToast('Wallet topped up', 'success');
-    } catch (e) { /* the webhook or a later retry will settle it */ }
+        if (res.ok && data.credited) { showToast('Wallet topped up', 'success'); return; }
+        // A capture that did not go through has a reason, and losing it means
+        // the money is gone from PayPal's side with nothing on screen to say so.
+        showToast(data.detail || data.message || 'PayPal did not complete the payment.',
+                  'error');
+    } catch (e) {
+        showToast('Could not confirm the payment with PayPal. '
+                  + 'Check the wallet history before paying again.', 'error');
+    }
 }
 
 function handleTopUpReturn() {

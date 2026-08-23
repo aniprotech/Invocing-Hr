@@ -9,6 +9,9 @@
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- The payslip is built here, in the browser, the same way the owner's side
+       builds one. There is no server-side generator to call. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script>
     tailwind.config = {
       theme: {
@@ -45,7 +48,7 @@
     .notification-badge { animation: notifPulse 2s infinite; }
     @keyframes notifPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.1); } }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=71">
+    <link rel="stylesheet" href="mobile.css?v=72">
 </head>
 <body class="bg-gray-50 min-h-screen">
 
@@ -126,6 +129,10 @@
         <button onclick="switchTab('team')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="team">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
           Team
+        </button>
+        <button onclick="switchTab('assistant')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="assistant">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+          Assistant
         </button>
         <button onclick="switchTab('requests')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="requests">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
@@ -328,6 +335,9 @@
 
     <!-- Tab: Leave -->
     <div id="tab-leave" class="tab-panel hidden fade-in">
+      <!-- Days remaining, before the history of days used. Nobody plans a
+           holiday from a count of what they have already taken. -->
+      <div id="leaveRemaining" class="mb-6"></div>
       <div class="grid lg:grid-cols-3 gap-6">
         <div class="lg:col-span-2">
           <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden">
@@ -428,6 +438,27 @@
     </div>
 
     <!-- Tab: Team -->
+    <!-- Ask about your own record. Everything it is told is this one person's;
+         it has nothing about anybody else and says so if asked. -->
+    <div id="tab-assistant" class="tab-panel hidden fade-in">
+      <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+        <div class="p-6 border-b border-gray-100">
+          <h3 class="font-semibold text-gray-900">Ask about your own record</h3>
+          <p class="text-xs text-gray-400 mt-0.5">Leave, pay, hours, documents and goals.
+             For anything it cannot answer, use Ask HR.</p>
+        </div>
+        <div id="asstLog" class="p-6 space-y-3 max-h-96 overflow-y-auto"></div>
+        <div id="asstSuggestions" class="px-6 pb-3 flex flex-wrap gap-2"></div>
+        <div class="p-4 border-t border-gray-100 flex gap-2">
+          <input id="asstInput" type="text" maxlength="500" placeholder="How much leave do I have left?"
+                 class="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                 onkeydown="if(event.key==='Enter')askAssistant()">
+          <button onclick="askAssistant()" id="asstSend"
+                  class="px-5 py-2.5 rounded-xl bg-brand-500 text-white text-sm font-semibold hover:bg-brand-600 transition-colors">Ask</button>
+        </div>
+      </div>
+    </div>
+
     <div id="tab-team" class="tab-panel hidden fade-in">
       <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4" id="teamGrid"></div>
     </div>
@@ -471,6 +502,62 @@
         </div>
         <div class="p-6">
           <div class="grid sm:grid-cols-2 gap-4" id="profileDetails"></div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden mt-6">
+        <div class="p-6 border-b border-gray-100">
+          <h3 class="font-semibold text-gray-900">Keep your details right</h3>
+          <p class="text-xs text-gray-400 mt-0.5">
+            Contact details save straight away. Bank details go to HR first,
+            because that is where your wages are paid.</p>
+        </div>
+        <div class="p-6 grid sm:grid-cols-2 gap-4">
+          <label class="block">
+            <span class="text-[11px] text-gray-400 uppercase tracking-wider font-medium">Phone</span>
+            <input id="me-phone" type="text" maxlength="40"
+                   class="mt-1 w-full px-3 py-2 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+          </label>
+          <label class="block">
+            <span class="text-[11px] text-gray-400 uppercase tracking-wider font-medium">Address</span>
+            <input id="me-address" type="text" maxlength="200"
+                   class="mt-1 w-full px-3 py-2 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+          </label>
+          <label class="block">
+            <span class="text-[11px] text-gray-400 uppercase tracking-wider font-medium">Emergency contact</span>
+            <input id="me-emergency_contact" type="text" maxlength="120"
+                   class="mt-1 w-full px-3 py-2 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+          </label>
+          <label class="block">
+            <span class="text-[11px] text-gray-400 uppercase tracking-wider font-medium">Emergency phone</span>
+            <input id="me-emergency_phone" type="text" maxlength="40"
+                   class="mt-1 w-full px-3 py-2 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+          </label>
+
+          <div class="sm:col-span-2 mt-2 p-4 rounded-xl bg-amber-50 border border-amber-100">
+            <div class="text-xs font-semibold text-amber-800 mb-3">
+              Bank details &middot; HR has to approve a change here</div>
+            <div class="grid sm:grid-cols-2 gap-4">
+              <label class="block">
+                <span class="text-[11px] text-amber-700 uppercase tracking-wider font-medium">Bank name</span>
+                <input id="me-bank_name" type="text" maxlength="120"
+                       class="mt-1 w-full px-3 py-2 rounded-xl border border-amber-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-400">
+              </label>
+              <label class="block">
+                <span class="text-[11px] text-amber-700 uppercase tracking-wider font-medium">Account</span>
+                <input id="me-bank_account" type="text" maxlength="40"
+                       class="mt-1 w-full px-3 py-2 rounded-xl border border-amber-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-400">
+              </label>
+            </div>
+          </div>
+
+          <div class="sm:col-span-2 flex items-center gap-3 flex-wrap">
+            <button onclick="saveMyDetails()"
+                    class="px-5 py-2.5 rounded-xl bg-brand-500 text-white text-sm font-semibold hover:bg-brand-600 transition-colors">Save</button>
+            <span id="meSaveNote" class="text-xs text-gray-400"></span>
+          </div>
+
+          <div class="sm:col-span-2" id="myChanges"></div>
         </div>
       </div>
     </div>
@@ -776,11 +863,298 @@
       if (panel) panel.classList.remove('hidden');
       if (btn) { btn.classList.add('tab-active'); btn.classList.remove('text-gray-500'); }
       if (tab === 'goals') loadGoals();
-      if (tab === 'leave') loadLeave();
+      if (tab === 'leave') { loadLeave(); loadLeaveBalance(); }
       if (tab === 'documents') { loadDocuments(); loadDocumentRequests(); }
       if (tab === 'team') loadTeamPresence();
-      if (tab === 'profile') loadProfileTab();
+      if (tab === 'profile') { loadProfileTab(); loadMyChanges(); }
       if (tab === 'requests') loadStaffRequests();
+      if (tab === 'payslips') loadPayslips();
+      if (tab === 'assistant') startAssistant();
+    }
+
+    // --- Payslips ----------------------------------------------------------
+    // The figures were already on the dashboard. What was missing was anything
+    // a person could keep: a payslip is what a landlord or a lender asks for,
+    // and getting one meant emailing HR.
+
+    var _payslips = [];
+
+    async function loadPayslips() {
+      var host = document.getElementById('payslipGrid');
+      if (!host) return;
+      try {
+        var res = await apiGet('/api/employee/payslips');
+        if (!res.ok) throw new Error('nope');
+        _payslips = await res.json();
+      } catch (e) {
+        host.innerHTML = '<div class="p-8 text-center text-gray-400 text-sm">Could not load your payslips.</div>';
+        return;
+      }
+      if (!_payslips.length) {
+        host.innerHTML = '<div class="p-8 text-center text-gray-400 text-sm">No payslips yet.</div>';
+        return;
+      }
+      host.innerHTML = _payslips.map(function (p) {
+        return '<div class="bg-white rounded-2xl border border-gray-100 p-5 flex items-center gap-4 flex-wrap">' +
+          '<div class="flex-1 min-w-[180px]">' +
+            '<div class="font-semibold text-gray-900">' + esc(p.number) + '</div>' +
+            '<div class="text-xs text-gray-400 mt-0.5">' + esc(p.period_start) + ' to ' + esc(p.period_end) +
+            ' &middot; paid ' + esc(p.pay_date) + '</div>' +
+          '</div>' +
+          '<div class="text-right">' +
+            '<div class="text-lg font-bold text-gray-900">' + Number(p.net_pay).toFixed(2) + '</div>' +
+            '<div class="text-[11px] text-gray-400 uppercase tracking-wider">Net pay</div>' +
+          '</div>' +
+          '<button onclick="downloadPayslip(' + p.id + ')" ' +
+            'class="px-4 py-2 rounded-xl bg-brand-500 text-white text-sm font-semibold hover:bg-brand-600 transition-colors">Download</button>' +
+        '</div>';
+      }).join('');
+    }
+
+    async function downloadPayslip(id) {
+      var ps;
+      try {
+        var res = await apiGet('/api/employee/payslips/' + id);
+        if (!res.ok) throw new Error('nope');
+        ps = await res.json();
+      } catch (e) { alert('Could not load that payslip.'); return; }
+
+      if (!window.jspdf || !window.jspdf.jsPDF) {
+        alert('The PDF library did not load. Check your connection and try again.');
+        return;
+      }
+      var doc = new window.jspdf.jsPDF({ unit: 'pt', format: 'a4' });
+      var W = doc.internal.pageSize.getWidth();
+      var M = 48;
+      var cur = ps.currency || '';
+      var money = function (n) { return cur + ' ' + (Number(n) || 0).toFixed(2); };
+      var y = M;
+
+      doc.setFontSize(20); doc.setFont(undefined, 'bold');
+      doc.text('PAYSLIP', M, y);
+      doc.setFontSize(10); doc.setFont(undefined, 'normal');
+      doc.text(String(ps.number || ''), W - M, y, { align: 'right' });
+      y += 22;
+
+      doc.setFontSize(9); doc.setTextColor(110);
+      doc.text(String(ps.company.name || ''), M, y); y += 12;
+      if (ps.company.address) { doc.text(String(ps.company.address), M, y); y += 12; }
+      doc.setTextColor(0);
+      y += 10;
+
+      doc.setFontSize(10); doc.setFont(undefined, 'bold');
+      doc.text(String(ps.employee.name || ''), M, y);
+      doc.setFont(undefined, 'normal'); doc.setTextColor(110); doc.setFontSize(9);
+      doc.text(String(ps.employee.job_title || ''), M, y + 12);
+      doc.text('Period: ' + ps.period_start + ' to ' + ps.period_end, W - M, y, { align: 'right' });
+      doc.text('Pay date: ' + ps.pay_date, W - M, y + 12, { align: 'right' });
+      if (ps.employee.bank_account) {
+        doc.text('Account: ' + ps.employee.bank_account, W - M, y + 24, { align: 'right' });
+      }
+      doc.setTextColor(0);
+      y += 46;
+
+      // Two columns that have to reconcile: what was earned, what was taken off.
+      function row(label, value, bold) {
+        doc.setFont(undefined, bold ? 'bold' : 'normal');
+        doc.setFontSize(10);
+        doc.text(String(label), M, y);
+        doc.text(money(value), W - M, y, { align: 'right' });
+        y += 16;
+      }
+      function rule() {
+        doc.setDrawColor(220); doc.line(M, y - 6, W - M, y - 6); y += 4;
+      }
+
+      doc.setFont(undefined, 'bold'); doc.setFontSize(11);
+      doc.text('Earnings', M, y); y += 16;
+      doc.setFont(undefined, 'normal');
+      row('Basic salary', ps.basic_salary);
+      if (ps.overtime_pay) row('Overtime (' + (ps.overtime_hours || 0) + 'h)', ps.overtime_pay);
+      if (ps.bonus) row('Bonus', ps.bonus);
+      if (ps.allowances) row('Allowances', ps.allowances);
+      rule();
+      row('Gross pay', ps.gross_pay, true);
+      y += 12;
+
+      doc.setFont(undefined, 'bold'); doc.setFontSize(11);
+      doc.text('Deductions', M, y); y += 16;
+      doc.setFont(undefined, 'normal');
+      row('Tax', ps.tax_amount);
+      if (ps.insurance) row('Insurance', ps.insurance);
+      if (ps.retirement) row('Pension', ps.retirement);
+      if (ps.other_deductions) row('Other', ps.other_deductions);
+      rule();
+      row('Total deductions', ps.total_deductions, true);
+      y += 18;
+
+      doc.setDrawColor(0); doc.setLineWidth(1);
+      doc.line(M, y - 8, W - M, y - 8);
+      doc.setFont(undefined, 'bold'); doc.setFontSize(13);
+      doc.text('Net pay', M, y + 8);
+      doc.text(money(ps.net_pay), W - M, y + 8, { align: 'right' });
+
+      doc.setFont(undefined, 'normal'); doc.setFontSize(8); doc.setTextColor(140);
+      doc.text('This payslip is issued by ' + (ps.company.name || 'your employer') + '.',
+               M, doc.internal.pageSize.getHeight() - 40);
+
+      doc.save('payslip-' + (ps.number || id) + '.pdf');
+    }
+
+    // --- What is left, not what is taken -----------------------------------
+    // The leave tab counted days used. Nobody plans a holiday from that figure,
+    // and a request already sent but not yet decided is spent as far as
+    // planning goes even though it is not approved.
+
+    async function loadLeaveBalance() {
+      var host = document.getElementById('leaveRemaining');
+      if (!host) return;
+      try {
+        var res = await apiGet('/api/employee/leave-balance');
+        if (!res.ok) return;
+        var b = await res.json();
+        host.innerHTML =
+          '<div class="flex flex-wrap gap-3">' +
+          '<div class="flex-1 min-w-[140px] p-4 rounded-xl bg-brand-50">' +
+            '<div class="text-2xl font-bold text-brand-700">' + b.annual_remaining + '</div>' +
+            '<div class="text-xs text-brand-600 mt-0.5">annual days left of ' + b.annual_total + '</div>' +
+            (b.annual_pending ? '<div class="text-[11px] text-amber-600 mt-1">' + b.annual_pending +
+              ' still awaiting a decision</div>' : '') +
+          '</div>' +
+          '<div class="flex-1 min-w-[140px] p-4 rounded-xl bg-gray-50">' +
+            '<div class="text-2xl font-bold text-gray-800">' + b.sick_remaining + '</div>' +
+            '<div class="text-xs text-gray-500 mt-0.5">sick days left of ' + b.sick_total + '</div>' +
+          '</div></div>';
+      } catch (e) { /* the tab still works without it */ }
+    }
+
+    // --- Correcting your own record ----------------------------------------
+    // Contact details are the person's own to fix. Bank details decide where
+    // the wages land, so those are proposed and wait for HR.
+
+    async function saveMyDetails() {
+      var body = {};
+      ['phone', 'address', 'emergency_contact', 'emergency_phone',
+       'bank_name', 'bank_account'].forEach(function (f) {
+        var el = document.getElementById('me-' + f);
+        if (el) body[f] = el.value;
+      });
+      var note = document.getElementById('meSaveNote');
+      note.className = 'text-xs text-gray-400 mt-2';
+      note.textContent = 'Saving...';
+      try {
+        var res = await fetch('/api/employee/profile', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin', body: JSON.stringify(body)
+        });
+        var d = await res.json();
+        if (!res.ok) {
+          note.className = 'text-xs text-red-600 mt-2';
+          note.textContent = d.detail || 'That did not save.';
+          return;
+        }
+        note.className = 'text-xs text-emerald-600 mt-2';
+        note.textContent = d.message;
+        loadProfileTab();
+        loadMyChanges();
+      } catch (e) {
+        note.className = 'text-xs text-red-600 mt-2';
+        note.textContent = 'That did not save.';
+      }
+    }
+
+    async function loadMyChanges() {
+      var host = document.getElementById('myChanges');
+      if (!host) return;
+      try {
+        var res = await apiGet('/api/employee/profile-changes');
+        if (!res.ok) return;
+        var rows = await res.json();
+        var open = rows.filter(function (r) { return r.status === 'pending'; });
+        var decided = rows.filter(function (r) { return r.status !== 'pending'; }).slice(0, 3);
+        if (!open.length && !decided.length) { host.innerHTML = ''; return; }
+        var tone = { approved: 'text-emerald-600', rejected: 'text-red-600' };
+        host.innerHTML = open.concat(decided).map(function (r) {
+          return '<div class="text-xs py-1.5 border-b border-gray-100 last:border-0">' +
+            '<span class="font-medium text-gray-700">' + esc(r.field.replace(/_/g, ' ')) + '</span>' +
+            ' &rarr; ' + esc(r.new_value) + ' &middot; ' +
+            '<span class="' + (tone[r.status] || 'text-amber-600') + '">' +
+            (r.status === 'pending' ? 'waiting for HR' : esc(r.status)) + '</span>' +
+            (r.note ? '<div class="text-gray-400 mt-0.5">' + esc(r.note) + '</div>' : '') +
+          '</div>';
+        }).join('');
+      } catch (e) { /* the tab still works without it */ }
+    }
+
+    // --- The assistant ------------------------------------------------------
+    // It is told this one person's record and nothing else, so it can answer
+    // "how much leave do I have" without anyone reading it having to be trusted
+    // with anybody else's.
+
+    var _asstStarted = false;
+
+    async function startAssistant() {
+      if (_asstStarted) return;
+      _asstStarted = true;
+      asstSay('Ask me about your leave, pay, hours, documents or goals. ' +
+              'I only know about your own record.', 'ai');
+      try {
+        var res = await apiGet('/api/employee/assistant/suggestions');
+        if (!res.ok) return;
+        var out = await res.json();
+        var host = document.getElementById('asstSuggestions');
+        host.innerHTML = (out.suggestions || []).map(function (q) {
+          return '<button class="px-3 py-1.5 rounded-full bg-gray-100 text-xs text-gray-600 hover:bg-gray-200 transition-colors" ' +
+            'onclick="askAssistant(this.textContent)">' + esc(q) + '</button>';
+        }).join('');
+      } catch (e) { /* openers are a convenience, not the feature */ }
+    }
+
+    function asstSay(text, who) {
+      var log = document.getElementById('asstLog');
+      var mine = who === 'me';
+      var el = document.createElement('div');
+      el.className = mine ? 'flex justify-end' : 'flex justify-start';
+      el.innerHTML = '<div class="max-w-[85%] px-4 py-2.5 rounded-2xl text-sm ' +
+        (mine ? 'bg-brand-500 text-white' : 'bg-gray-100 text-gray-800') + '">' +
+        esc(text) + '</div>';
+      log.appendChild(el);
+      log.scrollTop = log.scrollHeight;
+      return el;
+    }
+
+    async function askAssistant(preset) {
+      var input = document.getElementById('asstInput');
+      var question = (preset || input.value || '').trim();
+      if (!question) return;
+      input.value = '';
+      document.getElementById('asstSuggestions').innerHTML = '';
+      asstSay(question, 'me');
+      var thinking = asstSay('Thinking...', 'ai');
+      var btn = document.getElementById('asstSend');
+      btn.disabled = true;
+
+      try {
+        var res = await fetch('/api/employee/assistant', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin', body: JSON.stringify({ question: question })
+        });
+        var d = await res.json();
+        thinking.remove();
+        if (res.status === 402) {
+          // The employer pays for this, so there is nothing the employee can do
+          // about it except tell somebody who can.
+          asstSay('The assistant is out of credit. Ask HR to top up the account.', 'ai');
+          return;
+        }
+        if (!res.ok) { asstSay(d.detail || 'That did not work.', 'ai'); return; }
+        asstSay(d.answer, 'ai');
+      } catch (e) {
+        thinking.remove();
+        asstSay('Could not reach the assistant. Check your connection.', 'ai');
+      } finally {
+        btn.disabled = false;
+      }
     }
 
     // --- Ask HR ------------------------------------------------------------
@@ -1020,9 +1394,12 @@
         var res = await apiGet('/api/employee/auth/me');
         if (res.status === 401) { window.location.href = '/employee-login.html'; return; }
         empData = await res.json();
-        document.getElementById('userName').textContent = empData.full_name;
+        // Everything below this line is startup too, so reading a letter off a
+        // name that did not arrive would silently skip the clock-in state.
+        var who = empData.full_name || empData.email || '';
+        document.getElementById('userName').textContent = who;
         document.getElementById('userRole').textContent = empData.job_title || '';
-        document.getElementById('userAvatar').textContent = empData.full_name.charAt(0).toUpperCase();
+        document.getElementById('userAvatar').textContent = (who.charAt(0) || '?').toUpperCase();
         isClockedIn = !!(empData.today_clock_in && !empData.today_clock_out);
         todayCompleted = !!(empData.today_clock_in && empData.today_clock_out);
         isOnBreak = empData.today_is_on_break || false;
@@ -1277,6 +1654,21 @@
           { label: 'Employment Type', value: (p.employment_type||'').replace('_',' '), icon: 'M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z' },
           { label: 'Emergency Contact', value: p.emergency_contact || 'Not set', icon: 'M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z' },
         ];
+        // The form starts from what is on file, so saving does not blank a field
+        // somebody did not mean to touch. The account number is the exception:
+        // it is shown masked as a placeholder and never prefilled, because a
+        // real value sitting in an editable box invites a stray edit.
+        ['phone', 'address', 'emergency_contact', 'emergency_phone', 'bank_name']
+          .forEach(function (f) {
+            var el = document.getElementById('me-' + f);
+            if (el) el.value = p[f] || '';
+          });
+        var acct = document.getElementById('me-bank_account');
+        if (acct) {
+          acct.value = '';
+          acct.placeholder = p.bank_account_masked || 'Not set';
+        }
+
         var grid = document.getElementById('profileDetails');
         grid.innerHTML = '';
         details.forEach(function(d) {

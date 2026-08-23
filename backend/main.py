@@ -6932,12 +6932,18 @@ def get_hr_dashboard(request: Request, db: Session = Depends(get_db)):
     unpaid = db.query(models.DBPayslip).filter(
         models.DBPayslip.client_id == cid,
         models.DBPayslip.status != "Paid").all()
+    bank_changes = db.query(models.DBProfileChange).filter(
+        models.DBProfileChange.client_id == cid,
+        models.DBProfileChange.status == "pending").count()
 
     waiting = [
         {"key": "leave", "label": "Leave requests to decide", "count": pending_leave,
          "view": "leave-view"},
         {"key": "requests", "label": "Staff requests unanswered", "count": open_requests,
          "view": "staff-requests-view"},
+        # Somebody's wages are waiting on this one.
+        {"key": "bank_changes", "label": "Bank detail changes to approve",
+         "count": bank_changes, "view": "staff-requests-view"},
         {"key": "documents", "label": "Documents to review", "count": docs_to_review,
          "view": "onboarding-hub-view"},
         {"key": "chasing", "label": "Documents not sent in yet", "count": docs_outstanding,
@@ -9096,7 +9102,7 @@ def superadmin_environment(request: Request):
               "Point DATABASE_URL at the Postgres instance."),
         state("Payment gateways",
               any(os.getenv(k) for k in
-                  ("STRIPE_SECRET_KEY", "RAZORPAY_KEY_SECRET", "PAYPAL_CLIENT_SECRET")),
+                  ("STRIPE_SECRET_KEY", "RAZORPAY_KEY_SECRET", "PAYPAL_SECRET")),
               "At least one gateway is configured.",
               "Set the keys for whichever gateway you intend to take money with."),
     ]
@@ -9699,6 +9705,19 @@ def provider_unavailable(name, missing):
 class TopUpIn(BaseModel):
     amount: float
     provider: str
+    # Which portal the person is topping up from. Both live behind the same
+    # API, and sending an HR user back to the invoicing app is disorienting.
+    return_page: Optional[str] = ""
+
+
+# Only these, and never whatever the browser asked for: a return_url is a
+# redirect target, and an open one is somebody else's phishing page.
+RETURN_PAGES = ("app.html", "hr.html")
+
+
+def topup_return_page(requested: str) -> str:
+    name = (requested or "").strip().lstrip("/")
+    return name if name in RETURN_PAGES else "app.html"
 
 
 @app.post("/api/wallet/topup")
@@ -9732,7 +9751,8 @@ def create_topup(body: TopUpIn, request: Request, db: Session = Depends(get_db))
         elif provider == "razorpay":
             result = _create_razorpay_order(order, client)
         else:
-            result = _create_paypal_order(order, client, request)
+            result = _create_paypal_order(
+                order, client, request, topup_return_page(body.return_page))
     except HTTPException:
         db.rollback()
         raise
@@ -9859,8 +9879,15 @@ def _paypal_token():
     )
     if resp.status_code >= 400:
         logger.error("PayPal token failed: %s", resp.text[:300])
-        raise HTTPException(status_code=502, detail="Could not authenticate with PayPal.")
-    return resp.json().get("access_token", "")
+        # The likeliest failure with brand new keys, and the one worth naming:
+        # sandbox credentials against live is indistinguishable from a typo.
+        raise HTTPException(status_code=502, detail=paypal_complaint(resp))
+    token = resp.json().get("access_token", "")
+    if not token:
+        raise HTTPException(
+            status_code=502,
+            detail="PayPal accepted the credentials but returned no token. Try again.")
+    return token
 
 
 def paypal_complaint(resp, currency="") -> str:
@@ -9895,7 +9922,7 @@ def paypal_complaint(resp, currency="") -> str:
     return "PayPal rejected the payment request."
 
 
-def _create_paypal_order(order, client, request):
+def _create_paypal_order(order, client, request, return_page="app.html"):
     cfg = gateway_config()["paypal"]
     missing = [k for k, v in (("PAYPAL_CLIENT_ID", cfg["client_id"]), ("PAYPAL_SECRET", cfg["secret"])) if not v]
     if missing:
@@ -9917,8 +9944,11 @@ def _create_paypal_order(order, client, request):
                 },
             }],
             "application_context": {
-                "return_url": f"{base}/app.html?topup=success",
-                "cancel_url": f"{base}/app.html?topup=cancelled",
+                # The order id travels with the redirect, so the page that
+                # receives it captures the payment it was actually made for
+                # rather than the newest one that happens to be pending.
+                "return_url": f"{base}/{return_page}?topup=success&order={order.id}",
+                "cancel_url": f"{base}/{return_page}?topup=cancelled",
             },
         },
         timeout=20,
@@ -10069,9 +10099,10 @@ def capture_paypal(order_id: int, request: Request, db: Session = Depends(get_db
     )
     if resp.status_code >= 400:
         logger.error("PayPal capture failed: %s", resp.text[:400])
-        order.failure_reason = "capture failed"
+        why = paypal_complaint(resp, order.currency.upper())
+        order.failure_reason = why[:300]
         db.commit()
-        raise HTTPException(status_code=502, detail="PayPal could not complete the payment.")
+        raise HTTPException(status_code=502, detail=why)
     data = resp.json()
     if data.get("status") != "COMPLETED":
         return {"message": f"Payment is {data.get('status', 'incomplete')}", "credited": False}
@@ -11590,6 +11621,10 @@ def get_employee_profile(request: Request, db: Session = Depends(get_db)):
         "emergency_contact": emp.emergency_contact,
         "emergency_phone": emp.emergency_phone,
         "employee_id_code": emp.employee_id,
+        "bank_name": emp.bank_name or "",
+        # Enough to tell whether the account on file is the right one, never
+        # enough to use it, and never prefilled into an editable field.
+        "bank_account_masked": mask_secret(emp.bank_account or ""),
         "goals_count": len(goals),
         "goal_progress": goal_progress,
         "team": [{"id": t.id, "name": f"{t.first_name} {t.last_name}", "job_title": t.job_title, "email": t.email} for t in team],
@@ -13293,6 +13328,462 @@ def add_staff_message(db: Session, req, author: str, name: str, body: str):
     db.add(msg)
     req.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return msg
+
+
+# --- what a person can see and change about themselves -----------------------
+
+# Their own record is theirs to correct. These are the fields where a stale
+# value is only ever the employee's own problem, so making them ask HR is how
+# the numbers on file go out of date.
+SELF_SERVICE_FIELDS = ("phone", "address", "emergency_contact", "emergency_phone")
+
+# Where the money goes. A change to one of these is a change to where somebody's
+# wages land, so it is proposed rather than applied.
+APPROVAL_FIELDS = ("bank_name", "bank_account", "tax_id")
+
+
+@app.get("/api/employee/leave-balance")
+def employee_leave_balance(request: Request, db: Session = Depends(get_db)):
+    """What is left, from the employee's own side.
+
+    The figures existed but only on the HR record, so leave was requested by
+    people who could not see what they had - and refused by HR for a reason the
+    form could have shown before it was submitted.
+    """
+    emp = current_employee(request, db)
+    return leave_balance_for(db, emp)
+
+
+@app.get("/api/employee/payslips")
+def employee_payslips(request: Request, db: Session = Depends(get_db)):
+    """Every payslip issued to this person, newest first."""
+    emp = current_employee(request, db)
+    rows = db.query(models.DBPayslip).filter(
+        models.DBPayslip.employee_id == emp.id
+    ).order_by(models.DBPayslip.pay_date.desc(), models.DBPayslip.id.desc()).all()
+    return [{
+        "id": r.id, "number": r.number,
+        "period_start": r.period_start, "period_end": r.period_end,
+        "pay_date": r.pay_date, "net_pay": round(r.net_pay or 0, 2),
+        "gross_pay": round(r.gross_pay or 0, 2), "status": r.status,
+    } for r in rows]
+
+
+@app.get("/api/employee/payslips/{ps_id}")
+def employee_payslip(ps_id: int, request: Request, db: Session = Depends(get_db)):
+    """Everything on one payslip, so the portal can build the document.
+
+    The figures were on the dashboard already; what was missing was anything a
+    person could keep. A payslip is what a landlord or a lender asks for, and
+    until now getting one meant emailing HR.
+    """
+    emp = current_employee(request, db)
+    ps = db.query(models.DBPayslip).filter(
+        models.DBPayslip.id == ps_id,
+        # Scoped to the person asking, not merely to the tenant - one employee
+        # must never be able to read another's pay by changing the number.
+        models.DBPayslip.employee_id == emp.id,
+    ).first()
+    if not ps:
+        raise HTTPException(status_code=404, detail="Payslip not found")
+
+    client = db.query(models.DBClient).filter(
+        models.DBClient.id == ps.client_id).first()
+    settings_map = {r.key: r.value for r in db.query(models.DBSettings).filter(
+        models.DBSettings.client_id == ps.client_id).all()}
+
+    return {
+        "id": ps.id, "number": ps.number,
+        "period_start": ps.period_start, "period_end": ps.period_end,
+        "pay_date": ps.pay_date, "status": ps.status,
+        "hours_worked": ps.hours_worked or 0, "overtime_hours": ps.overtime_hours or 0,
+        "basic_salary": round(ps.basic_salary or 0, 2),
+        "overtime_pay": round(ps.overtime_pay or 0, 2),
+        "bonus": round(ps.bonus or 0, 2),
+        "allowances": round(ps.allowances or 0, 2),
+        "gross_pay": round(ps.gross_pay or 0, 2),
+        "tax_amount": round(ps.tax_amount or 0, 2),
+        "insurance": round(ps.insurance or 0, 2),
+        "retirement": round(ps.retirement or 0, 2),
+        "other_deductions": round(ps.other_deductions or 0, 2),
+        "total_deductions": round(ps.total_deductions or 0, 2),
+        "net_pay": round(ps.net_pay or 0, 2),
+        "employee": {
+            "name": f"{emp.first_name} {emp.last_name}".strip(),
+            "employee_id": emp.employee_id or "",
+            "job_title": emp.job_title or "",
+            # Enough to identify the account, never enough to use it.
+            "bank_account": mask_secret(emp.bank_account or ""),
+        },
+        "company": {
+            "name": settings_map.get("company_name") or (client.company_name if client else "") or "",
+            "address": settings_map.get("company_address") or (client.address if client else "") or "",
+            "email": settings_map.get("email") or (client.email if client else "") or "",
+        },
+        "currency": base_currency(client) if client else "GBP",
+    }
+
+
+@app.put("/api/employee/profile")
+def update_employee_profile(request: Request, body: dict = None,
+                            db: Session = Depends(get_db)):
+    """Let people correct their own details.
+
+    Two kinds of field. Contact details apply straight away - a new phone
+    number is nobody's decision but the person's own. Bank details are proposed
+    and wait for HR, because whatever is stored there is where the wages go.
+    """
+    emp = current_employee(request, db)
+    body = body or {}
+
+    applied, proposed, unchanged = [], [], []
+
+    for field in SELF_SERVICE_FIELDS:
+        if field not in body:
+            continue
+        value = str(body[field] or "").strip()[:300]
+        if value == (getattr(emp, field) or ""):
+            unchanged.append(field)
+            continue
+        setattr(emp, field, value)
+        applied.append(field)
+
+    for field in APPROVAL_FIELDS:
+        if field not in body:
+            continue
+        value = str(body[field] or "").strip()[:120]
+        current = getattr(emp, field) or ""
+        if not value or value == current:
+            unchanged.append(field)
+            continue
+        # One open request per field: asking twice should revise the ask, not
+        # queue a second one for HR to work out the order of.
+        existing = db.query(models.DBProfileChange).filter(
+            models.DBProfileChange.employee_id == emp.id,
+            models.DBProfileChange.field == field,
+            models.DBProfileChange.status == "pending",
+        ).first()
+        if existing:
+            existing.new_value = value
+            existing.created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            db.add(models.DBProfileChange(
+                client_id=emp.client_id, employee_id=emp.id, field=field,
+                old_value=current, new_value=value))
+        proposed.append(field)
+
+    if applied:
+        log_audit(db, emp.client_id, "profile_self_updated", "employee", emp.id,
+                  f"{emp.first_name} {emp.last_name}", ", ".join(applied), request,
+                  user_type="employee", user_name=emp.email or "")
+    db.commit()
+
+    return {
+        "applied": applied,
+        "awaiting_approval": proposed,
+        "unchanged": unchanged,
+        "message": ("Saved." if applied and not proposed else
+                    "Sent to HR to approve." if proposed and not applied else
+                    "Saved. Bank details are with HR to approve." if applied and proposed
+                    else "Nothing to change."),
+    }
+
+
+@app.get("/api/employee/profile-changes")
+def employee_profile_changes(request: Request, db: Session = Depends(get_db)):
+    """What this person has asked for and where it got to."""
+    emp = current_employee(request, db)
+    rows = db.query(models.DBProfileChange).filter(
+        models.DBProfileChange.employee_id == emp.id
+    ).order_by(models.DBProfileChange.id.desc()).limit(20).all()
+    return [{
+        "id": r.id, "field": r.field, "status": r.status,
+        # The proposed value is the employee's own, so they may see it whole.
+        "new_value": r.new_value, "note": r.note or "",
+        "created_at": r.created_at, "decided_at": r.decided_at or "",
+    } for r in rows]
+
+
+@app.get("/api/hr/profile-changes")
+def hr_profile_changes(request: Request, status: str = "pending",
+                       db: Session = Depends(get_db)):
+    """The queue of bank-detail changes waiting on a decision."""
+    client = get_client_user(request, db)
+    q = db.query(models.DBProfileChange).filter(
+        models.DBProfileChange.client_id == client.id)
+    if status and status != "all":
+        q = q.filter(models.DBProfileChange.status == status)
+    rows = q.order_by(models.DBProfileChange.id.desc()).limit(200).all()
+
+    emps = {e.id: e for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client.id).all()}
+    out = []
+    for r in rows:
+        emp = emps.get(r.employee_id)
+        out.append({
+            "id": r.id, "field": r.field,
+            "old_value": r.old_value or "", "new_value": r.new_value,
+            "status": r.status, "note": r.note or "",
+            "created_at": r.created_at, "decided_at": r.decided_at or "",
+            "employee": {
+                "id": r.employee_id,
+                "name": f"{emp.first_name} {emp.last_name}".strip() if emp else "",
+                "email": emp.email if emp else "",
+            },
+        })
+    return out
+
+
+@app.post("/api/hr/profile-changes/{change_id}/decide")
+def decide_profile_change(change_id: int, request: Request, body: dict = None,
+                          db: Session = Depends(get_db)):
+    """Approve writes the value across; reject leaves the record untouched.
+
+    Either way the employee is told, because a change to where their wages land
+    is not something they should have to come back and check on.
+    """
+    client = get_client_user(request, db)
+    body = body or {}
+    decision = (body.get("decision") or "").strip().lower()
+    if decision not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="decision must be approve or reject")
+
+    row = db.query(models.DBProfileChange).filter(
+        models.DBProfileChange.id == change_id,
+        models.DBProfileChange.client_id == client.id,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if row.status != "pending":
+        raise HTTPException(status_code=409,
+                            detail=f"This was already {row.status}.")
+
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == row.employee_id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    row.status = "approved" if decision == "approve" else "rejected"
+    row.note = str(body.get("note") or "").strip()[:300]
+    row.decided_by = client.email or "HR"
+    row.decided_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if decision == "approve":
+        # Only ever a field on the approval list - the id in the URL decides
+        # which row, never which column.
+        if row.field not in APPROVAL_FIELDS:
+            raise HTTPException(status_code=400, detail="Unknown field")
+        setattr(emp, row.field, row.new_value)
+
+    label = row.field.replace("_", " ")
+    notify_employee(
+        db, emp,
+        f"Your {label} change was {row.status}",
+        row.note or (f"The {label} on your record has been updated."
+                     if decision == "approve"
+                     else f"HR did not apply the {label} change you asked for."),
+        kind="success" if decision == "approve" else "warning",
+        sent_by=client.email or "HR")
+
+    log_audit(db, client.id, f"profile_change_{row.status}", "employee", emp.id,
+              f"{emp.first_name} {emp.last_name}", row.field, request)
+    db.commit()
+    return {"status": row.status, "field": row.field}
+
+
+EMPLOYEE_ASSISTANT_SYSTEM = (
+    "You are the assistant inside an employee's own staff portal. "
+    "You are speaking to that employee about their own record. "
+    "Answer using ONLY the CONTEXT below, which is this one person's real data. "
+    "Never invent numbers, dates or totals, and never speculate about anyone else - "
+    "you have no information about colleagues' pay, leave or performance, and you "
+    "must say so plainly if asked. "
+    "An empty answer is still an answer: if the context says none or zero, say so "
+    "directly rather than saying you lack the information. "
+    "When something is missing from the context, name the tab where they can find "
+    "it (Attendance, Leave, Payslips, Documents, Goals, Ask HR). "
+    "For anything about why a figure was calculated a particular way, or anything "
+    "contractual, tell them to raise it with HR through Ask HR - do not guess. "
+    "Do not give legal, tax or financial advice. "
+    "Be brief and concrete: two or three sentences, or a short list."
+)
+
+
+def build_employee_context(db: Session, emp) -> str:
+    """One person's own facts, and nothing about anybody else.
+
+    Deliberately not build_business_context: that one carries every salary in
+    the company. Everything here is filtered to this employee's id.
+    """
+    lines = []
+    name = f"{emp.first_name} {emp.last_name}".strip()
+    lines.append("WHO YOU ARE SPEAKING TO")
+    lines.append(f"Name: {name}")
+    if emp.job_title:
+        lines.append(f"Job title: {emp.job_title}")
+    if emp.start_date:
+        lines.append(f"Started: {emp.start_date}")
+    lines.append(f"Employment status: {emp.status}")
+
+    dept = db.query(models.DBDepartment).filter(
+        models.DBDepartment.id == emp.department_id).first() if emp.department_id else None
+    if dept:
+        lines.append(f"Department: {dept.name}")
+    manager = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == emp.reports_to).first() if emp.reports_to else None
+    if manager:
+        lines.append(f"Manager: {manager.first_name} {manager.last_name}".strip())
+
+    # --- leave ---------------------------------------------------------------
+    bal = leave_balance_for(db, emp)
+    lines.append("")
+    lines.append("YOUR LEAVE")
+    lines.append(f"Annual: {bal['annual_remaining']} days left of {bal['annual_total']} "
+                 f"({bal['annual_taken']} taken, {bal['annual_pending']} awaiting a decision)")
+    lines.append(f"Sick: {bal['sick_remaining']} days left of {bal['sick_total']}")
+
+    recent_leave = db.query(models.DBLeaveRequest).filter(
+        models.DBLeaveRequest.employee_id == emp.id
+    ).order_by(models.DBLeaveRequest.id.desc()).limit(5).all()
+    if recent_leave:
+        for lv in recent_leave:
+            lines.append(f"- {lv.leave_type} {lv.start_date} to {lv.end_date}, "
+                         f"{lv.days} days, {lv.status}")
+    else:
+        lines.append("- no leave requests on record")
+
+    # --- pay -----------------------------------------------------------------
+    payslips = db.query(models.DBPayslip).filter(
+        models.DBPayslip.employee_id == emp.id
+    ).order_by(models.DBPayslip.id.desc()).limit(4).all()
+    cur = ""
+    client = db.query(models.DBClient).filter(
+        models.DBClient.id == emp.client_id).first()
+    cur = base_currency(client) if client else "GBP"
+    lines.append("")
+    lines.append("YOUR PAY")
+    if payslips:
+        for ps in payslips:
+            lines.append(
+                f"- {ps.number} for {ps.period_start} to {ps.period_end}: "
+                f"gross {cur} {ps.gross_pay:.2f}, tax {cur} {ps.tax_amount:.2f}, "
+                f"deductions {cur} {ps.total_deductions:.2f}, "
+                f"net {cur} {ps.net_pay:.2f} ({ps.status})")
+    else:
+        lines.append("- no payslips issued yet")
+
+    # --- attendance this month ----------------------------------------------
+    month = datetime.now().strftime("%Y-%m")
+    att = db.query(models.DBAttendance).filter(
+        models.DBAttendance.employee_id == emp.id,
+        models.DBAttendance.date.like(f"{month}%"),
+    ).all()
+    hours = round(sum(a.total_hours or 0 for a in att), 2)
+    lines.append("")
+    lines.append("YOUR ATTENDANCE THIS MONTH")
+    lines.append(f"Days recorded: {len(att)}; hours logged: {hours}")
+    today = datetime.now().strftime("%Y-%m-%d")
+    todays = next((a for a in att if a.date == today), None)
+    lines.append(f"Today: clocked in at {todays.clock_in}" if todays and todays.clock_in
+                 else "Today: not clocked in yet")
+
+    # --- documents -----------------------------------------------------------
+    reqs = db.query(models.DBDocumentRequest).filter(
+        models.DBDocumentRequest.employee_id == emp.id).all()
+    outstanding = [r for r in reqs if r.status in ("pending", "rejected")]
+    lines.append("")
+    lines.append("YOUR DOCUMENTS")
+    if outstanding:
+        for r in outstanding:
+            due = f", due {r.due_date}" if r.due_date else ""
+            lines.append(f"- still to send: {r.name} ({r.status}{due})")
+    else:
+        lines.append("- nothing outstanding")
+
+    # --- goals ---------------------------------------------------------------
+    goals = db.query(models.DBEmployeeGoal).filter(
+        models.DBEmployeeGoal.employee_id == emp.id).all()
+    lines.append("")
+    lines.append("YOUR GOALS")
+    if goals:
+        for g in goals:
+            lines.append(f"- {g.title}: {g.current_value} of {g.target_value} "
+                         f"{g.unit or ''} ({g.status})".replace("  ", " "))
+    else:
+        lines.append("- none set")
+
+    # --- open questions with HR ----------------------------------------------
+    open_threads = db.query(models.DBStaffRequest).filter(
+        models.DBStaffRequest.employee_id == emp.id,
+        models.DBStaffRequest.status == "open").all()
+    lines.append("")
+    lines.append("YOUR OPEN QUESTIONS WITH HR")
+    lines.extend([f"- {t.subject} ({t.category})" for t in open_threads] or ["- none"])
+
+    return "\n".join(lines)
+
+
+@app.post("/api/employee/assistant")
+def employee_assistant(request: Request, body: dict = None,
+                       db: Session = Depends(get_db)):
+    """Answer a question about this person's own record.
+
+    Billed to the employer's wallet like every other AI action - the employee
+    has no wallet of their own, and the company is who the platform bills.
+    """
+    emp = current_employee(request, db)
+    body = body or {}
+    question = str(body.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Ask a question")
+    if len(question) > 500:
+        raise HTTPException(status_code=400,
+                            detail="Please keep the question under 500 characters")
+
+    ensure_can_afford(db, emp.client_id, "ai_assistant")
+
+    answer = llm_chat([
+        {"role": "system", "content": EMPLOYEE_ASSISTANT_SYSTEM},
+        {"role": "user", "content":
+            f"CONTEXT:\n{build_employee_context(db, emp)}\n\nQUESTION: {question}"},
+    ], temperature=0.2, max_tokens=400)
+
+    if not answer:
+        return {"answer": llm_error_message(), "available": False,
+                "reason": llm.llm_last_error()}
+
+    charge_after_success(db, emp.client_id, "ai_assistant", 1,
+                         f"{emp.first_name}: {question[:40]}")
+    return {"answer": answer, "available": True}
+
+
+@app.get("/api/employee/assistant/suggestions")
+def employee_assistant_suggestions(request: Request, db: Session = Depends(get_db)):
+    """Openers drawn from what is actually true for this person, so the first
+    question is one the assistant can definitely answer."""
+    emp = current_employee(request, db)
+    out = []
+
+    bal = leave_balance_for(db, emp)
+    if bal["annual_pending"]:
+        out.append("What leave have I asked for that has not been decided?")
+    out.append("How much annual leave do I have left?")
+
+    if db.query(models.DBDocumentRequest).filter(
+            models.DBDocumentRequest.employee_id == emp.id,
+            models.DBDocumentRequest.status.in_(("pending", "rejected"))).count():
+        out.append("What documents do I still need to send in?")
+
+    if db.query(models.DBPayslip).filter(
+            models.DBPayslip.employee_id == emp.id).count():
+        out.append("What was my last payslip?")
+
+    if db.query(models.DBEmployeeGoal).filter(
+            models.DBEmployeeGoal.employee_id == emp.id).count():
+        out.append("How am I doing against my goals?")
+
+    out.append("How many hours have I logged this month?")
+    return {"suggestions": out[:5]}
 
 
 # --- the employee's side -----------------------------------------------------
