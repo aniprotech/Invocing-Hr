@@ -548,6 +548,27 @@ def get_client_user(request: Request, db: Session):
                                 detail="Your account has read-only access.")
     return client
 
+
+def require_superadmin(request: Request):
+    """The one gate in front of every platform-operator endpoint.
+
+    Defined here, beside get_client_user, for the same reason: a superadmin
+    route reaches every tenant's data at once, so the check has to be
+    impossible to forget rather than remembered thirty-four times. Prefer
+    the SuperAdmin dependency below - it applies the guard from the
+    signature, so a new route cannot ship without it.
+    """
+    if not request.session.get("superadmin_id"):
+        raise HTTPException(status_code=401, detail="Not authorized")
+    return request.session.get("superadmin_id")
+
+
+# Declaring `_: int = SuperAdmin` on a route runs the guard before the body,
+# so a handler that forgets to call require_superadmin still cannot be reached
+# unauthenticated.
+SuperAdmin = Depends(require_superadmin)
+
+
 @app.post("/api/client/register")
 def client_register(body: ClientRegister, request: Request, db: Session = Depends(get_db)):
     ip = request.client.host if request.client else "unknown"
@@ -709,9 +730,7 @@ def superadmin_login(request: Request, body: dict = None, db: Session = Depends(
 
 @app.post("/api/superadmin/change-password")
 def superadmin_change_password(request: Request, body: dict = None, db: Session = Depends(get_db)):
-    sa_id = request.session.get("superadmin_id")
-    if not sa_id:
-        raise HTTPException(status_code=401, detail="Not logged in")
+    sa_id = require_superadmin(request)
     body = body or {}
     new_pwd = body.get("new_password", "")
     if len(new_pwd) < 6:
@@ -730,9 +749,7 @@ def superadmin_logout(request: Request):
 
 @app.get("/api/superadmin/me")
 def superadmin_me(request: Request, db: Session = Depends(get_db)):
-    sa_id = request.session.get("superadmin_id")
-    if not sa_id:
-        raise HTTPException(status_code=401, detail="Not logged in")
+    sa_id = require_superadmin(request)
     admin = db.query(models.DBSuperAdmin).filter(models.DBSuperAdmin.id == sa_id).first()
     if not admin:
         raise HTTPException(status_code=401, detail="Not found")
@@ -747,9 +764,7 @@ def superadmin_platform_stats(request: Request, db: Session = Depends(get_db)):
     The original insights endpoint only counted invoices, so HR and
     recruitment usage was invisible to the operator.
     """
-    sa_id = request.session.get("superadmin_id")
-    if not sa_id:
-        raise HTTPException(status_code=401, detail="Not authorized")
+    require_superadmin(request)
 
     def count(model):
         return db.query(model).count()
@@ -816,9 +831,7 @@ def superadmin_platform_stats(request: Request, db: Session = Depends(get_db)):
 def superadmin_client_overview(client_id: int, request: Request, db: Session = Depends(get_db)):
     """Everything the operator needs to answer 'how is this tenant doing?'
     without impersonating them."""
-    sa_id = request.session.get("superadmin_id")
-    if not sa_id:
-        raise HTTPException(status_code=401, detail="Not authorized")
+    require_superadmin(request)
     client = db.query(models.DBClient).filter(models.DBClient.id == client_id).first()
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -889,9 +902,7 @@ def superadmin_client_overview(client_id: int, request: Request, db: Session = D
 
 @app.get("/api/superadmin/clients")
 def superadmin_clients(request: Request, db: Session = Depends(get_db)):
-    sa_id = request.session.get("superadmin_id")
-    if not sa_id:
-        raise HTTPException(status_code=401, detail="Not authorized")
+    require_superadmin(request)
     results = (
         db.query(
             models.DBClient,
@@ -921,9 +932,7 @@ def superadmin_clients(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/api/superadmin/insights")
 def superadmin_insights(request: Request, db: Session = Depends(get_db)):
-    sa_id = request.session.get("superadmin_id")
-    if not sa_id:
-        raise HTTPException(status_code=401, detail="Not authorized")
+    require_superadmin(request)
     total_clients = db.query(models.DBClient).count()
     active_clients = db.query(models.DBClient).filter(models.DBClient.is_active == True).count()
     onboarded = db.query(models.DBClient).filter(models.DBClient.is_onboarded == True).count()
@@ -941,9 +950,7 @@ def superadmin_insights(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/api/superadmin/login-logs")
 def superadmin_login_logs(request: Request, limit: int = 100, db: Session = Depends(get_db)):
-    sa_id = request.session.get("superadmin_id")
-    if not sa_id:
-        raise HTTPException(status_code=401, detail="Not authorized")
+    require_superadmin(request)
     logs = db.query(models.DBClientLoginLog).order_by(models.DBClientLoginLog.created_at.desc()).limit(limit).all()
     return [{
         "id": l.id, "client_id": l.client_id, "email": l.email,
@@ -954,9 +961,7 @@ def superadmin_login_logs(request: Request, limit: int = 100, db: Session = Depe
 
 @app.get("/api/superadmin/login-stats")
 def superadmin_login_stats(request: Request, db: Session = Depends(get_db)):
-    sa_id = request.session.get("superadmin_id")
-    if not sa_id:
-        raise HTTPException(status_code=401, detail="Not authorized")
+    require_superadmin(request)
     from datetime import timedelta
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
@@ -985,9 +990,7 @@ def superadmin_login_stats(request: Request, db: Session = Depends(get_db)):
 
 @app.put("/api/superadmin/clients/{client_id}/toggle")
 def superadmin_toggle_client(client_id: int, request: Request, db: Session = Depends(get_db)):
-    sa_id = request.session.get("superadmin_id")
-    if not sa_id:
-        raise HTTPException(status_code=401, detail="Not authorized")
+    require_superadmin(request)
     client = db.query(models.DBClient).filter(models.DBClient.id == client_id).first()
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -998,9 +1001,7 @@ def superadmin_toggle_client(client_id: int, request: Request, db: Session = Dep
 
 @app.delete("/api/superadmin/clients/{client_id}")
 def superadmin_delete_client(client_id: int, request: Request, db: Session = Depends(get_db)):
-    sa_id = request.session.get("superadmin_id")
-    if not sa_id:
-        raise HTTPException(status_code=401, detail="Not authorized")
+    require_superadmin(request)
     client = db.query(models.DBClient).filter(models.DBClient.id == client_id).first()
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -1017,9 +1018,7 @@ def superadmin_delete_client(client_id: int, request: Request, db: Session = Dep
 
 @app.post("/api/superadmin/impersonate/{client_id}")
 def superadmin_impersonate(client_id: int, request: Request, db: Session = Depends(get_db)):
-    sa_id = request.session.get("superadmin_id")
-    if not sa_id:
-        raise HTTPException(status_code=401, detail="Not authorized")
+    require_superadmin(request)
     client = db.query(models.DBClient).filter(models.DBClient.id == client_id).first()
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -1032,9 +1031,7 @@ def superadmin_impersonate(client_id: int, request: Request, db: Session = Depen
 
 @app.get("/api/superadmin/trends")
 def superadmin_trends(request: Request, db: Session = Depends(get_db)):
-    sa_id = request.session.get("superadmin_id")
-    if not sa_id:
-        raise HTTPException(status_code=401, detail="Not authorized")
+    require_superadmin(request)
     from datetime import timedelta
     from collections import defaultdict
     now = datetime.now()
@@ -1058,9 +1055,7 @@ def superadmin_trends(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/api/superadmin/clients/{client_id}")
 def superadmin_get_client(client_id: int, request: Request, db: Session = Depends(get_db)):
-    sa_id = request.session.get("superadmin_id")
-    if not sa_id:
-        raise HTTPException(status_code=401, detail="Not authorized")
+    require_superadmin(request)
     client = db.query(models.DBClient).filter(models.DBClient.id == client_id).first()
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -9046,11 +9041,6 @@ def wallet_quote(request: Request, action: str, quantity: int = 1,
 
 # --- Operator: pricing ------------------------------------------------------
 
-def require_superadmin(request):
-    if not request.session.get("superadmin_id"):
-        raise HTTPException(status_code=401, detail="Not authorized")
-
-
 @app.get("/api/superadmin/migration-warnings")
 def superadmin_migration_warnings(request: Request):
     """The schema steps that failed at boot.
@@ -9199,8 +9189,9 @@ def list_pricing(request: Request, db: Session = Depends(get_db)):
 
 @app.put("/api/superadmin/pricing/{rule_id}")
 def update_pricing(rule_id: int, request: Request, body: PricingRuleIn,
-                   db: Session = Depends(get_db)):
-    require_superadmin(request)
+                   db: Session = Depends(get_db), _: int = SuperAdmin):
+    # See create_pricing: the dependency runs before `body` is validated, so
+    # the refusal is a 401 rather than a 422 handing out the schema.
     rule = db.query(models.DBPricingRule).filter(models.DBPricingRule.id == rule_id).first()
     if not rule:
         raise HTTPException(status_code=404, detail="Pricing rule not found")
@@ -9230,8 +9221,11 @@ def update_pricing(rule_id: int, request: Request, body: PricingRuleIn,
 
 
 @app.post("/api/superadmin/pricing")
-def create_pricing(request: Request, body: PricingRuleIn, db: Session = Depends(get_db)):
-    require_superadmin(request)
+def create_pricing(request: Request, body: PricingRuleIn, db: Session = Depends(get_db),
+                   _: int = SuperAdmin):
+    # Guarded by dependency rather than a call in the body: FastAPI validates
+    # `body` before the handler runs, so a signed-out caller posting nothing
+    # used to get a 422 describing PricingRuleIn instead of being turned away.
     key = (body.action_key or "").strip().lower().replace(" ", "_")
     if not key:
         raise HTTPException(status_code=400, detail="An action key is required")
