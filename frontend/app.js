@@ -811,6 +811,7 @@ async function checkAuthStatus() {
     var userInfo = document.getElementById('user-info');
     try {
         var res = await fetch('/api/auth/me');
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         var data = await res.json();
         if (data.user) {
             if (loginBtn) loginBtn.style.display = 'none';
@@ -2498,6 +2499,7 @@ window.loadReports = loadReports;
 async function loadGmailStatus() {
     try {
         var res = await fetch('/api/gmail/status');
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         var data = await res.json();
         var statusEl = document.getElementById('gmail-status');
         var loginBtn = document.getElementById('gmail-login-btn');
@@ -3052,11 +3054,13 @@ async function showAddEmployeeModal() {
     // Load departments and employees for dropdowns
     try {
         var deptRes = await fetch('/api/departments');
+        if (!deptRes.ok) throw new Error("Request failed: " + deptRes.status);
         var depts = await deptRes.json();
         var deptSel = document.getElementById('emp-department');
         deptSel.innerHTML = '<option value="">None</option>';
         depts.forEach(function(d) { deptSel.insertAdjacentHTML('beforeend', '<option value="' + d.id + '">' + esc(d.name) + '</option>'); });
         var empRes = await fetch('/api/employees');
+        if (!empRes.ok) throw new Error("Request failed: " + empRes.status);
         var emps = await empRes.json();
         var mgrSel = document.getElementById('emp-reports-to');
         mgrSel.innerHTML = '<option value="">None</option>';
@@ -3246,8 +3250,10 @@ window.toggleEmpEdit = toggleEmpEdit;
 async function loadEmpEditDropdowns() {
     try {
         var res = await fetch('/api/employees');
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         var emps = await res.json();
         var deptRes = await fetch('/api/departments');
+        if (!deptRes.ok) throw new Error("Request failed: " + deptRes.status);
         var depts = await deptRes.json();
         var deptSel = document.getElementById('emp-detail-dept');
         var mgrSel = document.getElementById('emp-detail-mgr');
@@ -3719,6 +3725,7 @@ window.addOnbItemToEmp = addOnbItemToEmp;
 async function showBulkOnboardModal() {
     try {
         var res = await fetch('/api/employees?status=onboarding');
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         var emps = await res.json();
         var select = document.getElementById('bulk-emp-select');
         select.innerHTML = '';
@@ -3766,6 +3773,7 @@ window.loadBulkDefault = loadBulkDefault;
 async function loadBulkFromTemplate() {
     try {
         var res = await fetch('/api/onboarding/templates');
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         var templates = await res.json();
         if (templates.length === 0) { showToast('No templates found. Create one first.', 'error'); return; }
         var names = templates.map(function(t, i) { return (i + 1) + '. ' + t.name; }).join('\n');
@@ -3817,6 +3825,7 @@ window.applyBulkOnboard = applyBulkOnboard;
 async function showOnboardingTemplates() {
     try {
         var res = await fetch('/api/onboarding/templates');
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         var templates = await res.json();
         var list = document.getElementById('onb-templates-list');
         list.innerHTML = '';
@@ -4062,6 +4071,7 @@ async function showGeneratePayslipModalForNew() {
     if (!empContainer) return;
     try {
         var empRes = await fetch('/api/employees');
+        if (!empRes.ok) throw new Error("Request failed: " + empRes.status);
         var emps = await empRes.json();
         empContainer.innerHTML = '<select id="ps-employee-id" class="form-control" onchange="autoFetchPayDetails()"><option value="">Select employee...</option></select>';
         var sel = document.getElementById('ps-employee-id');
@@ -4159,6 +4169,9 @@ async function submitGeneratePayslip() {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
+        // Deliberately not guarded on res.ok: the caller reads the status
+        // itself, because a 409 here means a payslip already covers this
+        // period and the user is asked whether to create it anyway.
         return { res: res, data: await res.json() };
     }
     try {
@@ -4878,6 +4891,7 @@ window.saveAttendanceSettings = saveAttendanceSettings;
 async function loadOvertimeTab() {
     try {
         var empRes = await fetch('/api/employees');
+        if (!empRes.ok) throw new Error("Request failed: " + empRes.status);
         var emps = await empRes.json();
         var sel = document.getElementById('ot-employee');
         if (sel) {
@@ -4911,6 +4925,7 @@ async function announceOvertime() {
 async function loadOvertimeLogs() {
     try {
         var res = await fetch('/api/attendance/overtime/logs');
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         var logs = await res.json();
         var tbody = document.getElementById('overtime-log-body');
         if (!tbody) return;
@@ -5846,8 +5861,10 @@ async function loadGoalsView() {
     container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-secondary);">Loading goals...</div>';
     try {
         var empRes = await fetch('/api/employees?status=active');
+        if (!empRes.ok) throw new Error("Request failed: " + empRes.status);
         var emps = await empRes.json();
         var deptRes = await fetch('/api/departments');
+        if (!deptRes.ok) throw new Error("Request failed: " + deptRes.status);
         var depts = await deptRes.json();
         var deptMap = {};
         depts.forEach(function(d) { deptMap[d.id] = d.name; });
@@ -5926,6 +5943,7 @@ async function openDeptGoalModal() {
     select.innerHTML = '<option value="">Select department...</option>';
     try {
         var res = await fetch('/api/departments');
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         var depts = await res.json();
         depts.forEach(function(d) {
             select.innerHTML += '<option value="' + d.id + '">' + esc(d.name) + ' (' + d.employee_count + ' employees)</option>';
@@ -6145,6 +6163,7 @@ async function aiScreenResume() {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
             body: JSON.stringify({ job_title: jobTitle, job_description: jobDesc, candidate_name: candidateName, resume_text: resumeText })
         });
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         var data = await res.json();
         if (el) {
             var scoreColor = data.score >= 70 ? 'var(--success-color)' : data.score >= 40 ? 'var(--warning-color)' : 'var(--danger-color)';
@@ -6178,6 +6197,7 @@ async function aiGenerateOnboarding() {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
             body: JSON.stringify({ job_title: title, department: dept === 'None' ? '' : dept })
         });
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         var data = await res.json();
         if (data.items && data.items.length) {
             showToast('Generated ' + data.items.length + ' onboarding items', 'success');
@@ -6207,6 +6227,7 @@ async function aiPersonalizeEmail(invoiceNumber, clientName, total, dueDate) {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
             body: JSON.stringify({ client_name: clientName, invoice_number: invoiceNumber, total: total, due_date: dueDate, is_first_time: false, tone: 'professional' })
         });
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         var data = await res.json();
         // Held rather than threaded through an onclick attribute; the body is
         // multi-line free text and would not survive the quoting.
@@ -6252,6 +6273,7 @@ async function aiGenerateFollowup(invoiceNumber, clientName, total, daysOverdue)
             method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
             body: JSON.stringify({ client_name: clientName, invoice_number: invoiceNumber, total: total, days_overdue: daysOverdue, tone: 'polite' })
         });
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         var data = await res.json();
         if (el) {
             el.innerHTML = '<div style="padding:12px;">' +
@@ -6274,6 +6296,7 @@ async function loadPayrollAnomalies() {
     el.innerHTML = '<div style="padding:16px;color:var(--text-secondary);"><i class="bi bi-hourglass-split"></i> Checking payroll data...</div>';
     try {
         var res = await fetch('/api/ai/payroll-anomalies', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         var data = await res.json();
         if (!data.anomalies || !data.anomalies.length) {
             el.innerHTML = '<div style="padding:16px;color:var(--success-color);"><i class="bi bi-check-circle"></i> No payroll anomalies detected across ' + data.total_checked + ' employees.</div>';
@@ -6300,6 +6323,7 @@ async function loadAttendanceAlerts() {
     el.innerHTML = '<div style="padding:16px;color:var(--text-secondary);"><i class="bi bi-hourglass-split"></i> Analyzing attendance patterns...</div>';
     try {
         var res = await fetch('/api/ai/attendance-alerts', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         var data = await res.json();
         if (!data.alerts || !data.alerts.length) {
             el.innerHTML = '<div style="padding:16px;color:var(--success-color);"><i class="bi bi-check-circle"></i> No attendance alerts. All ' + data.employees_checked + ' employees look good over the last 30 days.</div>';
@@ -6326,6 +6350,7 @@ async function loadAttendanceSummary() {
     el.innerHTML = '<div style="padding:12px;color:var(--text-secondary);"><i class="bi bi-hourglass-split"></i> Generating AI summary...</div>';
     try {
         var res = await fetch('/api/ai/summarize-attendance', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: '{}' });
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         var data = await res.json();
         el.innerHTML = '<div style="padding:12px;font-size:0.9rem;white-space:pre-wrap;">' + esc(data.summary || 'No summary available.') + '</div>';
     } catch(e) { el.innerHTML = '<div style="padding:12px;color:var(--danger-color);">AI summary unavailable.</div>'; }
@@ -6437,6 +6462,7 @@ async function showAddBillModal() {
     document.getElementById('bill-notes').value = '';
     try {
         var res = await fetch('/api/next-bill-number', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         var data = await res.json();
         document.getElementById('bill-number').value = data.number || 'BILL-0001';
     } catch(e) {}
@@ -6529,6 +6555,7 @@ window.saveBill = saveBill;
 async function editBill(id) {
     try {
         var res = await fetch('/api/bills/' + id, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         var b = await res.json();
         document.getElementById('bill-edit-id').value = b.id;
         document.getElementById('bill-modal-title').textContent = 'Edit Bill';
@@ -8220,6 +8247,7 @@ async function openTopUpModal() {
     if (!modal) return;
     try {
         var res = await fetch('/api/wallet/providers');
+        if (!res.ok) throw new Error("Request failed: " + res.status);
         _walletProviders = await res.json();
     } catch (e) { return; }
 
@@ -8478,6 +8506,9 @@ async function sendAIChat() {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ question: question })
         });
+        // Deliberately not guarded on res.ok: the body carries why. A 402 is
+        // "out of wallet credit" and has its own path below, which throwing
+        // here would replace with a connection error.
         var data = await res.json();
         if (thinking) thinking.remove();
 
