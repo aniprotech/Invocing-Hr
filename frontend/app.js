@@ -302,6 +302,173 @@ function localDate(d) {
 }
 window.localDate = localDate;
 
+// Which nav entry lights up for a given view. Detail screens deliberately
+// point at their parent list, so opening an invoice keeps Invoices marked as
+// where you are. Read by showView to set the highlight and by the router to
+// tell whether a view is available to this tenant at all.
+var NAV_FOR_VIEW = {
+    'dashboard-view': 'nav-dashboard',
+    'hr-dashboard-view': 'nav-hr-dashboard',
+    'invoices-view': 'nav-invoices',
+    'create-invoice-view': 'nav-invoices',
+    'view-invoice-view': 'nav-invoices',
+    'sales-pipeline-view': 'nav-pipeline',
+    'recurring-view': 'nav-recurring',
+    'customer-view': 'nav-contacts',
+    'quotes-view': 'nav-quotes',
+    'create-quote-view': 'nav-quotes',
+    'view-quote-view': 'nav-quotes',
+    'bills-view': 'nav-bills',
+    'reports-view': 'nav-reports',
+    'contacts-view': 'nav-contacts',
+    'employees-view': 'nav-people',
+    'employee-detail-view': 'nav-people',
+    'departments-view': 'nav-people',
+    'attendance-view': 'nav-people',
+    'leave-view': 'nav-leave',
+    'goals-view': 'nav-goals',
+    'onboarding-hub-view': 'nav-onboarding',
+    'recruitment-view': 'nav-recruitment',
+    'payroll-view': 'nav-payroll',
+    'payslip-detail-view': 'nav-payroll',
+    'orgchart-view': 'nav-org',
+    'wallet-view': 'nav-wallet',
+    'settings-view': 'nav-settings'
+};
+
+// --- Routing ------------------------------------------------------------
+// Views used to be swapped by toggling display alone, which left the address
+// bar on app.html whatever you were looking at. Nothing could be bookmarked
+// or sent to a colleague, Back left the app entirely rather than returning to
+// the previous screen, and every refresh dropped you on the dashboard.
+//
+// The hash is written from showView - the one funnel every navigation already
+// goes through - so the URL follows the view without each caller having to
+// remember to update it.
+
+var ROUTE_SLUGS = {
+    'dashboard-view': 'dashboard',
+    'hr-dashboard-view': 'hr',
+    'invoices-view': 'invoices',
+    'create-invoice-view': 'invoices/new',
+    'quotes-view': 'quotes',
+    'create-quote-view': 'quotes/new',
+    'sales-pipeline-view': 'pipeline',
+    'recurring-view': 'recurring',
+    'bills-view': 'bills',
+    'wallet-view': 'wallet',
+    'reports-view': 'reports',
+    'contacts-view': 'contacts',
+    'employees-view': 'people',
+    'departments-view': 'departments',
+    'attendance-view': 'attendance',
+    'orgchart-view': 'org-chart',
+    'leave-view': 'leave',
+    'goals-view': 'goals',
+    'payroll-view': 'payroll',
+    'recruitment-view': 'recruitment',
+    'onboarding-hub-view': 'onboarding',
+    'staff-requests-view': 'staff-requests',
+    'settings-view': 'settings'
+};
+
+var VIEW_FOR_SLUG = (function () {
+    var m = {};
+    Object.keys(ROUTE_SLUGS).forEach(function (viewId) { m[ROUTE_SLUGS[viewId]] = viewId; });
+    return m;
+})();
+
+// Detail screens need the thing they are showing, so they are restored by
+// calling the same opener the in-app click would have called.
+var DETAIL_ROUTES = [
+    { re: /^invoices\/([^/]+)$/, open: function (id) { showView('invoices-view'); if (typeof viewInvoice === 'function') viewInvoice(decodeURIComponent(id)); } },
+    { re: /^quotes\/([^/]+)$/,   open: function (id) { showView('quotes-view');   if (typeof viewQuote === 'function') viewQuote(decodeURIComponent(id)); } },
+    { re: /^people\/(\d+)$/,     open: function (id) { if (typeof openEmployee === 'function') openEmployee(Number(id)); else showView('employees-view'); } },
+    { re: /^contacts\/(\d+)$/,   open: function (id) { if (typeof openCustomer === 'function') openCustomer(Number(id)); else showView('contacts-view'); } }
+];
+
+// Set while the router is driving showView, so writing the hash back does not
+// bounce straight into another navigation.
+var _applyingRoute = false;
+
+function currentRoute() {
+    return (window.location.hash || '').replace(/^#\/?/, '');
+}
+
+// Called by the detail openers once they know what they opened. Kept separate
+// from showView because only the caller knows the id.
+function setRoute(slug, replace) {
+    if (_applyingRoute) return;
+    var target = '#/' + slug;
+    if (window.location.hash === target) return;
+    if (replace) window.history.replaceState(null, '', target);
+    else window.history.pushState(null, '', target);
+}
+window.setRoute = setRoute;
+
+function applyRoute(slug) {
+    slug = (slug || '').replace(/^\/+|\/+$/g, '');
+    if (!slug) return false;
+
+    var viewId = VIEW_FOR_SLUG[slug];
+    if (viewId) {
+        // A hash pointing at a portal this tenant does not have - an HR link
+        // opened by an invoicing-only account - must not strand them on a
+        // blank screen, so fall through to the default view.
+        if (!isViewAvailable(viewId)) return false;
+        _applyingRoute = true;
+        try { showView(viewId); } finally { _applyingRoute = false; }
+        return true;
+    }
+
+    for (var i = 0; i < DETAIL_ROUTES.length; i++) {
+        var m = slug.match(DETAIL_ROUTES[i].re);
+        if (m) {
+            _applyingRoute = true;
+            try { DETAIL_ROUTES[i].open(m[1]); } finally { _applyingRoute = false; }
+            return true;
+        }
+    }
+    return false;
+}
+window.applyRoute = applyRoute;
+
+// A view is reachable if the section exists and its nav entry has not been
+// hidden by enforcePortalSeparation(). Views with no nav entry of their own
+// (detail screens, staff requests) are treated as reachable.
+function isViewAvailable(viewId) {
+    if (!document.getElementById(viewId)) return false;
+    var navId = NAV_FOR_VIEW[viewId];
+    if (!navId) return true;
+    var navEl = document.getElementById(navId);
+    if (!navEl) return true;
+    return navEl.style.display !== 'none';
+}
+
+function defaultView() {
+    return window.location.pathname.includes('hr.html') ? 'hr-dashboard-view' : 'dashboard-view';
+}
+
+// Back and Forward. Both events are listened for because a hash change made
+// by the user typing in the address bar fires hashchange, while our own
+// pushState navigations come back through popstate.
+function handleRouteChange() {
+    if (!applyRoute(currentRoute())) {
+        _applyingRoute = true;
+        try { showView(defaultView()); } finally { _applyingRoute = false; }
+    }
+}
+
+window.addEventListener('popstate', handleRouteChange);
+window.addEventListener('hashchange', handleRouteChange);
+
+// Restores whatever the URL asked for at boot, falling back to the portal's
+// own dashboard when the hash is absent or not one we serve.
+function startRouter() {
+    if (!applyRoute(currentRoute())) showView(defaultView());
+}
+window.startRouter = startRouter;
+
 // --- View Switcher ---
 function showView(viewId) {
     if (viewId !== 'view-invoice-view' && viewId !== 'view-quote-view') _viewCurrency = '';
@@ -321,36 +488,7 @@ function showView(viewId) {
         }
     }
     document.querySelectorAll('.nav-item').forEach(function(el) { el.classList.remove('active'); });
-    var navMap = {
-        'dashboard-view': 'nav-dashboard',
-        'hr-dashboard-view': 'nav-hr-dashboard',
-        'invoices-view': 'nav-invoices',
-        'create-invoice-view': 'nav-invoices',
-        'view-invoice-view': 'nav-invoices',
-        'sales-pipeline-view': 'nav-pipeline',
-        'recurring-view': 'nav-recurring',
-        'customer-view': 'nav-contacts',
-        'quotes-view': 'nav-quotes',
-        'create-quote-view': 'nav-quotes',
-        'view-quote-view': 'nav-quotes',
-        'bills-view': 'nav-bills',
-        'reports-view': 'nav-reports',
-        'contacts-view': 'nav-contacts',
-        'employees-view': 'nav-people',
-        'employee-detail-view': 'nav-people',
-        'departments-view': 'nav-people',
-        'attendance-view': 'nav-people',
-        'leave-view': 'nav-leave',
-        'goals-view': 'nav-goals',
-        'onboarding-hub-view': 'nav-onboarding',
-        'recruitment-view': 'nav-recruitment',
-        'payroll-view': 'nav-payroll',
-        'payslip-detail-view': 'nav-payroll',
-        'orgchart-view': 'nav-org',
-        'wallet-view': 'nav-wallet',
-        'settings-view': 'nav-settings'
-    };
-    var navId = navMap[viewId];
+    var navId = NAV_FOR_VIEW[viewId];
     if (navId) { var navEl = document.getElementById(navId); if (navEl) navEl.classList.add('active'); }
     // The active item may now live inside a menu, so its heading has to
     // show the state instead.
@@ -381,6 +519,11 @@ function showView(viewId) {
     // gets out of the way. It was the same three lines written out again;
     // closeMobileMenu is the one implementation.
     closeMobileMenu();
+
+    // ...and for the same reason, this is where the address bar is kept in
+    // step. Detail screens are skipped: they are routed by their opener,
+    // which is the only caller that knows which record was opened.
+    if (ROUTE_SLUGS[viewId]) setRoute(ROUTE_SLUGS[viewId]);
 }
 window.showView = showView;
 
@@ -1191,6 +1334,9 @@ async function viewInvoice(number) {
         if (backBtn) backBtn.style.display = 'none';
         document.querySelectorAll('.invoice-action-btn').forEach(function(btn) { btn.style.display = 'inline-block'; });
         showView('view-invoice-view');
+        // Now that we know which invoice this is, the URL can name it, so the
+        // screen can be bookmarked or sent to somebody.
+        setRoute('invoices/' + encodeURIComponent(inv.number));
     } catch (e) {
         showToast('Failed to load invoice', 'error');
     }
@@ -1263,7 +1409,7 @@ function toggleDocumentSection(input) {
     saveTemplateLayout();
 }
 window.toggleDocumentSection = toggleDocumentSection;
-
+
 window.initTemplateBuilder = initTemplateBuilder;
 
 async function saveTemplateLayout() {
@@ -1289,9 +1435,9 @@ async function saveTemplateLayout() {
     }
 }
 window.saveTemplateLayout = saveTemplateLayout;
-
-
-
+
+
+
 
 // Open a generated PDF in a new tab.
 //
@@ -1319,7 +1465,7 @@ function openPdfPreview(doc, title) {
     setTimeout(function () { URL.revokeObjectURL(url); }, 120000);
 }
 window.openPdfPreview = openPdfPreview;
-
+
 
 // --- DYNAMIC GENERATE INVOICE PDF ---
 // Currency sanitizer shared by the invoice and payslip PDFs. jsPDF's built-in
@@ -2870,6 +3016,7 @@ async function viewEmployee(empId) {
         }
 
         showView('employee-detail-view');
+        setRoute('people/' + empId);
         loadEmpGoals(empId);
         loadEmpDocs(empId);
     } catch (e) {
@@ -4868,12 +5015,10 @@ document.addEventListener('DOMContentLoaded', async function() {
     var urlParams = new URLSearchParams(window.location.search);
     
 
-    // Set initial view based on physical file
-    if (window.location.pathname.includes('hr.html')) {
-        showView('hr-dashboard-view');
-    } else {
-        showView('dashboard-view');
-    }
+    // Restore whatever the URL asked for - a bookmark, a shared link, or a
+    // refresh of the screen you were already on - falling back to this
+    // portal's dashboard when there is no usable hash.
+    startRouter();
     
     var issueEl = document.getElementById('inv-issue-date');
     var dueEl = document.getElementById('inv-due-date');
@@ -8763,6 +8908,7 @@ async function viewQuote(number) {
         if (decideWrap) decideWrap.style.display = (q.status === 'Invoiced') ? 'none' : '';
 
         showView('view-quote-view');
+        setRoute('quotes/' + encodeURIComponent(q.number || number));
     } catch (e) { showToast('Failed to load quote: ' + e.message, 'error'); }
 }
 window.viewQuote = viewQuote;
@@ -9538,6 +9684,7 @@ async function openCustomer(contactId) {
         if (!res.ok) { showToast('Customer not found', 'error'); return; }
         renderCustomer(await res.json());
         showView('customer-view');
+        setRoute('contacts/' + contactId);
     } catch (e) { showToast('Failed: ' + e.message, 'error'); }
 }
 window.openCustomer = openCustomer;
