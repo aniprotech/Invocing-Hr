@@ -83,9 +83,29 @@ for (const page of ['app.html', 'hr.html']) {
 // feature rather than a missing link.
 {
     const appJs = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
-    const targets = text => new Set(
-        [...text.matchAll(/showView\(\s*(?:'|"|&quot;)([a-z0-9-]+-view)(?:'|"|&quot;)\s*\)/g)]
-            .map(m => m[1]));
+
+    // The header navigates by href="#/slug" now rather than by an onclick, so
+    // a link counts as a way in just as a showView call does. The slug table
+    // is read out of app.js so this cannot drift from what the router serves.
+    const VIEW_FOR_SLUG = (() => {
+        const block = appJs.slice(appJs.indexOf('var ROUTE_SLUGS'),
+                                  appJs.indexOf('var VIEW_FOR_SLUG'));
+        const m = {};
+        for (const [, view, slug] of block.matchAll(/'([a-z0-9-]+-view)':\s*'([^']+)'/g)) {
+            m[slug] = view;
+        }
+        return m;
+    })();
+
+    const targets = text => {
+        const found = new Set(
+            [...text.matchAll(/showView\(\s*(?:'|"|&quot;)([a-z0-9-]+-view)(?:'|"|&quot;)\s*\)/g)]
+                .map(m => m[1]));
+        for (const [, slug] of text.matchAll(/href="#\/([^"]+)"/g)) {
+            if (VIEW_FOR_SLUG[slug]) found.add(VIEW_FOR_SLUG[slug]);
+        }
+        return found;
+    };
     const fromJs = targets(appJs);
 
     for (const page of ['app.html', 'hr.html']) {
@@ -116,9 +136,9 @@ for (const page of ['app.html', 'hr.html']) {
         .replace(/<script[^>]*src=[^>]*><\/script>/g, '')).window.document;
     const hrNav = hr.getElementById('main-nav').innerHTML;
     check('HR has an Employees link in its header',
-        /showView\('employees-view'\)/.test(hrNav));
+        /href="#\/people"/.test(hrNav));
     check('and it sits in the People menu',
-        /data-nav-group="People"[\s\S]*?employees-view[\s\S]*?<\/div>\s*<\/div>/.test(hrNav));
+        /data-nav-group="People"[\s\S]*?href="#\/people"[\s\S]*?<\/div>\s*<\/div>/.test(hrNav));
 }
 
 (async () => {
@@ -172,22 +192,32 @@ for (const page of ['app.html', 'hr.html']) {
 
             // The whole point of a menu: the item inside it must navigate to
             // its own view, not merely leave some view on screen.
-            const inner = nav.querySelector('.nav-group-menu .nav-item');
-            const wanted = (inner.getAttribute('onclick') || '').match(/showView\('([^']+)'\)/);
-            check('the menu item is wired to a view', !!wanted, inner.id + ' has no showView call');
+            // A menu item this portal does not serve is hidden by
+            // enforcePortalSeparation, and the router deliberately refuses to
+            // open one - an invoicing view on the HR side falls back rather
+            // than showing a screen with no way back to it. So the item under
+            // test has to be one this portal actually offers.
+            const inner = [...nav.querySelectorAll('.nav-group-menu .nav-item')]
+                .find(el => el.style.display !== 'none');
+            check('a menu holds at least one item this portal offers', !!inner);
+            if (!inner) return;
+            const href = inner.getAttribute('href') || '';
+            const slug = (href.match(/^#\/(.+)$/) || [])[1];
+            const wanted = slug && w.VIEW_FOR_SLUG ? w.VIEW_FOR_SLUG[slug] : null;
+            check('the menu item is wired to a view', !!wanted,
+                `${inner.id} has href="${href}", which is not a route`);
             if (wanted) {
                 w.eval("showView('dashboard-view')");   // somewhere else first
-                // jsdom does not execute inline onclick attributes unless
-                // scripts run dangerously, so the handler is invoked exactly as
-                // written instead. This still proves the attribute survived
-                // being moved into a menu, which is what could break.
-                w.eval('(function (event) { ' + inner.getAttribute('onclick') +
-                    ' }).call(document.getElementById("' + inner.id + '"), ' +
-                    '{ preventDefault: function () {} })');
+                // jsdom does not follow a link's default action, so the hash
+                // is set and the event the browser would fire is dispatched.
+                // This still proves the href survived being moved into a menu,
+                // which is what could break.
+                w.location.hash = href;
+                w.dispatchEvent(new w.Event('hashchange'));
                 const shown = d.querySelector('.view-section.active');
                 check('an item inside a menu opens its own view',
-                    shown && shown.id === wanted[1],
-                    `clicked ${inner.id}, wanted ${wanted[1]}, got ${shown && shown.id}`);
+                    shown && shown.id === wanted,
+                    `clicked ${inner.id}, wanted ${wanted}, got ${shown && shown.id}`);
                 check('the group heading shows where you are',
                     !!nav.querySelector('.nav-group .nav-group-toggle.active') ||
                     !!nav.querySelector('.nav-group .nav-item.active'),

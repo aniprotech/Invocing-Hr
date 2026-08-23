@@ -377,6 +377,8 @@ var VIEW_FOR_SLUG = (function () {
     Object.keys(ROUTE_SLUGS).forEach(function (viewId) { m[ROUTE_SLUGS[viewId]] = viewId; });
     return m;
 })();
+window.ROUTE_SLUGS = ROUTE_SLUGS;
+window.VIEW_FOR_SLUG = VIEW_FOR_SLUG;
 
 // Detail screens need the thing they are showing, so they are restored by
 // calling the same opener the in-app click would have called.
@@ -391,8 +393,13 @@ var DETAIL_ROUTES = [
 // bounce straight into another navigation.
 var _applyingRoute = false;
 
+// Only "#/something" is a route. A bare "#anchor" is an ordinary fragment
+// link - the skip-to-content link at the top of every page is one - and must
+// be left to the browser to scroll to, not read as a view that does not
+// exist and answered by throwing the reader back to the dashboard.
 function currentRoute() {
-    return (window.location.hash || '').replace(/^#\/?/, '');
+    var h = window.location.hash || '';
+    return h.indexOf('#/') === 0 ? h.slice(2) : null;
 }
 
 // Called by the detail openers once they know what they opened. Kept separate
@@ -453,7 +460,9 @@ function defaultView() {
 // by the user typing in the address bar fires hashchange, while our own
 // pushState navigations come back through popstate.
 function handleRouteChange() {
-    if (!applyRoute(currentRoute())) {
+    var slug = currentRoute();
+    if (slug === null) return;   // a plain anchor; not ours to act on
+    if (!applyRoute(slug)) {
         _applyingRoute = true;
         try { showView(defaultView()); } finally { _applyingRoute = false; }
     }
@@ -487,9 +496,17 @@ function showView(viewId) {
             setCurrencyPickerDisplay('invCurrency', _appCurrency);
         }
     }
-    document.querySelectorAll('.nav-item').forEach(function(el) { el.classList.remove('active'); });
+    document.querySelectorAll('.nav-item').forEach(function(el) {
+        el.classList.remove('active');
+        // A class is a colour and nothing more. aria-current is how a screen
+        // reader is told which of these links is the page you are on.
+        el.removeAttribute('aria-current');
+    });
     var navId = NAV_FOR_VIEW[viewId];
-    if (navId) { var navEl = document.getElementById(navId); if (navEl) navEl.classList.add('active'); }
+    if (navId) {
+        var navEl = document.getElementById(navId);
+        if (navEl) { navEl.classList.add('active'); navEl.setAttribute('aria-current', 'page'); }
+    }
     // The active item may now live inside a menu, so its heading has to
     // show the state instead.
     if (typeof syncNavGroupState === 'function') syncNavGroupState();

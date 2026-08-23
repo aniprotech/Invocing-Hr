@@ -133,6 +133,44 @@ const shown = w => {
         await wait(30);
         check('going back to a previous URL shows that view again',
             shown(w) === 'invoices-view', shown(w));
+
+        // The highlight is a colour; this is what a screen reader reads.
+        const cur = w.document.querySelector('[aria-current="page"]');
+        check('the view you are on is marked for a screen reader, not just coloured',
+            cur && cur.id === 'nav-invoices', cur ? cur.id : '(none marked)');
+    }
+
+    // --- Plain anchors are not routes -------------------------------------
+    {
+        // Every page carries a "Skip to main content" link pointing at
+        // #main-content-region. Read as a route it matches nothing, and the
+        // fallback would throw a keyboard user to the dashboard - the exact
+        // opposite of what the link is for.
+        const w = boot('app.html').window;
+        await wait(30);
+        w.showView('reports-view');
+        w.location.hash = '#main-content-region';
+        w.dispatchEvent(new w.Event('hashchange'));
+        await wait(30);
+        check('the skip-to-content link does not navigate away',
+            shown(w) === 'reports-view', shown(w));
+    }
+
+    // --- The nav is made of real links ------------------------------------
+    for (const page of ['app.html', 'hr.html']) {
+        const raw = fs.readFileSync(path.join(ROOT, page), 'utf8');
+        const nav = raw.slice(raw.indexOf('id="main-nav"'), raw.indexOf('</nav>'));
+
+        // href="#" with an onclick is not a link: it cannot be opened in a new
+        // tab, middle-clicked, or read out as a destination.
+        check(`${page}: no nav item is a dead href="#"`,
+            !/<a[^>]*href="#"/.test(nav),
+            (nav.match(/<a[^>]*href="#"[^>]*>/g) || [])[0]);
+        check(`${page}: nav items do not navigate by onclick`,
+            !/onclick="event\.preventDefault\(\);showView/.test(nav));
+        check(`${page}: nav items point at real routes`,
+            (nav.match(/href="#\/[a-z-]+"/g) || []).length > 5,
+            (nav.match(/href="#\/[a-z-]+"/g) || []).length + ' found');
     }
 
     // --- Deep links to a single record ------------------------------------

@@ -94,8 +94,8 @@ check('never caches an API call with an asset-looking query',
     !intercepts(h, ORIGIN + '/api/invoices?export=report.css'));
 
 // Writes go to the network whatever they are.
-check('never caches a POST', !intercepts(h, ORIGIN + '/styles.css?v=72', 'POST'));
-check('never caches a DELETE', !intercepts(h, ORIGIN + '/styles.css?v=72', 'DELETE'));
+check('never caches a POST', !intercepts(h, ORIGIN + '/styles.css?v=73', 'POST'));
+check('never caches a DELETE', !intercepts(h, ORIGIN + '/styles.css?v=73', 'DELETE'));
 
 // Another origin's responses are not ours to keep.
 check('never caches a third-party request',
@@ -103,9 +103,9 @@ check('never caches a third-party request',
 
 // --- The things that should be cached --------------------------------------
 [
-    ['/styles.css?v=72', 'the stylesheet'],
-    ['/mobile.css?v=72', 'the mobile stylesheet'],
-    ['/app.js?v=72', 'the script bundle'],
+    ['/styles.css?v=73', 'the stylesheet'],
+    ['/mobile.css?v=73', 'the mobile stylesheet'],
+    ['/app.js?v=73', 'the script bundle'],
     ['/icons/icon-192.png', 'an icon'],
     ['/icons/icon.svg', 'the svg icon'],
 ].forEach(([p, what]) => {

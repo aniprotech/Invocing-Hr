@@ -27,9 +27,9 @@
 const CACHE = 'aniprotech-static-v1';
 
 const PRECACHE = [
-    '/styles.css?v=72',
-    '/mobile.css?v=72',
-    '/app.js?v=72',
+    '/styles.css?v=73',
+    '/mobile.css?v=73',
+    '/app.js?v=73',
     '/icons/icon-192.png',
     '/icons/icon-512.png',
     '/icons/icon.svg',

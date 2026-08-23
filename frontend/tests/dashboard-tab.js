@@ -71,17 +71,19 @@ function boot(page, board) {
 
 (async () => {
     // --- the link exists in the markup, before any script runs ---------------
-    for (const [page, id, view] of [
-        ['app.html', 'nav-dashboard', 'dashboard-view'],
-        ['hr.html', 'nav-hr-dashboard', 'hr-dashboard-view'],
+    // The header navigates by href now rather than by an onclick, so the
+    // route is what says where the link goes.
+    for (const [page, id, route] of [
+        ['app.html', 'nav-dashboard', '#/dashboard'],
+        ['hr.html', 'nav-hr-dashboard', '#/hr'],
     ]) {
         const raw = fs.readFileSync(path.join(ROOT, page), 'utf8');
         const dom = new JSDOM(raw.replace(/<script[^>]*src=[^>]*><\/script>/g, ''));
         const link = dom.window.document.getElementById(id);
         check(`${page} ships a Dashboard link in its markup`, !!link);
-        check(`${page} link goes to ${view}`,
-            !!link && (link.getAttribute('onclick') || '').includes(view),
-            link && link.getAttribute('onclick'));
+        check(`${page} link goes to ${route}`,
+            !!link && link.getAttribute('href') === route,
+            link && link.getAttribute('href'));
         check(`${page} link is labelled Dashboard`,
             !!link && link.textContent.trim() === 'Dashboard');
     }
