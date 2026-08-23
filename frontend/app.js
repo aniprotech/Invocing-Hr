@@ -4957,6 +4957,62 @@ async function requireAuth() {
 }
 window.requireAuth = requireAuth;
 
+// --- Service worker --------------------------------------------------------
+// manifest.webmanifest had been shipping without one, so the app was
+// installable but had none of what installing implies. Registration is left
+// until after load so it never competes with the first paint, and a failure
+// is ignored: the worker is an optimisation, and the app works without it.
+
+function registerServiceWorker() {
+    if (!('serviceWorker' in navigator)) return;
+    window.addEventListener('load', function () {
+        navigator.serviceWorker.register('/sw.js').catch(function () { });
+    });
+}
+window.registerServiceWorker = registerServiceWorker;
+
+// --- Impersonation banner --------------------------------------------------
+// An operator can open a tenant's account to help them, which used to leave
+// no sign on screen that the data belonged to somebody else - and the confirm
+// dialog promised a way back that did not exist. Signing out was the only
+// exit, and it ended the operator's own session too.
+
+async function showImpersonationBannerIfNeeded() {
+    var me;
+    try {
+        var res = await fetch('/api/client/me', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        me = await res.json();
+    } catch (e) { return; }
+    if (!me || !me.impersonated_by_operator) return;
+
+    var who = me.company_name || me.email || 'this account';
+    var bar = document.createElement('div');
+    bar.id = 'impersonation-banner';
+    bar.setAttribute('role', 'status');
+    bar.style.cssText =
+        'position:sticky;top:0;z-index:10000;display:flex;gap:12px;align-items:center;' +
+        'flex-wrap:wrap;padding:10px 16px;background:#b45309;color:#fff;' +
+        'font-size:0.85rem;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+    bar.innerHTML =
+        '<span>You are viewing <strong>' + esc(who) + '</strong> as an operator. ' +
+        'Anything you change here changes their account.</span>' +
+        '<button type="button" id="impersonation-exit" style="margin-left:auto;' +
+        'background:rgba(0,0,0,0.25);color:#fff;border:1px solid rgba(255,255,255,0.4);' +
+        'border-radius:6px;padding:5px 14px;cursor:pointer;font:inherit;">' +
+        'Return to admin</button>';
+    document.body.insertBefore(bar, document.body.firstChild);
+
+    document.getElementById('impersonation-exit').addEventListener('click', async function () {
+        try {
+            await fetch('/api/superadmin/stop-impersonating',
+                        { method: 'POST', credentials: 'same-origin' });
+        } catch (e) { /* go back anyway; the panel will re-check the session */ }
+        window.location.href = '/superadmin.html';
+    });
+}
+window.showImpersonationBannerIfNeeded = showImpersonationBannerIfNeeded;
+
 document.addEventListener('DOMContentLoaded', async function() {
     // The header is built from markup alone, so it is done before anything
     // is awaited. It used to run after the session check, which meant a
@@ -4971,6 +5027,9 @@ document.addEventListener('DOMContentLoaded', async function() {
     // Nothing else runs until we know there is a session, so the page
     // never renders an empty shell behind a redirect.
     if (!(await requireAuth())) return;
+    registerServiceWorker();
+    // Before anything is rendered from the tenant's data, say whose it is.
+    showImpersonationBannerIfNeeded();
     checkAuthStatus();
     // The PDF renderer needs the theme before anyone can export a document.
     loadBrandTheme();

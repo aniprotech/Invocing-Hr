@@ -644,7 +644,25 @@ def client_me(request: Request, db: Session = Depends(get_db)):
         "industry": client.industry,
         "is_onboarded": client.is_onboarded,
         "created_at": client.created_at,
+        # An operator viewing a tenant keeps their superadmin session, so the
+        # app can say whose account is on screen. Without this the only clue
+        # was the data itself, which is exactly the wrong moment to guess.
+        "impersonated_by_operator": bool(request.session.get("superadmin_id")),
     }
+
+@app.post("/api/superadmin/stop-impersonating")
+def superadmin_stop_impersonating(request: Request, db: Session = Depends(get_db)):
+    """Hand the operator back their own session.
+
+    Impersonation offered to 'return to the admin panel afterwards' but there
+    was no way to do it: the tenant stayed in the session until sign-out,
+    which dropped the superadmin session too. Only the tenant keys are
+    cleared here, so the operator lands back on the panel still signed in.
+    """
+    require_superadmin(request)
+    for key in ("client_id", "member_id"):
+        request.session.pop(key, None)
+    return {"message": "Back to the admin panel"}
 
 @app.post("/api/client/onboard")
 def client_onboard(body: ClientOnboard, request: Request, db: Session = Depends(get_db)):
@@ -951,6 +969,10 @@ def superadmin_insights(request: Request, db: Session = Depends(get_db)):
 @app.get("/api/superadmin/login-logs")
 def superadmin_login_logs(request: Request, limit: int = 100, db: Session = Depends(get_db)):
     require_superadmin(request)
+    # Bounded because limit arrives from the query string: this table grows
+    # with every sign-in attempt on the platform, so an unbounded value asks
+    # for all of it at once.
+    limit = max(1, min(int(limit or 100), 1000))
     logs = db.query(models.DBClientLoginLog).order_by(models.DBClientLoginLog.created_at.desc()).limit(limit).all()
     return [{
         "id": l.id, "client_id": l.client_id, "email": l.email,
