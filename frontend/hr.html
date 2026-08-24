@@ -10,8 +10,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>A</text></svg>">
-    <link rel="stylesheet" href="styles.css?v=73">
-    <link rel="stylesheet" href="mobile.css?v=73">
+    <link rel="stylesheet" href="styles.css?v=75">
+    <link rel="stylesheet" href="mobile.css?v=75">
 </head>
 <body>
     <a class="skip-link" href="#main-content-region">Skip to main content</a>
@@ -2123,6 +2123,7 @@
                             <button class="btn btn-outline" onclick="switchAttTab('history')" id="att-tab-history">History</button>
                             <button class="btn btn-outline" onclick="switchAttTab('analytics')" id="att-tab-analytics">Analytics</button>
                             <button class="btn btn-outline" onclick="switchAttTab('overtime')" id="att-tab-overtime">Overtime</button>
+                            <button class="btn btn-outline" onclick="switchAttTab('corrections')" id="att-tab-corrections">Corrections <span id="att-corr-count" class="status-pill status-awaiting" style="display:none;margin-left:6px;"></span></button>
                             <button class="btn btn-outline" onclick="switchAttTab('settings')" id="att-tab-settings"><i class="bi bi-gear"></i></button>
                             <input type="date" id="att-date-filter" class="form-control" style="display:inline-block;width:auto;" onchange="loadAttendance()">
                             <button class="btn btn-outline" onclick="exportAttendance()"><i class="bi bi-download"></i> Export</button>
@@ -2285,6 +2286,35 @@
                     </div>
 
                     <!-- SETTINGS TAB -->
+                    <!-- CORRECTIONS TAB -->
+                    <!-- A day the nightly job closed with no hours, that the
+                         person who worked it has asked to have put right.
+                         Approving is what writes it to the record. -->
+                    <div id="att-sub-corrections" class="d-none">
+                        <section class="widget" style="padding:0;">
+                            <div class="widget-header" style="padding:16px 20px;">
+                                <h3>Attendance corrections</h3>
+                                <select id="att-corr-filter" class="form-control" style="width:auto;" onchange="loadCorrectionQueue()">
+                                    <option value="pending">Waiting on you</option>
+                                    <option value="approved">Approved</option>
+                                    <option value="rejected">Rejected</option>
+                                    <option value="all">All</option>
+                                </select>
+                            </div>
+                            <div class="table-responsive">
+                                <table class="data-table">
+                                    <thead><tr>
+                                        <th>Employee</th><th>Day</th><th>On record</th>
+                                        <th>Asked for</th><th>Why</th><th>Status</th><th></th>
+                                    </tr></thead>
+                                    <tbody id="att-corr-body">
+                                        <tr><td colspan="7" class="loading">Loading...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </section>
+                    </div>
+
                     <div id="att-sub-settings" class="d-none">
                         <div class="glass-widget" style="max-width:600px;">
                             <div class="widget-header"><h3><i class="bi bi-geo-alt"></i> Geofence & Work Hours</h3></div>
@@ -2783,7 +2813,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="app.js?v=73"></script>
+    <script src="app.js?v=75"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">

@@ -1208,6 +1208,48 @@ class DBStaffRequest(Base):
                             cascade="all, delete-orphan")
 
 
+class DBAttendanceCorrection(Base):
+    """A day an employee says their attendance record has wrong, waiting on HR.
+
+    Clocking in and forgetting to clock out is the ordinary case, not the rare
+    one - the nightly job closes those and marks them needs_review, but it
+    deliberately records no hours, because the length of the shift is not
+    knowable from the outside. Until this existed the person who actually
+    worked the day had no way to say so, and the day stayed worth nothing.
+
+    Shaped like DBProfileChange for the same reason: the request never changes
+    the record. The proposed times sit here until HR decides, and the values
+    they would replace are kept alongside so whoever approves can see what is
+    moving. Approving writes them across and recomputes the hours; rejecting
+    leaves the attendance row exactly as it was.
+    """
+    __tablename__ = "attendance_corrections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+    attendance_id = Column(Integer, ForeignKey("attendance.id"), nullable=False, index=True)
+
+    # What the row said when the request was raised, so an approval that lands
+    # days later can still show what it changed.
+    old_clock_in = Column(String, default="")
+    old_clock_out = Column(String, default="")
+
+    requested_clock_in = Column(String, default="")
+    requested_clock_out = Column(String, default="")
+
+    # The employee's account of the day. Required: "fix my hours" with no
+    # explanation is not something HR can reasonably approve.
+    reason = Column(String, nullable=False)
+
+    status = Column(String, default="pending", index=True)   # pending|approved|rejected
+    note = Column(String, default="")            # why HR turned it down
+
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    decided_at = Column(String, default="")
+    decided_by = Column(String, default="")
+
+
 class DBProfileChange(Base):
     """One field an employee wants changed, waiting on HR.
 

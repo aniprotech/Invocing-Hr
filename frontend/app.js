@@ -4619,9 +4619,16 @@ function renderAttendance(records) {
         return;
     }
     records.forEach(function(r) {
-        var statusClass = r.status === 'completed' ? 'paid' : r.status === 'present' ? 'sent' : 'draft';
+        var statusClass = r.status === 'completed' ? 'paid'
+            : r.status === 'present' ? 'sent'
+            : r.status === 'needs_review' ? 'awaiting'
+            : 'draft';
+        // A shift the nightly job closed is not open, however empty the
+        // clock-out column looks - offering Clock Out on it would write a
+        // finish time days after the fact.
+        var isOpen = !!r.clock_in && !r.clock_out && r.status !== 'needs_review';
         var typeBadge = r.check_type ? '<span class="status-pill status-' + (r.check_type === 'office' ? 'sent' : r.check_type === 'remote' ? 'paid' : 'draft') + '">' + r.check_type + '</span>' : '-';
-        tbody.insertAdjacentHTML('beforeend', '<tr><td><strong>' + employeeLink(r.employee_id, r.employee_name) + '</strong><br><span style="font-size:0.78rem;color:var(--text-secondary);">' + esc(r.employee_email || '') + '</span></td><td>' + esc(r.date) + '</td><td>' + esc(r.clock_in || '-') + '</td><td>' + esc(r.clock_out || '-') + '</td><td class="text-right">' + (r.total_hours ? r.total_hours + 'h' : '-') + '</td><td>' + typeBadge + '</td><td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(r.location_label || '') + '">' + (r.location_label ? esc(r.location_label.substring(0, 30)) : '-') + '</td><td><span class="status-pill status-' + statusClass + '">' + esc(r.status) + '</span></td><td class="text-right">' + (!r.clock_out && r.clock_in ? '<button class="btn btn-outline btn-sm" onclick="clockInOut(' + r.employee_id + ')">Clock Out</button>' : '') + '</td></tr>');
+        tbody.insertAdjacentHTML('beforeend', '<tr><td><strong>' + employeeLink(r.employee_id, r.employee_name) + '</strong><br><span style="font-size:0.78rem;color:var(--text-secondary);">' + esc(r.employee_email || '') + '</span></td><td>' + esc(r.date) + '</td><td>' + esc(r.clock_in || '-') + '</td><td>' + esc(r.clock_out || '-') + '</td><td class="text-right">' + (r.clock_out ? Number(r.total_hours || 0).toFixed(2) + 'h' : '-') + '</td><td>' + typeBadge + '</td><td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(r.location_label || '') + '">' + (r.location_label ? esc(r.location_label.substring(0, 30)) : '-') + '</td><td><span class="status-pill status-' + statusClass + '">' + esc(r.status) + '</span></td><td class="text-right">' + (isOpen ? '<button class="btn btn-outline btn-sm" onclick="clockInOut(' + r.employee_id + ')">Clock Out</button>' : '') + '</td></tr>');
     });
 }
 
@@ -4738,7 +4745,7 @@ window.showPeopleTab = showPeopleTab;
 
 // --- Attendance Sub-Tabs ---
 function switchAttTab(tab) {
-    ['live','history','analytics','overtime','settings'].forEach(t => {
+    ['live','history','analytics','overtime','corrections','settings'].forEach(t => {
         var el = document.getElementById('att-sub-' + t);
         if (el) el.classList.add('d-none');
         var btn = document.getElementById('att-tab-' + t);
@@ -4751,8 +4758,113 @@ function switchAttTab(tab) {
     if (tab === 'analytics') loadAttendanceAnalytics();
     if (tab === 'settings') loadAttendanceSettings();
     if (tab === 'overtime') loadOvertimeTab();
+    if (tab === 'corrections') loadCorrectionQueue();
 }
 window.switchAttTab = switchAttTab;
+
+
+// --- Attendance corrections -----------------------------------------------
+// The nightly job closes a forgotten clock-out and records no hours, because
+// it cannot know how long the shift was. This is where the account the
+// employee gave gets turned into a decision - approving is what writes it.
+
+async function loadCorrectionQueue() {
+    var tbody = document.getElementById('att-corr-body');
+    if (!tbody) return;
+    var sel = document.getElementById('att-corr-filter');
+    var status = sel ? sel.value : 'pending';
+    var rows;
+    try {
+        var res = await fetch('/api/hr/attendance/corrections?status=' +
+                              encodeURIComponent(status));
+        if (!res.ok) throw new Error('Failed');
+        rows = await res.json();
+    } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="7" class="loading">Could not load corrections.</td></tr>';
+        return;
+    }
+
+    if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:32px;' +
+            'color:var(--text-secondary);">Nothing here.</td></tr>';
+        updateCorrectionBadge();
+        return;
+    }
+
+    tbody.innerHTML = rows.map(function (c) {
+        var was = (c.old_clock_in || '-') + ' to ' + (c.old_clock_out || '-');
+        var want = (c.requested_clock_in || '-') + ' to ' + (c.requested_clock_out || '-');
+        var pill = c.status === 'approved' ? 'paid'
+                 : c.status === 'rejected' ? 'draft' : 'awaiting';
+        // Buttons carry their id and decision as data, and one delegated
+        // listener below reads them. Inline handlers would need the row id
+        // quoted into an attribute, which is a quoting trap for no gain.
+        var actions = c.status === 'pending'
+            ? '<button class="btn btn-sm btn-primary" data-corr="' + c.id + '" data-decision="approve">Approve</button> ' +
+              '<button class="btn btn-sm btn-outline" data-corr="' + c.id + '" data-decision="reject">Reject</button>'
+            : esc(c.decided_by || '');
+        return '<tr>' +
+            '<td>' + employeeLink(c.employee_id, c.employee_name) + '</td>' +
+            '<td>' + esc(c.created_at ? c.created_at.substring(0, 10) : '') + '</td>' +
+            '<td style="color:var(--text-secondary);">' + esc(was) + '</td>' +
+            '<td><strong>' + esc(want) + '</strong></td>' +
+            '<td style="max-width:220px;">' + esc(c.reason || '') + '</td>' +
+            '<td><span class="status-pill status-' + pill + '">' + esc(c.status) + '</span></td>' +
+            '<td class="text-right">' + actions + '</td>' +
+        '</tr>';
+    }).join('');
+    updateCorrectionBadge();
+}
+window.loadCorrectionQueue = loadCorrectionQueue;
+
+// Attached once to the table body, so rows redrawn after a decision keep
+// working without rebinding anything.
+document.addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('[data-corr][data-decision]') : null;
+    if (!btn) return;
+    decideCorrection(Number(btn.getAttribute('data-corr')),
+                     btn.getAttribute('data-decision'));
+});
+
+async function decideCorrection(id, decision) {
+    var note = '';
+    if (decision === 'reject') {
+        // A refusal without a reason is the thing people chase HR about.
+        note = window.prompt('Why is this being turned down?') || '';
+        if (!note.trim()) return;
+    }
+    try {
+        var res = await fetch('/api/hr/attendance/corrections/' + id + '/decide', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ decision: decision, note: note }),
+        });
+        var body = await res.json().catch(function () { return {}; });
+        if (!res.ok) throw new Error(body.detail || 'That did not go through.');
+        showToast(decision === 'approve' ? 'Attendance updated' : 'Request turned down',
+                  decision === 'approve' ? 'success' : 'info');
+        loadCorrectionQueue();
+        // The history table behind this now says something different.
+        if (typeof loadAttendance === 'function') loadAttendance();
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+window.decideCorrection = decideCorrection;
+
+// The count of what is waiting, so the tab says there is something to do
+// without anyone having to open it.
+async function updateCorrectionBadge() {
+    var badge = document.getElementById('att-corr-count');
+    if (!badge) return;
+    try {
+        var res = await fetch('/api/hr/attendance/corrections?status=pending');
+        if (!res.ok) return;
+        var rows = await res.json();
+        badge.textContent = rows.length;
+        badge.style.display = rows.length ? '' : 'none';
+    } catch (e) { /* the tab still works without a number on it */ }
+}
+window.updateCorrectionBadge = updateCorrectionBadge;
 
 // --- Live Attendance Board ---
 async function loadLiveAttendance() {

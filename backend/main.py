@@ -3212,6 +3212,44 @@ def job_overdue_reminders(db, now):
 INTERVIEW_REMINDER_HOURS = 24
 
 
+@scheduled_job("close_abandoned_shifts")
+def job_close_abandoned_shifts(db, now):
+    """Close a shift somebody clocked into and never out of.
+
+    Nothing did this, so a forgotten clock-out stayed open for ever: the row
+    kept a live "Clock Out" button weeks later, the status stayed "present",
+    and payroll counted the day as nothing at all despite the person having
+    worked it.
+
+    Deliberately records zero hours rather than assuming a working day. The
+    length of that shift is not knowable from here, and a guessed number in
+    payroll is worse than a visible gap - it is wrong, and it looks right.
+    The row is marked needs_review instead, which is what puts it in front of
+    HR and what the employee can raise a correction against.
+
+    Yesterday and earlier only. A shift opened today is somebody still at
+    work, not an abandoned one.
+    """
+    cutoff = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    stale = db.query(models.DBAttendance).filter(
+        models.DBAttendance.clock_in != "",
+        models.DBAttendance.clock_out == "",
+        models.DBAttendance.date <= cutoff,
+        models.DBAttendance.status != "needs_review",
+    ).all()
+
+    for att in stale:
+        att.clock_out = ""            # still unknown; we are not inventing one
+        att.total_hours = 0.0
+        att.status = "needs_review"
+        note = f"Auto-closed on {now.strftime('%Y-%m-%d')}: no clock-out recorded."
+        att.notes = f"{att.notes} {note}".strip() if att.notes else note
+
+    if stale:
+        db.commit()
+    return f"closed {len(stale)}"
+
+
 @scheduled_job("interview_reminders")
 def job_interview_reminders(db, now):
     """Remind both sides about an interview happening tomorrow.
@@ -7084,9 +7122,18 @@ def get_attendance(request: Request, employee_id: int = 0, date: str = "", db: S
     if date:
         query = query.filter(models.DBAttendance.date == date)
     records = query.order_by(models.DBAttendance.date.desc(), models.DBAttendance.clock_in.desc()).limit(200).all()
+
+    # One query for the people, not one per row. This loop used to issue a
+    # lookup per record, so a full page was 201 queries for 200 rows.
+    emp_ids = {a.employee_id for a in records}
+    emps = {}
+    if emp_ids:
+        emps = {e.id: e for e in db.query(models.DBEmployee).filter(
+            models.DBEmployee.id.in_(emp_ids)).all()}
+
     result = []
     for a in records:
-        emp = db.query(models.DBEmployee).filter(models.DBEmployee.id == a.employee_id).first()
+        emp = emps.get(a.employee_id)
         result.append({
             "id": a.id, "employee_id": a.employee_id,
             "employee_name": f"{emp.first_name} {emp.last_name}" if emp else "",
@@ -7094,6 +7141,10 @@ def get_attendance(request: Request, employee_id: int = 0, date: str = "", db: S
             "date": a.date, "clock_in": a.clock_in, "clock_out": a.clock_out,
             "total_hours": a.total_hours, "status": a.status, "notes": a.notes,
             "created_at": a.created_at,
+            # The history table has had Type and Location columns all along and
+            # they were never sent, so both read "-" on every row for everyone.
+            "check_type": a.check_type, "location_label": a.location_label,
+            "break_minutes": a.break_minutes, "overtime_hours": a.overtime_hours,
         })
     return result
 
@@ -7734,6 +7785,9 @@ def employee_dashboard(request: Request, db: Session = Depends(get_db)):
         models.DBAttendance.date >= thirty_days_ago,
     ).order_by(models.DBAttendance.date.desc()).limit(30).all()
     attendance = [{
+        # The row id, so the portal can name the day it is asking to correct.
+        # Without it the Fix button had nothing to send.
+        "id": r.id,
         "date": r.date, "clock_in": r.clock_in, "clock_out": r.clock_out,
         "total_hours": r.total_hours, "status": r.status, "check_type": r.check_type,
         "break_minutes": r.break_minutes or 0, "overtime_hours": r.overtime_hours or 0,
@@ -13771,6 +13825,167 @@ def employee_assistant(request: Request, body: dict = None,
     charge_after_success(db, emp.client_id, "ai_assistant", 1,
                          f"{emp.first_name}: {question[:40]}")
     return {"answer": answer, "available": True}
+
+
+# --- Attendance corrections ------------------------------------------------
+# Forgetting to clock out is the ordinary case. The nightly job closes those
+# and records no hours, on purpose - it cannot know the shift length. This is
+# how the person who worked the day says what it actually was.
+
+
+def _valid_time(value):
+    """HH:MM or HH:MM:SS, normalised to HH:MM:SS. None if it is neither."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(value, fmt).strftime("%H:%M:%S")
+        except ValueError:
+            continue
+    return None
+
+
+def correction_to_dict(c, emp=None):
+    return {
+        "id": c.id, "attendance_id": c.attendance_id,
+        "employee_id": c.employee_id,
+        "employee_name": f"{emp.first_name} {emp.last_name}" if emp else "",
+        "old_clock_in": c.old_clock_in, "old_clock_out": c.old_clock_out,
+        "requested_clock_in": c.requested_clock_in,
+        "requested_clock_out": c.requested_clock_out,
+        "reason": c.reason, "status": c.status, "note": c.note,
+        "created_at": c.created_at, "decided_at": c.decided_at,
+        "decided_by": c.decided_by,
+    }
+
+
+@app.get("/api/employee/attendance/corrections")
+def employee_list_corrections(request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    rows = db.query(models.DBAttendanceCorrection).filter(
+        models.DBAttendanceCorrection.employee_id == emp.id,
+    ).order_by(models.DBAttendanceCorrection.id.desc()).limit(100).all()
+    return [correction_to_dict(c, emp) for c in rows]
+
+
+@app.post("/api/employee/attendance/corrections")
+def employee_raise_correction(request: Request, body: dict = None,
+                              db: Session = Depends(get_db)):
+    """Ask for a day to be corrected. Nothing is applied here."""
+    emp = current_employee(request, db)
+    body = body or {}
+
+    att = db.query(models.DBAttendance).filter(
+        models.DBAttendance.id == int(body.get("attendance_id") or 0),
+        # Scoped to the person asking: an employee may only correct their own
+        # attendance, never a colleague's.
+        models.DBAttendance.employee_id == emp.id,
+    ).first()
+    if not att:
+        raise HTTPException(status_code=404, detail="That day is not on your record")
+
+    reason = str(body.get("reason") or "").strip()
+    if len(reason) < 5:
+        raise HTTPException(status_code=400,
+                            detail="Say what happened, so HR can decide")
+
+    cin = _valid_time(body.get("clock_in"))
+    cout = _valid_time(body.get("clock_out"))
+    if cin is None or cout is None:
+        raise HTTPException(status_code=400, detail="Times must look like 09:00")
+    if not cin and not cout:
+        raise HTTPException(status_code=400, detail="Give a start or a finish time")
+    if cin and cout and cout <= cin:
+        raise HTTPException(status_code=400,
+                            detail="The finish time must be after the start time")
+
+    # One open request per day. Otherwise a second one silently overwrites what
+    # HR is part-way through deciding on.
+    if db.query(models.DBAttendanceCorrection).filter(
+            models.DBAttendanceCorrection.attendance_id == att.id,
+            models.DBAttendanceCorrection.status == "pending").first():
+        raise HTTPException(status_code=409,
+                            detail="You already have a request waiting on this day")
+
+    row = models.DBAttendanceCorrection(
+        client_id=att.client_id, employee_id=emp.id, attendance_id=att.id,
+        old_clock_in=att.clock_in or "", old_clock_out=att.clock_out or "",
+        requested_clock_in=cin, requested_clock_out=cout, reason=reason[:500],
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return correction_to_dict(row, emp)
+
+
+@app.get("/api/hr/attendance/corrections")
+def hr_list_corrections(request: Request, status: str = "pending",
+                        db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    q = db.query(models.DBAttendanceCorrection).filter(
+        models.DBAttendanceCorrection.client_id == client.id)
+    if status and status != "all":
+        q = q.filter(models.DBAttendanceCorrection.status == status)
+    rows = q.order_by(models.DBAttendanceCorrection.id.desc()).limit(200).all()
+
+    emp_ids = {r.employee_id for r in rows}
+    emps = {}
+    if emp_ids:
+        emps = {e.id: e for e in db.query(models.DBEmployee).filter(
+            models.DBEmployee.id.in_(emp_ids)).all()}
+    return [correction_to_dict(c, emps.get(c.employee_id)) for c in rows]
+
+
+@app.post("/api/hr/attendance/corrections/{correction_id}/decide")
+def hr_decide_correction(correction_id: int, request: Request, body: dict = None,
+                         db: Session = Depends(get_db)):
+    """Approve writes the times across and recomputes the hours; reject leaves
+    the attendance row exactly as it was."""
+    client = get_client_user(request, db)
+    body = body or {}
+    decision = (body.get("decision") or "").strip().lower()
+    if decision not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="decision must be approve or reject")
+
+    row = db.query(models.DBAttendanceCorrection).filter(
+        models.DBAttendanceCorrection.id == correction_id,
+        models.DBAttendanceCorrection.client_id == client.id,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if row.status != "pending":
+        raise HTTPException(status_code=409, detail=f"This was already {row.status}.")
+
+    row.status = "approved" if decision == "approve" else "rejected"
+    row.note = str(body.get("note") or "").strip()[:300]
+    row.decided_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    row.decided_by = client.company_name or client.email or "HR"
+
+    if decision == "approve":
+        att = db.query(models.DBAttendance).filter(
+            models.DBAttendance.id == row.attendance_id).first()
+        if not att:
+            raise HTTPException(status_code=404, detail="That day is no longer on record")
+        if row.requested_clock_in:
+            att.clock_in = row.requested_clock_in
+        if row.requested_clock_out:
+            att.clock_out = row.requested_clock_out
+        # Recomputed from whatever the row now holds, so the hours always match
+        # the times shown beside them.
+        if att.clock_in and att.clock_out:
+            try:
+                cin = datetime.strptime(att.clock_in, "%H:%M:%S")
+                cout = datetime.strptime(att.clock_out, "%H:%M:%S")
+                att.total_hours = max(0.0, round((cout - cin).total_seconds() / 3600, 2))
+                att.status = "completed"
+            except ValueError:
+                att.total_hours = 0.0
+        log_audit(db, client.id, "attendance_corrected", "attendance", att.id,
+                  att.date, f"{att.clock_in} to {att.clock_out}", request)
+
+    db.commit()
+    return correction_to_dict(row)
 
 
 @app.get("/api/employee/assistant/suggestions")

@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#0b0f19">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
-  <link rel="stylesheet" href="tailwind.css?v=73">
+  <link rel="stylesheet" href="tailwind.css?v=75">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -36,7 +36,7 @@
     .notification-badge { animation: notifPulse 2s infinite; }
     @keyframes notifPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.1); } }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=73">
+    <link rel="stylesheet" href="mobile.css?v=75">
 </head>
 <body class="bg-gray-50 min-h-screen">
 
@@ -309,6 +309,7 @@
               <th class="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-6 py-3">Break</th>
               <th class="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-6 py-3">Type</th>
               <th class="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-6 py-3">Status</th>
+              <th class="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-6 py-3"></th>
             </tr></thead>
             <tbody id="historyBody" class="divide-y divide-gray-50"></tbody>
           </table>
@@ -1420,6 +1421,9 @@
         var res = await apiGet('/api/employee/dashboard');
         if (!res.ok) return;
         var data = await res.json();
+        // Before the table is drawn, so a day already with HR shows that
+        // rather than offering to raise a second request on it.
+        await loadCorrections();
         var sum = data.attendance_summary || {};
         var mh = sum.total_hours || 0; if (mh < 0) mh = 0;
         document.getElementById('monthHours').textContent = Math.floor(mh) + 'h ' + Math.round((mh - Math.floor(mh)) * 60) + 'm';
@@ -1427,13 +1431,13 @@
         var histBody = document.getElementById('historyBody');
         var records = data.attendance || [];
         histBody.innerHTML = '';
-        if (records.length === 0) { histBody.innerHTML = '<tr><td colspan="7" class="text-center py-8 text-gray-400">No records</td></tr>'; return; }
+        if (records.length === 0) { histBody.innerHTML = '<tr><td colspan="8" class="text-center py-8 text-gray-400">No records</td></tr>'; return; }
         records.forEach(function(r) {
           var hours = r.total_hours || 0; if (hours < 0) hours = 0;
           var ct = r.check_type || 'manual';
           var ctColors = { office: 'bg-blue-100 text-blue-700', remote: 'bg-emerald-100 text-emerald-700', field: 'bg-amber-100 text-amber-700' };
           var ctClass = ctColors[ct] || 'bg-gray-100 text-gray-600';
-          histBody.innerHTML += '<tr class="hover:bg-gray-50 transition-colors"><td class="px-6 py-3 text-sm font-medium text-gray-900">' + new Date(r.date).toLocaleDateString('en-US',{month:'short',day:'numeric'}) + '</td><td class="px-6 py-3 text-sm text-gray-600">' + esc(r.clock_in||'-') + '</td><td class="px-6 py-3 text-sm text-gray-600">' + esc(r.clock_out||'-') + '</td><td class="px-6 py-3 text-sm font-semibold text-gray-900">' + Math.floor(hours) + 'h ' + Math.round((hours-Math.floor(hours))*60) + 'm</td><td class="px-6 py-3 text-sm text-amber-600">' + (r.break_minutes>0?Math.round(r.break_minutes)+'m':'-') + '</td><td class="px-6 py-3"><span class="px-2 py-0.5 text-xs font-medium rounded-full ' + ctClass + '">' + esc(ct) + '</span></td><td class="px-6 py-3"><span class="px-2 py-0.5 text-xs font-medium rounded-full ' + (r.status==='completed'?'bg-emerald-100 text-emerald-700':'bg-brand-100 text-brand-700') + '">' + esc(r.status) + '</span></td></tr>';
+          histBody.innerHTML += '<tr class="hover:bg-gray-50 transition-colors"><td class="px-6 py-3 text-sm font-medium text-gray-900">' + new Date(r.date).toLocaleDateString('en-US',{month:'short',day:'numeric'}) + '</td><td class="px-6 py-3 text-sm text-gray-600">' + esc(r.clock_in||'-') + '</td><td class="px-6 py-3 text-sm text-gray-600">' + esc(r.clock_out||'-') + '</td><td class="px-6 py-3 text-sm font-semibold text-gray-900">' + Math.floor(hours) + 'h ' + Math.round((hours-Math.floor(hours))*60) + 'm</td><td class="px-6 py-3 text-sm text-amber-600">' + (r.break_minutes>0?Math.round(r.break_minutes)+'m':'-') + '</td><td class="px-6 py-3"><span class="px-2 py-0.5 text-xs font-medium rounded-full ' + ctClass + '">' + esc(ct) + '</span></td><td class="px-6 py-3"><span class="px-2 py-0.5 text-xs font-medium rounded-full ' + (r.status==='completed'?'bg-emerald-100 text-emerald-700':'bg-brand-100 text-brand-700') + '">' + esc(r.status) + '</span></td>' + '<td class="px-6 py-3">' + fixCell(r) + '</td></tr>';
         });
         var recent = document.getElementById('recentAttendance');
         recent.innerHTML = '';
@@ -1449,6 +1453,93 @@
         renderOnboarding(items);
       } catch (e) { console.error(e); }
     }
+
+    // --- Attendance corrections ---------------------------------------
+    // Forgetting to clock out is ordinary. The nightly job closes those days
+    // and records no hours on purpose, because it cannot know how long the
+    // shift was - so the day is worth nothing until the person who worked it
+    // says otherwise. This is where they say so.
+
+    var _corrections = {};   // attendance_id -> the request already raised
+
+    async function loadCorrections() {
+      try {
+        // apiGet hands back the Response, not the body.
+        var res = await apiGet('/api/employee/attendance/corrections');
+        if (!res.ok) { _corrections = {}; return; }
+        var rows = await res.json();
+        _corrections = {};
+        // Newest first from the server, and a day can be raised again after a
+        // refusal - so the first one seen is the one that still stands. Taking
+        // the last would show a stale "rejected" beside a day since put right.
+        (rows || []).forEach(function (c) {
+          if (!_corrections[c.attendance_id]) _corrections[c.attendance_id] = c;
+        });
+      } catch (e) { _corrections = {}; }
+    }
+
+    function fixCell(r) {
+      var existing = _corrections[r.id];
+      if (existing) {
+        var look = existing.status === 'approved' ? 'bg-emerald-100 text-emerald-700'
+                 : existing.status === 'rejected' ? 'bg-red-100 text-red-700'
+                 : 'bg-amber-100 text-amber-700';
+        var label = existing.status === 'pending' ? 'with HR' : existing.status;
+        return '<span class="px-2 py-0.5 text-xs font-medium rounded-full ' + look + '">'
+             + esc(label) + '</span>';
+      }
+      // Only worth offering where something is actually wrong: a day with no
+      // finish time, or one HR has already flagged.
+      if (r.clock_out && r.status !== 'needs_review') return '';
+      return '<button onclick="openCorrection(' + r.id + ')" '
+           + 'class="px-3 py-1 text-xs font-medium text-brand-600 hover:text-brand-700 '
+           + 'hover:bg-brand-50 rounded-lg min-h-[32px]">Fix this</button>';
+    }
+
+    function openCorrection(attendanceId) {
+      document.getElementById('corrAttendanceId').value = attendanceId;
+      document.getElementById('corrIn').value = '';
+      document.getElementById('corrOut').value = '';
+      document.getElementById('corrReason').value = '';
+      document.getElementById('corrError').classList.add('hidden');
+      document.getElementById('correctionModal').classList.remove('hidden');
+      document.getElementById('correctionModal').classList.add('flex');
+    }
+    window.openCorrection = openCorrection;
+
+    function closeCorrection() {
+      document.getElementById('correctionModal').classList.add('hidden');
+      document.getElementById('correctionModal').classList.remove('flex');
+    }
+    window.closeCorrection = closeCorrection;
+
+    async function submitCorrection() {
+      var err = document.getElementById('corrError');
+      var btn = document.getElementById('corrSubmit');
+      err.classList.add('hidden');
+      btn.disabled = true;
+      try {
+        var res = await apiPost('/api/employee/attendance/corrections', {
+          attendance_id: Number(document.getElementById('corrAttendanceId').value),
+          clock_in: document.getElementById('corrIn').value,
+          clock_out: document.getElementById('corrOut').value,
+          reason: document.getElementById('corrReason').value,
+        });
+        var body = await res.json().catch(function () { return {}; });
+        // The server is the one that decides this is valid, so its wording is
+        // what gets shown rather than a guess made here.
+        if (!res.ok) throw new Error(body.detail || 'Could not send that.');
+        closeCorrection();
+        await loadCorrections();
+        loadDashboard();
+      } catch (e) {
+        err.textContent = e.message || 'Could not send that.';
+        err.classList.remove('hidden');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+    window.submitCorrection = submitCorrection;
 
     function renderOnboarding(items) {
       var onbList = document.getElementById('onboardingList');
@@ -1694,5 +1785,45 @@
       });
     }
   </script>
+
+  <!-- Asking for a day to be corrected. Nothing here changes the record; it
+       goes to HR as a request, which is the same shape as a bank-detail
+       change for the same reason. -->
+  <div id="correctionModal" class="hidden fixed inset-0 z-[9000] bg-black/50 items-center justify-center p-4">
+    <div class="bg-white rounded-2xl w-full max-w-md p-6 shadow-xl" role="dialog"
+         aria-modal="true" aria-labelledby="corrTitle">
+      <div class="flex items-start justify-between mb-1">
+        <h3 id="corrTitle" class="font-semibold text-gray-900">Fix this day</h3>
+        <button onclick="closeCorrection()" aria-label="Close"
+                class="text-gray-400 hover:text-gray-600 min-h-[32px] px-2">&times;</button>
+      </div>
+      <p class="text-sm text-gray-500 mb-4">
+        Tell HR what the times should have been. Nothing changes until they agree.
+      </p>
+      <input type="hidden" id="corrAttendanceId">
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <label for="corrIn" class="block text-xs font-medium text-gray-600 mb-1">Started</label>
+          <input id="corrIn" type="time"
+                 class="w-full px-3 py-2 border border-gray-200 rounded-xl text-sm min-h-[40px]">
+        </div>
+        <div>
+          <label for="corrOut" class="block text-xs font-medium text-gray-600 mb-1">Finished</label>
+          <input id="corrOut" type="time"
+                 class="w-full px-3 py-2 border border-gray-200 rounded-xl text-sm min-h-[40px]">
+        </div>
+      </div>
+      <label for="corrReason" class="block text-xs font-medium text-gray-600 mb-1">What happened</label>
+      <textarea id="corrReason" rows="3" placeholder="Forgot to clock out when I left"
+                class="w-full px-3 py-2 border border-gray-200 rounded-xl text-sm mb-3"></textarea>
+      <p id="corrError" class="hidden text-sm text-red-600 mb-3" role="alert"></p>
+      <div class="flex gap-2 justify-end">
+        <button onclick="closeCorrection()"
+                class="px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-xl min-h-[40px]">Cancel</button>
+        <button id="corrSubmit" onclick="submitCorrection()"
+                class="px-4 py-2 text-sm font-medium text-white bg-brand-500 hover:bg-brand-600 disabled:opacity-50 rounded-xl min-h-[40px]">Send to HR</button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>
