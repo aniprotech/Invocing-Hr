@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Checks for the parts of the frontend that only fail at runtime. The Python suite covers the API; this covers the PDF generator, which is where a removed variable turns into a thrown exception that takes the invoice preview and the email attachment down together.",
   "scripts": {
-    "test": "npm run test:pdf && npm run test:pagination && npm run test:logo && npm run test:form && npm run test:logosync && npm run test:mobilenav && npm run test:nav && npm run test:layering && npm run test:walletcurrency && npm run test:dashtab && npm run test:shapes && npm run test:portal && npm run test:routing && npm run test:superadmin && npm run test:sw",
+    "test": "npm run test:pdf && npm run test:pagination && npm run test:logo && npm run test:form && npm run test:logosync && npm run test:mobilenav && npm run test:nav && npm run test:layering && npm run test:walletcurrency && npm run test:dashtab && npm run test:shapes && npm run test:portal && npm run test:routing && npm run test:superadmin && npm run test:sw && npm run test:tailwind",
     "test:sw": "node frontend/tests/service-worker.js",
     "test:routing": "node frontend/tests/routing.js",
     "test:superadmin": "node frontend/tests/superadmin-panel.js",
@@ -19,10 +19,13 @@
     "test:walletcurrency": "node frontend/tests/wallet-currency.js",
     "test:dashtab": "node frontend/tests/dashboard-tab.js",
     "test:shapes": "node frontend/tests/api-shape-tolerance.js",
-    "test:portal": "node frontend/tests/employee-portal.js"
+    "test:portal": "node frontend/tests/employee-portal.js",
+    "build:css": "tailwindcss -c frontend/tailwind.config.js -i frontend/tailwind.src.css -o frontend/tailwind.css --minify",
+    "test:tailwind": "node frontend/tests/tailwind-build.js"
   },
   "devDependencies": {
     "jsdom": "^24.0.0",
-    "jspdf": "^2.5.1"
+    "jspdf": "^2.5.1",
+    "tailwindcss": "^3.4.19"
   }
 }

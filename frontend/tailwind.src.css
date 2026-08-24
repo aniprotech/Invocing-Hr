@@ -1,0 +1,5 @@
+/* Input for `npm run build:css`. The generated result is frontend/tailwind.css,
+   which is the file the pages actually load. Do not edit that one by hand. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
