@@ -8440,6 +8440,14 @@ async function startTopUp() {
         var data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Could not start the payment');
 
+        if (data.authorisation_url) {
+            // GoCardless hosts the bank authorisation. Said before they go,
+            // because bank debit is not a card and the balance may not be
+            // there the moment they come back.
+            if (data.settlement_note) showToast(data.settlement_note, 'info');
+            window.location.href = data.authorisation_url;
+            return;
+        }
         if (data.checkout_url || data.approve_url) {
             // Stripe and PayPal take the user to their own hosted page.
             window.location.href = data.checkout_url || data.approve_url;
@@ -8517,7 +8525,16 @@ function handleTopUpReturn() {
     var params = new URLSearchParams(window.location.search);
     var state = params.get('topup');
     if (!state) return;
-    if (state === 'success') {
+    if (state === 'gocardless') {
+        // Authorised, not yet settled. Bank debit confirms through the
+        // webhook - in seconds where the bank supports instant payments, over
+        // a few working days where it is an ordinary Direct Debit. Promising
+        // "complete" here would be a lie on the slower path.
+        showToast('Payment authorised with your bank. Your balance updates as ' +
+                  'soon as it clears - seconds for an instant bank payment, ' +
+                  'a few working days for a Direct Debit.', 'success');
+        loadWallet();
+    } else if (state === 'success') {
         showToast('Payment complete. Updating your balance...', 'success');
         finishPayPalReturn().then(function () { loadWallet(); });
     } else if (state === 'cancelled') {

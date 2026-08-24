@@ -9563,7 +9563,27 @@ def gateway_config():
             "secret": _env_key("PAYPAL_SECRET"),
             "mode": (os.getenv("PAYPAL_MODE", "sandbox") or "sandbox").strip(),
         },
+        "gocardless": {
+            "access_token": _env_key("GOCARDLESS_ACCESS_TOKEN"),
+            "webhook_secret": _env_key("GOCARDLESS_WEBHOOK_SECRET"),
+            # sandbox until someone deliberately says otherwise, because the
+            # failure mode the other way is charging real bank accounts.
+            "environment": (os.getenv("GOCARDLESS_ENVIRONMENT", "sandbox")
+                            or "sandbox").strip().lower(),
+        },
     }
+
+
+# GoCardless is bank debit, not cards, so what it takes depends on the scheme
+# behind the currency: BACS for GBP, SEPA for EUR, ACH for USD, BECS for AUD,
+# and so on. A currency with no scheme cannot be collected at all.
+GOCARDLESS_CURRENCIES = {"GBP", "EUR", "SEK", "DKK", "AUD", "NZD", "CAD", "USD"}
+
+
+def gocardless_base_url():
+    cfg = gateway_config()["gocardless"]
+    return ("https://api.gocardless.com" if cfg["environment"] == "live"
+            else "https://api-sandbox.gocardless.com")
 
 
 def razorpay_key_shape(key_id: str, key_secret: str):
@@ -9653,6 +9673,7 @@ def enabled_providers():
         "stripe": bool(cfg["stripe"]["secret"]),
         "razorpay": bool(cfg["razorpay"]["key_id"] and cfg["razorpay"]["key_secret"]),
         "paypal": bool(cfg["paypal"]["client_id"] and cfg["paypal"]["secret"]),
+        "gocardless": bool(cfg["gocardless"]["access_token"]),
     }
 
 
@@ -9685,6 +9706,8 @@ def provider_takes_currency(provider: str, currency: str) -> bool:
         return code in PAYPAL_CURRENCIES
     if provider == "razorpay":
         return RAZORPAY_INTERNATIONAL or code in RAZORPAY_CURRENCIES
+    if provider == "gocardless":
+        return code in GOCARDLESS_CURRENCIES
     return False
 
 
@@ -9700,6 +9723,10 @@ def why_not_available(provider: str, currency: str, configured: bool) -> str:
                 f"international payments and set RAZORPAY_INTERNATIONAL=true.")
     if provider == "paypal":
         return f"PayPal does not hold balances in {code}."
+    if provider == "gocardless":
+        return (f"GoCardless collects by bank debit, and there is no scheme "
+                f"for {code}. Set the wallet to one of: "
+                f"{', '.join(sorted(GOCARDLESS_CURRENCIES))}.")
     return f"Does not take {code}."
 
 
@@ -9730,12 +9757,11 @@ def wallet_providers(request: Request, db: Session = Depends(get_db)):
             row.update(extra)
         return row
 
+    # Bank debit is the only way a tenant tops up. The card and wallet
+    # gateways stay in the codebase because live orders taken through them
+    # still have to settle and reconcile, but nothing offers them any more.
     providers = [
-        entry("stripe", "Card (Stripe)",
-              {"publishable_key": cfg["stripe"]["publishable"]}),
-        entry("razorpay", "Razorpay (UPI, cards, netbanking)",
-              {"key_id": cfg["razorpay"]["key_id"]}),
-        entry("paypal", "PayPal"),
+        entry("gocardless", "Bank payment (GoCardless)"),
     ]
     return {
         "currency": currency,
@@ -9798,8 +9824,17 @@ def create_topup(body: TopUpIn, request: Request, db: Session = Depends(get_db))
     wallet = get_wallet(db, client.id)
     amount_minor = validate_topup_amount(body.amount, wallet.currency)
     provider = (body.provider or "").strip().lower()
-    if provider not in ("stripe", "razorpay", "paypal"):
-        raise HTTPException(status_code=400, detail="Choose Stripe, Razorpay or PayPal")
+    # Bank debit is the only way to pay. The card gateways still exist in the
+    # code so live orders taken through them can settle, but they cannot be
+    # chosen for anything new.
+    OFFERED = ("gocardless",)
+    if provider not in OFFERED:
+        raise HTTPException(status_code=400,
+                            detail="Top-ups are by bank payment (GoCardless).")
+    # Unknown and unconfigured are different problems with different fixes, so
+    # they get different answers: this one names the setting that is missing.
+    if not enabled_providers().get(provider):
+        raise provider_unavailable("GoCardless", ["GOCARDLESS_ACCESS_TOKEN"])
 
     # Checked here as well as on the page, because a tab left open across a
     # currency change would otherwise start a payment certain to be refused.
@@ -9820,6 +9855,9 @@ def create_topup(body: TopUpIn, request: Request, db: Session = Depends(get_db))
             result = _create_stripe_checkout(order, client, request)
         elif provider == "razorpay":
             result = _create_razorpay_order(order, client)
+        elif provider == "gocardless":
+            result = _create_gocardless_billing_request(
+                order, client, request, topup_return_page(body.return_page))
         else:
             result = _create_paypal_order(
                 order, client, request, topup_return_page(body.return_page))
@@ -9841,6 +9879,108 @@ def create_topup(body: TopUpIn, request: Request, db: Session = Depends(get_db))
         "currency": wallet.currency,
     })
     return result
+
+
+def gocardless_headers(idempotency_key=""):
+    cfg = gateway_config()["gocardless"]
+    headers = {
+        "Authorization": f"Bearer {cfg['access_token']}",
+        "GoCardless-Version": "2015-07-06",
+        "Content-Type": "application/json",
+    }
+    # GoCardless dedupes on this, so a retried request cannot become a second
+    # collection from somebody's bank account.
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    return headers
+
+
+def _create_gocardless_billing_request(order, client, request, return_page):
+    """Start a bank-debit collection and hand back where to authorise it.
+
+    A Billing Request is GoCardless's one flow for both instruments: the payer
+    authorises with their bank, and depending on what their bank supports this
+    settles either in seconds (Instant Bank Pay, open banking) or over the
+    days a Direct Debit takes. Either way no credit is added here - the
+    webhook does that, and only once the money is confirmed.
+    """
+    cfg = gateway_config()["gocardless"]
+    if not cfg["access_token"]:
+        raise provider_unavailable("GoCardless", ["GOCARDLESS_ACCESS_TOKEN"])
+
+    base = str(request.base_url).rstrip("/")
+    api = gocardless_base_url()
+
+    # The collection itself. mandate_request alongside payment_request means
+    # the same authorisation also leaves a reusable mandate behind, which is
+    # what lets auto top-up work later without asking again.
+    payload = {
+        "billing_requests": {
+            "payment_request": {
+                "description": f"Wallet top-up for {client.company_name or client.email}",
+                "amount": int(order.amount_minor),
+                "currency": order.currency.upper(),
+                # Our own id travels with the payment, so the webhook can find
+                # the order without trusting anything the payer controls.
+                "metadata": {"order_id": str(order.id), "client_id": str(client.id)},
+            },
+            "mandate_request": {
+                "currency": order.currency.upper(),
+                "metadata": {"client_id": str(client.id)},
+            },
+            "metadata": {"order_id": str(order.id), "client_id": str(client.id)},
+        }
+    }
+
+    res = httpx.post(f"{api}/billing_requests", json=payload,
+                     headers=gocardless_headers(f"topup-{order.id}"), timeout=30)
+    if res.status_code >= 300:
+        logger.error("GoCardless billing request failed %s: %s",
+                     res.status_code, res.text[:400])
+        raise Exception(f"GoCardless refused the request ({res.status_code})")
+
+    br = res.json().get("billing_requests", {})
+    br_id = br.get("id", "")
+    if not br_id:
+        raise Exception("GoCardless returned no billing request id")
+    order.provider_order_id = br_id
+
+    # The hosted page the payer is sent to. Prefilling the email saves them
+    # typing it and keeps the GoCardless customer matched to our tenant.
+    flow_payload = {
+        "billing_request_flows": {
+            "redirect_uri": f"{base}/{return_page}?topup=gocardless&order={order.id}",
+            "exit_uri": f"{base}/{return_page}?topup=cancelled",
+            "links": {"billing_request": br_id},
+            "prefilled_customer": {
+                "email": client.email or "",
+                "company_name": client.company_name or "",
+            },
+        }
+    }
+    flow = httpx.post(f"{api}/billing_request_flows", json=flow_payload,
+                      headers=gocardless_headers(), timeout=30)
+    if flow.status_code >= 300:
+        logger.error("GoCardless flow failed %s: %s", flow.status_code, flow.text[:400])
+        raise Exception(f"GoCardless could not build the authorisation page ({flow.status_code})")
+
+    url = flow.json().get("billing_request_flows", {}).get("authorisation_url", "")
+    if not url:
+        raise Exception("GoCardless returned no authorisation url")
+    order.checkout_url = url
+
+    return {
+        "provider": "gocardless",
+        "authorisation_url": url,
+        "billing_request_id": br_id,
+        # Said plainly because bank debit is not a card and people expect a
+        # card. The page repeats it before they commit.
+        "settlement_note": (
+            "Your bank confirms this. If your bank supports instant payments "
+            "the credit lands in seconds; otherwise a Direct Debit takes a "
+            "few working days to clear, and the balance is added once it does."
+        ),
+    }
 
 
 def _create_stripe_checkout(order, client, request):
@@ -10105,6 +10245,132 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     credited = credit_topup_once(db, order, session.get("payment_intent", ""))
     db.commit()
     return {"received": True, "credited": credited}
+
+
+def _store_gocardless_mandate(db, ev):
+    """Keep a mandate GoCardless says is now active.
+
+    Same shape the card gateways use - payer_type 'tenant' means a business
+    authorised its own wallet to top itself up. The ceiling comes from the
+    tenant's own auto top-up amount, because "you may collect from me" is not
+    "you may collect anything".
+    """
+    action = ev.get("action", "")
+    links = ev.get("links", {}) or {}
+    mandate_id = links.get("mandate", "")
+    client_id = (ev.get("metadata") or {}).get("client_id", "")
+
+    if not mandate_id or not client_id:
+        return {"action": action, "result": "mandate without an owner"}
+    client_id = int(client_id)
+
+    existing = db.query(models.DBPaymentMandate).filter(
+        models.DBPaymentMandate.token_id == mandate_id).first()
+
+    if action in ("cancelled", "failed", "expired"):
+        if existing:
+            existing.status = "cancelled"
+            existing.cancelled_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            existing.failure_reason = f"GoCardless reported {action}"
+        return {"action": action, "mandate": mandate_id, "result": "closed"}
+
+    if action != "active":
+        return {"action": action, "mandate": mandate_id, "result": "noted"}
+
+    if existing:
+        existing.status = "active"
+        return {"action": action, "mandate": mandate_id, "result": "already held"}
+
+    wallet = get_wallet(db, client_id)
+    db.add(models.DBPaymentMandate(
+        client_id=client_id, payer_type="tenant", provider="gocardless",
+        token_id=mandate_id, method="bank_debit", status="active",
+        currency=wallet.currency,
+        max_amount_minor=int(wallet.auto_topup_amount_minor or 0),
+    ))
+    return {"action": action, "mandate": mandate_id, "result": "stored"}
+
+
+@app.post("/api/wallet/webhook/gocardless")
+async def gocardless_webhook(request: Request, db: Session = Depends(get_db)):
+    """Where a bank debit becomes wallet credit.
+
+    Credit is added on `confirmed`, not on `submitted`. Bank debit is not a
+    card: a submitted Direct Debit can still fail days later for want of
+    funds, and crediting early would mean a tenant spending balance that never
+    arrived. Instant Bank Pay confirms in seconds, so for those payers this
+    costs nothing; for a slower Direct Debit it is the difference between a
+    balance we hold and a debt we chase.
+
+    `failed` and `cancelled` are recorded too, so a top-up that went nowhere
+    reads as failed rather than sitting on "pending" for ever.
+    """
+    cfg = gateway_config()["gocardless"]
+    raw = await request.body()
+    signature = request.headers.get("webhook-signature", "")
+
+    if not cfg["webhook_secret"]:
+        # Unverified, anyone who found this URL could credit their own wallet.
+        logger.error("GoCardless webhook rejected: GOCARDLESS_WEBHOOK_SECRET is not set")
+        raise HTTPException(status_code=503, detail="GoCardless webhooks are not configured")
+
+    expected = hmac.new(cfg["webhook_secret"].encode(), raw, hashlib.sha256).hexdigest()
+    if not signature or not hmac.compare_digest(expected, signature):
+        logger.warning("GoCardless webhook signature mismatch")
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    events = json.loads(raw or b"{}").get("events", [])
+    handled = []
+
+    for ev in events:
+        # A mandate becoming active is what makes automatic top-up possible
+        # later without asking the payer again. It is stored the moment it
+        # arrives, because the payer is long gone by then.
+        if ev.get("resource_type") == "mandates":
+            handled.append(_store_gocardless_mandate(db, ev))
+            continue
+        if ev.get("resource_type") != "payments":
+            continue
+        action = ev.get("action", "")
+        links = ev.get("links", {}) or {}
+        payment_id = links.get("payment", "")
+
+        # The order id travels in our own metadata, so nothing the payer
+        # controls decides which wallet gets credited.
+        order_id = (ev.get("metadata") or {}).get("order_id", "")
+        order = None
+        if order_id:
+            order = db.query(models.DBTopUpOrder).filter(
+                models.DBTopUpOrder.id == int(order_id)).first()
+        if not order and payment_id:
+            order = db.query(models.DBTopUpOrder).filter(
+                models.DBTopUpOrder.provider_payment_id == payment_id).first()
+        if not order:
+            billing_request = links.get("billing_request", "")
+            if billing_request:
+                order = db.query(models.DBTopUpOrder).filter(
+                    models.DBTopUpOrder.provider_order_id == billing_request).first()
+        if not order:
+            logger.warning("GoCardless %s for an order we do not have (payment %s)",
+                           action, payment_id)
+            handled.append({"action": action, "result": "unknown order"})
+            continue
+
+        if action in ("confirmed", "paid_out"):
+            credited = credit_topup_once(db, order, payment_id)
+            handled.append({"action": action, "order": order.id, "credited": credited})
+        elif action in ("failed", "cancelled", "charged_back"):
+            # Never un-credit here. A chargeback on money already spent is an
+            # operator decision, not something a webhook should settle alone.
+            if not order.credited:
+                order.status = "failed"
+                order.failure_reason = f"GoCardless reported {action}"
+            handled.append({"action": action, "order": order.id, "credited": False})
+        else:
+            handled.append({"action": action, "order": order.id, "result": "noted"})
+
+    db.commit()
+    return {"received": True, "events": handled}
 
 
 @app.post("/api/wallet/webhook/razorpay")
@@ -15031,27 +15297,105 @@ def job_invoice_autopay(db, now):
     return {"charged": charged, "failed": failed}
 
 
+def _collect_gocardless_autotopup(db, wallet, mandate, amount_minor, day):
+    """Ask GoCardless to collect against a mandate we already hold.
+
+    Creates the order and the collection, and stops there. The webhook credits
+    it, exactly as it does a manual top-up, because a bank debit that has been
+    requested is not a bank debit that has been paid - it can still fail days
+    later. One money path, one place that adds credit.
+    """
+    cfg = gateway_config()["gocardless"]
+    if not cfg["access_token"]:
+        return None, "GoCardless is not configured"
+
+    # The attempt is recorded, and committed, before GoCardless is called.
+    # This row is what stops a wallet still under its threshold being
+    # collected from on every run of the job, and a crash partway through
+    # leaves evidence rather than a silent gap.
+    key = topup_charge_key(wallet, day)
+    if already_attempted(db, key):
+        return None, "already_attempted"
+
+    attempt = models.DBAutoCharge(
+        client_id=wallet.client_id, mandate_id=mandate.id, purpose="wallet_topup",
+        amount_minor=int(amount_minor), currency=(wallet.currency or "GBP").upper(),
+        idempotency_key=key, status="pending")
+    db.add(attempt)
+    db.commit()
+
+    order = models.DBTopUpOrder(
+        client_id=wallet.client_id, provider="gocardless",
+        amount_minor=int(amount_minor), currency=wallet.currency,
+        status="created")
+    db.add(order)
+    db.flush()
+
+    payload = {"payments": {
+        "amount": int(amount_minor),
+        "currency": wallet.currency.upper(),
+        "description": "Automatic wallet top-up",
+        "links": {"mandate": mandate.token_id},
+        "metadata": {"order_id": str(order.id), "client_id": str(wallet.client_id)},
+    }}
+    try:
+        res = httpx.post(
+            f"{gocardless_base_url()}/payments", json=payload,
+            # Keyed on the wallet and the day, so a job that runs twice does
+            # not collect twice from somebody's bank account.
+            headers=gocardless_headers(topup_charge_key(wallet, day)),
+            timeout=30)
+    except Exception as exc:
+        order.status = "failed"
+        order.failure_reason = str(exc)[:200]
+        attempt.status = "failed"
+        attempt.failure_reason = str(exc)[:200]
+        return None, str(exc)
+
+    if res.status_code >= 300:
+        order.status = "failed"
+        order.failure_reason = f"GoCardless {res.status_code}"
+        attempt.status = "failed"
+        attempt.failure_reason = f"GoCardless {res.status_code}"
+        logger.error("GoCardless auto top-up failed %s: %s",
+                     res.status_code, res.text[:300])
+        return None, f"GoCardless refused it ({res.status_code})"
+
+    order.provider_payment_id = res.json().get("payments", {}).get("id", "")
+    order.status = "pending"
+    # Requested, not settled. The webhook marks it paid when the bank confirms.
+    attempt.status = "requested"
+    attempt.gateway_payment_id = order.provider_payment_id
+    return order, ""
+
+
 @scheduled_job("wallet_auto_topup")
 def job_wallet_auto_topup(db, now):
-    """Top up a wallet that has fallen below the line its owner set."""
-    topped, failed = 0, 0
-    cfg = gateway_config()["razorpay"]
+    """Ask for a top-up on a wallet that has fallen below its owner's line.
+
+    Nothing is credited here any more. Collection is by bank debit now, and a
+    requested debit is not a settled one - the webhook adds the balance when
+    the money actually confirms, the same as it does for a manual top-up.
+    """
+    requested, failed = 0, 0
+    day = now.date().isoformat()
     for wallet, mandate, amount_minor in wallets_due_for_topup(db, now.date()):
-        attempt, error = run_auto_charge(
-            db, mandate, amount_minor, wallet.currency, "wallet_topup",
-            topup_charge_key(wallet, now.date().isoformat()),
-            "Wallet top-up",
-            key_id=cfg["key_id"], key_secret=cfg["key_secret"])
+        if mandate.provider != "gocardless":
+            # A mandate from a gateway we no longer collect through cannot be
+            # used. Saying so beats a silent skip that looks like nothing due.
+            logger.warning("Wallet %s has a %s mandate, which is no longer collectable",
+                           wallet.client_id, mandate.provider)
+            failed += 1
+            continue
+        order, error = _collect_gocardless_autotopup(
+            db, wallet, mandate, amount_minor, day)
         if error:
             failed += 1
             continue
-        credit_wallet(db, wallet.client_id, amount_minor,
-                      "Automatic top-up",
-                      reference=attempt.gateway_payment_id,
-                      performed_by="autopay", action_key="topup")
-        topped += 1
+        mandate.last_used_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        requested += 1
     db.commit()
-    return {"topped_up": topped, "failed": failed}
+    return {"requested": requested, "failed": failed}
 
 
 # --- setting it up ------------------------------------------------------------

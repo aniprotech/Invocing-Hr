@@ -35,6 +35,7 @@ def all_keys(monkeypatch):
     monkeypatch.setenv("RAZORPAY_KEY_SECRET", "secret")
     monkeypatch.setenv("PAYPAL_CLIENT_ID", "pp_id")
     monkeypatch.setenv("PAYPAL_SECRET", "pp_secret")
+    monkeypatch.setenv("GOCARDLESS_ACCESS_TOKEN", "gc_token")
     yield
 
 
@@ -83,67 +84,58 @@ def test_an_unknown_provider_takes_nothing():
 
 # --- what the top-up screen is told -------------------------------------------
 
-def test_a_pounds_wallet_is_not_offered_razorpay(tenant, account, all_keys):
-    """The case that was reported."""
+def test_a_pounds_wallet_can_be_collected_by_bank_debit(tenant, account, all_keys):
+    """GBP runs on Bacs, so this is the ordinary case."""
     wallet_currency(account, "GBP")
     rows = providers(tenant)
-    assert rows["razorpay"]["enabled"] is False
-    assert rows["razorpay"]["configured"] is True, "the keys are set; the currency is the problem"
-    assert "INR" in rows["razorpay"]["unavailable_because"]
-    assert rows["paypal"]["enabled"] is True
-    assert rows["stripe"]["enabled"] is True
+    assert rows["gocardless"]["enabled"] is True
+    assert rows["gocardless"]["unavailable_because"] == ""
 
 
-def test_a_rupees_wallet_is_offered_razorpay_and_not_paypal(tenant, account, all_keys):
+def test_only_bank_debit_is_offered(tenant, account, all_keys):
+    """Every card gateway is configured here, so this is not about keys. They
+    are simply not a way to pay any more."""
+    rows = providers(tenant)
+    assert set(rows) == {"gocardless"}
+
+
+def test_a_rupees_wallet_cannot_be_collected(tenant, account, all_keys):
+    """Bank debit runs on schemes - Bacs, SEPA, ACH - and there is none for
+    INR. Saying so here beats failing at the gateway."""
     wallet_currency(account, "INR")
     rows = providers(tenant)
-    assert rows["razorpay"]["enabled"] is True
-    assert rows["paypal"]["enabled"] is False
-    assert "INR" in rows["paypal"]["unavailable_because"]
+    assert rows["gocardless"]["enabled"] is False
+    assert rows["gocardless"]["configured"] is True, "the token is set; the currency is the problem"
+    assert "bank debit" in rows["gocardless"]["unavailable_because"].lower()
 
 
 def test_the_two_reasons_are_told_apart(tenant, account, monkeypatch):
-    """No keys and wrong currency are fixed in completely different places."""
-    monkeypatch.delenv("PAYPAL_CLIENT_ID", raising=False)
-    monkeypatch.delenv("PAYPAL_SECRET", raising=False)
-    monkeypatch.setenv("RAZORPAY_KEY_ID", "rzp_test_x")
-    monkeypatch.setenv("RAZORPAY_KEY_SECRET", "secret")
+    """No key and wrong currency are fixed in completely different places."""
+    monkeypatch.delenv("GOCARDLESS_ACCESS_TOKEN", raising=False)
     wallet_currency(account, "GBP")
+    assert "not set up" in providers(tenant)["gocardless"]["unavailable_because"].lower()
 
-    rows = providers(tenant)
-    assert "not set up" in rows["paypal"]["unavailable_because"].lower()
-    assert "INR" in rows["razorpay"]["unavailable_because"]
+    monkeypatch.setenv("GOCARDLESS_ACCESS_TOKEN", "gc_token")
+    wallet_currency(account, "INR")
+    assert "bank debit" in providers(tenant)["gocardless"]["unavailable_because"].lower()
 
 
 def test_a_usable_provider_explains_nothing(tenant, account, all_keys):
     wallet_currency(account, "GBP")
-    assert providers(tenant)["paypal"]["unavailable_because"] == ""
+    assert providers(tenant)["gocardless"]["unavailable_because"] == ""
 
 
-def test_keys_are_only_handed_over_for_a_usable_provider(tenant, account, all_keys):
-    """No point giving the page a key it cannot use, and one less place for it
-    to appear."""
-    wallet_currency(account, "GBP")
-    rows = providers(tenant)
-    assert "key_id" not in rows["razorpay"] or not rows["razorpay"].get("key_id")
-    assert rows["stripe"]["publishable_key"] == "pk_test_x"
-
-
-def test_it_says_so_when_nothing_takes_the_currency(tenant, account, monkeypatch):
-    monkeypatch.setenv("RAZORPAY_KEY_ID", "rzp_test_x")
-    monkeypatch.setenv("RAZORPAY_KEY_SECRET", "secret")
-    monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
-    monkeypatch.delenv("PAYPAL_CLIENT_ID", raising=False)
-    monkeypatch.delenv("PAYPAL_SECRET", raising=False)
-    wallet_currency(account, "GBP")
-
+def test_it_says_so_when_nothing_takes_the_currency(tenant, account, all_keys):
+    wallet_currency(account, "INR")
     body = tenant.get("/api/wallet/providers").json()
     assert body["any_enabled"] is False
-    assert "GBP" in body["none_take_currency"]
+    assert "INR" in body["none_take_currency"]
 
 
 def test_international_razorpay_opens_it_up(monkeypatch):
-    """An account with international payments enabled can charge in others."""
+    """An account with international payments enabled can charge in others.
+    Razorpay no longer takes new top-ups, but old orders still settle through
+    this, so the rule still has to hold."""
     monkeypatch.setattr(main, "RAZORPAY_INTERNATIONAL", True)
     assert main.provider_takes_currency("razorpay", "GBP") is True
 
@@ -152,22 +144,22 @@ def test_international_razorpay_opens_it_up(monkeypatch):
 
 def test_starting_a_doomed_top_up_is_refused(tenant, account, all_keys):
     """A tab left open across a currency change would otherwise send somebody
-    to a gateway that is certain to turn them away."""
-    wallet_currency(account, "GBP")
-    res = tenant.post("/api/wallet/topup", json={"amount": 25, "provider": "razorpay"})
+    to a gateway certain to turn them away."""
+    wallet_currency(account, "INR")
+    res = tenant.post("/api/wallet/topup", json={"amount": 25, "provider": "gocardless"})
     assert res.status_code == 400
-    assert "INR" in res.json()["detail"]
+    assert "bank debit" in res.json()["detail"].lower()
 
 
 def test_a_supported_pairing_gets_past_the_check(tenant, account, all_keys, monkeypatch):
     """It should fail at the gateway call, not at the currency check - which is
     how we know the guard let it through."""
-    wallet_currency(account, "INR")
+    wallet_currency(account, "GBP")
 
     def boom(*a, **k):
         raise RuntimeError("no network in tests")
 
     monkeypatch.setattr(main.httpx, "post", boom)
-    res = tenant.post("/api/wallet/topup", json={"amount": 25, "provider": "razorpay"})
+    res = tenant.post("/api/wallet/topup", json={"amount": 25, "provider": "gocardless"})
     assert res.status_code == 502
-    assert "INR" not in res.json()["detail"]
+    assert "bank debit" not in res.json()["detail"].lower()

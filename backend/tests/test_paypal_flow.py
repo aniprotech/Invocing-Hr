@@ -133,6 +133,32 @@ def test_an_unsupported_currency_says_which_one(paypal_keys):
 
 
 # --- the order that gets created ----------------------------------------------
+#
+# PayPal is no longer a way to top up - bank debit is the only one - so these
+# call the builder directly rather than through /api/wallet/topup, which now
+# refuses it. The code is still here because orders taken before the change
+# still have to settle and reconcile, and it still has to be right.
+
+class _FakeRequest:
+    base_url = "https://app.test/"
+
+
+def build_paypal_order(tenant, account, amount_minor, return_page="app.html"):
+    """Create a top-up order and hand it to the PayPal builder."""
+    with main.SessionLocal() as db:
+        client = db.query(models.DBClient).filter(
+            models.DBClient.email == account["email"]).first()
+        wallet = main.get_wallet(db, client.id)
+        order = models.DBTopUpOrder(
+            client_id=client.id, provider="paypal", amount_minor=amount_minor,
+            currency=wallet.currency, status="created")
+        db.add(order)
+        db.flush()
+        result = main._create_paypal_order(
+            order, client, _FakeRequest(), main.topup_return_page(return_page))
+        db.commit()
+        return result
+
 
 def test_the_return_url_carries_the_order_it_belongs_to(tenant, account,
                                                         paypal_keys, monkeypatch):
@@ -149,8 +175,7 @@ def test_the_return_url_carries_the_order_it_belongs_to(tenant, account,
             {"rel": "approve", "href": "https://paypal.test/approve"}]})
 
     monkeypatch.setattr(main.httpx, "post", fake_post)
-    res = tenant.post("/api/wallet/topup", json={"amount": 25, "provider": "paypal"})
-    assert res.status_code == 200, res.text
+    build_paypal_order(tenant, account, amount_minor=2500)
 
     ret = seen["json"]["application_context"]["return_url"]
     assert "topup=success" in ret
@@ -170,8 +195,7 @@ def test_the_buyer_comes_back_to_the_portal_they_left(tenant, account,
             {"rel": "approve", "href": "https://paypal.test/approve"}]})
 
     monkeypatch.setattr(main.httpx, "post", fake_post)
-    tenant.post("/api/wallet/topup", json={
-        "amount": 25, "provider": "paypal", "return_page": "hr.html"})
+    build_paypal_order(tenant, account, amount_minor=2500, return_page="hr.html")
     assert "hr.html" in seen["json"]["application_context"]["return_url"]
 
 
@@ -198,18 +222,18 @@ def test_the_amount_reaches_paypal_in_major_units(tenant, account, paypal_keys,
         return FakeResponse({"id": "PP-1", "links": []})
 
     monkeypatch.setattr(main.httpx, "post", fake_post)
-    tenant.post("/api/wallet/topup", json={"amount": 25, "provider": "paypal"})
+    build_paypal_order(tenant, account, amount_minor=2500)
     amount = seen["json"]["purchase_units"][0]["amount"]
     assert amount["value"] == "25.00"
     assert amount["currency_code"] == "GBP"
 
 
-def test_paypal_is_refused_for_a_currency_it_cannot_hold(tenant, account,
-                                                         paypal_keys):
-    set_currency(account, "INR")
-    res = tenant.post("/api/wallet/topup", json={"amount": 25, "provider": "paypal"})
-    assert res.status_code == 400
-    assert "INR" in res.json()["detail"]
+def test_paypal_is_refused_for_a_currency_it_cannot_hold(paypal_keys):
+    """PayPal publishes a fixed list of balance currencies and INR is not on
+    it. Checked at the rule now rather than through the top-up endpoint, which
+    no longer offers PayPal at all."""
+    assert main.provider_takes_currency("paypal", "INR") is False
+    assert "INR" in main.why_not_available("paypal", "INR", configured=True)
 
 
 # --- capturing ----------------------------------------------------------------

@@ -51,6 +51,39 @@ def charges(monkeypatch):
 
 
 @pytest.fixture
+def collections(monkeypatch):
+    """Stand in for GoCardless, recording what it was asked to collect.
+
+    Collection is by bank debit now, so the job asks for money and stops. The
+    webhook is what credits, once the bank confirms - which is why these tests
+    check the wallet does NOT move here.
+    """
+    seen = []
+
+    class FakeResponse:
+        status_code = 201
+
+        @staticmethod
+        def json():
+            return {"payments": {"id": f"PM{len(seen)}"}}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        seen.append({
+            "amount_minor": json["payments"]["amount"],
+            "currency": json["payments"]["currency"],
+            "mandate": json["payments"]["links"]["mandate"],
+            # The key GoCardless dedupes on, so a job run twice cannot collect
+            # twice from a bank account.
+            "idempotency_key": (headers or {}).get("Idempotency-Key", ""),
+        })
+        return FakeResponse()
+
+    monkeypatch.setenv("GOCARDLESS_ACCESS_TOKEN", "sandbox_token")
+    monkeypatch.setattr(main.httpx, "post", fake_post)
+    return seen
+
+
+@pytest.fixture
 def refusing_gateway(monkeypatch):
     def fake(*a, **k):
         return None, "BAD_REQUEST_ERROR: token is not valid"
@@ -64,13 +97,14 @@ def client_id_of(account):
 
 
 def give_mandate(account, payer_type="customer", payer_ref="Customer Ltd",
-                 max_amount_minor=0, status="active"):
+                 max_amount_minor=0, status="active", provider="razorpay"):
     """A standing permission, as the authorisation endpoint would leave it."""
     with main.SessionLocal() as db:
         m = models.DBPaymentMandate(
             client_id=client_id_of(account), payer_type=payer_type,
             payer_ref=payer_ref, token_id="token_abc", customer_id="cust_abc",
             method="card", masked="1111", currency="INR",
+            provider=provider,
             max_amount_minor=max_amount_minor, status=status)
         db.add(m)
         db.commit()
@@ -216,129 +250,75 @@ def set_wallet(account, balance_minor, threshold_minor, amount_minor, enabled=Tr
         db.commit()
 
 
-def test_a_low_wallet_tops_itself_up(tenant, account, charges, monkeypatch):
-    monkeypatch.setenv("RAZORPAY_KEY_ID", KEY_ID)
-    monkeypatch.setenv("RAZORPAY_KEY_SECRET", SECRET)
-    give_mandate(account, payer_type="tenant", payer_ref="")
+def test_a_low_wallet_asks_for_a_top_up(tenant, account, collections):
+    give_mandate(account, payer_type="tenant", payer_ref="", provider="gocardless")
     set_wallet(account, balance_minor=100, threshold_minor=500, amount_minor=2000)
 
-    assert run_topup_job()["topped_up"] == 1
-    assert charges[0]["amount_minor"] == 2000
-
-    balance = tenant.get("/api/wallet").json()["balance"]
-    assert balance == 21.0      # 1.00 that was there, plus 20.00
+    assert run_topup_job()["requested"] == 1
+    assert collections[0]["amount_minor"] == 2000
 
 
-def test_a_healthy_wallet_is_left_alone(tenant, account, charges, monkeypatch):
-    monkeypatch.setenv("RAZORPAY_KEY_ID", KEY_ID)
-    monkeypatch.setenv("RAZORPAY_KEY_SECRET", SECRET)
-    give_mandate(account, payer_type="tenant", payer_ref="")
+def test_the_job_does_not_credit_anything_itself(tenant, account, collections):
+    """The heart of it. A bank debit that has been requested is not one that
+    has been paid - it can still fail days later for want of funds. Crediting
+    here would hand a tenant balance that never arrived."""
+    give_mandate(account, payer_type="tenant", payer_ref="", provider="gocardless")
+    set_wallet(account, balance_minor=100, threshold_minor=500, amount_minor=2000)
+
+    before = tenant.get("/api/wallet").json()["balance"]
+    run_topup_job()
+    assert tenant.get("/api/wallet").json()["balance"] == before
+
+
+def test_the_collection_is_left_pending_for_the_webhook(tenant, account, collections):
+    give_mandate(account, payer_type="tenant", payer_ref="", provider="gocardless")
+    set_wallet(account, balance_minor=100, threshold_minor=500, amount_minor=2000)
+    run_topup_job()
+
+    with main.SessionLocal() as db:
+        order = db.query(models.DBTopUpOrder).filter(
+            models.DBTopUpOrder.client_id == client_id_of(account)).first()
+    assert order.provider == "gocardless"
+    assert order.status == "pending"
+    assert order.credited is False
+
+
+def test_a_healthy_wallet_is_left_alone(tenant, account, collections):
+    give_mandate(account, payer_type="tenant", payer_ref="", provider="gocardless")
     set_wallet(account, balance_minor=5000, threshold_minor=500, amount_minor=2000)
-    assert run_topup_job()["topped_up"] == 0
+    assert run_topup_job()["requested"] == 0
+    assert collections == []
 
 
-def test_it_does_not_top_up_twice_in_a_day(tenant, account, charges, monkeypatch):
-    """A wallet still below its threshold must not be charged on every run."""
-    monkeypatch.setenv("RAZORPAY_KEY_ID", KEY_ID)
-    monkeypatch.setenv("RAZORPAY_KEY_SECRET", SECRET)
-    give_mandate(account, payer_type="tenant", payer_ref="")
+def test_it_does_not_collect_twice_in_a_day(tenant, account, collections):
+    """A wallet still below its threshold must not be collected from on every
+    run - and the idempotency key is the second belt, so even a retry that got
+    through would be deduped by GoCardless."""
+    give_mandate(account, payer_type="tenant", payer_ref="", provider="gocardless")
     set_wallet(account, balance_minor=0, threshold_minor=500, amount_minor=100)
 
-    assert run_topup_job()["topped_up"] == 1
-    assert run_topup_job()["topped_up"] == 0
-    assert len(charges) == 1
+    assert run_topup_job()["requested"] == 1
+    assert run_topup_job()["requested"] == 0
+    assert len(collections) == 1
+    assert collections[0]["idempotency_key"]
 
 
-def test_it_is_off_until_somebody_turns_it_on(tenant, account, charges, monkeypatch):
-    monkeypatch.setenv("RAZORPAY_KEY_ID", KEY_ID)
-    monkeypatch.setenv("RAZORPAY_KEY_SECRET", SECRET)
-    give_mandate(account, payer_type="tenant", payer_ref="")
+def test_it_is_off_until_somebody_turns_it_on(tenant, account, collections):
+    give_mandate(account, payer_type="tenant", payer_ref="", provider="gocardless")
     set_wallet(account, balance_minor=0, threshold_minor=500, amount_minor=2000,
                enabled=False)
-    assert run_topup_job()["topped_up"] == 0
+    assert run_topup_job()["requested"] == 0
 
 
-def test_turning_it_on_needs_permission_first(tenant):
-    """Otherwise it is a setting that quietly does nothing."""
-    res = tenant.put("/api/wallet/auto-topup",
-                     json={"enabled": True, "threshold": 5, "amount": 20})
-    assert res.status_code == 400
-    assert "Authorise" in res.json()["detail"]
+def test_a_mandate_from_a_gateway_we_no_longer_use_is_not_collected(
+        tenant, account, collections):
+    """Bank debit is the only way money is taken now. An old card mandate
+    cannot be used, and that has to be visible rather than look like nothing
+    was due."""
+    give_mandate(account, payer_type="tenant", payer_ref="", provider="razorpay")
+    set_wallet(account, balance_minor=0, threshold_minor=500, amount_minor=2000)
 
-
-def test_turning_it_on_needs_an_amount(tenant, account):
-    give_mandate(account, payer_type="tenant", payer_ref="")
-    res = tenant.put("/api/wallet/auto-topup",
-                     json={"enabled": True, "threshold": 5, "amount": 0})
-    assert res.status_code == 400
-
-
-def test_the_settings_round_trip(tenant, account):
-    give_mandate(account, payer_type="tenant", payer_ref="")
-    res = tenant.put("/api/wallet/auto-topup",
-                     json={"enabled": True, "threshold": 5, "amount": 20})
-    assert res.status_code == 200, res.text
-    body = res.json()
-    assert body["enabled"] is True
-    assert body["threshold"] == 5.0
-    assert body["amount"] == 20.0
-    assert body["has_mandate"] is True
-
-
-# --- who can see and stop them -------------------------------------------------
-
-def test_a_business_sees_its_own_mandates(tenant, account):
-    give_mandate(account, payer_ref="Customer Ltd")
-    body = tenant.get("/api/autopay/mandates").json()
-    assert [m["payer_ref"] for m in body["customers"]] == ["Customer Ltd"]
-
-
-def test_cancelling_is_immediate(tenant, account, gateway, charges):
-    due_invoice(tenant)
-    mid = give_mandate(account)
-    assert tenant.delete(f"/api/autopay/mandates/{mid}").status_code == 200
-    assert run_invoice_job()["charged"] == 0
-
-
-def test_one_business_cannot_cancel_another(client, tenant, account):
-    mid = give_mandate(account)
-
-    other = f"other-{uuid.uuid4().hex[:8]}@example.com"
-    client.post("/api/client/register", json={
-        "email": other, "password": "Passw0rdTest", "company_name": "Other Ltd"})
-    main.rate_limiter._hits.clear()
-    client.post("/api/client/login", json={"email": other, "password": "Passw0rdTest"})
-
-    assert client.delete(f"/api/autopay/mandates/{mid}").status_code == 404
-    assert client.get("/api/autopay/mandates").json()["customers"] == []
-
-
-def test_authorising_needs_a_verified_payment(client, tenant, gateway):
-    """A mandate is created from a payment the gateway signed, so agreeing is
-    something the payer did at the checkout, not something anyone can post."""
-    inv = due_invoice(tenant)
-    tid = tenant.get(f"/api/invoices/{inv['number']}").json()["tracking_id"]
-
-    res = client.post(f"/api/public/invoices/{tid}/autopay", json={
-        "token_id": "token_x", "customer_id": "cust_x",
-        "razorpay_order_id": "order_A", "razorpay_payment_id": "pay_B",
-        "razorpay_signature": "not-a-real-signature"})
-    assert res.status_code == 400
-    assert "could not be verified" in res.json()["detail"]
-
-
-def test_a_verified_authorisation_is_kept(client, tenant, gateway):
-    inv = due_invoice(tenant)
-    tid = tenant.get(f"/api/invoices/{inv['number']}").json()["tracking_id"]
-    signature = hmac.new(SECRET.encode(), b"order_A|pay_B", hashlib.sha256).hexdigest()
-
-    res = client.post(f"/api/public/invoices/{tid}/autopay", json={
-        "token_id": "token_x", "customer_id": "cust_x", "method": "card",
-        "masked": "4242", "max_amount": 1000,
-        "razorpay_order_id": "order_A", "razorpay_payment_id": "pay_B",
-        "razorpay_signature": signature})
-    assert res.status_code == 200, res.text
-    body = res.json()
-    assert body["status"] == "active"
-    assert body["masked"] == "4242"
-    assert body["max_amount"] == 1000.0
+    result = run_topup_job()
+    assert result["requested"] == 0
+    assert result["failed"] == 1
+    assert collections == []

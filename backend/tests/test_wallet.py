@@ -218,7 +218,7 @@ def test_tenants_cannot_set_prices(tenant):
 
 def test_providers_report_themselves_as_unconfigured(tenant, monkeypatch):
     for var in ("STRIPE_SECRET_KEY", "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET",
-                "PAYPAL_CLIENT_ID", "PAYPAL_SECRET"):
+                "PAYPAL_CLIENT_ID", "PAYPAL_SECRET", "GOCARDLESS_ACCESS_TOKEN"):
         monkeypatch.delenv(var, raising=False)
     data = tenant.get("/api/wallet/providers").json()
     assert data["any_enabled"] is False
@@ -226,17 +226,19 @@ def test_providers_report_themselves_as_unconfigured(tenant, monkeypatch):
 
 
 def test_topup_against_an_unconfigured_provider_says_so(tenant, monkeypatch):
-    monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
-    res = tenant.post("/api/wallet/topup", json={"amount": 25, "provider": "stripe"})
+    """Unconfigured names the setting that is missing, because the person who
+    hits this is the one who can fix it."""
+    monkeypatch.delenv("GOCARDLESS_ACCESS_TOKEN", raising=False)
+    res = tenant.post("/api/wallet/topup", json={"amount": 25, "provider": "gocardless"})
     assert res.status_code == 503
     assert "not configured" in res.json()["detail"]
-    assert "STRIPE_SECRET_KEY" in res.json()["detail"]
+    assert "GOCARDLESS_ACCESS_TOKEN" in res.json()["detail"]
 
 
 @pytest.mark.parametrize("amount,code", [(0.5, 400), (99999, 400)])
 def test_topup_amount_limits(tenant, amount, code):
     assert tenant.post("/api/wallet/topup",
-                       json={"amount": amount, "provider": "stripe"}).status_code == code
+                       json={"amount": amount, "provider": "gocardless"}).status_code == code
 
 
 def test_unknown_provider_rejected(tenant):
