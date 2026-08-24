@@ -12353,6 +12353,57 @@ async def meeting_page():
             return HTMLResponse(content=f.read())
     return HTMLResponse(content="<h1>Meeting page not found</h1>", status_code=404)
 
+@app.get("/api/meet/ice")
+def meet_ice_servers():
+    """What the browser should use to find a path to the other side.
+
+    STUN alone only works when both ends can be reached directly. Behind
+    symmetric NAT, a corporate firewall, or some mobile carriers, it cannot -
+    and the failure is the worst kind: the call appears to connect, the UI
+    shows the other person, and no audio or video ever arrives. Somewhere
+    between a tenth and a fifth of real connections need a relay, and our
+    users are office staff, which is exactly the population sitting behind
+    restrictive firewalls.
+
+    TURN credentials are served from here rather than written into the page,
+    so they are not sitting in a static file for anyone to lift, and so
+    rotating them is an environment change rather than a deploy.
+
+    Configure with:
+        TURN_URLS=turn:host:3478,turns:host:5349   (comma separated)
+        TURN_USERNAME=...
+        TURN_PASSWORD=...
+
+    Works with a self-hosted coturn or any hosted provider. With none set
+    this still returns STUN, so meetings keep working for everyone whose
+    network allows a direct path - it just cannot rescue those it cannot.
+    """
+    stun = [{"urls": [
+        "stun:stun.l.google.com:19302",
+        "stun:stun1.l.google.com:19302",
+    ]}]
+
+    urls = [u.strip() for u in os.getenv("TURN_URLS", "").split(",") if u.strip()]
+    username = os.getenv("TURN_USERNAME", "")
+    password = os.getenv("TURN_PASSWORD", "")
+
+    if urls and username and password:
+        return {
+            "iceServers": stun + [{
+                "urls": urls, "username": username, "credential": password,
+            }],
+            "relay_configured": True,
+        }
+
+    # Said plainly rather than hidden, because "some people cannot join" is
+    # otherwise diagnosed one confused user at a time.
+    logger.warning(
+        "No TURN relay configured. Anyone behind symmetric NAT or a "
+        "restrictive firewall will fail to connect. Set TURN_URLS, "
+        "TURN_USERNAME and TURN_PASSWORD.")
+    return {"iceServers": stun, "relay_configured": False}
+
+
 @app.websocket("/ws/meeting/{room_id}")
 async def meeting_websocket(websocket: WebSocket, room_id: str):
     user_id = websocket.query_params.get("user_id", str(uuid.uuid4())[:8])
