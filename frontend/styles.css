@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap');
 :root {
     /* ── Stacking order ───────────────────────────────────────────────────
        Every fixed or floating thing in the app, in one place and in the order
@@ -48,7 +48,7 @@
     --border-color: #e2e8f0;
     --success-color: #16a34a;
     --danger-color: #dc2626;
-    --warning-color: #d97706;
+    --warning-color: #b45309;   /* amber-700: -600 is 3.2:1 on white, under AA at label sizes */
     --topbar-height: 64px;
     --shadow-sm: 0 1px 2px 0 rgba(15, 23, 42, 0.06);
     --shadow-md: 0 4px 12px -2px rgba(15, 23, 42, 0.08), 0 2px 4px -1px rgba(15, 23, 42, 0.04);
@@ -79,7 +79,7 @@ html {
 }
 
 body {
-    font-family: 'Space Grotesk', -apple-system, sans-serif;
+    font-family: 'Poppins', system-ui, -apple-system, sans-serif;
     background-color: var(--background-color);
     background-image: radial-gradient(circle at 15% 50%, rgba(37, 99, 235, 0.08), transparent 25%), radial-gradient(circle at 85% 30%, rgba(220, 38, 38, 0.05), transparent 25%);
     background-attachment: fixed;
@@ -460,7 +460,7 @@ input[type="number"] {
     min-width: 180px; display: inline-block; position: relative;
     transition: border-color 0.2s, box-shadow 0.2s; cursor: pointer;
 }
-.org-node:hover { border-color: var(--primary-color); box-shadow: 0 0 12px rgba(37, 99, 235, 0.2); }
+.org-node:hover { border-color: #cbd5e1; box-shadow: var(--shadow-md); }
 .org-node .org-name { font-weight: 600; font-size: 0.9rem; margin-bottom: 4px; }
 .org-node .org-title { font-size: 0.8rem; color: var(--text-secondary); }
 .org-node .org-dept { font-size: 0.75rem; color: var(--primary-color); margin-top: 4px; }
@@ -1014,74 +1014,67 @@ select option:hover {
 
 
 
-/* SCI-FI UI OVERRIDES */
-h1, h2, h3, h4, h5, h6, .kanban-card strong, .invoices-header-area h1, .dashboard-header h1 { 
-    font-family: 'Rajdhani', sans-serif; 
-    letter-spacing: 0.5px; 
+/* ── What used to be the sci-fi layer ─────────────────────────────────────
+   Recolouring the theme left this behind, and it was the real problem: a
+   neon-cyberpunk skin wearing light colours, which reads worse than either
+   on its own. What was here:
+
+     - a holographic blue grid over the whole page, and a CRT scanline on
+       top of it;
+     - chamfered clip-path corners on every card and button, so nothing had
+       an ordinary rounded edge;
+     - a glowing blue tab stuck to the corner of every widget;
+     - Rajdhani, a techno display face, on all headings and on buttons, in
+       uppercase with letter-spacing.
+
+   It is now the same card language as the marketing site and the login
+   page: rounded corners, a hairline, a soft shadow, and type that is just
+   type. */
+
+h1, h2, h3, h4, h5, h6,
+.kanban-card strong, .invoices-header-area h1, .dashboard-header h1 {
+    font-family: inherit;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
 }
 
-/* Holographic Grid Background */
-body::before {
-    content: '';
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background-image: 
-        linear-gradient(rgba(37, 99, 235, 0.03) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(37, 99, 235, 0.03) 1px, transparent 1px);
-    background-size: 30px 30px;
-    z-index: -1;
-    pointer-events: none;
-}
-
-/* Scanline Effect */
-body::after {
-    content: '';
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    /* Was a CRT scanline: dark stripes laid over the whole page, which
-       belonged to the neon-on-black look and reads as a rendering fault
-       on a light one. Now the faint horizontal rule the marketing site
-       uses, which does the same job of stopping large areas reading as
-       flat without darkening anything. */
-    background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(148,163,184,0.05) 50%, rgba(148,163,184,0.05));
-    background-size: 100% 4px;
-    z-index: var(--layer-decor);
-    pointer-events: none;
-    opacity: 0.4;
-}
-
-/* Chamfered Edges & Glows */
 .widget {
-    clip-path: polygon(15px 0, 100% 0, 100% calc(100% - 15px), calc(100% - 15px) 100%, 0 100%, 0 15px);
+    background: var(--panel-bg);
     border: 1px solid var(--border-color);
-    box-shadow: 0 4px 15px rgba(15, 23, 42, 0.08), inset 0 0 10px rgba(37, 99, 235, 0.02);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
     position: relative;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
-.widget::before {
-    content: ''; position: absolute; top: 0; left: 0; width: 4px; height: 30px;
-    background: var(--primary-color);
-    box-shadow: var(--glow);
+.widget:hover {
+    border-color: #cbd5e1;
+    box-shadow: var(--shadow-lg);
 }
 
 .kanban-card {
-    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
-    border-left: 2px solid var(--primary-color);
+    border-radius: var(--radius-md);
+    /* The colour cue stays - it is how a column is read at a glance - but as
+       an edge rather than a lit strip. */
+    border-left: 3px solid var(--primary-color);
 }
 
 .btn-primary {
-    clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
-    border-radius: 0;
-    text-transform: uppercase;
-    font-family: 'Rajdhani', sans-serif;
-    font-weight: 700;
-    letter-spacing: 1px;
-    box-shadow: 0 0 10px rgba(37, 99, 235, 0.3);
-    transition: box-shadow 0.2s, transform 0.2s;
+    border-radius: var(--radius-md);
+    text-transform: none;
+    font-family: inherit;
+    font-weight: 600;
+    letter-spacing: 0;
+    background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
+    color: #ffffff;
+    border: none;
+    box-shadow: 0 6px 16px rgba(37, 99, 235, 0.22);
+    transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
 .btn-primary:hover {
-    box-shadow: 0 0 20px rgba(37, 99, 235, 0.6);
-    transform: translateY(-2px);
+    box-shadow: 0 10px 24px rgba(37, 99, 235, 0.3);
+    transform: translateY(-1px);
 }
+.btn-primary:active { transform: translateY(0) scale(0.99); }
 
 /* AI Core Orb */
 .ai-core {
@@ -1091,21 +1084,22 @@ body::after {
     width: 60px;
     height: 60px;
     border-radius: 50%;
-    background: radial-gradient(circle at 30% 30%, #fff, var(--primary-color));
-    box-shadow: 0 0 20px var(--primary-color), 0 0 40px var(--primary-light), inset 0 0 20px rgba(255,255,255,0.8);
+    background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
+    box-shadow: 0 8px 24px rgba(37, 99, 235, 0.32);
     cursor: pointer;
     z-index: var(--layer-float);
-    animation: pulse 2s infinite alternate;
+    transition: transform 0.18s ease, box-shadow 0.18s ease;
     display: flex;
     align-items: center;
     justify-content: center;
     color: #ffffff;
     font-size: 24px;
 }
-@keyframes pulse {
-    0% { transform: scale(1); box-shadow: 0 0 15px var(--primary-color), 0 0 30px var(--primary-light); }
-    100% { transform: scale(1.05); box-shadow: 0 0 25px var(--primary-color), 0 0 50px var(--primary-light); }
+.ai-core:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 30px rgba(37, 99, 235, 0.4);
 }
+.ai-core:active { transform: translateY(0) scale(0.97); }
 
 .ai-chat-window {
     position: fixed;
@@ -1115,9 +1109,9 @@ body::after {
     height: 400px;
     background: rgba(255, 255, 255, 0.94);
     backdrop-filter: blur(16px);
-    border: 1px solid var(--primary-color);
-    box-shadow: var(--shadow-lg), 0 0 15px rgba(37, 99, 235, 0.2);
-    clip-path: polygon(20px 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%, 0 20px);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 16px 40px rgba(15, 23, 42, 0.14);
     z-index: calc(var(--layer-float) + 1);
     display: none;
     flex-direction: column;

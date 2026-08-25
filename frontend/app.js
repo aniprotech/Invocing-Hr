@@ -2633,7 +2633,7 @@ async function loadReports() {
         var chartEl = document.getElementById('reports-status-chart');
         if (chartEl) {
             var html = '<div style="display:flex;flex-direction:column;gap:12px;">';
-            var colors = { 'Draft': '#94a3b8', 'Sent': '#00f0ff', 'Awaiting Payment': '#fcd34d', 'Paid': '#39ff14' };
+            var colors = { 'Draft': '#94a3b8', 'Sent': '#2563eb', 'Awaiting Payment': '#d97706', 'Paid': '#16a34a' };
             for (var status in statusCounts) {
                 var pct = Math.round((statusCounts[status] / invoices.length) * 100);
                 html += '<div><div style="display:flex;justify-content:space-between;margin-bottom:4px;"><span>' + status + '</span><span>' + statusCounts[status] + ' (' + pct + '%)</span></div><div style="height:8px;background:rgba(255,255,255,0.1);border-radius:4px;overflow:hidden;"><div style="height:100%;width:' + pct + '%;background:' + (colors[status] || '#94a3b8') + ';border-radius:4px;"></div></div></div>';
@@ -3279,7 +3279,7 @@ window.populateLevelRoleSelects = populateLevelRoleSelects;
 function levelBadge(level) {
     if (!level) return '';
     return '<span style="display:inline-block;padding:2px 7px;border-radius:5px;font-size:0.7rem;' +
-           'font-weight:700;background:rgba(0,240,255,0.15);color:var(--primary-color);' +
+           'font-weight:700;background:rgba(37, 99, 235, 0.15);color:var(--primary-color);' +
            'margin-left:6px;">' + esc(level) + '</span>';
 }
 window.levelBadge = levelBadge;
@@ -3528,9 +3528,9 @@ var deptIcons = [
     { id: 'heart', svg: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>' },
     { id: 'rocket', svg: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/></svg>' },
 ];
-var deptColors = ['#00f0ff','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#f97316','#06b6d4','#84cc16','#6366f1'];
+var deptColors = ['#2563eb','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#f97316','#06b6d4','#84cc16','#6366f1'];
 var editingDeptId = null;
-var selectedDeptColor = '#00f0ff';
+var selectedDeptColor = '#2563eb';
 var selectedDeptIcon = 'building';
 
 var allDepartments = [];
@@ -3560,7 +3560,7 @@ function renderDepartments(depts) {
     grid.style.display = 'grid';
     depts.forEach(function(d) {
         var iconObj = deptIcons.find(function(i) { return i.id === d.icon; }) || deptIcons[0];
-        var color = d.color || '#00f0ff';
+        var color = d.color || '#2563eb';
         grid.insertAdjacentHTML('beforeend',
             '<div class="dept-card" onclick="openDeptDetail(' + d.id + ')" style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:var(--radius-lg);padding:24px;cursor:pointer;transition:all 0.2s;border-top:3px solid ' + color + ';">' +
                 '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">' +
@@ -3592,7 +3592,7 @@ function openDeptModal(dept) {
     document.getElementById('dept-modal-title').textContent = dept ? 'Edit Department' : 'Add Department';
     document.getElementById('dept-name').value = dept ? dept.name : '';
     document.getElementById('dept-desc').value = dept ? (dept.description || '') : '';
-    selectedDeptColor = dept ? (dept.color || '#00f0ff') : '#00f0ff';
+    selectedDeptColor = dept ? (dept.color || '#2563eb') : '#2563eb';
     selectedDeptIcon = dept ? (dept.icon || 'building') : 'building';
     renderDeptColorPicker();
     renderDeptIconPicker();
@@ -3757,7 +3757,7 @@ function renderOnboardingHub() {
         list.insertAdjacentHTML('beforeend',
             '<div class="widget" style="padding:16px 20px;margin-bottom:12px;cursor:pointer;" onclick="openOnbEmpDetail(' + e.id + ')">' +
                 '<div style="display:flex;align-items:center;gap:16px;">' +
-                    '<div style="width:42px;height:42px;border-radius:10px;background:rgba(0,240,255,0.1);color:var(--primary-color);display:flex;align-items:center;justify-content:center;font-weight:600;">' + (e.name || '?')[0].toUpperCase() + '</div>' +
+                    '<div style="width:42px;height:42px;border-radius:10px;background:rgba(37, 99, 235, 0.1);color:var(--primary-color);display:flex;align-items:center;justify-content:center;font-weight:600;">' + (e.name || '?')[0].toUpperCase() + '</div>' +
                     '<div style="flex:1;min-width:0;">' +
                         '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">' +
                             '<span style="font-weight:600;font-size:0.95rem;">' + esc(e.name) + '</span>' +
@@ -4719,7 +4719,7 @@ async function loadAttendanceButtons() {
         }
         activeEmps.forEach(function(e) {
             var initials = (e.first_name[0] || '') + (e.last_name[0] || '');
-            container.insertAdjacentHTML('beforeend', '<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;background:rgba(255,255,255,0.03);border:1px solid var(--border-color);border-radius:var(--radius-md);min-width:280px;"><div style="width:40px;height:40px;border-radius:50%;background:var(--primary-color);color:#0b0f19;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.85rem;flex-shrink:0;">' + esc(initials) + '</div><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:0.9rem;">' + esc(e.first_name) + ' ' + esc(e.last_name) + '</div><div style="font-size:0.78rem;color:var(--text-secondary);">' + esc(e.job_title || e.email || '') + '</div></div><button class="btn btn-outline btn-sm" onclick="clockInOut(' + e.id + ')" id="att-btn-' + e.id + '" style="flex-shrink:0;">Clock In</button></div>');
+            container.insertAdjacentHTML('beforeend', '<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;background:rgba(255,255,255,0.03);border:1px solid var(--border-color);border-radius:var(--radius-md);min-width:280px;"><div style="width:40px;height:40px;border-radius:50%;background:var(--primary-color);color:#ffffff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.85rem;flex-shrink:0;">' + esc(initials) + '</div><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:0.9rem;">' + esc(e.first_name) + ' ' + esc(e.last_name) + '</div><div style="font-size:0.78rem;color:var(--text-secondary);">' + esc(e.job_title || e.email || '') + '</div></div><button class="btn btn-outline btn-sm" onclick="clockInOut(' + e.id + ')" id="att-btn-' + e.id + '" style="flex-shrink:0;">Clock In</button></div>');
         });
     } catch (e) { console.error('Attendance buttons error:', e); }
 }
@@ -7156,11 +7156,11 @@ function renderInvoiceChart(revenue, outstanding, invoices) {
             datasets: [{
                 label: 'Revenue Trajectory',
                 data: [revenue*0.2, revenue*0.4, revenue*0.5, revenue*0.8, revenue],
-                borderColor: '#00f0ff',
-                backgroundColor: 'rgba(0, 240, 255, 0.1)',
+                borderColor: '#2563eb',
+                backgroundColor: 'rgba(37, 99, 235, 0.1)',
                 borderWidth: 2,
-                pointBackgroundColor: '#0b0f19',
-                pointBorderColor: '#00f0ff',
+                pointBackgroundColor: '#ffffff',
+                pointBorderColor: '#2563eb',
                 pointBorderWidth: 2,
                 pointRadius: 4,
                 pointHoverRadius: 6,
@@ -7170,11 +7170,11 @@ function renderInvoiceChart(revenue, outstanding, invoices) {
             {
                 label: 'Outstanding',
                 data: [outstanding*0.9, outstanding*0.7, outstanding*0.8, outstanding*1.1, outstanding],
-                borderColor: '#ff003c',
+                borderColor: '#dc2626',
                 backgroundColor: 'rgba(255, 0, 60, 0.1)',
                 borderWidth: 2,
-                pointBackgroundColor: '#0b0f19',
-                pointBorderColor: '#ff003c',
+                pointBackgroundColor: '#ffffff',
+                pointBorderColor: '#dc2626',
                 borderDash: [5, 5],
                 fill: true,
                 tension: 0.4
@@ -7183,8 +7183,8 @@ function renderInvoiceChart(revenue, outstanding, invoices) {
         options: {
             responsive: true, maintainAspectRatio: false,
             plugins: {
-                legend: { labels: { color: '#f8fafc', font: { family: "'Rajdhani', sans-serif", size: 14 } } },
-                tooltip: { backgroundColor: 'rgba(15,23,42,0.9)', titleFont: { family: "'Rajdhani'" }, bodyFont: { family: "'Space Grotesk'" }, borderColor: '#00f0ff', borderWidth: 1 }
+                legend: { labels: { color: '#f8fafc', font: { family: "'Poppins', sans-serif", size: 14 } } },
+                tooltip: { backgroundColor: 'rgba(15,23,42,0.92)', titleFont: { family: "'Poppins'" }, bodyFont: { family: "'Space Grotesk'" }, borderColor: '#2563eb', borderWidth: 1 }
             },
             scales: {
                 y: { grid: { color: 'rgba(255,255,255,0.05)' }, border: { dash: [4, 4] } },
@@ -7947,8 +7947,8 @@ function showFocusBanner(viewId, name) {
     var banner = document.createElement('div');
     banner.className = 'hr-focus-banner';
     banner.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;' +
-        'margin-bottom:16px;border-radius:8px;background:rgba(0,240,255,0.08);' +
-        'border:1px solid rgba(0,240,255,0.3);font-size:0.85rem;';
+        'margin-bottom:16px;border-radius:8px;background:rgba(37, 99, 235, 0.08);' +
+        'border:1px solid rgba(37, 99, 235, 0.3);font-size:0.85rem;';
     banner.innerHTML = 'Showing only <strong>' + esc(name) + '</strong>' +
         '<button type="button" class="btn btn-outline btn-sm" style="margin-left:auto;" ' +
         'onclick="clearEmployeeFocus(&quot;' + viewId + '&quot;)">Show everyone</button>';
@@ -8726,7 +8726,7 @@ window.handleInsufficientCredit = handleInsufficientCredit;
 // ==========================================================================
 // AI ASSISTANT
 // Answers from the tenant's own data. The previous version was an inline
-// script that never ran: an unescaped quote in font-family:'Rajdhani' broke
+// script that never ran: an unescaped quote in font-family:'Poppins' broke
 // the whole block, so toggleAIChat was never defined and the orb did nothing.
 // It also only ever replied "simulation mode".
 // ==========================================================================
@@ -8754,7 +8754,7 @@ function aiChatBubble(text, who) {
         el.style.cssText = 'align-self:flex-end;background:rgba(255,255,255,0.1);padding:8px 12px;' +
             'border-radius:4px;border-right:2px solid var(--text-secondary);max-width:85%;overflow-wrap:anywhere;';
     } else {
-        el.style.cssText = 'align-self:flex-start;background:rgba(0,240,255,0.1);padding:8px 12px;' +
+        el.style.cssText = 'align-self:flex-start;background:rgba(37, 99, 235, 0.1);padding:8px 12px;' +
             'border-radius:4px;border-left:2px solid var(--primary-color);max-width:90%;' +
             'white-space:pre-wrap;overflow-wrap:anywhere;';
     }
@@ -10975,7 +10975,7 @@ async function openStaffRequestThread(id) {
             var fromHr = m.author === 'hr';
             return '<div style="margin-bottom:10px;' + (fromHr ? 'text-align:right;' : '') + '">' +
                 '<div style="display:inline-block;max-width:80%;padding:8px 12px;border-radius:12px;' +
-                (fromHr ? 'background:var(--primary-color);color:#0b0f19;' :
+                (fromHr ? 'background:var(--primary-color);color:#ffffff;' :
                     'background:rgba(255,255,255,0.06);') + '">' + esc(m.body) + '</div>' +
                 '<div class="bt-note" style="margin:2px 0 0;">' +
                 esc(m.author_name || (fromHr ? 'You' : 'Them')) + ' &middot; ' + esc(m.created_at) +
