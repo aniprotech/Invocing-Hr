@@ -10,8 +10,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>A</text></svg>">
-    <link rel="stylesheet" href="styles.css?v=78">
-    <link rel="stylesheet" href="mobile.css?v=78">
+    <link rel="stylesheet" href="styles.css?v=79">
+    <link rel="stylesheet" href="mobile.css?v=79">
 </head>
 <body>
     <a class="skip-link" href="#main-content-region">Skip to main content</a>
@@ -594,14 +594,18 @@
                         <div style="display:flex;gap:8px;align-items:center;">
                             <span style="color:var(--text-secondary);font-size:0.9rem;cursor:pointer;" onclick="showView('invoices-view')">Invoices</span>
                             <span style="color:var(--text-secondary);font-size:0.9rem;">/</span>
-                            <h1>New invoice</h1>
-                            <span class="status-pill status-draft">Draft</span>
+                            <h1 id="create-invoice-title">New invoice</h1>
+                            <span class="status-pill status-draft" id="create-invoice-pill">Draft</span>
                         </div>
                         <div class="invoices-actions">
                             <button class="btn btn-outline" onclick="previewInvoice()">Preview</button>
                             <button class="btn btn-outline" onclick="makeInvoiceRecurring()">Make recurring</button>
-                            <button class="btn btn-outline" onclick="submitComplexInvoice('Draft')">Save as draft</button>
-                            <button class="btn btn-primary" onclick="submitComplexInvoice('Awaiting Payment')">Approve & Send</button>
+                            <!-- Only while editing, so there is a way out that does not
+                                 save. Hidden on a new invoice, where Invoices above is
+                                 already that way out. -->
+                            <button class="btn btn-outline" id="inv-cancel-edit-btn" style="display:none;" onclick="cancelInvoiceEdit()">Cancel</button>
+                            <button class="btn btn-outline" id="inv-save-btn" onclick="submitComplexInvoice('Draft')">Save as draft</button>
+                            <button class="btn btn-primary" id="inv-approve-btn" onclick="submitComplexInvoice('Awaiting Payment')">Approve & Send</button>
                         </div>
                     </div>
                     <div class="glass-widget">
@@ -724,6 +728,10 @@
                             <button class="btn btn-outline invoice-action-btn" onclick="sendWhatsApp()" style="color:#25d366;border-color:#25d366;">WhatsApp</button>
                             <button class="btn btn-outline invoice-action-btn" id="view-invoice-payment-btn" onclick="recordPayment(this.dataset.number)" style="color:var(--primary-color);border-color:var(--primary-color);">Record Payment</button>
                             <button class="btn btn-outline invoice-action-btn" id="view-invoice-paid-btn" onclick="markAsPaid(this.dataset.number)" style="color:var(--success-color);border-color:var(--success-color);">Mark Paid</button>
+                            <!-- Hidden by viewInvoice once anything has been paid against it:
+                                 the server refuses that edit, so offering it would be a
+                                 button whose only outcome is an error. -->
+                            <button class="btn btn-outline invoice-action-btn" id="view-invoice-edit-btn" onclick="editInvoice(this.dataset.number)">Edit</button>
                             <button class="btn btn-outline invoice-action-btn" id="view-invoice-delete-btn" onclick="deleteInvoice(this.dataset.number)" style="color:var(--danger-color);border-color:var(--danger-color);">Delete</button>
                         </div>
                     </div>
@@ -2690,7 +2698,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="app.js?v=78"></script>
+    <script src="app.js?v=79"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">

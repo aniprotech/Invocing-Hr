@@ -1090,6 +1090,9 @@ window.handleGlobalSearch = handleGlobalSearch;
 // had to be typed by hand. Filling them whenever the form is opened covers
 // both that reset and ordinary navigation.
 function prepareNewInvoiceForm() {
+    // Reached by choosing "New invoice", so anything half-edited is over.
+    // Without this, saving a new invoice would PUT over the last one edited.
+    if (typeof setInvoiceFormMode === 'function') setInvoiceFormMode('');
     var issueEl = document.getElementById('inv-issue-date');
     var dueEl = document.getElementById('inv-due-date');
     if (issueEl && !issueEl.value) issueEl.value = localDate(new Date());
@@ -1109,6 +1112,134 @@ function prepareNewInvoiceForm() {
     }
 }
 window.prepareNewInvoiceForm = prepareNewInvoiceForm;
+
+// --- Editing an invoice ----------------------------------------------------
+// The editor is the same form used to create one. _editingInvoice holds the
+// number the invoice had when it was opened, because the number itself is
+// editable and the PUT has to address the original.
+
+var _editingInvoice = '';
+
+function setInvoiceFormMode(number) {
+    _editingInvoice = number || '';
+    var editing = !!_editingInvoice;
+    if (!editing) {
+        window._editingInvoiceStatus = '';
+        var pill = document.getElementById('create-invoice-pill');
+        if (pill) { pill.textContent = 'Draft'; pill.className = 'status-pill status-draft'; }
+    }
+
+    var title = document.getElementById('create-invoice-title');
+    if (title) title.textContent = editing ? 'Edit invoice ' + _editingInvoice : 'New invoice';
+
+    // Saving a draft of something already sent is not a thing, and "Approve"
+    // reads wrong on an edit.
+    var save = document.getElementById('inv-save-btn');
+    if (save) save.textContent = editing ? 'Save changes' : 'Save as draft';
+    var approve = document.getElementById('inv-approve-btn');
+    if (approve) approve.style.display = editing ? 'none' : '';
+
+    var cancel = document.getElementById('inv-cancel-edit-btn');
+    if (cancel) cancel.style.display = editing ? '' : 'none';
+}
+window.setInvoiceFormMode = setInvoiceFormMode;
+
+function cancelInvoiceEdit() {
+    var number = _editingInvoice;
+    clearInvoiceForm();
+    if (number) viewInvoice(number); else showView('invoices-view');
+}
+window.cancelInvoiceEdit = cancelInvoiceEdit;
+
+function clearInvoiceForm() {
+    var form = document.getElementById('complex-invoice-form');
+    if (form) form.reset();
+    var body = document.getElementById('line-items-body');
+    if (body) body.innerHTML = '';
+    addLineItemRow();
+    calculateTotals();
+    setInvoiceFormMode('');
+}
+window.clearInvoiceForm = clearInvoiceForm;
+
+async function editInvoice(number) {
+    if (!number) return;
+    var inv;
+    try {
+        var res = await fetch('/api/invoices/' + encodeURIComponent(number),
+                              { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        inv = await res.json();
+    } catch (e) {
+        showToast('Could not open that invoice for editing', 'error');
+        return;
+    }
+
+    // Checked here as well as on the server. A detail page left open while
+    // somebody else recorded a payment would otherwise offer an edit that is
+    // certain to be refused.
+    if ((inv.paid || 0) > 0) {
+        showToast('This invoice has payments against it. Reverse them before editing.', 'error');
+        return;
+    }
+
+    showView('create-invoice-view');
+    // Remembered so saving keeps the invoice in the state it was already in.
+    // An edit is not a decision to send a draft, and must not un-send a sent
+    // one - the pill shows which it is.
+    window._editingInvoiceStatus = inv.status || 'Draft';
+    setInvoiceFormMode(inv.number);
+    var pill = document.getElementById('create-invoice-pill');
+    if (pill) {
+        pill.textContent = window._editingInvoiceStatus;
+        pill.className = 'status-pill status-' + window._editingInvoiceStatus.toLowerCase().replace(/\s+/g, '-');
+    }
+
+    var set = function (id, value) {
+        var el = document.getElementById(id);
+        if (el) el.value = value === undefined || value === null ? '' : value;
+    };
+    set('inv-number', inv.number);
+    set('inv-ref', inv.ref || inv.reference || '');
+    set('inv-contact', inv.to || inv.contact || '');
+    set('inv-email', inv.email || '');
+    set('inv-phone', inv.phone_number || '');
+    set('inv-issue-date', inv.date || inv.issue_date || '');
+    set('inv-due-date', inv.due_date || '');
+    set('tax-type', inv.tax_type || 'exclusive');
+    set('inv-bank-account', inv.bank_details || '');
+
+    var currency = inv.currency || _appCurrency || 'GBP';
+    set('inv-currency', currency);
+    if (typeof setCurrencyPickerDisplay === 'function' &&
+        typeof _curPickers !== 'undefined' && _curPickers['invCurrency']) {
+        setCurrencyPickerDisplay('invCurrency', currency);
+    }
+
+    var body = document.getElementById('line-items-body');
+    if (body) body.innerHTML = '';
+    var items = inv.line_items || [];
+    if (!items.length) addLineItemRow();
+    items.forEach(function (item) {
+        addLineItemRow();
+        var rows = scopedLineRows('invoice');
+        var row = rows[rows.length - 1];
+        if (!row) return;
+        var put = function (sel, value) {
+            var el = row.querySelector(sel);
+            if (el) el.value = value === undefined || value === null ? '' : value;
+        };
+        put('.item-name', item.name);
+        put('.item-desc', item.description);
+        put('.item-qty', item.qty);
+        put('.item-price', item.price);
+        put('.item-disc', item.disc || 0);
+        put('.item-account', item.account);
+        put('.item-tax-rate', item.tax_rate);
+    });
+    calculateTotals();
+}
+window.editInvoice = editInvoice;
 
 async function fetchNextInvoiceNumber() {
     try {
@@ -1351,6 +1482,19 @@ async function viewInvoice(number) {
         var backBtn = document.getElementById('preview-back-btn');
         if (backBtn) backBtn.style.display = 'none';
         document.querySelectorAll('.invoice-action-btn').forEach(function(btn) { btn.style.display = 'inline-block'; });
+
+        // Editing is offered only while nothing has been paid against it. The
+        // server refuses the rest - money already received is a fact, and
+        // quietly rewriting the invoice it was received against would leave
+        // the payment pointing at something that never happened. Shown after
+        // the loop above, which reveals every action button.
+        var editBtn = document.getElementById('view-invoice-edit-btn');
+        if (editBtn) {
+            editBtn.dataset.number = inv.number;
+            var locked = (inv.paid || 0) > 0;
+            editBtn.style.display = locked ? 'none' : 'inline-block';
+        }
+
         showView('view-invoice-view');
         // Now that we know which invoice this is, the URL can name it, so the
         // screen can be bookmarked or sent to somebody.
@@ -2413,10 +2557,32 @@ async function submitComplexInvoice(status) {
         bank_details: document.getElementById('inv-bank-account') ? document.getElementById('inv-bank-account').value : ''
     };
 
+    // Editing addresses the number the invoice had when it was opened, not
+    // the one in the box - that field is editable, and after a rename the new
+    // one does not exist yet.
+    var editing = _editingInvoice;
+    if (editing) {
+        // Keep whatever state it was already in. An edit is not a decision to
+        // send a draft, and it must not quietly un-send a sent invoice.
+        payload.status = (window._editingInvoiceStatus || status);
+    }
+
     try {
-        var response = await fetch('/api/invoices', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        var response = editing
+            ? await fetch('/api/invoices/' + encodeURIComponent(editing), {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin', body: JSON.stringify(payload) })
+            : await fetch('/api/invoices', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         if (!response.ok) { var err = await response.json(); throw new Error(err.detail || 'Failed'); }
         var invData = await response.json();
+
+        if (editing) {
+            clearInvoiceForm();
+            showToast('Invoice updated', 'success');
+            await viewInvoice(invData.number || editing);
+            return;
+        }
+
         document.getElementById('complex-invoice-form').reset();
         document.getElementById('line-items-body').innerHTML = '';
         addLineItemRow();

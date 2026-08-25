@@ -2618,7 +2618,10 @@ def update_invoice(number: str, invoice: InvoiceCreate, request: Request, db: Se
     inv.issue_date = invoice.issue_date
     inv.due_date = invoice.due_date
     inv.tax_type = invoice.tax_type
-    inv.due = total
+    # Rounded the way create_invoice rounds it; without this an edit could
+    # leave a due of 100.00000000000001 where creating the same invoice
+    # gives 100.00.
+    inv.due = round(total, 2)
     if invoice.currency:
         inv.currency = invoice.currency.upper()
     if invoice.bank_details is not None:
