@@ -54,7 +54,7 @@ function boot(invoice) {
         let body = {};
         if (p.startsWith('/api/invoices/')) body = invoice || INVOICE;
         else if (p === '/api/client/me') body = { id: 1, email: 'me@example.com' };
-        else if (p === '/api/auth/me') body = { user: { email: 'me@example.com' } };
+        else if (p === '/api/auth/me') body = { user: { email: 'me@example.com' }, client_id: 1 };
         else if (p.endsWith('s')) body = [];
         return Promise.resolve({
             ok: true, status: 200,

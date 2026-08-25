@@ -2412,14 +2412,29 @@ def health_check(db: Session = Depends(get_db)):
 
 @app.get("/api/auth/me")
 def get_current_user(request: Request, db: Session = Depends(get_db)):
+    """Who is signed in, and whether they can actually use the business app.
+
+    These are two different questions and answering only the first caused a
+    bad failure. 'user' is set for anyone who completes Google sign-in,
+    including a superadmin and a member of staff, but every endpoint that
+    touches tenant data resolves the tenant through client_id. So a session
+    with a user and no client_id got past the gate on app.html, rendered the
+    whole shell, filled in the invoice form - and then failed every single
+    save with "Not logged in", which is a baffling thing to be told while
+    looking at your own dashboard.
+
+    client_id is returned so the caller can ask the question it actually
+    means, rather than inferring it from the presence of a user.
+    """
     user = request.session.get('user')
     client_id = request.session.get('client_id')
     if user:
-        return {"user": user}
+        return {"user": user, "client_id": client_id}
     if client_id:
         client = db.query(models.DBClient).filter(models.DBClient.id == client_id).first()
         if client:
-            return {"user": {"email": client.email, "name": client.contact_name or client.company_name}}
+            return {"user": {"email": client.email, "name": client.contact_name or client.company_name},
+                    "client_id": client_id}
     return JSONResponse(status_code=401, content={"error": "Not authenticated"})
 
 @app.get("/api/auth/logout")

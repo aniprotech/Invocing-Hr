@@ -5253,7 +5253,12 @@ async function requireAuth() {
         var res = await fetch('/api/auth/me', { credentials: 'same-origin' });
         if (res.ok) {
             var data = await res.json();
-            if (data && data.user) return true;
+            // client_id, not merely a user. A superadmin or a member of staff
+            // who signs in with Google has a user and no client_id, and every
+            // endpoint here resolves the tenant through client_id - so letting
+            // them in renders the whole app and then refuses every action with
+            // "Not logged in". Better to send them to the door they belong at.
+            if (data && data.user && data.client_id) return true;
         }
     } catch (e) {
         // A network failure is not the same as being signed out; let the page

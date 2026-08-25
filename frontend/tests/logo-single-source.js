@@ -39,7 +39,7 @@ function boot({ themeLogo, accountLogo }) {
 
     const routes = {
         '/api/client/me': { id: 1, email: 'me@example.com', company_name: 'aniprotech', currency: 'GBP' },
-        '/api/auth/me': { user: { email: 'me@example.com' } },
+        '/api/auth/me': { user: { email: 'me@example.com' }, client_id: 1 },
         '/api/settings': { currency: 'GBP' },
         '/api/next-invoice-number': { next_number: 'INV-0029', payment_terms_days: 14 },
         '/api/client/logo': { logo_url: accountLogo || '' },

@@ -139,7 +139,7 @@ check('the overlay sits below the header, not over it',
     w.fetch = (url) => {
         const p = String(url).split('?')[0];
         const body = p === '/api/client/me' ? { id: 1, email: 'me@example.com' }
-            : p === '/api/auth/me' ? { user: { email: 'me@example.com' } }
+            : p === '/api/auth/me' ? { user: { email: 'me@example.com' }, client_id: 1 }
                 : (p.endsWith('s') ? [] : {});
         return Promise.resolve({
             ok: true, status: 200,
