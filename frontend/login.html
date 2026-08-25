@@ -3,206 +3,380 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>Login - aniprotech</title>
+    <title>Sign in - Ani Protech</title>
     <link rel="manifest" href="/manifest.webmanifest">
-    <meta name="theme-color" content="#0b0f19">
+    <!-- Matches the page, not the app shell: this one is light like the site. -->
+    <meta name="theme-color" content="#ffffff">
     <link rel="apple-touch-icon" href="/icons/icon-192.png">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="tailwind.css?v=82">
+    <link rel="stylesheet" href="mobile.css?v=82">
     <style>
-        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+        /* ── Taken from aniprotech.com ────────────────────────────────────
+           The marketing site and the door into the product were two
+           different-looking products: the site is white, Poppins and
+           blue-600, and this page was dark navy, Inter and cyan. Somebody
+           clicking "Login" left one design and arrived in another, which
+           reads as a third-party page and is exactly where people hesitate
+           to type a credential.
+
+           These are the site's own values, read off it rather than guessed. */
+        :root {
+            --ap-ink:        #0f172a;   /* headings                        */
+            --ap-body:       #475569;   /* paragraphs                      */
+            --ap-muted:      #64748b;
+            --ap-line:       #e2e8f0;   /* card borders                    */
+            --ap-blue:       #2563eb;   /* primary                         */
+            --ap-blue-dark:  #1d4ed8;   /* gradient end, eyebrow text      */
+            --ap-blue-soft:  #eff6ff;   /* tinted panels                   */
+            --ap-green:      #16a34a;
+            --ap-ease:       cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
         body {
-            font-family: 'Inter', sans-serif;
-            background: #0b0f19;
-            color: #e2e8f0;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background-image:
-                radial-gradient(ellipse 80% 50% at 50% -20%, rgba(120, 119, 198, 0.15), transparent),
-                radial-gradient(ellipse 60% 40% at 80% 60%, rgba(0, 240, 255, 0.05), transparent);
+            font-family: 'Poppins', system-ui, -apple-system, Arial, sans-serif;
+            color: var(--ap-ink);
+            /* The site's own hero wash, plus a second one low-left so the
+               panel does not sit on flat white. */
+            background:
+                radial-gradient(circle at 88% 8%, rgba(37, 99, 235, 0.13), transparent 34%),
+                radial-gradient(circle at 6% 92%, rgba(96, 165, 250, 0.12), transparent 38%),
+                #ffffff;
+            -webkit-font-smoothing: antialiased;
         }
-        .auth-container { width: 100%; max-width: 440px; padding: 24px; }
-        .auth-card {
-            background: rgba(15, 23, 42, 0.8);
-            border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 20px;
-            padding: 48px 40px;
-            backdrop-filter: blur(20px);
-            box-shadow: 0 25px 60px rgba(0,0,0,0.5);
+
+        /* The faint horizontal rules the site lays under its hero. */
+        .ap-grid::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background-image: linear-gradient(to top, rgba(226, 232, 240, 0.55) 1px, transparent 1px);
+            background-size: 100% 64px;
+            mask-image: linear-gradient(to bottom, #000 0%, transparent 70%);
+            -webkit-mask-image: linear-gradient(to bottom, #000 0%, transparent 70%);
+            pointer-events: none;
         }
-        .brand { text-align: center; margin-bottom: 40px; }
-        .brand-icon {
-            width: 56px; height: 56px;
-            background: linear-gradient(135deg, #00f0ff, #7877c6);
-            border-radius: 16px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            margin-bottom: 16px;
-            font-size: 24px;
+
+        .ap-eyebrow {
+            color: var(--ap-blue-dark);
+            font-size: 0.8rem;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
         }
-        .brand h1 { font-size: 1.4rem; font-weight: 700; color: #f8fafc; margin-bottom: 4px; }
-        .brand p { font-size: 0.85rem; color: #94a3b8; }
-        .btn-google {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-            width: 100%;
-            padding: 14px;
+
+        /* 800 weight and tight tracking, as on the site's own h1. */
+        .ap-display {
+            font-weight: 800;
+            letter-spacing: -0.045em;
+            line-height: 1.04;
+            color: var(--ap-ink);
+        }
+
+        .ap-card {
             background: #fff;
-            color: #333;
-            border-radius: 12px;
+            border: 1px solid var(--ap-line);
+            border-radius: 18px;
+            box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+        }
+
+        /* Google's own button is white with a hairline, and people recognise
+           it. Only the motion is ours. */
+        .ap-btn-google {
+            background: #fff;
+            border: 1px solid var(--ap-line);
+            border-radius: 10px;
+            color: #1f2937;
             font-weight: 600;
-            font-size: 0.95rem;
-            text-decoration: none;
-            transition: all 0.2s;
-            border: 1px solid #e2e8f0;
-            cursor: pointer;
+            transition: transform 0.18s var(--ap-ease), box-shadow 0.18s var(--ap-ease),
+                        border-color 0.18s var(--ap-ease);
         }
-        .btn-google:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.15); transform: translateY(-1px); }
-        .error-msg {
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid rgba(239, 68, 68, 0.3);
-            color: #fca5a5;
-            padding: 12px 16px;
-            border-radius: 10px;
-            font-size: 0.85rem;
-            margin-bottom: 20px;
-            display: none;
+        .ap-btn-google:hover {
+            transform: translateY(-2px);
+            border-color: #cbd5e1;
+            box-shadow: 0 12px 28px rgba(15, 23, 42, 0.10);
         }
-        .success-msg {
-            background: rgba(34, 197, 94, 0.1);
-            border: 1px solid rgba(34, 197, 94, 0.3);
-            color: #86efac;
-            padding: 12px 16px;
-            border-radius: 10px;
-            font-size: 0.85rem;
-            margin-bottom: 20px;
-            display: none;
+        .ap-btn-google:active { transform: translateY(0) scale(0.99); }
+
+        .ap-feature {
+            transition: transform 0.22s var(--ap-ease), border-color 0.22s var(--ap-ease),
+                        box-shadow 0.22s var(--ap-ease);
         }
-        .info-text {
-            text-align: center;
-            margin-top: 24px;
-            font-size: 0.8rem;
-            color: #64748b;
-            line-height: 1.5;
+        .ap-feature:hover {
+            transform: translateY(-3px);
+            border-color: #bfdbfe;
+            box-shadow: 0 12px 28px rgba(37, 99, 235, 0.10);
         }
-        .link-home { text-align: center; margin-top: 24px; }
-        .link-home a { color: #64748b; text-decoration: none; font-size: 0.8rem; }
-        .link-home a:hover { color: #00f0ff; }
-        .super-link {
-            text-align: center;
-            margin-top: 16px;
+
+        /* --- Motion ---------------------------------------------------
+           Everything arrives once, in reading order. Staggered by index so
+           the eye is led down the page rather than hit with all of it. */
+        @keyframes ap-rise {
+            from { opacity: 0; transform: translateY(18px); }
+            to   { opacity: 1; transform: none; }
         }
-        .super-link a {
-            color: #7877c6;
-            text-decoration: none;
-            font-size: 0.8rem;
-            font-weight: 500;
+        .ap-rise { opacity: 0; animation: ap-rise 0.62s var(--ap-ease) forwards; }
+        .ap-d1 { animation-delay: 0.05s; }
+        .ap-d2 { animation-delay: 0.13s; }
+        .ap-d3 { animation-delay: 0.21s; }
+        .ap-d4 { animation-delay: 0.29s; }
+        .ap-d5 { animation-delay: 0.37s; }
+
+        @keyframes ap-float {
+            0%, 100% { transform: translateY(0); }
+            50%      { transform: translateY(-9px); }
         }
-        .super-link a:hover { color: #00f0ff; }
-        .loading {
-            display: none;
-            text-align: center;
-            padding: 20px;
+        .ap-float { animation: ap-float 6s ease-in-out infinite; }
+
+        @keyframes ap-pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50%      { opacity: 0.55; transform: scale(0.86); }
         }
-        .spinner {
-            width: 32px;
-            height: 32px;
-            border: 3px solid rgba(255,255,255,0.1);
-            border-top-color: #00f0ff;
+        .ap-live-dot { animation: ap-pulse 2s ease-in-out infinite; }
+
+        /* The bar fills, as the counter does on the site's hero card.
+           Scaled rather than widened so it stays on the compositor: animating
+           width relayouts the card on every frame of the 1.6s, and this runs
+           on the slowest device anyone signs in from. */
+        @keyframes ap-bar {
+            from { transform: scaleX(0); }
+            to   { transform: scaleX(1); }
+        }
+        .ap-bar-fill {
+            transform-origin: left center;
+            animation: ap-bar 1.6s var(--ap-ease) forwards;
+        }
+
+        @keyframes ap-spin { to { transform: rotate(360deg); } }
+        .ap-spinner {
+            width: 34px; height: 34px;
+            border: 3px solid #e2e8f0;
+            border-top-color: var(--ap-blue);
             border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-            margin: 0 auto 12px;
+            animation: ap-spin 0.8s linear infinite;
         }
-        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Somebody signing in from a moving train does not need any of it. */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }
+            .ap-rise { opacity: 1; }
+            .ap-btn-google:hover, .ap-feature:hover { transform: none; }
+        }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=79">
 </head>
-<body>
-    <div class="auth-container">
-        <div class="auth-card">
-            <div class="brand">
-                <div class="brand-icon">A</div>
-                <h1>aniprotech</h1>
-                <p>Manage your invoices effortlessly</p>
-            </div>
+<body class="min-h-screen">
 
-            <div class="error-msg" id="error-msg"></div>
-            <div class="success-msg" id="success-msg"></div>
-            <div class="loading" id="loading">
-                <div class="spinner"></div>
-                <p style="color:#94a3b8;font-size:0.85rem;">Signing you in...</p>
-            </div>
+<div class="ap-grid relative min-h-screen flex items-center justify-center px-5 py-10 md:py-14">
+  <div class="w-full max-w-6xl grid lg:grid-cols-2 gap-10 lg:gap-16 items-center relative">
 
-            <div id="login-content">
-                <a href="/api/auth/login?portal=invoicing" class="btn-google" id="google-btn">
-                    <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
-                    Sign in with Google
-                </a>
+    <!-- ── Left: the same promise the site makes ─────────────────────── -->
+    <div class="hidden lg:block">
+      <div class="ap-rise ap-d1 inline-flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-4 py-1.5 mb-6">
+        <span class="ap-live-dot inline-block w-2 h-2 rounded-full bg-blue-600"></span>
+        <span class="ap-eyebrow">Smart HR &amp; Business Platform</span>
+      </div>
 
-                <p class="info-text">
-                    Sign in with your Google account to access your invoicing dashboard.<br>
-                    Your account will be created automatically on first login.
-                </p>
-            </div>
+      <h1 class="ap-rise ap-d2 ap-display text-[2.75rem] xl:text-[3.4rem] mb-5">
+        Everything Your Business Needs.<br>
+        <span class="bg-gradient-to-r from-blue-600 to-blue-800 bg-clip-text text-transparent">One Powerful Platform.</span>
+      </h1>
 
-            <div class="super-link">
-                <a href="/superadmin-login.html">Super Admin Login</a>
-                <a href="/employee-login.html" style="display:block;margin-top:8px;color:#64748b;font-size:0.85rem;">Employee Portal Login</a>
-            </div>
-            <div class="link-home">
-                <a href="/">Back to home</a>
-            </div>
+      <p class="ap-rise ap-d3 text-[1.02rem] leading-relaxed mb-8 max-w-xl" style="color:var(--ap-body);">
+        Manage HR, Attendance, Payroll, Leave, Employee Records, Timesheets,
+        Shift Management, Invoicing and Business Operations from one secure
+        cloud platform.
+      </p>
+
+      <!-- The site's own module list, in the site's own order. -->
+      <div class="ap-rise ap-d4 grid grid-cols-2 xl:grid-cols-3 gap-3 mb-9 max-w-xl">
+        <div class="ap-feature ap-card flex items-center gap-2.5 px-3.5 py-3">
+          <span class="text-blue-600 shrink-0" aria-hidden="true">&#10004;</span>
+          <span class="text-sm font-medium" style="color:var(--ap-ink);">HR Management</span>
         </div>
+        <div class="ap-feature ap-card flex items-center gap-2.5 px-3.5 py-3">
+          <span class="text-blue-600 shrink-0" aria-hidden="true">&#10004;</span>
+          <span class="text-sm font-medium" style="color:var(--ap-ink);">Attendance</span>
+        </div>
+        <div class="ap-feature ap-card flex items-center gap-2.5 px-3.5 py-3">
+          <span class="text-blue-600 shrink-0" aria-hidden="true">&#10004;</span>
+          <span class="text-sm font-medium" style="color:var(--ap-ink);">Payroll</span>
+        </div>
+        <div class="ap-feature ap-card flex items-center gap-2.5 px-3.5 py-3">
+          <span class="text-blue-600 shrink-0" aria-hidden="true">&#10004;</span>
+          <span class="text-sm font-medium" style="color:var(--ap-ink);">Invoicing</span>
+        </div>
+        <div class="ap-feature ap-card flex items-center gap-2.5 px-3.5 py-3">
+          <span class="text-blue-600 shrink-0" aria-hidden="true">&#10004;</span>
+          <span class="text-sm font-medium" style="color:var(--ap-ink);">Reports</span>
+        </div>
+        <div class="ap-feature ap-card flex items-center gap-2.5 px-3.5 py-3">
+          <span class="text-blue-600 shrink-0" aria-hidden="true">&#10004;</span>
+          <span class="text-sm font-medium" style="color:var(--ap-ink);">Multi Branch</span>
+        </div>
+      </div>
+
+      <!-- A quiet nod to the hero card on the site, without pretending to
+           be live data on a page where nobody is signed in yet. -->
+      <div class="ap-rise ap-d5 ap-card ap-float max-w-sm p-5">
+        <div class="flex items-center justify-between mb-4">
+          <span class="text-sm font-semibold" style="color:var(--ap-ink);">Ani Protech Dashboard</span>
+          <span class="inline-flex items-center gap-1.5 text-xs font-semibold" style="color:var(--ap-green);">
+            <span class="ap-live-dot inline-block w-1.5 h-1.5 rounded-full" style="background:var(--ap-green);"></span>
+            Live
+          </span>
+        </div>
+        <div class="mb-3">
+          <div class="flex justify-between text-xs mb-1.5">
+            <span style="color:var(--ap-muted);">Attendance</span>
+            <span class="font-bold" style="color:var(--ap-ink);">98.7%</span>
+          </div>
+          <div class="h-1.5 rounded-full bg-slate-100 overflow-hidden">
+            <div class="ap-bar-fill h-full rounded-full bg-gradient-to-r from-blue-500 to-blue-700" style="width:98.7%;"></div>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3 pt-3 border-t" style="border-color:var(--ap-line);">
+          <div>
+            <div class="text-xs" style="color:var(--ap-muted);">Payroll</div>
+            <div class="text-sm font-bold" style="color:var(--ap-green);">Completed</div>
+          </div>
+          <div>
+            <div class="text-xs" style="color:var(--ap-muted);">Invoices</div>
+            <div class="text-sm font-bold" style="color:var(--ap-ink);">542</div>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <script>
-        var params = new URLSearchParams(window.location.search);
-        var error = params.get('error');
-        if (error) {
-            var msg = 'Something went wrong. Please try again.';
-            if (error === 'auth_failed') msg = 'Google authentication failed. Please try again.';
-            if (error === 'callback_failed') msg = 'Login callback failed. Please try again.';
-            if (error === 'not_client') msg = 'This email is registered as an administrator. Please use the Super Admin login.';
-            document.getElementById('error-msg').textContent = msg;
-            document.getElementById('error-msg').style.display = 'block';
-        }
+    <!-- ── Right: the door ───────────────────────────────────────────── -->
+    <div class="ap-rise ap-d2 w-full max-w-md mx-auto lg:mx-0 lg:ml-auto">
+      <div class="ap-card p-8 sm:p-10">
 
+        <div class="text-center mb-8">
+          <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl mb-4 text-white text-2xl font-extrabold"
+               style="background:linear-gradient(135deg,var(--ap-blue),var(--ap-blue-dark));box-shadow:0 10px 26px rgba(37,99,235,0.24);">A</div>
+          <h2 class="ap-display text-2xl mb-1.5">Welcome back</h2>
+          <p class="text-sm" style="color:var(--ap-body);">
+            Sign in to your HR, payroll and invoicing dashboard.
+          </p>
+        </div>
 
-        // Return the visitor to whatever they were trying to reach, but only
-        // to a path on this site - never to an attacker-supplied URL.
-        function nextTarget(fallback) {
-            var next = params.get('next') || '';
-            if (next.charAt(0) === '/' && next.charAt(1) !== '/') return next;
-            return fallback;
-        }
+        <div id="error-msg" role="alert"
+             class="hidden mb-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700"></div>
+        <div id="success-msg" role="status"
+             class="hidden mb-5 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm font-medium text-green-700"></div>
 
-        // Check if already logged in
-        fetch('/api/auth/me').then(function(r) { return r.json(); }).then(function(data) {
-            if (data.user) {
-                // Already logged in, check if super admin or client
-                fetch('/api/superadmin/me').then(function(r2) {
-                    if (r2.ok) {
-                        window.location.href = '/superadmin.html';
-                    } else {
-                        window.location.href = nextTarget('/app.html');
-                    }
-                }).catch(function() {
+        <div id="loading" class="hidden text-center py-8" role="status" aria-live="polite">
+          <div class="ap-spinner mx-auto mb-3"></div>
+          <p class="text-sm" style="color:var(--ap-body);">Signing you in&hellip;</p>
+        </div>
+
+        <div id="login-content">
+          <a href="/api/auth/login?portal=invoicing" id="google-btn"
+             class="ap-btn-google flex items-center justify-center gap-3 w-full px-4 py-3.5 min-h-[52px]">
+            <svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+            Sign in with Google
+          </a>
+
+          <p class="mt-5 text-center text-[0.82rem] leading-relaxed" style="color:var(--ap-muted);">
+            Your account is created automatically the first time you sign in.
+          </p>
+
+          <div class="flex items-center gap-3 my-7" aria-hidden="true">
+            <span class="h-px flex-1" style="background:var(--ap-line);"></span>
+            <span class="text-xs font-semibold" style="color:var(--ap-muted);">OR</span>
+            <span class="h-px flex-1" style="background:var(--ap-line);"></span>
+          </div>
+
+          <div class="grid gap-2.5">
+            <a href="/employee-login.html" aria-label="Employee Portal sign in"
+               class="ap-feature ap-card flex items-center justify-between px-4 py-3.5 min-h-[52px]">
+              <span class="flex items-center gap-3">
+                <span class="inline-flex items-center justify-center w-8 h-8 rounded-lg text-base"
+                      style="background:var(--ap-blue-soft);" aria-hidden="true">&#128100;</span>
+                <span class="text-sm font-semibold" style="color:var(--ap-ink);">Employee Portal</span>
+              </span>
+              <span aria-hidden="true" style="color:var(--ap-muted);">&rarr;</span>
+            </a>
+            <a href="/hr-login.html" aria-label="HR Portal sign in"
+               class="ap-feature ap-card flex items-center justify-between px-4 py-3.5 min-h-[52px]">
+              <span class="flex items-center gap-3">
+                <span class="inline-flex items-center justify-center w-8 h-8 rounded-lg text-base"
+                      style="background:var(--ap-blue-soft);" aria-hidden="true">&#127970;</span>
+                <span class="text-sm font-semibold" style="color:var(--ap-ink);">HR Portal</span>
+              </span>
+              <span aria-hidden="true" style="color:var(--ap-muted);">&rarr;</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- -mx-2 so the padded hit areas line up with the card edge while
+             still being big enough to hit on a phone. -->
+        <div class="mt-6 pt-4 border-t flex items-center justify-between text-[0.82rem] -mx-2"
+             style="border-color:var(--ap-line);">
+          <a href="/superadmin-login.html"
+             class="font-semibold hover:underline px-2 py-2.5 min-h-[44px] flex items-center"
+             style="color:var(--ap-blue-dark);">Super Admin</a>
+          <a href="/" class="hover:underline px-2 py-2.5 min-h-[44px] flex items-center"
+             style="color:var(--ap-muted);">&larr; Back to home</a>
+        </div>
+      </div>
+
+      <p class="mt-6 text-center text-xs" style="color:var(--ap-muted);">
+        &copy; 2026 Ani Protech &middot; HR &bull; Payroll &bull; Business Platform
+      </p>
+    </div>
+  </div>
+</div>
+
+<script>
+    var params = new URLSearchParams(window.location.search);
+    var error = params.get('error');
+    if (error) {
+        var msg = 'Something went wrong. Please try again.';
+        if (error === 'auth_failed') msg = 'Google authentication failed. Please try again.';
+        if (error === 'callback_failed') msg = 'Login callback failed. Please try again.';
+        if (error === 'not_client') msg = 'This email is registered as an administrator. Please use the Super Admin login.';
+        var box = document.getElementById('error-msg');
+        box.textContent = msg;
+        box.classList.remove('hidden');
+    }
+
+    // Return the visitor to whatever they were trying to reach, but only
+    // to a path on this site - never to an attacker-supplied URL.
+    function nextTarget(fallback) {
+        var next = params.get('next') || '';
+        if (next.charAt(0) === '/' && next.charAt(1) !== '/') return next;
+        return fallback;
+    }
+
+    // Check if already logged in
+    fetch('/api/auth/me').then(function(r) { return r.json(); }).then(function(data) {
+        if (data.user) {
+            // Already logged in, check if super admin or client
+            fetch('/api/superadmin/me').then(function(r2) {
+                if (r2.ok) {
+                    window.location.href = '/superadmin.html';
+                } else {
                     window.location.href = nextTarget('/app.html');
-                });
-            }
-        }).catch(function() {});
+                }
+            }).catch(function() {
+                window.location.href = nextTarget('/app.html');
+            });
+        }
+    }).catch(function() {});
 
-        // Show loading on Google button click
-        document.getElementById('google-btn').addEventListener('click', function() {
-            document.getElementById('login-content').style.display = 'none';
-            document.getElementById('loading').style.display = 'block';
-        });
-    </script>
+    // Show loading on Google button click
+    document.getElementById('google-btn').addEventListener('click', function() {
+        document.getElementById('login-content').classList.add('hidden');
+        document.getElementById('loading').classList.remove('hidden');
+    });
+</script>
 </body>
 </html>

@@ -25,6 +25,7 @@ module.exports = {
     'frontend/employee-login.html',
     'frontend/meeting.html',
     'frontend/reset-password.html',
+    'frontend/login.html',
   ],
   darkMode: 'class',          // meeting.html toggles dark by class
   theme: {

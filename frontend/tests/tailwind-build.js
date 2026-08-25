@@ -30,7 +30,7 @@ const check = (label, ok, detail) => {
     else { failures++; console.log(`FAIL  ${label}${detail ? ': ' + detail : ''}`); }
 };
 
-const PAGES = ['employee-dashboard', 'employee-login', 'meeting', 'reset-password'];
+const PAGES = ['employee-dashboard', 'employee-login', 'meeting', 'reset-password', 'login'];
 
 // --- No page may go back to compiling in the browser ----------------------
 for (const page of PAGES) {
