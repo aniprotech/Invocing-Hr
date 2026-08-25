@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>aniprotech</title>
-    <meta name="description" content="aniprotech — Create professional invoices, send via email with one click, track payments, and manage your business finances.">
+    <meta name="description" content="Ani Protech — one secure cloud platform for HR, attendance, payroll, leave, timesheets, shift management, invoicing and business operations.">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
     <link rel="manifest" href="/manifest.webmanifest">
     <meta name="theme-color" content="#ffffff">
@@ -242,8 +242,161 @@
             }
             .btn-white:hover, .btn-ghost:hover, .card:hover, .nav-login:hover { transform: none; }
         }
+
+        /* ── Sections carried over from aniprotech.com ────────────────────
+           Modules, Industries, the FAQ and Contact did not exist here, so
+           four of the site's own nav items had nowhere to go. */
+
+        /* The nav is fixed, so an anchor would otherwise land with its
+           heading tucked underneath it. */
+        section[id], div[id="home"] { scroll-margin-top: 88px; }
+
+        .eyebrow {
+            display: block;
+            text-align: center;
+            color: var(--ap-blue-dark);
+            font-size: 12.8px;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin-bottom: 12px;
+        }
+
+        .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; }
+        .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; }
+        @media (max-width: 980px) { .grid-4 { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 640px)  { .grid-4, .grid-2 { grid-template-columns: 1fr; } }
+
+        /* Compact card for the module and industry grids - twelve and eight
+           of them, so they cannot carry the padding the feature cards do. */
+        .tile {
+            background: #ffffff;
+            border: 1px solid var(--ap-line);
+            border-radius: 16px;
+            padding: 22px;
+            box-shadow: var(--ap-card-shadow);
+            transition: transform 0.22s var(--ap-ease), border-color 0.22s var(--ap-ease),
+                        box-shadow 0.22s var(--ap-ease);
+        }
+        .tile:hover {
+            transform: translateY(-3px);
+            border-color: #bfdbfe;
+            box-shadow: 0 14px 30px rgba(37, 99, 235, 0.12);
+        }
+        .tile-icon {
+            width: 40px; height: 40px; border-radius: 10px;
+            background: var(--ap-blue-soft);
+            display: flex; align-items: center; justify-content: center;
+            margin-bottom: 14px; font-size: 19px;
+        }
+        .tile h3 { font-size: 16px; font-weight: 700; color: var(--ap-ink); margin-bottom: 6px; }
+        .tile p { font-size: 13.5px; color: var(--ap-body); line-height: 1.65; }
+
+        /* The problems section reads as a warning, so it is warm rather than
+           blue - otherwise it looks like another feature list. */
+        .tile-warn .tile-icon { background: #fff7ed; }
+
+        /* --- FAQ ---------------------------------------------------------
+           A real disclosure widget: a button per question, aria-expanded on
+           it, and the answer hidden from the reader as well as the eye. */
+        .faq-list { max-width: 780px; margin: 0 auto; display: grid; gap: 12px; }
+        .faq-item {
+            background: #ffffff;
+            border: 1px solid var(--ap-line);
+            border-radius: 14px;
+            box-shadow: var(--ap-card-shadow);
+            overflow: hidden;
+        }
+        .faq-q {
+            width: 100%;
+            display: flex; align-items: center; justify-content: space-between; gap: 16px;
+            padding: 18px 22px;
+            min-height: 56px;
+            background: none; border: none;
+            font-family: inherit; font-size: 15.5px; font-weight: 600;
+            color: var(--ap-ink); text-align: left; cursor: pointer;
+            transition: background 0.18s var(--ap-ease), color 0.18s var(--ap-ease);
+        }
+        .faq-q:hover { background: var(--ap-blue-soft); color: var(--ap-blue-dark); }
+        .faq-q:focus-visible { outline: 2px solid var(--ap-blue); outline-offset: -2px; }
+        .faq-chevron {
+            flex: 0 0 auto; width: 20px; height: 20px;
+            color: var(--ap-blue-dark);
+            transition: transform 0.24s var(--ap-ease);
+        }
+        .faq-q[aria-expanded="true"] .faq-chevron { transform: rotate(180deg); }
+        .faq-a {
+            padding: 0 22px 20px;
+            font-size: 14.5px; color: var(--ap-body); line-height: 1.75;
+        }
+        .faq-a[hidden] { display: none; }
+
+        /* --- Contact ----------------------------------------------------- */
+        .contact-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; max-width: 900px; margin: 0 auto 36px; }
+        @media (max-width: 760px) { .contact-grid { grid-template-columns: 1fr; } }
+        .contact-card {
+            display: flex; flex-direction: column; align-items: center; gap: 8px;
+            background: #ffffff; border: 1px solid var(--ap-line);
+            border-radius: 18px; padding: 28px 20px; text-align: center;
+            box-shadow: var(--ap-card-shadow);
+            transition: transform 0.22s var(--ap-ease), border-color 0.22s var(--ap-ease),
+                        box-shadow 0.22s var(--ap-ease);
+        }
+        .contact-card:hover {
+            transform: translateY(-3px); border-color: #bfdbfe;
+            box-shadow: 0 14px 30px rgba(37, 99, 235, 0.12);
+        }
+        .contact-icon {
+            width: 46px; height: 46px; border-radius: 12px;
+            background: var(--ap-blue-soft);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 21px; margin-bottom: 4px;
+        }
+        .contact-label { font-size: 12.8px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ap-muted); }
+        .contact-value { font-size: 15.5px; font-weight: 700; color: var(--ap-ink); word-break: break-word; }
+        .contact-card:hover .contact-value { color: var(--ap-blue-dark); }
+
+        /* --- Demo panel --------------------------------------------------- */
+        .demo-points { display: grid; gap: 10px; max-width: 440px; margin: 0 auto 28px; text-align: left; }
+        .demo-point { display: flex; align-items: center; gap: 10px; font-size: 15px; color: var(--ap-body); }
+        .demo-point .tick { color: var(--ap-blue); font-weight: 800; flex: 0 0 auto; }
+
+        /* --- The live dashboard mock -------------------------------------- */
+        .mock {
+            background: #ffffff; border: 1px solid var(--ap-line);
+            border-radius: 18px; box-shadow: 0 18px 46px rgba(15, 23, 42, 0.10);
+            overflow: hidden; max-width: 940px; margin: 0 auto;
+        }
+        .mock-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--ap-line); background: #fbfdff; }
+        .mock-title { font-size: 14px; font-weight: 700; color: var(--ap-ink); }
+        .mock-live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: #16a34a; }
+        .mock-live .dot { width: 7px; height: 7px; border-radius: 50%; background: #16a34a; animation: pulse 2s infinite; }
+        .mock-body { display: grid; grid-template-columns: 200px 1fr; }
+        @media (max-width: 760px) { .mock-body { grid-template-columns: 1fr; } .mock-side { display: none; } }
+        .mock-side { border-right: 1px solid var(--ap-line); padding: 16px 12px; background: #fbfdff; }
+        .mock-side span { display: block; font-size: 13px; color: var(--ap-body); padding: 9px 12px; border-radius: 8px; }
+        .mock-side span.on { background: var(--ap-blue-soft); color: var(--ap-blue-dark); font-weight: 700; }
+        .mock-main { padding: 24px; }
+        .mock-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 18px; }
+        @media (max-width: 560px) { .mock-stats { grid-template-columns: 1fr; } }
+        .mock-stat { border: 1px solid var(--ap-line); border-radius: 12px; padding: 14px; }
+        .mock-stat .k { font-size: 12px; color: var(--ap-muted); }
+        .mock-stat .v { font-size: 22px; font-weight: 800; color: var(--ap-ink); letter-spacing: -0.03em; }
+        .mock-stat .s { font-size: 12px; font-weight: 600; color: #16a34a; }
+        .mock-acts { border-top: 1px solid var(--ap-line); padding-top: 14px; }
+        .mock-acts div { font-size: 13px; color: var(--ap-body); padding: 6px 0; display: flex; align-items: center; gap: 8px; }
+        .mock-acts .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ap-blue); flex: 0 0 auto; }
+
+        /* --- Footer columns ------------------------------------------------ */
+        .footer-cols { max-width: 1200px; margin: 0 auto; padding: 48px 16px 24px; display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 32px; }
+        @media (max-width: 860px) { .footer-cols { grid-template-columns: 1fr 1fr; } }
+        @media (max-width: 520px) { .footer-cols { grid-template-columns: 1fr; } }
+        .footer-col h4 { font-size: 13px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ap-ink); margin-bottom: 14px; }
+        .footer-col a, .footer-col p { display: block; font-size: 13.5px; color: var(--ap-body); line-height: 1.6; padding: 5px 0; }
+        .footer-col a:hover { color: var(--ap-blue-dark); }
+        .footer-about { font-size: 13.5px; color: var(--ap-body); line-height: 1.7; max-width: 320px; margin-top: 12px; }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=83">
+    <link rel="stylesheet" href="mobile.css?v=85">
 </head>
 <body>
 
@@ -263,9 +416,13 @@
                 <span>aniprotech</span>
             </a>
             <div class="nav-links">
+                <a href="#home">Home</a>
+                <a href="#modules">Modules</a>
                 <a href="#features">Features</a>
+                <a href="#industries">Industries</a>
                 <a href="#pricing">Pricing</a>
-                <a href="#testimonials">Testimonials</a>
+                <a href="#faq">FAQ</a>
+                <a href="#contact">Contact</a>
             </div>
             <div id="nav-auth" style="display:flex;gap:8px;align-items:center;">
                 <a href="/login.html" class="nav-login nav-login-alt">Invoicing Portal</a>
@@ -277,9 +434,13 @@
             </button>
         </div>
         <div id="mobile-menu" class="mobile-menu">
+            <a href="#home">Home</a>
+            <a href="#modules">Modules</a>
             <a href="#features">Features</a>
+            <a href="#industries">Industries</a>
             <a href="#pricing">Pricing</a>
-            <a href="#testimonials">Testimonials</a>
+            <a href="#faq">FAQ</a>
+            <a href="#contact">Contact</a>
             <hr style="border:none;border-top:1px solid var(--ap-line);margin:8px 0;">
             <a href="/login.html" id="m-invoicing-link">Invoicing Portal</a>
             <a href="/hr-login.html" id="m-hr-link">HR Portal</a>
@@ -288,13 +449,16 @@
     </nav>
 
     <!-- Hero -->
-    <section class="hero">
+    <section class="hero" id="home">
         <div class="fade-in fade-in-d1 hero-badge">
             <span class="dot"></span>
-            Gmail API + WhatsApp Integration
+            Smart HR &amp; Business Management Platform
         </div>
-        <h1 class="fade-in fade-in-d2">Invoicing Made <span class="gradient">Simple &amp; Powerful</span></h1>
-        <p class="fade-in fade-in-d3">Create professional invoices, send via email with one click, track payments, and manage your business finances — all in one place.</p>
+        <!-- The site's own headline. It used to promise invoicing alone,
+             which stopped being true the moment the twelve modules below it
+             arrived on this page. -->
+        <h1 class="fade-in fade-in-d2">Everything Your Business Needs.<br><span class="gradient">One Powerful Platform.</span></h1>
+        <p class="fade-in fade-in-d3">Manage HR, Attendance, Payroll, Leave, Employee Records, Timesheets, Shift Management, Invoicing and Business Operations from one secure cloud platform.</p>
         <div class="fade-in fade-in-d4 hero-cta" id="hero-auth">
             <a href="/login.html" class="btn-white">
                 Invoicing Portal
@@ -306,6 +470,111 @@
             </a>
         </div>
         <p class="fade-in fade-in-d5 hero-sub">Already have an account? <a href="/login.html">Sign in</a><br><span style="opacity:0.85;">Staff member? <a href="/employee-login.html">Open the employee portal</a> to clock in, book leave and get payslips.</span></p>
+    </section>
+
+    <!-- ── Business challenges ─────────────────────────────────────────── -->
+    <section class="section">
+        <div class="container">
+            <div class="section-title">
+                <span class="eyebrow">Business Challenges</span>
+                <h2>Still Managing Your Business Manually?</h2>
+                <p>Many businesses still rely on spreadsheets, paperwork and disconnected systems&mdash;leading to delays, errors and reduced productivity.</p>
+            </div>
+            <div class="grid-3">
+                <div class="tile tile-warn"><div class="tile-icon" aria-hidden="true">&#128337;</div><h3>Manual Attendance</h3><p>Employees mark attendance manually, resulting in mistakes and lost productivity.</p></div>
+                <div class="tile tile-warn"><div class="tile-icon" aria-hidden="true">&#128181;</div><h3>Payroll Delays</h3><p>Payroll calculations consume valuable time every month.</p></div>
+                <div class="tile tile-warn"><div class="tile-icon" aria-hidden="true">&#129534;</div><h3>Manual Invoicing</h3><p>Creating invoices manually increases errors and slows cash flow.</p></div>
+                <div class="tile tile-warn"><div class="tile-icon" aria-hidden="true">&#128193;</div><h3>Employee Records</h3><p>Finding employee information becomes difficult as teams grow.</p></div>
+                <div class="tile tile-warn"><div class="tile-icon" aria-hidden="true">&#128200;</div><h3>No Real-Time Reports</h3><p>Business decisions are delayed without live analytics and reporting.</p></div>
+                <div class="tile tile-warn"><div class="tile-icon" aria-hidden="true">&#127970;</div><h3>Multiple Branches</h3><p>Managing multiple offices from different systems wastes time.</p></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ── Modules ─────────────────────────────────────────────────────── -->
+    <section class="section" id="modules">
+        <div class="container">
+            <div class="section-title">
+                <span class="eyebrow">Complete Business Platform</span>
+                <h2>Everything You Need. One Platform.</h2>
+                <p>Ani Protech combines powerful business tools into one secure cloud platform, eliminating the need for multiple software subscriptions.</p>
+            </div>
+            <div class="grid-4">
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#128101;</div><h3>HR Management</h3><p>Manage employees, departments, onboarding and company records.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#9200;</div><h3>Attendance</h3><p>Real-time attendance tracking with complete employee visibility.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#128176;</div><h3>Payroll</h3><p>Generate salaries, deductions and payroll reports effortlessly.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#129534;</div><h3>Invoicing</h3><p>Create professional invoices and track customer payments.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#127958;</div><h3>Leave Management</h3><p>Approve, reject and monitor leave requests instantly.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#128197;</div><h3>Shift Management</h3><p>Plan employee shifts with complete scheduling flexibility.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#9201;</div><h3>Timesheets</h3><p>Track work hours and improve workforce productivity.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#128194;</div><h3>Employee Records</h3><p>Securely store employee information and important documents.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#128202;</div><h3>Reports &amp; Analytics</h3><p>Powerful dashboards with real-time business insights.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#128272;</div><h3>Role Permissions</h3><p>Control access with secure role-based permissions.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#127970;</div><h3>Multi Branch</h3><p>Manage multiple branches from one centralized dashboard.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#9729;</div><h3>Cloud Platform</h3><p>Access your business securely from anywhere, anytime and on any device.</p></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ── Live software preview ───────────────────────────────────────── -->
+    <section class="section">
+        <div class="container">
+            <div class="section-title">
+                <span class="eyebrow">Live Software Preview</span>
+                <h2>Powerful Dashboard. Simple Experience.</h2>
+                <p>Manage your workforce, payroll, attendance, invoicing and business operations from one intelligent dashboard.</p>
+            </div>
+            <!-- A picture of the product, not a claim about live data: nobody
+                 is signed in on this page. -->
+            <div class="mock" role="img" aria-label="Preview of the Ani Protech dashboard showing attendance, payroll and invoice figures">
+                <div class="mock-bar">
+                    <span class="mock-title">Ani Protech &middot; Business Platform</span>
+                    <span class="mock-live"><span class="dot"></span> Live</span>
+                </div>
+                <div class="mock-body">
+                    <div class="mock-side" aria-hidden="true">
+                        <span class="on">Dashboard</span><span>Employees</span><span>Attendance</span>
+                        <span>Payroll</span><span>Invoicing</span><span>Leave</span>
+                        <span>Timesheets</span><span>Reports</span><span>Branches</span><span>Settings</span>
+                    </div>
+                    <div class="mock-main">
+                        <div class="mock-stats">
+                            <div class="mock-stat"><div class="k">Attendance</div><div class="v">98.7%</div><div class="s">Excellent</div></div>
+                            <div class="mock-stat"><div class="k">Payroll</div><div class="v">&pound;245K</div><div class="s">Processed</div></div>
+                            <div class="mock-stat"><div class="k">Invoices</div><div class="v">542</div><div class="s">Generated</div></div>
+                        </div>
+                        <div class="mock-acts">
+                            <div><span class="dot"></span> Payroll processed successfully</div>
+                            <div><span class="dot"></span> New employees onboarded</div>
+                            <div><span class="dot"></span> 42 invoices generated today</div>
+                            <div><span class="dot"></span> Leave request approved</div>
+                            <div><span class="dot"></span> Attendance synchronized</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ── Industries ──────────────────────────────────────────────────── -->
+    <section class="section" id="industries">
+        <div class="container">
+            <div class="section-title">
+                <span class="eyebrow">Industries We Serve</span>
+                <h2>Built for Every Growing Business</h2>
+                <p>Whether you are managing a small team or a multi-location enterprise, Ani Protech adapts to your business and helps streamline everyday operations.</p>
+            </div>
+            <div class="grid-4">
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#127959;</div><h3>Construction</h3><p>Manage workforce, attendance and payroll across multiple project sites.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#127973;</div><h3>Healthcare</h3><p>Track staff shifts, attendance and payroll for healthcare teams.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#128717;</div><h3>Retail</h3><p>Monitor employees, shifts, branches and daily business operations.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#127976;</div><h3>Hospitality</h3><p>Simplify staff scheduling, leave management and payroll processing.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#127979;</div><h3>Education</h3><p>Manage teaching and administrative staff from one secure platform.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#127981;</div><h3>Manufacturing</h3><p>Improve workforce productivity with attendance and shift automation.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#128666;</div><h3>Logistics</h3><p>Track mobile teams, branches, attendance and employee performance.</p></div>
+                <div class="tile"><div class="tile-icon" aria-hidden="true">&#128188;</div><h3>Professional Services</h3><p>Perfect for agencies, consultants, accountants and service businesses.</p></div>
+            </div>
+        </div>
     </section>
 
     <!-- Features -->
@@ -465,26 +734,214 @@
     </section>
 
     <!-- Footer -->
-<footer class="footer">
-        <div class="footer-inner">
-            <div class="footer-brand">
-                <div class="footer-brand-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                </div>
-                <span>aniprotech</span>
+    <!-- ── FAQ ─────────────────────────────────────────────────────────── -->
+    <section class="section" id="faq">
+        <div class="container">
+            <div class="section-title">
+                <span class="eyebrow">FAQs</span>
+                <h2>Frequently Asked Questions</h2>
+                <p>Find answers to the most common questions about Ani Protech.</p>
             </div>
-            <div class="footer-links">
+            <div class="faq-list" id="faq-list">
+                <div class="faq-item">
+                    <button type="button" class="faq-q" aria-expanded="false" aria-controls="faq-a1" id="faq-q1">
+                        What is Ani Protech?
+                        <svg class="faq-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
+                    </button>
+                    <div class="faq-a" id="faq-a1" role="region" aria-labelledby="faq-q1" hidden>
+                        Ani Protech is a cloud business platform that brings HR, attendance, payroll,
+                        leave, timesheets, shift management, invoicing and reporting together in one
+                        place, so you are not paying for and switching between several systems.
+                    </div>
+                </div>
+                <div class="faq-item">
+                    <button type="button" class="faq-q" aria-expanded="false" aria-controls="faq-a2" id="faq-q2">
+                        Is Ani Protech cloud based?
+                        <svg class="faq-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
+                    </button>
+                    <div class="faq-a" id="faq-a2" role="region" aria-labelledby="faq-q2" hidden>
+                        Yes. It runs entirely in the browser, so there is nothing to install and your
+                        team can reach it securely from a desktop, tablet or phone, anywhere.
+                    </div>
+                </div>
+                <div class="faq-item">
+                    <button type="button" class="faq-q" aria-expanded="false" aria-controls="faq-a3" id="faq-q3">
+                        Can I manage multiple branches?
+                        <svg class="faq-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
+                    </button>
+                    <div class="faq-a" id="faq-a3" role="region" aria-labelledby="faq-q3" hidden>
+                        Yes. Multiple branches are managed from one dashboard, with role-based
+                        permissions deciding who can see and change what in each of them.
+                    </div>
+                </div>
+                <div class="faq-item">
+                    <button type="button" class="faq-q" aria-expanded="false" aria-controls="faq-a4" id="faq-q4">
+                        Do you provide training?
+                        <svg class="faq-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
+                    </button>
+                    <div class="faq-a" id="faq-a4" role="region" aria-labelledby="faq-q4" hidden>
+                        Yes. Onboarding and training are included, and support continues afterwards
+                        rather than stopping once you are set up.
+                    </div>
+                </div>
+                <div class="faq-item">
+                    <button type="button" class="faq-q" aria-expanded="false" aria-controls="faq-a5" id="faq-q5">
+                        How can I request a demo?
+                        <svg class="faq-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
+                    </button>
+                    <div class="faq-a" id="faq-a5" role="region" aria-labelledby="faq-q5" hidden>
+                        Call or message <a href="tel:+447480422277" style="color:var(--ap-blue-dark);font-weight:600;">+44 7480 422277</a>,
+                        or email <a href="mailto:info@aniprotech.co.uk" style="color:var(--ap-blue-dark);font-weight:600;">info@aniprotech.co.uk</a>.
+                        The demo is free and walks through your own use case.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ── Contact ─────────────────────────────────────────────────────── -->
+    <section class="section" id="contact">
+        <div class="container">
+            <div class="section-title">
+                <span class="eyebrow">Contact Us</span>
+                <h2>Let's Grow Your Business Together</h2>
+                <p>Book a free live demonstration today.</p>
+            </div>
+            <!-- Every one of these does something when tapped: dials, opens
+                 WhatsApp, or starts an email. -->
+            <div class="contact-grid">
+                <a class="contact-card" href="tel:+447480422277">
+                    <span class="contact-icon" aria-hidden="true">&#128222;</span>
+                    <span class="contact-label">Call Us</span>
+                    <span class="contact-value">+44 7480 422277</span>
+                </a>
+                <a class="contact-card" href="https://wa.me/447480422277" target="_blank" rel="noopener noreferrer">
+                    <span class="contact-icon" aria-hidden="true">&#128172;</span>
+                    <span class="contact-label">WhatsApp</span>
+                    <span class="contact-value">+44 7480 422277</span>
+                </a>
+                <a class="contact-card" href="mailto:info@aniprotech.co.uk">
+                    <span class="contact-icon" aria-hidden="true">&#9993;</span>
+                    <span class="contact-label">Email</span>
+                    <span class="contact-value">info@aniprotech.co.uk</span>
+                </a>
+            </div>
+
+            <div class="cta-card">
+                <span class="eyebrow">Free Live Demo</span>
+                <h2>Ready to Transform Your Business?</h2>
+                <p>Discover how Ani Protech can simplify HR, attendance, payroll, invoicing and business operations with one powerful cloud platform.</p>
+                <div class="demo-points">
+                    <div class="demo-point"><span class="tick" aria-hidden="true">&#10004;</span> Free live product demonstration</div>
+                    <div class="demo-point"><span class="tick" aria-hidden="true">&#10004;</span> Tailored solution for your business</div>
+                    <div class="demo-point"><span class="tick" aria-hidden="true">&#10004;</span> No hidden charges</div>
+                    <div class="demo-point"><span class="tick" aria-hidden="true">&#10004;</span> Quick setup and training</div>
+                </div>
+                <div class="hero-cta">
+                    <a href="tel:+447480422277" class="btn-white">Book Your FREE Demo</a>
+                    <a href="mailto:info@aniprotech.co.uk" class="btn-ghost">Email Us</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+<footer class="footer">
+        <div class="footer-cols">
+            <div class="footer-col">
+                <div class="footer-brand">
+                    <div class="footer-brand-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                    </div>
+                    <span>Ani Protech</span>
+                </div>
+                <p class="footer-about">One platform for HR, attendance, payroll, invoicing and business management.</p>
+            </div>
+            <div class="footer-col">
+                <h4>Quick Links</h4>
+                <a href="#home">Home</a>
+                <a href="#modules">Modules</a>
+                <a href="#industries">Industries</a>
+                <a href="#contact">Contact</a>
+            </div>
+            <div class="footer-col">
+                <h4>Portals</h4>
                 <a href="/login.html">Invoicing Login</a>
                 <a href="/hr-login.html">HR Login</a>
                 <a href="/employee-login.html">Employee Portal</a>
-                <a href="#features">Features</a>
+            </div>
+            <div class="footer-col">
+                <h4>Contact</h4>
+                <a href="tel:+447480422277">+44 7480 422277</a>
+                <a href="mailto:info@aniprotech.co.uk">info@aniprotech.co.uk</a>
+            </div>
+        </div>
+        <div class="footer-inner" style="border-top:1px solid var(--ap-line);">
+            <span class="footer-copy">&copy; 2026 Ani Protech. All rights reserved.</span>
+            <div class="footer-links">
+                <a href="#faq">FAQ</a>
                 <a href="#pricing">Pricing</a>
-                <span class="footer-copy">&copy; 2026 aniprotech. All rights reserved.</span>
             </div>
         </div>
     </footer>
 
     <script>
+        // --- Things that have to work when tapped ------------------------
+
+        // The FAQ. A real disclosure: the button owns aria-expanded, the
+        // answer is hidden from a screen reader as well as the eye, and only
+        // one is open at a time so the list does not walk down the page.
+        document.querySelectorAll('.faq-q').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var open = btn.getAttribute('aria-expanded') === 'true';
+                document.querySelectorAll('.faq-q').forEach(function (other) {
+                    other.setAttribute('aria-expanded', 'false');
+                    var panel = document.getElementById(other.getAttribute('aria-controls'));
+                    if (panel) panel.hidden = true;
+                });
+                if (!open) {
+                    btn.setAttribute('aria-expanded', 'true');
+                    var mine = document.getElementById(btn.getAttribute('aria-controls'));
+                    if (mine) mine.hidden = false;
+                }
+            });
+        });
+
+        // Choosing something from the drop-down has to close it. It used to
+        // stay open over whatever you had just jumped to.
+        var mobileMenu = document.getElementById('mobile-menu');
+        if (mobileMenu) {
+            mobileMenu.addEventListener('click', function (e) {
+                if (e.target.closest('a')) mobileMenu.classList.remove('active');
+            });
+        }
+
+        // Which section you are in, marked in the header. Falls back to doing
+        // nothing at all where IntersectionObserver is missing.
+        if ('IntersectionObserver' in window) {
+            var navLinks = {};
+            document.querySelectorAll('.nav-links a[href^="#"]').forEach(function (a) {
+                navLinks[a.getAttribute('href').slice(1)] = a;
+            });
+            var spy = new IntersectionObserver(function (entries) {
+                entries.forEach(function (entry) {
+                    var link = navLinks[entry.target.id];
+                    if (!link) return;
+                    if (entry.isIntersecting) {
+                        Object.keys(navLinks).forEach(function (k) {
+                            navLinks[k].style.color = '';
+                            navLinks[k].style.fontWeight = '';
+                        });
+                        link.style.color = 'var(--ap-blue-dark)';
+                        link.style.fontWeight = '700';
+                    }
+                });
+            }, { rootMargin: '-88px 0px -60% 0px' });
+            Object.keys(navLinks).forEach(function (id) {
+                var el = document.getElementById(id);
+                if (el) spy.observe(el);
+            });
+        }
+
         // On phones the nav buttons are hidden and the drop-down menu is the only
         // way in, so the signed-in links have to be applied there too.
         function applySignedInLinks() {
