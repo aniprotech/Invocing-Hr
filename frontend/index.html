@@ -394,11 +394,11 @@
         .footer-col a:hover { color: var(--ap-blue-dark); }
         .footer-about { font-size: 13.5px; color: var(--ap-body); line-height: 1.7; max-width: 320px; margin-top: 12px; }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=98">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=98">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=98">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=98">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=98">
+    <link rel="stylesheet" href="mobile.css?v=99">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=99">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=99">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=99">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=99">
 </head>
 <body>
 
@@ -971,7 +971,10 @@
             try {
                 var res = await fetch('/api/auth/me');
                 var data = await res.json();
-                if (data.user) {
+                // client_id, not merely a user. Pointing the buttons at
+                // /app.html for a session that has no tenant sends somebody to
+                // a page that will refuse them and send them back.
+                if (data.user && data.client_id) {
                     navAuth.innerHTML = '<a href="/app.html" class="nav-login nav-login-alt">Invoicing Portal</a> <a href="/hr.html" class="nav-login nav-login-alt">HR Portal</a> <a href="/employee-login.html" class="nav-login nav-login-alt">Employee</a>';
                     heroAuth.innerHTML = '<a href="/app.html" class="btn-white">Invoicing Portal <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg></a> <a href="/hr.html" class="btn-ghost"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg> HR Portal</a>';
                     applySignedInLinks();

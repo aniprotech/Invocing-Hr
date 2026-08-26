@@ -10,8 +10,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="tailwind.css?v=98">
-    <link rel="stylesheet" href="mobile.css?v=98">
+    <link rel="stylesheet" href="tailwind.css?v=99">
+    <link rel="stylesheet" href="mobile.css?v=99">
     <style>
         /* ── Taken from aniprotech.com ────────────────────────────────────
            The marketing site and the door into the product were two
@@ -168,10 +168,10 @@
             .ap-btn-google:hover, .ap-feature:hover { transform: none; }
         }
     </style>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=98">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=98">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=98">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=98">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=99">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=99">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=99">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=99">
 </head>
 <body class="min-h-screen">
 
@@ -357,22 +357,32 @@
         if (next.charAt(0) === '/' && next.charAt(1) !== '/') return next;
         return fallback;
     }
+    // Where an already-signed-in visitor belongs.
+    //
+    // Two separate questions, asked in order, because they have different
+    // answers. Being a superadmin does not give you a tenant, and having a
+    // tenant does not make you an operator - so a single "is somebody signed
+    // in" test sent people to a page that would not have them, and the two
+    // pages bounced off each other without stopping.
+    (async function () {
+        var me;
+        try {
+            var res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+            if (!res.ok) return;                 // nobody home; show the form
+            me = await res.json();
+        } catch (e) { return; }                  // offline; show the form
+        if (!me || !me.user) return;
 
-    // Check if already logged in
-    fetch('/api/auth/me').then(function(r) { return r.json(); }).then(function(data) {
-        if (data.user) {
-            // Already logged in, check if super admin or client
-            fetch('/api/superadmin/me').then(function(r2) {
-                if (r2.ok) {
-                    window.location.href = '/superadmin.html';
-                } else {
-                    window.location.href = nextTarget('/app.html');
-                }
-            }).catch(function() {
-                window.location.href = nextTarget('/app.html');
-            });
-        }
-    }).catch(function() {});
+        // An operator first, since that session has no tenant of its own.
+        try {
+            var sa = await fetch('/api/superadmin/me', { credentials: 'same-origin' });
+            if (sa.ok) { window.location.href = '/superadmin.html'; return; }
+        } catch (e) { /* fall through to the tenant check */ }
+
+        // Then a tenant. Without client_id the app refuses every action, so
+        // this page is where they should stay.
+        if (me.client_id) window.location.href = nextTarget('/app.html');
+    })();
 
     // Show loading on Google button click
     document.getElementById('google-btn').addEventListener('click', function() {
