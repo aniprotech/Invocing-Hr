@@ -1,10 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+<!-- The app icon: the mark on the brand's rounded square, for the PWA, the
+     home screen and the browser tab. The monochrome version the header uses
+     is logo-mark.svg. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"
+     viewBox="0 0 512 512" role="img" aria-label="aniprotech">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#7877c6"/>
-      <stop offset="1" stop-color="#00f0ff"/>
+    <linearGradient id="ap" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#0284c7"/>
     </linearGradient>
   </defs>
-  <rect width="512" height="512" rx="104" fill="url(#g)"/>
-  <text x="256" y="360" font-family="Arial, sans-serif" font-size="300" font-weight="800" fill="#0b0f19" text-anchor="middle">A</text>
+  <rect width="512" height="512" rx="112" fill="url(#ap)"/>
+  <g transform="translate(96 96) scale(5)" fill="none" stroke="#ffffff"
+     stroke-width="5" stroke-linecap="round">
+    <circle cx="32" cy="32" r="25.5" stroke-dasharray="134 26.2"
+            transform="rotate(68 32 32)"/>
+    <circle cx="28.5" cy="33" r="9"/>
+    <path d="M37.5 24.5 V 40"/>
+    <circle cx="47" cy="47" r="2.6" fill="#ffffff" stroke="none"/>
+  </g>
 </svg>

@@ -317,7 +317,11 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=95">
+    <link rel="stylesheet" href="mobile.css?v=97">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=97">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=97">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=97">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=97">
 </head>
 <body>
     <div class="admin-header">
@@ -343,6 +347,7 @@
             <button type="button" class="admin-tab-btn" data-tab="trends"   onclick="showTab('trends')">Trends</button>
             <button type="button" class="admin-tab-btn" data-tab="activity" onclick="showTab('activity')">Login Activity</button>
             <button type="button" class="admin-tab-btn" data-tab="clients"  onclick="showTab('clients')">Clients</button>
+            <button type="button" class="admin-tab-btn" data-tab="control"  onclick="showTab('control')">Settings</button>
         </nav>
         <style>
             .admin-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 24px;
@@ -522,6 +527,26 @@
             </tbody>
         </table>
         <div class="pager" id="clients-pager"></div>
+        </section>
+
+        <!-- CONTROL TAB -->
+        <!-- What the operator can change without a deploy. Everything here
+             is a row in the settings table; nothing here is a secret, and
+             the reason is written on the page rather than only in the code. -->
+        <section class="admin-panel" id="panel-control">
+            <div class="section-header">
+                <h2>Application settings</h2>
+                <span style="font-size:0.78rem;color:#64748b;">Applies to every tenant, straight away</span>
+                <button class="action-btn" onclick="loadPlatformSettings()" style="margin-left:auto;">Reload</button>
+            </div>
+            <p style="font-size:0.8rem;color:#64748b;margin:0 0 18px;max-width:70ch;">
+              API keys, the session secret and the database URL are not here on
+              purpose. A value that can be read back out of a web page is a
+              value that leaks with the page, so those stay in the environment.
+            </p>
+            <div id="platform-settings-body">
+              <div style="padding:28px;color:#64748b;font-size:0.85rem;">Loading&hellip;</div>
+            </div>
         </section>
 
         <style>
@@ -1305,6 +1330,144 @@
             }));
         }
 
+        // --- Application settings ----------------------------------------
+        // The operator's control plane. Every field here is a row in the
+        // settings table, so a change is a save rather than a deploy.
+
+        var _settings = [];
+
+        async function loadPlatformSettings() {
+            var host = document.getElementById('platform-settings-body');
+            if (!host) return;
+            try {
+                var res = await fetch('/api/superadmin/platform-settings');
+                if (!res.ok) throw new Error('failed');
+                var data = await res.json();
+                _settings = data.settings || [];
+                renderPlatformSettings(data.groups || []);
+            } catch (e) {
+                host.innerHTML = '<div style="padding:28px;color:#64748b;">Could not load the settings.</div>';
+            }
+        }
+        window.loadPlatformSettings = loadPlatformSettings;
+
+        function settingField(s) {
+            var id = 'set-' + s.key.replace(/\./g, '-');
+            var common = 'id="' + id + '" data-key="' + esc(s.key) + '" class="setting-input"';
+
+            if (s.kind === 'colour') {
+                return '<div style="display:flex;gap:8px;align-items:center;">' +
+                       '<input type="color" ' + common + ' value="' + esc(s.value) + '" ' +
+                       'style="width:44px;height:34px;padding:2px;border-radius:8px;' +
+                       'border:1px solid rgba(255,255,255,0.12);background:none;cursor:pointer;">' +
+                       '<code style="font-size:0.78rem;color:#94a3b8;">' + esc(s.value) + '</code></div>';
+            }
+            if (s.kind === 'bool') {
+                var on = String(s.value).toLowerCase() === 'true';
+                return '<select ' + common + ' class="form-control setting-input" style="width:auto;">' +
+                       '<option value="true"' + (on ? ' selected' : '') + '>On</option>' +
+                       '<option value="false"' + (!on ? ' selected' : '') + '>Off</option></select>';
+            }
+            if (s.kind === 'choice') {
+                return '<select ' + common + ' class="form-control setting-input" style="width:auto;">' +
+                       s.choices.map(function (c) {
+                           return '<option value="' + esc(c) + '"' +
+                                  (c === s.value ? ' selected' : '') + '>' + esc(c) + '</option>';
+                       }).join('') + '</select>';
+            }
+            if (s.kind === 'longtext') {
+                return '<textarea ' + common + ' rows="4" class="form-control setting-input" ' +
+                       'style="width:100%;">' + esc(s.value) + '</textarea>';
+            }
+            var type = s.kind === 'number' ? 'number' : 'text';
+            var bounds = (s.min !== null && s.min !== undefined ? ' min="' + s.min + '"' : '') +
+                         (s.max !== null && s.max !== undefined ? ' max="' + s.max + '"' : '');
+            return '<input type="' + type + '"' + bounds + ' ' + common +
+                   ' class="form-control setting-input" value="' + esc(s.value) + '" style="width:220px;">';
+        }
+
+        function renderPlatformSettings(groups) {
+            var host = document.getElementById('platform-settings-body');
+            host.innerHTML = groups.map(function (g) {
+                var rows = _settings.filter(function (s) { return s.group === g; });
+                return '<div style="background:rgba(15,23,42,0.6);border:1px solid rgba(255,255,255,0.06);' +
+                       'border-radius:16px;padding:20px 24px;margin-bottom:18px;">' +
+                    '<h3 style="font-size:0.95rem;margin-bottom:14px;">' + esc(g) + '</h3>' +
+                    rows.map(function (s) {
+                        // Said plainly, because "inherited" and "chosen" are
+                        // fixed in completely different places.
+                        var origin = s.is_set
+                            ? '<span style="color:#39ff14;">set here</span>'
+                            : s.from_env
+                                ? '<span style="color:#94a3b8;">from ' + esc(s.env) + '</span>'
+                                : '<span style="color:#64748b;">default</span>';
+                        return '<div style="display:flex;gap:16px;align-items:flex-start;padding:12px 0;' +
+                               'border-top:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">' +
+                            '<div style="flex:1;min-width:220px;">' +
+                              '<div style="font-size:0.88rem;font-weight:600;">' + esc(s.label) + '</div>' +
+                              (s.help ? '<div style="font-size:0.75rem;color:#64748b;margin-top:3px;max-width:60ch;">'
+                                        + esc(s.help) + '</div>' : '') +
+                              '<div style="font-size:0.7rem;margin-top:4px;">' + origin +
+                                (s.is_set ? ' &middot; <a href="#" onclick="event.preventDefault();resetSetting(\'' +
+                                            esc(s.key) + '\')" style="color:#00f0ff;">reset</a>' : '') +
+                              '</div>' +
+                            '</div>' +
+                            '<div style="min-width:200px;">' + settingField(s) + '</div>' +
+                        '</div>';
+                    }).join('') +
+                '</div>';
+            }).join('') +
+            '<div style="display:flex;gap:10px;align-items:center;padding:4px 0 20px;">' +
+              '<button class="action-btn" style="background:#00f0ff;color:#0b0f19;font-weight:700;' +
+              'border:none;padding:9px 20px;" onclick="savePlatformSettings()">Save changes</button>' +
+              '<span id="settings-status" style="font-size:0.8rem;color:#64748b;"></span>' +
+            '</div>';
+
+            // The swatch prints its own value, so the hex is readable.
+            host.querySelectorAll('input[type="color"]').forEach(function (input) {
+                input.addEventListener('input', function () {
+                    var code = input.parentElement.querySelector('code');
+                    if (code) code.textContent = input.value;
+                });
+            });
+        }
+
+        async function savePlatformSettings() {
+            var status = document.getElementById('settings-status');
+            var changes = {};
+            document.querySelectorAll('.setting-input').forEach(function (el) {
+                changes[el.getAttribute('data-key')] = el.value;
+            });
+            status.textContent = 'Saving...';
+            try {
+                var res = await fetch('/api/superadmin/platform-settings', {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ settings: changes })
+                });
+                var body = await res.json();
+                if (!res.ok) throw new Error(body.detail || 'Could not save');
+                status.textContent = 'Saved. Tenants see this on their next page load.';
+                status.style.color = '#39ff14';
+                loadPlatformSettings();
+            } catch (e) {
+                status.textContent = e.message;
+                status.style.color = '#ff003c';
+            }
+        }
+        window.savePlatformSettings = savePlatformSettings;
+
+        async function resetSetting(key) {
+            try {
+                var res = await fetch('/api/superadmin/platform-settings/reset', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ keys: [key] })
+                });
+                if (!res.ok) throw new Error('failed');
+                loadPlatformSettings();
+            } catch (e) { /* the list reloads either way */ }
+        }
+        window.resetSetting = resetSetting;
+
         // --- Tabs -------------------------------------------------------
         // What each panel needs, run once on first visit. The page used to
         // fire all eleven of these at load, before it even knew whether
@@ -1315,7 +1478,8 @@
             billing:  [loadRevenue, loadGatewayStatus, loadPricing, loadWallets],
             trends:   [loadTrends],
             activity: [loadLoginLogs],
-            clients:  [loadClients]
+            clients:  [loadClients],
+            control:  [loadPlatformSettings]
         };
         var _tabLoaded = {};
 

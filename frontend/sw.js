@@ -27,16 +27,19 @@
 const CACHE = 'aniprotech-static-v1';
 
 const PRECACHE = [
-    '/styles.css?v=95',
+    '/styles.css?v=97',
     // The employee portal's stylesheet. It used to come from the Tailwind
     // CDN, which this worker refuses to cache because it is another origin -
     // so the busiest page in the product got none of the benefit.
-    '/tailwind.css?v=95',
-    '/mobile.css?v=95',
-    '/app.js?v=95',
+    '/tailwind.css?v=97',
+    '/mobile.css?v=97',
+    '/app.js?v=97',
     '/icons/icon-192.png',
     '/icons/icon-512.png',
     '/icons/icon.svg',
+    '/icons/favicon-32.png',
+    '/icons/favicon-16.png',
+    '/icons/apple-touch-icon.png',
 ];
 
 self.addEventListener('install', (event) => {

@@ -9015,6 +9015,15 @@ def ensure_can_afford(db, client_id, action_key, quantity=1):
     front would bill the tenant for a failure; charging without checking first
     would let a tenant with no credit consume the upstream call anyway.
     """
+    # One switch for every AI action. Turning it off here stops the work
+    # before the wallet is touched, so nobody is charged for a feature the
+    # operator has withdrawn - and it does not require pulling the API key,
+    # which would also break the status page that explains why.
+    if action_key.startswith("ai_") and not platform_flag(db, "ai.enabled"):
+        raise HTTPException(
+            status_code=503,
+            detail="AI features are switched off for the platform right now.")
+
     rule, chargeable, cost = quote_action(db, client_id, action_key, quantity)
     if cost <= 0:
         return 0
@@ -9784,8 +9793,8 @@ def wallet_providers(request: Request, db: Session = Depends(get_db)):
     return {
         "currency": currency,
         "symbol": currency_symbol(currency),
-        "min_amount": TOPUP_MIN_MAJOR,
-        "max_amount": TOPUP_MAX_MAJOR,
+        "min_amount": topup_limits(db)[0],
+        "max_amount": topup_limits(db)[1],
         "suggested": [10, 25, 50, 100, 250],
         "providers": providers,
         "any_enabled": any(p["enabled"] for p in providers),
@@ -9797,15 +9806,28 @@ def wallet_providers(request: Request, db: Session = Depends(get_db)):
     }
 
 
-def validate_topup_amount(amount, currency):
+def topup_limits(db=None):
+    """What a top-up may be, as the operator has it set right now.
+
+    Read per request rather than at import, so changing it in the operator
+    panel takes effect on the next payment instead of the next deploy.
+    """
+    if db is None:
+        return TOPUP_MIN_MAJOR, TOPUP_MAX_MAJOR
+    return (platform_number(db, "billing.topup_min", TOPUP_MIN_MAJOR),
+            platform_number(db, "billing.topup_max", TOPUP_MAX_MAJOR))
+
+
+def validate_topup_amount(amount, currency, db=None):
     try:
         amount = float(amount)
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Amount must be a number")
-    if amount < TOPUP_MIN_MAJOR:
-        raise HTTPException(status_code=400, detail=f"Minimum top-up is {currency_symbol(currency)}{TOPUP_MIN_MAJOR:.2f}")
-    if amount > TOPUP_MAX_MAJOR:
-        raise HTTPException(status_code=400, detail=f"Maximum top-up is {currency_symbol(currency)}{TOPUP_MAX_MAJOR:.2f}")
+    low, high = topup_limits(db)
+    if amount < low:
+        raise HTTPException(status_code=400, detail=f"Minimum top-up is {currency_symbol(currency)}{low:.2f}")
+    if amount > high:
+        raise HTTPException(status_code=400, detail=f"Maximum top-up is {currency_symbol(currency)}{high:.2f}")
     return to_minor(amount, currency)
 
 
@@ -9840,7 +9862,7 @@ def create_topup(body: TopUpIn, request: Request, db: Session = Depends(get_db))
     needs to complete it. No credit is added here."""
     client = get_client_user(request, db)
     wallet = get_wallet(db, client.id)
-    amount_minor = validate_topup_amount(body.amount, wallet.currency)
+    amount_minor = validate_topup_amount(body.amount, wallet.currency, db)
     provider = (body.provider or "").strip().lower()
     # Bank debit is the only way to pay. The card gateways still exist in the
     # code so live orders taken through them can settle, but they cannot be
@@ -14919,6 +14941,189 @@ def confirm_invoice_payment(tracking_id: str, request: Request,
 #                commitment, not a shortcut, and this is the record of it.
 # ============================================================================
 
+# --- Platform settings ------------------------------------------------------
+# Things the operator can change without a deploy.
+#
+# The pattern was already here - collection mode is a DBSettings row with a
+# null client_id, read through a helper - but every other operational value
+# was an environment variable, which means a redeploy and a developer to make
+# a change that is really an operator's decision.
+#
+# Precedence is deliberate: a row in the database wins, then the environment
+# variable that used to hold it, then the built-in default. Existing
+# deployments keep whatever their environment already says until somebody
+# changes it here, so nothing moves underneath them on upgrade.
+#
+# Secrets are deliberately absent. API keys, the session secret and the
+# database URL stay in the environment: a value that can be read back out of
+# a web page is a value that leaks with the page, and an operator account is
+# not the same trust level as the server's own configuration.
+
+
+class Setting:
+    """One thing an operator may change, and what counts as a valid value."""
+
+    def __init__(self, key, label, group, kind, default, env=None,
+                 help="", choices=None, minimum=None, maximum=None):
+        self.key = key
+        self.label = label
+        self.group = group
+        self.kind = kind            # text | colour | number | choice | bool | longtext
+        self.default = default
+        self.env = env              # the variable this used to live in
+        self.help = help
+        self.choices = choices or []
+        self.minimum = minimum
+        self.maximum = maximum
+
+    def coerce(self, raw):
+        """Return the value, or raise ValueError saying what was wrong."""
+        raw = "" if raw is None else str(raw).strip()
+
+        if self.kind == "bool":
+            if raw.lower() in ("1", "true", "yes", "on"):
+                return "true"
+            if raw.lower() in ("0", "false", "no", "off", ""):
+                return "false"
+            raise ValueError("must be true or false")
+
+        if self.kind == "number":
+            try:
+                value = float(raw)
+            except ValueError:
+                raise ValueError("must be a number")
+            if self.minimum is not None and value < self.minimum:
+                raise ValueError(f"must be at least {self.minimum}")
+            if self.maximum is not None and value > self.maximum:
+                raise ValueError(f"must be at most {self.maximum}")
+            return str(int(value) if value == int(value) else value)
+
+        if self.kind == "choice":
+            if raw not in self.choices:
+                raise ValueError("must be one of: " + ", ".join(self.choices))
+            return raw
+
+        if self.kind == "colour":
+            # Anything else would be injected straight into a stylesheet.
+            if not re.fullmatch(r"#[0-9a-fA-F]{6}", raw):
+                raise ValueError("must be a colour like #1a2b3c")
+            return raw.lower()
+
+        if self.kind == "longtext":
+            if len(raw) > 20000:
+                raise ValueError("too long")
+            return raw
+
+        if len(raw) > 500:
+            raise ValueError("too long")
+        return raw
+
+
+# The theme is the app's own CSS custom properties, so changing one here
+# changes the product without touching the stylesheet.
+PLATFORM_SETTINGS = [
+    # --- Theme -------------------------------------------------------------
+    Setting("theme.primary", "Accent", "Theme", "colour", "#00f0ff",
+            help="Buttons, links and the active menu item."),
+    Setting("theme.primary_light", "Accent (light)", "Theme", "colour", "#70ffff",
+            help="Hover states and glows."),
+    Setting("theme.background", "Page background", "Theme", "colour", "#0b0f19"),
+    Setting("theme.surface", "Panel", "Theme", "colour", "#161f2d",
+            help="Cards, dialogs and menus."),
+    Setting("theme.text", "Text", "Theme", "colour", "#f8fafc"),
+    Setting("theme.text_secondary", "Muted text", "Theme", "colour", "#94a3b8"),
+    Setting("theme.success", "Success", "Theme", "colour", "#39ff14"),
+    Setting("theme.danger", "Danger", "Theme", "colour", "#ff003c"),
+    Setting("theme.warning", "Warning", "Theme", "colour", "#fcd34d"),
+    Setting("theme.radius", "Corner radius", "Theme", "number", "12",
+            minimum=0, maximum=32, help="In pixels. 0 is square."),
+
+    # --- Money -------------------------------------------------------------
+    Setting("billing.topup_min", "Smallest top-up", "Money", "number", "5",
+            env="TOPUP_MIN", minimum=1, maximum=100000),
+    Setting("billing.topup_max", "Largest top-up", "Money", "number", "5000",
+            env="TOPUP_MAX", minimum=1, maximum=1000000),
+    Setting("billing.low_balance", "Low balance warning", "Money", "number", "5",
+            env="WALLET_LOW_BALANCE", minimum=0, maximum=100000,
+            help="A tenant is warned when their wallet falls below this."),
+    Setting("billing.currency", "Platform currency", "Money", "text", "GBP",
+            env="PLATFORM_CURRENCY",
+            help="What the platform itself charges in. Changing this does not "
+                 "convert balances that already exist."),
+
+    # --- Policy ------------------------------------------------------------
+    Setting("policy.session_hours", "Stay signed in for", "Policy", "number", "24",
+            minimum=1, maximum=720, help="Hours before somebody has to sign in again."),
+    Setting("policy.support_email", "Support address", "Policy", "text",
+            "", help="Shown to tenants when something needs a human."),
+    Setting("policy.terms_url", "Terms & conditions", "Policy", "text", ""),
+    Setting("policy.privacy_url", "Privacy policy", "Policy", "text", ""),
+    Setting("policy.terms_text", "Terms, in full", "Policy", "longtext", "",
+            help="Shown in the app when no link is set."),
+
+    # --- AI ----------------------------------------------------------------
+    Setting("ai.enabled", "AI features", "AI", "bool", "true",
+            help="Turns off every AI action at once, without removing the key."),
+    Setting("ai.model", "Model", "AI", "text", "",
+            env="GROQ_MODEL",
+            help="Leave empty for the built-in default. The AI status panel "
+                 "lists what this key can actually use."),
+]
+
+SETTINGS_BY_KEY = {s.key: s for s in PLATFORM_SETTINGS}
+
+
+def platform_setting(db: Session, key: str) -> str:
+    """The value in force: the database, then the old environment variable,
+    then the built-in default."""
+    spec = SETTINGS_BY_KEY.get(key)
+    if spec is None:
+        return ""
+    row = db.query(models.DBSettings).filter(
+        models.DBSettings.key == key,
+        models.DBSettings.client_id == None,        # noqa: E711
+    ).first()
+    if row and (row.value or "").strip():
+        return row.value
+    if spec.env:
+        from_env = os.getenv(spec.env, "")
+        if from_env.strip():
+            return from_env.strip()
+    return spec.default
+
+
+def platform_flag(db: Session, key: str) -> bool:
+    return platform_setting(db, key).lower() == "true"
+
+
+def platform_number(db: Session, key: str, fallback: float = 0.0) -> float:
+    try:
+        return float(platform_setting(db, key))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def set_platform_setting(db: Session, key: str, value: str) -> str:
+    """Validate and store. Returns what was actually stored."""
+    spec = SETTINGS_BY_KEY.get(key)
+    if spec is None:
+        raise HTTPException(status_code=404, detail=f"No such setting: {key}")
+    try:
+        cleaned = spec.coerce(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{spec.label}: {exc}")
+
+    row = db.query(models.DBSettings).filter(
+        models.DBSettings.key == key,
+        models.DBSettings.client_id == None,        # noqa: E711
+    ).first()
+    if row:
+        row.value = cleaned
+    else:
+        db.add(models.DBSettings(client_id=None, key=key, value=cleaned))
+    return cleaned
+
+
 COLLECTION_MODES = ("direct", "platform")
 COLLECTION_SETTING = "INVOICE_COLLECTION_MODE"
 
@@ -14965,6 +15170,106 @@ def record_settlement(db: Session, inv, amount_minor: int, currency: str,
         amount_minor=amount_minor, currency=(currency or "INR").upper(),
         status="owed", gateway="razorpay",
         gateway_payment_id=payment_id[:120]))
+
+
+@app.get("/api/superadmin/platform-settings")
+def list_platform_settings(request: Request, db: Session = Depends(get_db)):
+    """Everything an operator may change, with what is in force right now."""
+    require_superadmin(request)
+    out = []
+    for spec in PLATFORM_SETTINGS:
+        row = db.query(models.DBSettings).filter(
+            models.DBSettings.key == spec.key,
+            models.DBSettings.client_id == None,        # noqa: E711
+        ).first()
+        stored = (row.value if row else "") or ""
+        out.append({
+            "key": spec.key, "label": spec.label, "group": spec.group,
+            "kind": spec.kind, "help": spec.help, "choices": spec.choices,
+            "min": spec.minimum, "max": spec.maximum,
+            "default": spec.default,
+            "value": platform_setting(db, spec.key),
+            # Whether this has actually been set here, so the page can show
+            # what is inherited rather than chosen.
+            "is_set": bool(stored.strip()),
+            "from_env": bool(not stored.strip() and spec.env
+                             and os.getenv(spec.env, "").strip()),
+            "env": spec.env or "",
+        })
+    return {"settings": out,
+            "groups": sorted({s.group for s in PLATFORM_SETTINGS})}
+
+
+@app.put("/api/superadmin/platform-settings")
+def update_platform_settings(request: Request, body: dict = None,
+                             db: Session = Depends(get_db)):
+    """Change one or many. Validated per setting, and nothing is written
+    unless every value passes - a half-applied theme is worse than none."""
+    require_superadmin(request)
+    changes = (body or {}).get("settings") or {}
+    if not isinstance(changes, dict) or not changes:
+        raise HTTPException(status_code=400, detail="Nothing to change")
+
+    unknown = [k for k in changes if k not in SETTINGS_BY_KEY]
+    if unknown:
+        raise HTTPException(status_code=404,
+                            detail="No such setting: " + ", ".join(sorted(unknown)))
+
+    # Validate the lot first, so one bad colour cannot leave half a theme.
+    for key, value in changes.items():
+        try:
+            SETTINGS_BY_KEY[key].coerce(value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400,
+                                detail=f"{SETTINGS_BY_KEY[key].label}: {exc}")
+
+    applied = {key: set_platform_setting(db, key, value)
+               for key, value in changes.items()}
+    log_audit(db, None, "platform_settings_changed", "settings", 0,
+              ", ".join(sorted(applied)), "", request,
+              user_type="superadmin", user_name="superadmin")
+    db.commit()
+    return {"changed": applied}
+
+
+@app.post("/api/superadmin/platform-settings/reset")
+def reset_platform_settings(request: Request, body: dict = None,
+                            db: Session = Depends(get_db)):
+    """Put a setting back to what it inherits - the environment variable if
+    there is one, otherwise the built-in default."""
+    require_superadmin(request)
+    keys = (body or {}).get("keys") or []
+    if not keys:
+        raise HTTPException(status_code=400, detail="Nothing to reset")
+    unknown = [k for k in keys if k not in SETTINGS_BY_KEY]
+    if unknown:
+        raise HTTPException(status_code=404,
+                            detail="No such setting: " + ", ".join(sorted(unknown)))
+
+    db.query(models.DBSettings).filter(
+        models.DBSettings.key.in_(keys),
+        models.DBSettings.client_id == None,        # noqa: E711
+    ).delete(synchronize_session=False)
+    log_audit(db, None, "platform_settings_reset", "settings", 0,
+              ", ".join(sorted(keys)), "", request,
+              user_type="superadmin", user_name="superadmin")
+    db.commit()
+    return {"reset": keys,
+            "now": {k: platform_setting(db, k) for k in keys}}
+
+
+@app.get("/api/platform/theme")
+def public_platform_theme(db: Session = Depends(get_db)):
+    """The theme, for any page to apply before it paints.
+
+    Deliberately open: these are the colours of the product, which every
+    visitor sees anyway, and the sign-in pages need them before anyone has a
+    session. Nothing else from the settings table is exposed here - only the
+    keys under theme.
+    """
+    theme = {s.key.split(".", 1)[1]: platform_setting(db, s.key)
+             for s in PLATFORM_SETTINGS if s.group == "Theme"}
+    return {"theme": theme}
 
 
 @app.get("/api/superadmin/collection-mode")

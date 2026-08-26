@@ -6,12 +6,61 @@
     <title>aniprotech - Dashboard</title>
     <link rel="manifest" href="/manifest.webmanifest">
     <meta name="theme-color" content="#0b0f19">
-    <link rel="apple-touch-icon" href="/icons/icon-192.png">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>A</text></svg>">
-    <link rel="stylesheet" href="styles.css?v=95">
-    <link rel="stylesheet" href="mobile.css?v=95">
+    <link rel="stylesheet" href="styles.css?v=97">
+    <link rel="stylesheet" href="mobile.css?v=97">
+    <!-- The operator's theme, applied before the page paints.
+
+         Blocking on purpose: these are the product's own colours, and
+         fetching them after first paint would show the stylesheet's defaults
+         and then repaint in front of the user. It is one small request, it
+         is cached by the service worker, and any failure leaves the built-in
+         theme in place - so the worst case is the app looks as it always
+         did. -->
+    <script>
+    (function () {
+        var MAP = {
+            primary: '--primary-color',
+            primary_light: '--primary-light',
+            background: '--background-color',
+            surface: '--surface-solid',
+            text: '--text-primary',
+            text_secondary: '--text-secondary',
+            success: '--success-color',
+            danger: '--danger-color',
+            warning: '--warning-color'
+        };
+        try {
+            var req = new XMLHttpRequest();
+            req.open('GET', '/api/platform/theme', false);   // before paint
+            req.send(null);
+            if (req.status !== 200) return;
+            var theme = (JSON.parse(req.responseText) || {}).theme || {};
+            var root = document.documentElement;
+            Object.keys(MAP).forEach(function (k) {
+                var v = theme[k];
+                // Only a colour. Anything else here would be written straight
+                // into a style property.
+                if (typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v)) {
+                    root.style.setProperty(MAP[k], v);
+                }
+            });
+            var r = parseInt(theme.radius, 10);
+            if (!isNaN(r) && r >= 0 && r <= 32) {
+                root.style.setProperty('--radius-md', r + 'px');
+                root.style.setProperty('--radius-lg', Math.round(r * 1.33) + 'px');
+                root.style.setProperty('--radius-sm', Math.round(r * 0.67) + 'px');
+            }
+        } catch (e) {
+            // The stylesheet's own values stand.
+        }
+    })();
+    </script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=97">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=97">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=97">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=97">
 </head>
 <body>
     <a class="skip-link" href="#main-content-region">Skip to main content</a>
@@ -2813,7 +2862,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="app.js?v=95"></script>
+    <script src="app.js?v=97"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
