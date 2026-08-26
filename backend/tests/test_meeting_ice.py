@@ -12,6 +12,7 @@ can say something useful when a connection fails.
 """
 import importlib
 import os
+import pathlib
 
 import pytest
 
@@ -78,7 +79,10 @@ def test_a_half_configured_relay_is_not_offered(client, monkeypatch):
 def test_the_page_does_not_carry_the_credentials(no_relay):
     """The whole reason this is an endpoint. A password in a static file is
     readable by anyone who opens the page, and rotating it is a deploy."""
-    with open("../frontend/meeting.html", encoding="utf-8") as f:
-        page = f.read()
+    # Anchored on this file, not on the working directory: the suite runs
+    # from the repo root as often as from backend/, and a relative path made
+    # this pass or fail depending on where it was started.
+    page = (pathlib.Path(__file__).resolve().parents[2]
+            / "frontend" / "meeting.html").read_text(encoding="utf-8")
     assert "TURN_PASSWORD" not in page
     assert "credential" not in page.lower().replace("credentials", "")

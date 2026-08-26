@@ -11,6 +11,12 @@
  * The rule: a page may only send somebody into the app for a session the app
  * will actually accept. These check the two sides against each other rather
  * than each on its own, because agreeing is the whole point.
+ *
+ * There is one door now. Invoicing and HR are the same app, so hr-login.html
+ * survives only as a redirect for old bookmarks - and the cheapest way to keep
+ * it agreeing with requireAuth forever is for it to hold no opinion at all.
+ * The staff portal keeps its own door, which is a different thing: those are
+ * employees, not the business.
  */
 const fs = require('fs');
 const path = require('path');
@@ -25,7 +31,7 @@ const check = (label, ok, detail) => {
 };
 (async () => {
     // --- the shape that caused the loop -----------------------------------
-    for (const page of ['login.html', 'hr-login.html']) {
+    for (const page of ['login.html']) {
         const src = fs.readFileSync(path.join(ROOT, page), 'utf8');
 
         check(`${page} does not forward on a user alone`,
@@ -44,6 +50,37 @@ const check = (label, ok, detail) => {
         check(`${page} agrees with requireAuth about what counts as signed in`,
             /client_id/.test(gate) && /client_id/.test(src),
             'one side checks client_id and the other does not');
+    }
+
+    // --- the doors that were merged away ----------------------------------
+    // Each goes where its own visitor was headed: the old login page to the
+    // one login page, the old app page into the app.
+    for (const [page, lands] of [['hr-login.html', '/login.html'], ['hr.html', '/app.html']]) {
+        const src = fs.readFileSync(path.join(ROOT, page), 'utf8');
+
+        check(`${page} is a redirect, not a second sign-in`,
+            /location\.replace\(/.test(src) && src.length < 4000,
+            `${src.length} bytes`);
+
+        // A stub that starts deciding who is signed in is a second opinion,
+        // and a second opinion is how the loop happened the first time.
+        check(`${page} makes no decision about who is signed in`,
+            !/\/api\/auth\/me|\/api\/superadmin\/me|data\.user/.test(src));
+
+        check(`${page} lands on ${lands}`, src.indexOf(lands) !== -1);
+
+        // The destination is carried, so somebody deep-linked to an HR screen
+        // still gets to that screen rather than to a generic landing.
+        check(`${page} does not lose where they were going`,
+            /next|hash/.test(src));
+    }
+
+    // The staff portal was deliberately not merged: an employee is not the
+    // business, and gets a different session.
+    {
+        const src = fs.readFileSync(path.join(ROOT, 'employee-login.html'), 'utf8');
+        check('the employee portal still has its own door',
+            !/location\.replace\('\/login\.html/.test(src));
     }
 
     // --- an operator still gets where they are going ----------------------

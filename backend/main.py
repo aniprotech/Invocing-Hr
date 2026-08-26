@@ -546,7 +546,76 @@ def get_client_user(request: Request, db: Session):
         if member.role == "viewer":
             raise HTTPException(status_code=403,
                                 detail="Your account has read-only access.")
+
+    # And the plan. Every route that touches tenant data comes through here,
+    # which makes this the one place to ask - the alternative was adding the
+    # same check to a hundred and twenty-five handlers and getting it wrong
+    # on one of them. Hiding the menu item is not access control; the URL is
+    # still there for anyone who types it.
+    module = module_for_path(request.url.path)
+    if module:
+        require_module(client, module)
+
     return client
+
+
+ALL_MODULES = ("invoicing", "hr")
+
+
+def client_modules(client) -> list:
+    """What this business has. Anything unrecognised is dropped rather than
+    trusted, and an empty value means everything - an account that predates
+    the column was already reaching both and must not lose that."""
+    raw = (getattr(client, "modules", "") or "").strip()
+    if not raw:
+        return list(ALL_MODULES)
+    have = [m.strip().lower() for m in raw.split(",") if m.strip()]
+    return [m for m in have if m in ALL_MODULES] or list(ALL_MODULES)
+
+
+# Which part of the product a path belongs to. Only the prefixes that are
+# unambiguously one module are listed: anything shared - settings, the wallet,
+# the assistant, contacts - is deliberately absent, because refusing those
+# would break the half of the app the tenant does have.
+MODULE_PATHS = (
+    ("/api/hr/", "hr"),
+    ("/api/employees", "hr"),
+    ("/api/departments", "hr"),
+    ("/api/payroll", "hr"),
+    ("/api/payslips", "hr"),
+    ("/api/leave", "hr"),
+    ("/api/attendance", "hr"),
+    ("/api/onboarding", "hr"),
+    ("/api/recruitment", "hr"),
+    ("/api/goals", "hr"),
+    ("/api/org-chart", "hr"),
+    ("/api/invoices", "invoicing"),
+    ("/api/quotes", "invoicing"),
+    ("/api/bills", "invoicing"),
+    ("/api/recurring", "invoicing"),
+)
+
+
+def module_for_path(path: str):
+    for prefix, module in MODULE_PATHS:
+        if path.startswith(prefix):
+            return module
+    return None
+
+
+def require_module(client, module: str):
+    """Refuse a module this business has not got.
+
+    Hiding the menu item is not access control - the endpoint is still there
+    for anyone who types the URL. This asks the same question where it
+    actually decides something. It is an entitlement rather than a privacy
+    boundary: the data would be their own either way, which is why the
+    message says what to do about it.
+    """
+    if module not in client_modules(client):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Your plan does not include {module}. Contact us to add it.")
 
 
 def require_superadmin(request: Request):
@@ -644,6 +713,9 @@ def client_me(request: Request, db: Session = Depends(get_db)):
         "industry": client.industry,
         "is_onboarded": client.is_onboarded,
         "created_at": client.created_at,
+        # What the app should show. One app now, so the plan decides what is
+        # in it rather than which file was opened.
+        "modules": client_modules(client),
         # An operator viewing a tenant keeps their superadmin session, so the
         # app can say whose account is on screen. Without this the only clue
         # was the data itself, which is exactly the wrong moment to guess.
@@ -940,6 +1012,8 @@ def superadmin_clients(request: Request, db: Session = Depends(get_db)):
         "phone_number": c.phone_number,
         "is_active": c.is_active,
         "is_onboarded": c.is_onboarded,
+        # The plan, so the operator can see who has what without opening each.
+        "modules": client_modules(c),
         "last_login": c.last_login or "",
         "login_count": c.login_count or 0,
         "created_at": c.created_at,
@@ -1037,6 +1111,46 @@ def superadmin_delete_client(client_id: int, request: Request, db: Session = Dep
     log_audit(db, client_id, "client_deleted", "client", client_id, "", "Client and all data deleted", request, user_type="superadmin", user_name="superadmin")
     db.commit()
     return {"message": "Client deleted"}
+
+@app.put("/api/superadmin/clients/{client_id}/modules")
+def set_client_modules(client_id: int, request: Request, body: dict = None,
+                       db: Session = Depends(get_db)):
+    """Which parts of the product this business has.
+
+    This is the plan, and it is the operator's to set. It decides what appears
+    in their app and what the server will answer - the two used to disagree,
+    because the menu was hidden by which page you opened while every endpoint
+    stayed open to anyone who typed the URL.
+    """
+    require_superadmin(request)
+    wanted = (body or {}).get("modules")
+    if isinstance(wanted, str):
+        wanted = [m.strip() for m in wanted.split(",")]
+    if not isinstance(wanted, list) or not wanted:
+        raise HTTPException(status_code=400,
+                            detail="Give at least one module: " + ", ".join(ALL_MODULES))
+
+    cleaned = [m.strip().lower() for m in wanted if str(m).strip()]
+    unknown = [m for m in cleaned if m not in ALL_MODULES]
+    if unknown:
+        raise HTTPException(status_code=400,
+                            detail="Not a module: " + ", ".join(sorted(set(unknown))))
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Give at least one module")
+
+    client = db.query(models.DBClient).filter(models.DBClient.id == client_id).first()
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    # Ordered as ALL_MODULES lists them, so the stored value does not depend
+    # on the order somebody happened to tick the boxes.
+    client.modules = ",".join(m for m in ALL_MODULES if m in cleaned)
+    log_audit(db, client.id, "modules_changed", "client", client.id,
+              client.company_name or client.email, client.modules, request,
+              user_type="superadmin", user_name="superadmin")
+    db.commit()
+    return {"client_id": client.id, "modules": client_modules(client)}
+
 
 @app.post("/api/superadmin/impersonate/{client_id}")
 def superadmin_impersonate(client_id: int, request: Request, db: Session = Depends(get_db)):
@@ -4536,7 +4650,7 @@ THEME_STRINGS = (
 )
 
 
-def valid_hex_colour(value: str, fallback: str = "#4F46E5") -> str:
+def valid_hex_colour(value: str, fallback: str = "#0284C7") -> str:
     """Accept #rgb or #rrggbb only. This string is written straight into a PDF
     and into inline CSS in the preview, so it must never carry anything else."""
     v = (value or "").strip()
@@ -4549,7 +4663,7 @@ def theme_to_dict(t) -> dict:
     out = {
         "id": t.id, "name": t.name, "is_default": bool(t.is_default),
         "logo_data": t.logo_data or "", "logo_position": t.logo_position or "right",
-        "brand_color": t.brand_color or "#4F46E5", "font": t.font or "helvetica",
+        "brand_color": t.brand_color or "#0284C7", "font": t.font or "helvetica",
         "tax_breakdown": t.tax_breakdown or "separate_rates",
         "address_position": t.address_position or "default",
         "updated_at": t.updated_at or "",
@@ -4590,7 +4704,7 @@ def apply_theme_fields(theme, body: dict):
     if "logo_position" in body and body["logo_position"] in LOGO_POSITIONS:
         theme.logo_position = body["logo_position"]
     if "brand_color" in body:
-        theme.brand_color = valid_hex_colour(body["brand_color"], theme.brand_color or "#4F46E5")
+        theme.brand_color = valid_hex_colour(body["brand_color"], theme.brand_color or "#0284C7")
     if "font" in body and body["font"] in THEME_FONTS:
         theme.font = body["font"]
     if "tax_breakdown" in body and body["tax_breakdown"] in TAX_BREAKDOWNS:
@@ -14673,7 +14787,7 @@ def public_invoice_payload(db: Session, inv, client):
         "bank_details": inv.bank_details or "",
         "payment_terms": (theme.payment_terms if theme else "") or "",
         "footer_note": (theme.footer_note if theme else "") or "",
-        "brand_color": (theme.brand_color if theme else "") or "#4f46e5",
+        "brand_color": (theme.brand_color if theme else "") or "#0284c7",
         # Whether a Pay button can be shown, and the public half of the
         # key it needs. The secret never leaves the server.
         # Either the business's own keys or the platform's, depending on how
@@ -15094,18 +15208,18 @@ class Setting:
 # changes the product without touching the stylesheet.
 PLATFORM_SETTINGS = [
     # --- Theme -------------------------------------------------------------
-    Setting("theme.primary", "Accent", "Theme", "colour", "#00f0ff",
+    Setting("theme.primary", "Accent", "Theme", "colour", "#38bdf8",
             help="Buttons, links and the active menu item."),
-    Setting("theme.primary_light", "Accent (light)", "Theme", "colour", "#70ffff",
+    Setting("theme.primary_light", "Accent (light)", "Theme", "colour", "#7dd3fc",
             help="Hover states and glows."),
     Setting("theme.background", "Page background", "Theme", "colour", "#0b0f19"),
     Setting("theme.surface", "Panel", "Theme", "colour", "#161f2d",
             help="Cards, dialogs and menus."),
     Setting("theme.text", "Text", "Theme", "colour", "#f8fafc"),
     Setting("theme.text_secondary", "Muted text", "Theme", "colour", "#94a3b8"),
-    Setting("theme.success", "Success", "Theme", "colour", "#39ff14"),
-    Setting("theme.danger", "Danger", "Theme", "colour", "#ff003c"),
-    Setting("theme.warning", "Warning", "Theme", "colour", "#fcd34d"),
+    Setting("theme.success", "Success", "Theme", "colour", "#34d399"),
+    Setting("theme.danger", "Danger", "Theme", "colour", "#f43f5e"),
+    Setting("theme.warning", "Warning", "Theme", "colour", "#fbbf24"),
     Setting("theme.radius", "Corner radius", "Theme", "number", "12",
             minimum=0, maximum=32, help="In pixels. 0 is square."),
 

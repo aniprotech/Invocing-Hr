@@ -65,7 +65,8 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 // and until it has downloaded and run the browser paints whatever the HTML
 // says - so if the groups are built by script, every load shows the ungrouped
 // header first. That is what kept being reported as the old tabs returning.
-for (const page of ['app.html', 'hr.html']) {
+// One app now, so one page to check. hr.html is a redirect.
+for (const page of ['app.html']) {
     const raw = fs.readFileSync(path.join(ROOT, page), 'utf8');
     const nav = raw.slice(raw.indexOf('id="main-nav"'), raw.indexOf('</nav>'));
     const groups = (nav.match(/class="nav-group"/g) || []).length;
@@ -108,7 +109,8 @@ for (const page of ['app.html', 'hr.html']) {
     };
     const fromJs = targets(appJs);
 
-    for (const page of ['app.html', 'hr.html']) {
+    // One app now, so one page to check. hr.html is a redirect.
+    for (const page of ['app.html']) {
         const raw = fs.readFileSync(path.join(ROOT, page), 'utf8');
         const dom = new JSDOM(raw.replace(/<script[^>]*src=[^>]*><\/script>/g, ''));
         const d = dom.window.document;
@@ -131,18 +133,24 @@ for (const page of ['app.html', 'hr.html']) {
     }
 
     // The one that broke, named outright, because "reachable from somewhere" is
-    // not the same as "in the menu where somebody would look for it".
-    const hr = new JSDOM(fs.readFileSync(path.join(ROOT, 'hr.html'), 'utf8')
+    // not the same as "in the menu where somebody would look for it". It lives
+    // in the one app now, shown or hidden by the plan rather than by which
+    // file was opened.
+    const merged = new JSDOM(fs.readFileSync(path.join(ROOT, 'app.html'), 'utf8')
         .replace(/<script[^>]*src=[^>]*><\/script>/g, '')).window.document;
-    const hrNav = hr.getElementById('main-nav').innerHTML;
-    check('HR has an Employees link in its header',
-        /href="#\/people"/.test(hrNav));
+    const mergedNav = merged.getElementById('main-nav').innerHTML;
+    check('the app has an Employees link in its header',
+        /href="#\/people"/.test(mergedNav));
     check('and it sits in the People menu',
-        /data-nav-group="People"[\s\S]*?href="#\/people"[\s\S]*?<\/div>\s*<\/div>/.test(hrNav));
+        /data-nav-group="People"[\s\S]*?href="#\/people"[\s\S]*?<\/div>\s*<\/div>/.test(mergedNav));
+    check('and the header ships nothing hidden, so the plan decides',
+        !/id="nav-[a-z-]+"[^>]*style="display: *none/.test(mergedNav),
+        'a nav item is hidden in the markup, which is the old per-file split');
 }
 
 (async () => {
-    for (const page of ['app.html', 'hr.html']) {
+    // One app now, so one page to check. hr.html is a redirect.
+    for (const page of ['app.html']) {
         console.log(`\n-- ${page} --`);
         const dom = boot(page);
         const w = dom.window;

@@ -41,6 +41,17 @@ class DBClient(Base):
     currency = Column(String, default="GBP")
     last_login = Column(String, default="")
     login_count = Column(Integer, default=0)
+
+    # Which parts of the product this business has bought. Invoicing and
+    # HR used to be two separate pages with two separate logins, which
+    # made "which do I have" a question about which URL you opened rather
+    # than about what you pay for. They are one app now, and this is what
+    # decides what appears in it.
+    #
+    # Comma separated, and everything by default: an account that existed
+    # before this column did was already reaching both, and taking that
+    # away on upgrade would be a silent downgrade.
+    modules = Column(String, default="invoicing,hr")
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     settings = relationship("DBSettings", back_populates="client")
@@ -1127,7 +1138,7 @@ class DBBrandingTheme(Base):
     # --- brand and styling ---
     logo_data = Column(Text, default="")            # data: URI, per theme
     logo_position = Column(String, default="right")  # left | center | right
-    brand_color = Column(String, default="#4F46E5")
+    brand_color = Column(String, default="#0284C7")
     font = Column(String, default="helvetica")       # a jsPDF core font
 
     # --- which columns the line-item table shows, and what they are called ---

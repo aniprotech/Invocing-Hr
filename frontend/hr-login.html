@@ -2,212 +2,29 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>HR Login - aniprotech</title>
-    <link rel="manifest" href="/manifest.webmanifest">
-    <meta name="theme-color" content="#0b0f19">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <style>
-        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Inter', sans-serif;
-            background: #0b0f19;
-            color: #e2e8f0;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background-image:
-                radial-gradient(ellipse 80% 50% at 50% -20%, rgba(120, 119, 198, 0.15), transparent),
-                radial-gradient(ellipse 60% 40% at 80% 60%, rgba(0, 240, 255, 0.05), transparent);
-        }
-        .auth-container { width: 100%; max-width: 440px; padding: 24px; }
-        .auth-card {
-            background: rgba(15, 23, 42, 0.8);
-            border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 20px;
-            padding: 48px 40px;
-            backdrop-filter: blur(20px);
-            box-shadow: 0 25px 60px rgba(0,0,0,0.5);
-        }
-        .brand { text-align: center; margin-bottom: 40px; }
-        .brand-icon {
-            width: 56px; height: 56px;
-            background: linear-gradient(135deg, #00f0ff, #7877c6);
-            border-radius: 16px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            margin-bottom: 16px;
-            font-size: 24px;
-        }
-        .brand h1 { font-size: 1.4rem; font-weight: 700; color: #f8fafc; margin-bottom: 4px; }
-        .brand p { font-size: 0.85rem; color: #94a3b8; }
-        .btn-google {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-            width: 100%;
-            padding: 14px;
-            background: #fff;
-            color: #333;
-            border-radius: 12px;
-            font-weight: 600;
-            font-size: 0.95rem;
-            text-decoration: none;
-            transition: all 0.2s;
-            border: 1px solid #e2e8f0;
-            cursor: pointer;
-        }
-        .btn-google:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.15); transform: translateY(-1px); }
-        .error-msg {
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid rgba(239, 68, 68, 0.3);
-            color: #fca5a5;
-            padding: 12px 16px;
-            border-radius: 10px;
-            font-size: 0.85rem;
-            margin-bottom: 20px;
-            display: none;
-        }
-        .success-msg {
-            background: rgba(34, 197, 94, 0.1);
-            border: 1px solid rgba(34, 197, 94, 0.3);
-            color: #86efac;
-            padding: 12px 16px;
-            border-radius: 10px;
-            font-size: 0.85rem;
-            margin-bottom: 20px;
-            display: none;
-        }
-        .info-text {
-            text-align: center;
-            margin-top: 24px;
-            font-size: 0.8rem;
-            color: #64748b;
-            line-height: 1.5;
-        }
-        .link-home { text-align: center; margin-top: 24px; }
-        .link-home a { color: #64748b; text-decoration: none; font-size: 0.8rem; }
-        .link-home a:hover { color: #00f0ff; }
-        .super-link {
-            text-align: center;
-            margin-top: 16px;
-        }
-        .super-link a {
-            color: #7877c6;
-            text-decoration: none;
-            font-size: 0.8rem;
-            font-weight: 500;
-        }
-        .super-link a:hover { color: #00f0ff; }
-        .loading {
-            display: none;
-            text-align: center;
-            padding: 20px;
-        }
-        .spinner {
-            width: 32px;
-            height: 32px;
-            border: 3px solid rgba(255,255,255,0.1);
-            border-top-color: #00f0ff;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-            margin: 0 auto 12px;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
-    </style>
-    <link rel="stylesheet" href="mobile.css?v=99">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=99">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=99">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=99">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=99">
-</head>
-<body>
-    <div class="auth-container">
-        <div class="auth-card">
-            <div class="brand">
-                <div class="brand-icon">A</div>
-                <h1>HR Portal Login</h1>
-                <p>Manage your invoices effortlessly</p>
-            </div>
+    <title>Sign in - Ani Protech</title>
+    <meta name="robots" content="noindex">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=101">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=101">
+    <!-- One sign-in for the business now. There is no separate HR account to
+         hold: the same login reaches whatever the plan includes, so a second
+         door here would only be a second place to get the password wrong.
 
-            <div class="error-msg" id="error-msg"></div>
-            <div class="success-msg" id="success-msg"></div>
-            <div class="loading" id="loading">
-                <div class="spinner"></div>
-                <p style="color:#94a3b8;font-size:0.85rem;">Signing you in...</p>
-            </div>
-
-            <div id="login-content">
-                <a href="/api/auth/login?portal=hr" class="btn-google" id="google-btn">
-                    <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
-                    Sign in with Google
-                </a>
-
-                <p class="info-text">
-                    Sign in with your Google account to access your invoicing dashboard.<br>
-                    Your account will be created automatically on first login.
-                </p>
-            </div>
-
-            <div class="super-link">
-                <a href="/superadmin-login.html">Super Admin Login</a>
-                <a href="/employee-login.html" style="display:block;margin-top:8px;color:#64748b;font-size:0.85rem;">Employee Portal Login</a>
-            </div>
-            <div class="link-home">
-                <a href="/">Back to home</a>
-            </div>
-        </div>
-    </div>
-
+         Kept as a redirect because it is bookmarked, and the next= is carried
+         so somebody sent here on their way to a page still gets there. -->
     <script>
         var params = new URLSearchParams(window.location.search);
-        var error = params.get('error');
-        if (error) {
-            var msg = 'Something went wrong. Please try again.';
-            if (error === 'auth_failed') msg = 'Google authentication failed. Please try again.';
-            if (error === 'callback_failed') msg = 'Login callback failed. Please try again.';
-            if (error === 'not_client') msg = 'This email is registered as an administrator. Please use the Super Admin login.';
-            document.getElementById('error-msg').textContent = msg;
-            document.getElementById('error-msg').style.display = 'block';
-        }
-
-
-        // Return the visitor to whatever they were trying to reach, but only
-        // to a path on this site - never to an attacker-supplied URL.
-        function nextTarget(fallback) {
-            var next = params.get('next') || '';
-            if (next.charAt(0) === '/' && next.charAt(1) !== '/') return next;
-            return fallback;
-        }
-    // Where an already-signed-in visitor belongs. See login.html: being a
-    // superadmin does not give you a tenant, and a session with neither
-    // belongs on this page rather than being bounced into the portal.
-    (async function () {
-        var me;
-        try {
-            var res = await fetch('/api/auth/me', { credentials: 'same-origin' });
-            if (!res.ok) return;
-            me = await res.json();
-        } catch (e) { return; }
-        if (!me || !me.user) return;
-
-        try {
-            var sa = await fetch('/api/superadmin/me', { credentials: 'same-origin' });
-            if (sa.ok) { window.location.href = '/superadmin.html'; return; }
-        } catch (e) { /* fall through */ }
-
-        if (me.client_id) window.location.href = nextTarget('/hr.html');
-    })();
-
-        // Show loading on Google button click
-        document.getElementById('google-btn').addEventListener('click', function() {
-            document.getElementById('login-content').style.display = 'none';
-            document.getElementById('loading').style.display = 'block';
-        });
+        var next = params.get('next') || '';
+        // Only a path on this site, never an address somebody supplied.
+        var safe = (next.charAt(0) === '/' && next.charAt(1) !== '/') ? next : '/app.html#/hr';
+        window.location.replace('/login.html?next=' + encodeURIComponent(safe));
     </script>
+    <meta http-equiv="refresh" content="0; url=/login.html">
+</head>
+<body>
+    <p style="font-family:system-ui,sans-serif;padding:24px;">
+        There is one sign-in for the whole app now.
+        <a href="/login.html">Continue</a>.
+    </p>
 </body>
 </html>

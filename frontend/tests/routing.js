@@ -7,8 +7,12 @@
  * refresh always returned you to the dashboard however deep you were.
  *
  * These check the three things that behaviour rests on: navigating writes the
- * URL, loading a URL restores the view, and a link into a portal this tenant
- * does not have falls back rather than stranding them on a blank page.
+ * URL, loading a URL restores the view, and a link into a module this tenant's
+ * plan does not include falls back rather than stranding them on a blank page.
+ *
+ * Invoicing and HR are one app now, so that last one is no longer "the other
+ * portal" - it is the same page, told by /api/client/me what this business
+ * pays for.
  */
 const fs = require('fs');
 const path = require('path');
@@ -17,7 +21,7 @@ const { jsPDF } = require('jspdf');
 
 const ROOT = path.resolve(__dirname, '..');
 
-function boot(page, hash) {
+function boot(page, hash, modules) {
     const html = fs.readFileSync(path.join(ROOT, page), 'utf8')
         .replace(/<script[^>]*src=[^>]*><\/script>/g, '');
     const dom = new JSDOM(html, {
@@ -33,7 +37,8 @@ function boot(page, hash) {
     w.URL.revokeObjectURL = () => { };
     w.fetch = (url) => {
         const p = String(url).split('?')[0];
-        const body = p === '/api/client/me' ? { id: 1, email: 'me@example.com' }
+        const body = p === '/api/client/me'
+            ? { id: 1, email: 'me@example.com', modules: modules || ['invoicing', 'hr'] }
             : p === '/api/auth/me' ? { user: { email: 'me@example.com' }, client_id: 1 }
                 : (p.endsWith('s') ? [] : {});
         return Promise.resolve({
@@ -90,14 +95,16 @@ const shown = w => {
     {
         const w = boot('app.html').window;
         await wait(30);
-        check('with no hash at all the invoicing portal opens its dashboard',
+        check('with no hash at all a full plan opens the invoicing dashboard',
             shown(w) === 'dashboard-view', shown(w));
     }
 
     {
-        const w = boot('hr.html').window;
+        // Nothing about the page changes here - only the plan. An HR-only
+        // business must not be dropped on a dashboard it has no data for.
+        const w = boot('app.html', '', ['hr']).window;
         await wait(30);
-        check('and the HR portal opens its own',
+        check('and an HR-only plan opens the HR dashboard instead',
             shown(w) === 'hr-dashboard-view', shown(w));
     }
 
@@ -110,13 +117,31 @@ const shown = w => {
     }
 
     {
-        // Payroll is HR-only. enforcePortalSeparation() hides it on the
-        // invoicing side, so a pasted HR link must not open a view whose nav
-        // entry is not even there.
+        // Payroll needs the HR module. applyModuleAccess() hides it for a plan
+        // without one, so a pasted link must not open a view whose nav entry
+        // is not even there.
+        const w = boot('app.html', '#/payroll', ['invoicing']).window;
+        await wait(30);
+        check('an HR link opened on an invoicing-only plan falls back',
+            shown(w) === 'dashboard-view', shown(w));
+    }
+
+    {
+        // And the other way round, which the split into two files used to make
+        // impossible to get wrong and merging them makes possible again.
+        const w = boot('app.html', '#/invoices', ['hr']).window;
+        await wait(30);
+        check('an invoicing link opened on an HR-only plan falls back',
+            shown(w) === 'hr-dashboard-view', shown(w));
+    }
+
+    {
+        // A business on both is the case the merge exists for: one page, and
+        // both halves reachable by URL.
         const w = boot('app.html', '#/payroll').window;
         await wait(30);
-        check('an HR link opened by an invoicing account falls back',
-            shown(w) === 'dashboard-view', shown(w));
+        check('a business on both plans can open an HR link directly',
+            shown(w) === 'payroll-view', shown(w));
     }
 
     // --- Back and forward -------------------------------------------------
@@ -157,7 +182,7 @@ const shown = w => {
     }
 
     // --- The nav is made of real links ------------------------------------
-    for (const page of ['app.html', 'hr.html']) {
+    for (const page of ['app.html']) {
         const raw = fs.readFileSync(path.join(ROOT, page), 'utf8');
         const nav = raw.slice(raw.indexOf('id="main-nav"'), raw.indexOf('</nav>'));
 

@@ -57,6 +57,16 @@ def ensure_columns():
         return
     try:
         with engine.connect() as conn:
+            # clients.modules - which parts of the product this business
+            # has. Existing accounts get both, because they already
+            # reached both and this must not be a silent downgrade.
+            result = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='clients' AND column_name='modules'"))
+            if not result.fetchone():
+                conn.execute(text("ALTER TABLE clients ADD COLUMN modules VARCHAR DEFAULT 'invoicing,hr'"))
+                conn.execute(text("UPDATE clients SET modules = 'invoicing,hr' WHERE modules IS NULL OR modules = ''"))
+                conn.commit()
+                print("Added 'modules' column to clients table")
+
             # line_items.name
             result = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='line_items' AND column_name='name'"))
             if not result.fetchone():
@@ -1128,7 +1138,7 @@ def ensure_columns():
                         is_default BOOLEAN DEFAULT FALSE,
                         logo_data TEXT DEFAULT '',
                         logo_position VARCHAR DEFAULT 'right',
-                        brand_color VARCHAR DEFAULT '#4F46E5',
+                        brand_color VARCHAR DEFAULT '#0284C7',
                         font VARCHAR DEFAULT 'helvetica',
                         show_item BOOLEAN DEFAULT FALSE,
                         show_quantity BOOLEAN DEFAULT TRUE,

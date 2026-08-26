@@ -16,11 +16,11 @@
             color: #e2e8f0;
             min-height: 100vh;
             background-image:
-                radial-gradient(ellipse 80% 50% at 50% -20%, rgba(120, 119, 198, 0.12), transparent);
+                radial-gradient(ellipse 80% 50% at 50% -20%, rgba(14, 165, 233, 0.12), transparent);
         }
         .admin-header {
             background: rgba(15, 23, 42, 0.9);
-            border-bottom: 1px solid rgba(255,255,255,0.06);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
             padding: 16px 40px;
             display: flex;
             justify-content: space-between;
@@ -35,21 +35,21 @@
             align-items: center;
             gap: 12px;
         }
+        /* Was a rounded box with an "A" in it. The mark reads better on the
+           header itself than inside a tile competing with it. */
         .admin-header .brand-icon {
-            width: 36px; height: 36px;
-            background: linear-gradient(135deg, #7877c6, #00f0ff);
-            border-radius: 10px;
+            width: 30px; height: 30px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-weight: 800;
-            font-size: 14px;
-            color: #0b0f19;
+            color: #38bdf8;
+            flex-shrink: 0;
         }
+        .admin-header .brand-icon svg { width: 100%; height: 100%; }
         .admin-header h1 { font-size: 1rem; font-weight: 700; }
         .admin-header .badge {
-            background: rgba(120, 119, 198, 0.2);
-            color: #7877c6;
+            background: rgba(14, 165, 233, 0.2);
+            color: #0ea5e9;
             padding: 4px 10px;
             border-radius: 12px;
             font-size: 0.7rem;
@@ -64,9 +64,9 @@
         .admin-header .user-area span { font-size: 0.85rem; color: #94a3b8; }
         .btn-logout {
             padding: 8px 16px;
-            background: rgba(239, 68, 68, 0.1);
-            color: #fca5a5;
-            border: 1px solid rgba(239, 68, 68, 0.3);
+            background: rgba(244, 63, 94, 0.1);
+            color: #fda4af;
+            border: 1px solid rgba(244, 63, 94, 0.3);
             border-radius: 8px;
             cursor: pointer;
             font-size: 0.8rem;
@@ -74,7 +74,7 @@
             font-family: inherit;
             transition: all 0.2s;
         }
-        .btn-logout:hover { background: rgba(239, 68, 68, 0.2); }
+        .btn-logout:hover { background: rgba(244, 63, 94, 0.2); }
         .admin-body { max-width: 1200px; margin: 0 auto; padding: 40px; }
         .stats-grid {
             display: grid;
@@ -84,7 +84,7 @@
         }
         .stat-card {
             background: rgba(15, 23, 42, 0.6);
-            border: 1px solid rgba(255,255,255,0.06);
+            border: 1px solid rgba(255, 255, 255, 0.06);
             border-radius: 16px;
             padding: 24px;
             backdrop-filter: blur(12px);
@@ -109,10 +109,10 @@
             color: #475569;
             margin-top: 4px;
         }
-        .stat-card.accent { border-left: 3px solid #00f0ff; }
-        .stat-card.success { border-left: 3px solid #39ff14; }
-        .stat-card.warning { border-left: 3px solid #fcd34d; }
-        .stat-card.danger { border-left: 3px solid #ef4444; }
+        .stat-card.accent { border-left: 3px solid #38bdf8; }
+        .stat-card.success { border-left: 3px solid #34d399; }
+        .stat-card.warning { border-left: 3px solid #fbbf24; }
+        .stat-card.danger { border-left: 3px solid #f43f5e; }
         .section-header {
             display: flex;
             justify-content: space-between;
@@ -125,8 +125,8 @@
         }
         .search-box {
             padding: 10px 16px;
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.1);
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 10px;
             color: #f8fafc;
             font-size: 0.85rem;
@@ -135,13 +135,13 @@
             width: 280px;
             transition: all 0.2s;
         }
-        .search-box:focus { border-color: #00f0ff; }
+        .search-box:focus { border-color: #38bdf8; }
         .search-box::placeholder { color: #475569; }
         .clients-table {
             width: 100%;
             border-collapse: collapse;
             background: rgba(15, 23, 42, 0.6);
-            border: 1px solid rgba(255,255,255,0.06);
+            border: 1px solid rgba(255, 255, 255, 0.06);
             border-radius: 16px;
             overflow: hidden;
         }
@@ -153,15 +153,28 @@
             text-transform: uppercase;
             letter-spacing: 0.5px;
             color: #64748b;
-            border-bottom: 1px solid rgba(255,255,255,0.06);
-            background: rgba(255,255,255,0.02);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            background: rgba(255, 255, 255, 0.02);
         }
         .clients-table tbody td {
             padding: 16px 20px;
             font-size: 0.85rem;
-            border-bottom: 1px solid rgba(255,255,255,0.04);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
         }
-        .clients-table tbody tr:hover { background: rgba(255,255,255,0.03); }
+        .clients-table tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
+        .plan-select {
+            background: #131a2b;
+            color: #e2e8f0;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 8px;
+            padding: 5px 8px;
+            font-size: 0.78rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .plan-select:hover { border-color: rgba(56, 189, 248, 0.5); }
+        .plan-select:focus { outline: 2px solid #38bdf8; outline-offset: 1px; }
+        .plan-select:disabled { opacity: 0.5; cursor: progress; }
         .client-name {
             font-weight: 600;
             color: #f8fafc;
@@ -180,25 +193,25 @@
             font-weight: 700;
         }
         .status-active {
-            background: rgba(57, 255, 20, 0.1);
-            color: #39ff14;
+            background: rgba(52, 211, 153, 0.1);
+            color: #34d399;
         }
         .status-disabled {
-            background: rgba(239, 68, 68, 0.1);
-            color: #fca5a5;
+            background: rgba(244, 63, 94, 0.1);
+            color: #fda4af;
         }
         .status-onboarded {
-            background: rgba(0, 240, 255, 0.1);
-            color: #00f0ff;
+            background: rgba(56, 189, 248, 0.1);
+            color: #38bdf8;
         }
         .status-pending {
-            background: rgba(252, 211, 77, 0.1);
-            color: #fcd34d;
+            background: rgba(251, 191, 36, 0.1);
+            color: #fbbf24;
         }
         .action-btn {
             padding: 6px 12px;
             border-radius: 6px;
-            border: 1px solid rgba(255,255,255,0.1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
             background: transparent;
             color: #94a3b8;
             font-size: 0.75rem;
@@ -208,11 +221,11 @@
             transition: all 0.2s;
             margin-right: 4px;
         }
-        .action-btn:hover { background: rgba(255,255,255,0.05); color: #f8fafc; }
-        .action-btn.danger { color: #fca5a5; border-color: rgba(239, 68, 68, 0.3); }
-        .action-btn.danger:hover { background: rgba(239, 68, 68, 0.1); }
-        .action-btn.toggle { color: #fcd34d; border-color: rgba(252, 211, 77, 0.3); }
-        .action-btn.toggle:hover { background: rgba(252, 211, 77, 0.1); }
+        .action-btn:hover { background: rgba(255, 255, 255, 0.05); color: #f8fafc; }
+        .action-btn.danger { color: #fda4af; border-color: rgba(244, 63, 94, 0.3); }
+        .action-btn.danger:hover { background: rgba(244, 63, 94, 0.1); }
+        .action-btn.toggle { color: #fbbf24; border-color: rgba(251, 191, 36, 0.3); }
+        .action-btn.toggle:hover { background: rgba(251, 191, 36, 0.1); }
         .empty-state {
             text-align: center;
             padding: 60px 20px;
@@ -225,7 +238,7 @@
             display: none;
             position: fixed;
             inset: 0;
-            background: rgba(0,0,0,0.7);
+            background: rgba(0, 0, 0, 0.7);
             z-index: 200;
             align-items: center;
             justify-content: center;
@@ -234,7 +247,7 @@
         .modal-overlay.show { display: flex; }
         .modal {
             background: rgba(15, 23, 42, 0.95);
-            border: 1px solid rgba(255,255,255,0.1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 20px;
             padding: 40px;
             width: 90%;
@@ -285,12 +298,12 @@
             font-weight: 700;
             text-transform: uppercase;
             color: #64748b;
-            border-bottom: 1px solid rgba(255,255,255,0.06);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
         }
         .invoices-mini-table td {
             padding: 10px 12px;
             font-size: 0.85rem;
-            border-bottom: 1px solid rgba(255,255,255,0.04);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
         }
         /* Wide tables scroll inside their own box rather than widening the page. */
         .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
@@ -317,22 +330,22 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=99">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=99">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=99">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=99">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=99">
+    <link rel="stylesheet" href="mobile.css?v=101">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=101">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=101">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=101">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=101">
 </head>
 <body>
     <div class="admin-header">
         <div class="brand">
-            <div class="brand-icon">A</div>
+            <div class="brand-icon"><svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" aria-hidden="true"><circle cx="32" cy="32" r="25.5" stroke-dasharray="134 26.2" transform="rotate(68 32 32)"/><circle cx="28.5" cy="33" r="9"/><path d="M37.5 24.5 V 40"/><circle cx="47" cy="47" r="2.6" fill="currentColor" stroke="none"/></svg></div>
             <h1>aniprotech</h1>
             <span class="badge">Super Admin</span>
         </div>
         <div class="user-area">
             <span id="admin-name">Admin</span>
-            <button class="btn-logout" style="background:rgba(0,240,255,0.1);color:#67e8f9;border-color:rgba(0,240,255,0.3);" onclick="openPasswordModal()">Change Password</button>
+            <button class="btn-logout" style="background:rgba(56, 189, 248, 0.1);color:#7dd3fc;border-color:rgba(56, 189, 248, 0.3);" onclick="openPasswordModal()">Change Password</button>
             <button class="btn-logout" onclick="logout()">Sign Out</button>
         </div>
     </div>
@@ -351,12 +364,12 @@
         </nav>
         <style>
             .admin-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 24px;
-                border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 0; }
+                border-bottom: 1px solid rgba(255, 255, 255, 0.08); padding-bottom: 0; }
             .admin-tab-btn { background: none; border: none; border-bottom: 2px solid transparent;
                 color: #64748b; font-size: 0.85rem; font-weight: 600; padding: 10px 16px;
                 cursor: pointer; white-space: nowrap; font-family: inherit; }
             .admin-tab-btn:hover { color: #94a3b8; }
-            .admin-tab-btn.active { color: #00f0ff; border-bottom-color: #00f0ff; }
+            .admin-tab-btn.active { color: #38bdf8; border-bottom-color: #38bdf8; }
             .admin-panel { display: none; }
             .admin-panel.active { display: block; }
             /* The first heading in a panel has the tab bar directly above it,
@@ -422,12 +435,12 @@
         <div class="stats-grid" id="revenue-grid"></div>
 
         <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:20px;">
-            <div style="flex:1;min-width:320px;background:rgba(15,23,42,0.6);border:1px solid rgba(255,255,255,0.06);border-radius:16px;padding:20px 24px;">
+            <div style="flex:1;min-width:320px;background:rgba(15, 23, 42, 0.6);border:1px solid rgba(255, 255, 255, 0.06);border-radius:16px;padding:20px 24px;">
                 <h3 style="font-size:0.95rem;margin-bottom:4px;">What each action costs</h3>
                 <p style="font-size:0.75rem;color:#64748b;margin-bottom:14px;">Applies to every tenant. Free allowance resets each calendar month.</p>
                 <div id="pricing-list"></div>
             </div>
-            <div style="flex:1;min-width:320px;background:rgba(15,23,42,0.6);border:1px solid rgba(255,255,255,0.06);border-radius:16px;padding:20px 24px;">
+            <div style="flex:1;min-width:320px;background:rgba(15, 23, 42, 0.6);border:1px solid rgba(255, 255, 255, 0.06);border-radius:16px;padding:20px 24px;">
                 <h3 style="font-size:0.95rem;margin-bottom:4px;">Tenant wallets</h3>
                 <p style="font-size:0.75rem;color:#64748b;margin-bottom:14px;">Lowest balance first. Adjustments appear on the tenant statement.</p>
                 <div id="wallets-list"></div>
@@ -446,9 +459,9 @@
             <h2>6-Month Trends</h2>
         </div>
         <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:16px;">
-            <div style="flex:1;min-width:220px;background:rgba(15,23,42,0.6);border:1px solid rgba(255,255,255,0.06);border-radius:16px;padding:20px 24px;">
+            <div style="flex:1;min-width:220px;background:rgba(15, 23, 42, 0.6);border:1px solid rgba(255, 255, 255, 0.06);border-radius:16px;padding:20px 24px;">
                 <div style="font-size:0.8rem;color:#94a3b8;font-weight:600;margin-bottom:6px;">Total Revenue (All Time)</div>
-                <div style="font-size:1.6rem;font-weight:700;color:#39ff14;font-family:'Courier New',monospace;" id="stat-total-revenue">0.00</div>
+                <div style="font-size:1.6rem;font-weight:700;color:#34d399;font-family:'Courier New',monospace;" id="stat-total-revenue">0.00</div>
             </div>
         </div>
         <div class="trend-row">
@@ -465,17 +478,17 @@
             .trend-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 8px; }
             .trend-card {
                 background: rgba(15, 23, 42, 0.6);
-                border: 1px solid rgba(255,255,255,0.06);
+                border: 1px solid rgba(255, 255, 255, 0.06);
                 border-radius: 16px;
                 padding: 24px;
             }
             .trend-card h3 { font-size: 0.85rem; color: #94a3b8; margin-bottom: 16px; font-weight: 600; }
             .bars { display: flex; align-items: flex-end; gap: 10px; height: 140px; }
             .bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; }
-            .bar-track { width: 100%; height: 110px; display: flex; align-items: flex-end; background: rgba(255,255,255,0.03); border-radius: 6px; overflow: hidden; }
+            .bar-track { width: 100%; height: 110px; display: flex; align-items: flex-end; background: rgba(255, 255, 255, 0.03); border-radius: 6px; overflow: hidden; }
             .bar-fill { width: 100%; min-height: 2px; border-radius: 6px; transition: height 0.4s ease; }
-            .bar-rev { background: linear-gradient(180deg, #00f0ff, #7877c6); }
-            .bar-login { background: linear-gradient(180deg, #39ff14, #0ea5e9); }
+            .bar-rev { background: linear-gradient(180deg, #38bdf8, #0ea5e9); }
+            .bar-login { background: linear-gradient(180deg, #34d399, #0ea5e9); }
             .bar-label { font-size: 0.65rem; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; text-align: center; }
             .bar-val { font-size: 0.7rem; color: #94a3b8; font-weight: 600; }
             @media (max-width: 768px) { .trend-row { grid-template-columns: 1fr; } }
@@ -516,6 +529,7 @@
             <thead>
                 <tr>
                     <th>Client</th>
+                    <th>Plan</th>
                     <th>Status</th>
                     <th>Onboarding</th>
                     <th>Invoices</th>
@@ -525,7 +539,7 @@
                 </tr>
             </thead>
             <tbody id="clients-tbody">
-                <tr><td colspan="7" class="empty-state"><h3>Loading...</h3></td></tr>
+                <tr><td colspan="8" class="empty-state"><h3>Loading...</h3></td></tr>
             </tbody>
         </table>
         <div class="pager" id="clients-pager"></div>
@@ -556,10 +570,10 @@
                tenants, unreadable at five hundred. */
             .pager { display: flex; align-items: center; gap: 12px; padding: 14px 4px;
                 font-size: 0.78rem; color: #64748b; flex-wrap: wrap; }
-            .pager button { background: rgba(255,255,255,0.04); color: #94a3b8;
-                border: 1px solid rgba(255,255,255,0.1); border-radius: 6px;
+            .pager button { background: rgba(255, 255, 255, 0.04); color: #94a3b8;
+                border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px;
                 padding: 5px 12px; cursor: pointer; font-size: 0.78rem; font-family: inherit; }
-            .pager button:hover:not(:disabled) { color: #e2e8f0; border-color: rgba(255,255,255,0.25); }
+            .pager button:hover:not(:disabled) { color: #e2e8f0; border-color: rgba(255, 255, 255, 0.25); }
             .pager button:disabled { opacity: 0.35; cursor: default; }
             .pager .pager-count { margin-left: auto; }
         </style>
@@ -585,14 +599,14 @@
         <div class="modal" style="max-width:420px;">
             <button class="close-btn" onclick="closePasswordModal()">&times;</button>
             <h2>Change Password</h2>
-            <div class="error-msg" id="pwd-error" style="display:none;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#fca5a5;padding:10px 14px;border-radius:8px;font-size:0.85rem;margin-bottom:16px;"></div>
+            <div class="error-msg" id="pwd-error" style="display:none;background:rgba(244, 63, 94, 0.1);border:1px solid rgba(244, 63, 94, 0.3);color:#fda4af;padding:10px 14px;border-radius:8px;font-size:0.85rem;margin-bottom:16px;"></div>
             <div class="form-group" style="margin-bottom:14px;">
                 <label style="display:block;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#64748b;margin-bottom:6px;">New Password</label>
                 <input type="password" id="pwd-new" class="search-box" style="width:100%;" placeholder="At least 6 characters">
             </div>
             <div class="btn-row" style="display:flex;justify-content:flex-end;gap:8px;">
                 <button class="action-btn" onclick="closePasswordModal()">Cancel</button>
-                <button class="action-btn" style="color:#0b0f19;background:linear-gradient(135deg,#7877c6,#00f0ff);border:none;font-weight:700;" onclick="changePassword()">Save</button>
+                <button class="action-btn" style="color:#0b0f19;background:linear-gradient(135deg,#0ea5e9,#38bdf8);border:none;font-weight:700;" onclick="changePassword()">Save</button>
             </div>
         </div>
     </div>
@@ -665,8 +679,8 @@
                 if (!res.ok) { host.innerHTML = ''; return; }
                 var d = await res.json();
                 function group(title, pairs) {
-                    return '<div style="flex:1;min-width:190px;background:rgba(255,255,255,0.03);' +
-                           'border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:14px 16px;">' +
+                    return '<div style="flex:1;min-width:190px;background:rgba(255, 255, 255, 0.03);' +
+                           'border:1px solid rgba(255, 255, 255, 0.06);border-radius:12px;padding:14px 16px;">' +
                            '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;' +
                            'letter-spacing:0.5px;color:#64748b;margin-bottom:8px;">' + title + '</div>' +
                            pairs.map(function (pair) {
@@ -759,21 +773,21 @@
                           primary.filter(function (p) { return !p.enabled; })
                                  .map(function (p) { return p.label; }).join(' and ') + ' not set up'
                         : 'No payment gateway is set up - nothing can be collected';
-                el.style.color = liveNow.length === primary.length ? '#39ff14'
-                               : liveNow.length ? '#fcd34d' : '#ff003c';
+                el.style.color = liveNow.length === primary.length ? '#34d399'
+                               : liveNow.length ? '#fbbf24' : '#f43f5e';
 
                 if (!host) return;
                 host.innerHTML = providers.map(function (p) {
                     var legacy = p.role === 'legacy';
-                    var tone = p.enabled ? (legacy ? '#94a3b8' : '#39ff14') : '#64748b';
+                    var tone = p.enabled ? (legacy ? '#94a3b8' : '#34d399') : '#64748b';
                     var missing = (p.required_env || []).join(', ');
-                    return '<div style="background:rgba(15,23,42,0.6);border:1px solid ' +
-                        (p.enabled && !legacy ? 'rgba(57,255,20,0.25)' : 'rgba(255,255,255,0.06)') +
+                    return '<div style="background:rgba(15, 23, 42, 0.6);border:1px solid ' +
+                        (p.enabled && !legacy ? 'rgba(52, 211, 153, 0.25)' : 'rgba(255, 255, 255, 0.06)') +
                         ';border-radius:14px;padding:16px 18px;">' +
                       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">' +
                         '<strong style="font-size:0.95rem;">' + esc(p.label || p.key) + '</strong>' +
                         (legacy ? '<span style="font-size:0.65rem;text-transform:uppercase;' +
-                                  'letter-spacing:0.06em;color:#64748b;border:1px solid rgba(255,255,255,0.12);' +
+                                  'letter-spacing:0.06em;color:#64748b;border:1px solid rgba(255, 255, 255, 0.12);' +
                                   'border-radius:6px;padding:1px 6px;">legacy</span>' : '') +
                         '<span style="margin-left:auto;font-size:0.78rem;font-weight:600;color:' + tone + ';">' +
                           (p.enabled ? 'configured' : 'not set up') + '</span>' +
@@ -781,7 +795,7 @@
                       '<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:8px;">' +
                         esc(p.used_for || '') +
                         (p.environment ? ' &middot; <strong style="color:' +
-                          (p.environment === 'live' ? '#fcd34d' : '#64748b') + ';">' +
+                          (p.environment === 'live' ? '#fbbf24' : '#64748b') + ';">' +
                           esc(p.environment) + '</strong>' : '') +
                       '</div>' +
                       (p.note ? '<div style="font-size:0.73rem;color:#64748b;margin-bottom:8px;">' +
@@ -789,7 +803,7 @@
                       (p.enabled
                         ? (p.webhook_url
                             ? '<div style="font-size:0.72rem;color:' +
-                              (p.webhook_ready ? '#64748b' : '#fcd34d') + ';">' +
+                              (p.webhook_ready ? '#64748b' : '#fbbf24') + ';">' +
                               (p.webhook_ready
                                 ? 'Webhook: ' + esc(p.webhook_url)
                                 : 'Webhook secret missing - ' + esc(p.webhook_url) +
@@ -814,10 +828,10 @@
             host.textContent = 'Asking GoCardless...';
             try {
                 var d = await (await fetch('/api/superadmin/gocardless-check')).json();
-                host.style.color = d.ok ? (d.webhook_secret_set ? '#39ff14' : '#fcd34d') : '#ff003c';
+                host.style.color = d.ok ? (d.webhook_secret_set ? '#34d399' : '#fbbf24') : '#f43f5e';
                 host.textContent = d.message || (d.ok ? 'Connected.' : 'Could not connect.');
             } catch (e) {
-                host.style.color = '#ff003c';
+                host.style.color = '#f43f5e';
                 host.textContent = 'Could not reach the server.';
             }
         }
@@ -834,7 +848,7 @@
             try {
                 d = await (await fetch('/api/superadmin/razorpay-check')).json();
             } catch (e) {
-                host.style.color = '#ff003c';
+                host.style.color = '#f43f5e';
                 host.textContent = 'Could not run the check.';
                 return;
             }
@@ -848,11 +862,11 @@
                 shape.secret_length ? 'secret ' + shape.secret_length + ' characters' : '',
             ].filter(Boolean).join(' &middot; ');
 
-            host.style.color = d.ok ? '#39ff14' : '#ff003c';
+            host.style.color = d.ok ? '#34d399' : '#f43f5e';
             host.innerHTML = esc(d.reason || '') +
                 (about ? '<div style="color:#64748b;margin-top:4px;">' + about + '</div>' : '') +
                 ((shape.notes || []).length
-                    ? '<div style="color:#fcd34d;margin-top:4px;">' +
+                    ? '<div style="color:#fbbf24;margin-top:4px;">' +
                       shape.notes.map(esc).join('<br>') + '</div>' : '') +
                 (d.hint ? '<div style="color:#64748b;margin-top:4px;">' + esc(d.hint) + '</div>' : '') +
                 (d.next ? '<div style="color:#64748b;margin-top:4px;">' + esc(d.next) + '</div>' : '');
@@ -869,7 +883,7 @@
             try {
                 d = await (await fetch('/api/superadmin/ai-status')).json();
             } catch (e) {
-                host.style.color = '#ff003c';
+                host.style.color = '#f43f5e';
                 host.textContent = 'Could not run the check.';
                 return;
             }
@@ -883,7 +897,7 @@
             // fix it correctly is to pick from what the key can really use -
             // a model that sounds right is how this broke in the first place.
             if (d.model_is_available === false) {
-                parts.push('<div style="color:#fcd34d;margin-top:4px;">' +
+                parts.push('<div style="color:#fbbf24;margin-top:4px;">' +
                     'This key cannot use ' + esc(d.model) + '. Set ' +
                     esc(d.model_env_var || 'GROQ_MODEL') + ' to one of the below and restart.</div>');
             }
@@ -891,9 +905,9 @@
                 parts.push('<div style="color:#64748b;margin-top:6px;">Models this key can use:</div>' +
                     '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;">' +
                     d.available_models.map(function (m) {
-                        return '<code style="background:rgba(255,255,255,0.06);padding:3px 7px;' +
+                        return '<code style="background:rgba(255, 255, 255, 0.06);padding:3px 7px;' +
                                'border-radius:5px;font-size:0.72rem;' +
-                               (m === d.model ? 'color:#39ff14;' : 'color:#94a3b8;') + '">' +
+                               (m === d.model ? 'color:#34d399;' : 'color:#94a3b8;') + '">' +
                                esc(m) + '</code>';
                     }).join('') + '</div>');
             } else if (d.configured) {
@@ -905,7 +919,7 @@
                     esc(d.key_hint || '') + '</div>');
             }
 
-            host.style.color = d.reachable ? '#39ff14' : '#ff003c';
+            host.style.color = d.reachable ? '#34d399' : '#f43f5e';
             host.innerHTML = parts.join('');
         }
 
@@ -915,17 +929,17 @@
                 var rows = await (await fetch('/api/superadmin/pricing')).json();
                 host.innerHTML = rows.map(function (r) {
                     return '<div style="display:flex;gap:8px;align-items:center;padding:8px 0;' +
-                           'border-bottom:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">' +
+                           'border-bottom:1px solid rgba(255, 255, 255, 0.05);flex-wrap:wrap;">' +
                         '<div style="flex:1;min-width:130px;">' +
                             '<div style="font-size:0.85rem;font-weight:600;">' + esc(r.label) + '</div>' +
                             '<div style="font-size:0.7rem;color:#64748b;">' + esc(r.module) + ' &middot; ' + esc(r.action_key) + '</div>' +
                         '</div>' +
                         '<input type="number" step="0.01" min="0" value="' + r.unit_price + '" id="price-' + r.id + '" ' +
-                            'title="Price per unit" style="width:80px;padding:5px 8px;background:rgba(255,255,255,0.05);' +
-                            'border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#f8fafc;font-size:0.8rem;">' +
+                            'title="Price per unit" style="width:80px;padding:5px 8px;background:rgba(255, 255, 255, 0.05);' +
+                            'border:1px solid rgba(255, 255, 255, 0.1);border-radius:6px;color:#f8fafc;font-size:0.8rem;">' +
                         '<input type="number" min="0" value="' + r.free_allowance + '" id="free-' + r.id + '" ' +
-                            'title="Free units per month" style="width:64px;padding:5px 8px;background:rgba(255,255,255,0.05);' +
-                            'border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#f8fafc;font-size:0.8rem;">' +
+                            'title="Free units per month" style="width:64px;padding:5px 8px;background:rgba(255, 255, 255, 0.05);' +
+                            'border:1px solid rgba(255, 255, 255, 0.1);border-radius:6px;color:#f8fafc;font-size:0.8rem;">' +
                         '<button class="action-btn" onclick="savePrice(' + r.id + ')">Save</button>' +
                     '</div>';
                 }).join('');
@@ -959,12 +973,12 @@
                 }
                 host.innerHTML = rows.map(function (w) {
                     return '<div style="display:flex;gap:8px;align-items:center;padding:8px 0;' +
-                           'border-bottom:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">' +
+                           'border-bottom:1px solid rgba(255, 255, 255, 0.05);flex-wrap:wrap;">' +
                         '<div style="flex:1;min-width:130px;">' +
                             '<div style="font-size:0.85rem;font-weight:600;">' + esc(w.company_name) + '</div>' +
                             '<div style="font-size:0.7rem;color:#64748b;">spent ' + w.lifetime_spent.toFixed(2) + '</div>' +
                         '</div>' +
-                        '<strong style="color:' + (w.is_low ? '#fcd34d' : '#39ff14') + ';font-size:0.9rem;">' +
+                        '<strong style="color:' + (w.is_low ? '#fbbf24' : '#34d399') + ';font-size:0.9rem;">' +
                             w.balance.toFixed(2) + '</strong>' +
                         '<button class="action-btn" onclick="adjustWallet(' + w.client_id + ')">Adjust</button>' +
                     '</div>';
@@ -1011,7 +1025,7 @@
                 if (!res.ok) throw new Error('nope');
                 data = await res.json();
             } catch (e) {
-                body.innerHTML = '<p style="color:#ff003c;font-size:0.8rem;">Could not load this wallet.</p>';
+                body.innerHTML = '<p style="color:#f43f5e;font-size:0.8rem;">Could not load this wallet.</p>';
                 return;
             }
 
@@ -1024,7 +1038,7 @@
                     '<td style="padding:4px 6px;color:#64748b;font-size:0.7rem;">' + esc(t.created_at) + '</td>' +
                     '<td style="padding:4px 6px;font-size:0.75rem;">' + esc(t.description || t.action_key) + '</td>' +
                     '<td style="padding:4px 6px;text-align:right;font-size:0.75rem;color:' +
-                    (credit ? '#39ff14' : '#fcd34d') + ';">' +
+                    (credit ? '#34d399' : '#fbbf24') + ';">' +
                     (credit ? '+' : '-') + Number(t.amount).toFixed(2) + '</td>' +
                     '<td style="padding:4px 6px;text-align:right;font-size:0.7rem;color:#64748b;">' +
                     Number(t.balance_after).toFixed(2) + '</td>' +
@@ -1047,12 +1061,12 @@
                 '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">' + presets + '</div>' +
                 '<label style="display:block;font-size:0.75rem;color:#94a3b8;margin-bottom:4px;">Amount - negative takes it back</label>' +
                 '<input id="wallet-amount" type="number" step="0.01" value="25" ' +
-                'style="width:100%;padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:#0b0f19;color:#f8fafc;margin-bottom:8px;">' +
+                'style="width:100%;padding:8px;border-radius:6px;border:1px solid rgba(255, 255, 255, 0.1);background:#0b0f19;color:#f8fafc;margin-bottom:8px;">' +
                 '<label style="display:block;font-size:0.75rem;color:#94a3b8;margin-bottom:4px;">Reason - the tenant reads this on their statement</label>' +
                 '<input id="wallet-reason" type="text" maxlength="200" placeholder="Bank transfer received 17 Aug" ' +
-                'style="width:100%;padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:#0b0f19;color:#f8fafc;margin-bottom:10px;">' +
-                '<div id="wallet-error" style="color:#ff003c;font-size:0.75rem;margin-bottom:8px;"></div>' +
-                '<button class="action-btn" style="background:#00f0ff;color:#0b0f19;font-weight:700;" ' +
+                'style="width:100%;padding:8px;border-radius:6px;border:1px solid rgba(255, 255, 255, 0.1);background:#0b0f19;color:#f8fafc;margin-bottom:10px;">' +
+                '<div id="wallet-error" style="color:#f43f5e;font-size:0.75rem;margin-bottom:8px;"></div>' +
+                '<button class="action-btn" style="background:#38bdf8;color:#0b0f19;font-weight:700;" ' +
                 'onclick="applyWalletAdjustment()">Apply</button>' +
                 (rows
                     ? '<h4 style="margin:16px 0 6px;font-size:0.8rem;color:#94a3b8;">Recent activity</h4>' +
@@ -1079,7 +1093,7 @@
             return '<div style="margin-top:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">' +
                 '<label style="font-size:0.72rem;color:#94a3b8;">Currency</label>' +
                 '<select id="wallet-currency" style="padding:6px 8px;border-radius:6px;' +
-                'border:1px solid rgba(255,255,255,0.1);background:#0b0f19;color:#f8fafc;' +
+                'border:1px solid rgba(255, 255, 255, 0.1);background:#0b0f19;color:#f8fafc;' +
                 'font-size:0.78rem;">' + options + '</select>' +
                 '<button class="action-btn" onclick="applyWalletCurrency()">Change</button>' +
                 '<span id="wallet-currency-note" style="font-size:0.7rem;color:#64748b;"></span>' +
@@ -1102,14 +1116,14 @@
                 });
                 var d = await res.json();
                 if (!res.ok) {
-                    note.style.color = '#ff003c';
+                    note.style.color = '#f43f5e';
                     note.textContent = d.detail || 'That did not go through.';
                     return;
                 }
                 loadWallets();
                 adjustWallet(walletPanelFor);   // reopen, showing the new currency
             } catch (e) {
-                note.style.color = '#ff003c';
+                note.style.color = '#f43f5e';
                 note.textContent = 'That did not go through.';
             }
         }
@@ -1140,7 +1154,7 @@
                 allClients = await res.json();
                 renderClients(allClients);
             } catch (e) {
-                document.getElementById('clients-tbody').innerHTML = '<tr><td colspan="7" class="empty-state"><h3>Error loading clients</h3></td></tr>';
+                document.getElementById('clients-tbody').innerHTML = '<tr><td colspan="8" class="empty-state"><h3>Error loading clients</h3></td></tr>';
             }
         }
 
@@ -1186,12 +1200,13 @@
         function drawClientRows(clients) {
             var tbody = document.getElementById('clients-tbody');
             if (clients.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><h3>No clients yet</h3><p>Clients will appear here once they register.</p></td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" class="empty-state"><h3>No clients yet</h3><p>Clients will appear here once they register.</p></td></tr>';
                 return;
             }
             tbody.innerHTML = clients.map(function(c) {
                 return '<tr>' +
                     '<td><div class="client-name">' + esc(c.company_name || c.contact_name || 'Unnamed') + '</div><div class="client-email">' + esc(c.email) + '</div></td>' +
+                    '<td>' + planCell(c) + '</td>' +
                     '<td><span class="status-badge ' + (c.is_active ? 'status-active' : 'status-disabled') + '">' + (c.is_active ? 'Active' : 'Disabled') + '</span></td>' +
                     '<td><span class="status-badge ' + (c.is_onboarded ? 'status-onboarded' : 'status-pending') + '">' + (c.is_onboarded ? 'Complete' : 'Pending') + '</span></td>' +
                     '<td>' + esc(c.invoice_count) + '</td>' +
@@ -1199,13 +1214,71 @@
                     '<td style="color:#64748b;font-size:0.8rem;">' + esc((c.created_at || '').substring(0, 10)) + '<br><span style="font-size:0.7rem;">Login #' + esc(c.login_count || 0) + '</span></td>' +
                     '<td>' +
                         '<button class="action-btn" onclick="viewClient(' + c.id + ')">View</button>' +
-                        '<button class="action-btn" style="color:#00f0ff;border-color:rgba(0,240,255,0.3);" onclick="impersonateClient(' + c.id + ')">Login as</button>' +
+                        '<button class="action-btn" style="color:#38bdf8;border-color:rgba(56, 189, 248, 0.3);" onclick="impersonateClient(' + c.id + ')">Login as</button>' +
                         '<button class="action-btn toggle" onclick="toggleClient(' + c.id + ')">' + (c.is_active ? 'Disable' : 'Enable') + '</button>' +
                         '<button class="action-btn danger" onclick="deleteClient(' + c.id + ')">Delete</button>' +
                     '</td>' +
                 '</tr>';
             }).join('');
         }
+
+        // What this business has bought. Invoicing and HR are one app now, so
+        // this is the only thing deciding which half of it they see - both the
+        // menu they get and what the server will answer.
+        var PLANS = [
+            { value: 'invoicing,hr', label: 'Invoicing + HR' },
+            { value: 'invoicing', label: 'Invoicing only' },
+            { value: 'hr', label: 'HR only' },
+        ];
+
+        function planValue(c) {
+            var mods = c.modules;
+            if (typeof mods === 'string') mods = mods.split(',');
+            if (!Array.isArray(mods) || !mods.length) return 'invoicing,hr';
+            // Sorted so ['hr','invoicing'] and ['invoicing','hr'] are the same
+            // plan and the select does not fall through to nothing selected.
+            return mods.map(function (m) { return String(m).trim().toLowerCase(); })
+                .filter(Boolean).sort().reverse().join(',');
+        }
+
+        function planCell(c) {
+            var current = planValue(c);
+            return '<select class="plan-select" onchange="setClientPlan(' + c.id + ', this)">' +
+                PLANS.map(function (p) {
+                    return '<option value="' + p.value + '"' +
+                        (p.value === current ? ' selected' : '') + '>' + p.label + '</option>';
+                }).join('') +
+            '</select>';
+        }
+
+        async function setClientPlan(id, select) {
+            var was = planValue((allClients.find(function (c) { return c.id === id; })) || {});
+            var wanted = select.value;
+            select.disabled = true;
+            try {
+                var res = await fetch('/api/superadmin/clients/' + id + '/modules', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ modules: wanted.split(',') }),
+                });
+                if (!res.ok) {
+                    var err = await res.json().catch(function () { return {}; });
+                    throw new Error(err.detail || ('HTTP ' + res.status));
+                }
+                // Keep the copy in memory in step, or the next filter or page
+                // redraws the row with the old plan and it looks like it failed.
+                var row = allClients.find(function (c) { return c.id === id; });
+                if (row) row.modules = wanted.split(',');
+                // The select already shows the new plan, so this only needs to
+                // report the ones that did not go through.
+            } catch (e) {
+                select.value = was;   // it did not change, so do not show that it did
+                alert('Could not change the plan: ' + e.message);
+            } finally {
+                select.disabled = false;
+            }
+        }
+        window.setClientPlan = setClientPlan;
 
         function filterClients(q) {
             if (!q) { renderClients(allClients); return; }
@@ -1379,10 +1452,10 @@
                 return;
             }
             tbody.innerHTML = logs.map(function(l) {
-                var statusColor = l.status === 'success' ? '#39ff14' : l.status === 'failed' ? '#ef4444' : '#fcd34d';
+                var statusColor = l.status === 'success' ? '#34d399' : l.status === 'failed' ? '#f43f5e' : '#fbbf24';
                 var methodBadge = l.login_type === 'google' ?
-                    '<span style="background:rgba(66,133,244,0.2);color:#4285f4;padding:2px 8px;border-radius:4px;font-size:0.75rem;">Google</span>' :
-                    '<span style="background:rgba(148,163,184,0.2);color:#94a3b8;padding:2px 8px;border-radius:4px;font-size:0.75rem;">Password</span>';
+                    '<span style="background:rgba(66, 133, 244, 0.2);color:#4285f4;padding:2px 8px;border-radius:4px;font-size:0.75rem;">Google</span>' :
+                    '<span style="background:rgba(148, 163, 184, 0.2);color:#94a3b8;padding:2px 8px;border-radius:4px;font-size:0.75rem;">Password</span>';
                 return '<tr>' +
                     '<td style="font-weight:500;">' + esc(l.email) + '</td>' +
                     '<td style="color:#64748b;">' + esc(l.user_type) + '</td>' +
@@ -1431,7 +1504,7 @@
                 return '<div style="display:flex;gap:8px;align-items:center;">' +
                        '<input type="color" ' + common + ' value="' + esc(s.value) + '" ' +
                        'style="width:44px;height:34px;padding:2px;border-radius:8px;' +
-                       'border:1px solid rgba(255,255,255,0.12);background:none;cursor:pointer;">' +
+                       'border:1px solid rgba(255, 255, 255, 0.12);background:none;cursor:pointer;">' +
                        '<code style="font-size:0.78rem;color:#94a3b8;">' + esc(s.value) + '</code></div>';
             }
             if (s.kind === 'bool') {
@@ -1462,26 +1535,26 @@
             var host = document.getElementById('platform-settings-body');
             host.innerHTML = groups.map(function (g) {
                 var rows = _settings.filter(function (s) { return s.group === g; });
-                return '<div style="background:rgba(15,23,42,0.6);border:1px solid rgba(255,255,255,0.06);' +
+                return '<div style="background:rgba(15, 23, 42, 0.6);border:1px solid rgba(255, 255, 255, 0.06);' +
                        'border-radius:16px;padding:20px 24px;margin-bottom:18px;">' +
                     '<h3 style="font-size:0.95rem;margin-bottom:14px;">' + esc(g) + '</h3>' +
                     rows.map(function (s) {
                         // Said plainly, because "inherited" and "chosen" are
                         // fixed in completely different places.
                         var origin = s.is_set
-                            ? '<span style="color:#39ff14;">set here</span>'
+                            ? '<span style="color:#34d399;">set here</span>'
                             : s.from_env
                                 ? '<span style="color:#94a3b8;">from ' + esc(s.env) + '</span>'
                                 : '<span style="color:#64748b;">default</span>';
                         return '<div style="display:flex;gap:16px;align-items:flex-start;padding:12px 0;' +
-                               'border-top:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">' +
+                               'border-top:1px solid rgba(255, 255, 255, 0.05);flex-wrap:wrap;">' +
                             '<div style="flex:1;min-width:220px;">' +
                               '<div style="font-size:0.88rem;font-weight:600;">' + esc(s.label) + '</div>' +
                               (s.help ? '<div style="font-size:0.75rem;color:#64748b;margin-top:3px;max-width:60ch;">'
                                         + esc(s.help) + '</div>' : '') +
                               '<div style="font-size:0.7rem;margin-top:4px;">' + origin +
                                 (s.is_set ? ' &middot; <a href="#" onclick="event.preventDefault();resetSetting(\'' +
-                                            esc(s.key) + '\')" style="color:#00f0ff;">reset</a>' : '') +
+                                            esc(s.key) + '\')" style="color:#38bdf8;">reset</a>' : '') +
                               '</div>' +
                             '</div>' +
                             '<div style="min-width:200px;">' + settingField(s) + '</div>' +
@@ -1490,7 +1563,7 @@
                 '</div>';
             }).join('') +
             '<div style="display:flex;gap:10px;align-items:center;padding:4px 0 20px;">' +
-              '<button class="action-btn" style="background:#00f0ff;color:#0b0f19;font-weight:700;' +
+              '<button class="action-btn" style="background:#38bdf8;color:#0b0f19;font-weight:700;' +
               'border:none;padding:9px 20px;" onclick="savePlatformSettings()">Save changes</button>' +
               '<span id="settings-status" style="font-size:0.8rem;color:#64748b;"></span>' +
             '</div>';
@@ -1519,11 +1592,11 @@
                 var body = await res.json();
                 if (!res.ok) throw new Error(body.detail || 'Could not save');
                 status.textContent = 'Saved. Tenants see this on their next page load.';
-                status.style.color = '#39ff14';
+                status.style.color = '#34d399';
                 loadPlatformSettings();
             } catch (e) {
                 status.textContent = e.message;
-                status.style.color = '#ff003c';
+                status.style.color = '#f43f5e';
             }
         }
         window.savePlatformSettings = savePlatformSettings;
@@ -1592,8 +1665,8 @@
 
     <!-- Topping up a tenant, with their ledger beside the form. -->
     <div id="wallet-panel" style="display:none;position:fixed;inset:0;z-index:9000;
-         background:rgba(0,0,0,0.65);align-items:center;justify-content:center;padding:16px;">
-      <div style="background:#131a2b;border:1px solid rgba(255,255,255,0.1);border-radius:12px;
+         background:rgba(0, 0, 0, 0.65);align-items:center;justify-content:center;padding:16px;">
+      <div style="background:#131a2b;border:1px solid rgba(255, 255, 255, 0.1);border-radius:12px;
            padding:20px;max-width:460px;width:100%;max-height:88vh;overflow:auto;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
           <h3 style="margin:0;font-size:1rem;">Wallet</h3>

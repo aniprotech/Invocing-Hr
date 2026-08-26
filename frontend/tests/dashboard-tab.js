@@ -1,11 +1,15 @@
 /**
- * A dashboard, and a way back to it, in both portals.
+ * A dashboard, and a way back to it, whichever plan a business is on.
  *
- * The invoicing portal opened on its dashboard and had no link to it, so the
- * first click anywhere was a one-way trip until you reloaded. The HR portal had
- * no dashboard at all - it opened on the employee list, which says who exists
- * but not what needs doing, and the one view its markup called dashboard-view
- * was the invoicing one, hidden.
+ * Invoicing opened on its dashboard and had no link to it, so the first click
+ * anywhere was a one-way trip until you reloaded. HR had no dashboard at all -
+ * it opened on the employee list, which says who exists but not what needs
+ * doing.
+ *
+ * Both now live in one app, so what a business sees is decided by its plan
+ * rather than by which file it loaded. That is the part worth pinning: an
+ * HR-only plan must still land somewhere that makes sense, and must not be
+ * shown a Dashboard link into invoicing it cannot open.
  *
  * The nav link has to be in the markup rather than built at runtime: app.js is
  * half a megabyte, and until it has run the browser paints whatever the HTML
@@ -36,7 +40,10 @@ const EMPTY_BOARD = {
     coming_up: { starting: [], interviews: [], expiring_documents: [] },
 };
 
-function boot(page, board) {
+// `modules` is the plan the tenant is on - the same list /api/client/me
+// returns in production, and the only thing that now separates one business's
+// app from another's.
+function boot(page, board, modules) {
     const html = fs.readFileSync(path.join(ROOT, page), 'utf8')
         .replace(/<script[^>]*src=[^>]*><\/script>/g, '');
     const dom = new JSDOM(html, {
@@ -56,7 +63,10 @@ function boot(page, board) {
     w.fetch = (url) => {
         const p = String(url).split('?')[0];
         const body = p === '/api/hr/dashboard' ? (board || EMPTY_BOARD)
-            : p === '/api/client/me' ? { id: 1, email: 'me@example.com' }
+            : p === '/api/client/me' ? {
+                id: 1, email: 'me@example.com',
+                modules: modules || ['invoicing', 'hr'],
+            }
                 : p === '/api/auth/me' ? { user: { email: 'me@example.com' }, client_id: 1 }
                     : (p.endsWith('s') ? [] : {});
         return Promise.resolve({
@@ -73,52 +83,88 @@ function boot(page, board) {
     // --- the link exists in the markup, before any script runs ---------------
     // The header navigates by href now rather than by an onclick, so the
     // route is what says where the link goes.
-    for (const [page, id, route] of [
-        ['app.html', 'nav-dashboard', '#/dashboard'],
-        ['hr.html', 'nav-hr-dashboard', '#/hr'],
-    ]) {
-        const raw = fs.readFileSync(path.join(ROOT, page), 'utf8');
+    {
+        const raw = fs.readFileSync(path.join(ROOT, 'app.html'), 'utf8');
         const dom = new JSDOM(raw.replace(/<script[^>]*src=[^>]*><\/script>/g, ''));
-        const link = dom.window.document.getElementById(id);
-        check(`${page} ships a Dashboard link in its markup`, !!link);
-        check(`${page} link goes to ${route}`,
-            !!link && link.getAttribute('href') === route,
-            link && link.getAttribute('href'));
-        check(`${page} link is labelled Dashboard`,
-            !!link && link.textContent.trim() === 'Dashboard');
+        const doc = dom.window.document;
+
+        for (const [id, route, label] of [
+            ['nav-dashboard', '#/dashboard', 'Dashboard'],
+            ['nav-hr-dashboard', '#/hr', 'HR dashboard'],
+        ]) {
+            const link = doc.getElementById(id);
+            check(`the app ships ${label} in its markup`, !!link);
+            check(`${label} goes to ${route}`,
+                !!link && link.getAttribute('href') === route,
+                link && link.getAttribute('href'));
+            check(`${label} is labelled "${label}"`,
+                !!link && link.textContent.trim() === label,
+                link && link.textContent.trim());
+        }
+
+        // Two entries both reading "Dashboard" is what merging the portals
+        // naively produced, and it told nobody which was which.
+        const labels = Array.from(doc.querySelectorAll('#main-nav .nav-item'))
+            .map(el => el.textContent.trim().toLowerCase());
+        check('no two nav entries share a label',
+            new Set(labels).size === labels.length,
+            labels.filter((l, i) => labels.indexOf(l) !== i).join(', '));
     }
 
     // --- and survives the portal filter --------------------------------------
+    // --- an HR-only plan ----------------------------------------------------
     {
-        const w = boot('hr.html');
+        const w = boot('app.html', null, ['hr']);
         await wait(30);
         const link = w.document.getElementById('nav-hr-dashboard');
-        check('HR keeps its dashboard link after the portal filter runs',
+        check('an HR-only plan keeps the HR dashboard link',
             link.style.display !== 'none', link.style.display);
-        check('and does not show the invoicing one',
+        check('and is not shown the invoicing one it cannot open',
             w.document.getElementById('nav-dashboard').style.display === 'none');
-        check('HR opens on its own dashboard, not the employee list',
+        check('and is not shown Invoices either',
+            w.document.getElementById('nav-invoices').style.display === 'none');
+        check('it opens on the HR dashboard, not the employee list',
             w.document.getElementById('hr-dashboard-view').style.display === 'block',
             w.document.getElementById('hr-dashboard-view').style.display);
-        check('the link is marked active',
+        check('the link it landed on is marked active',
             link.classList.contains('active'));
     }
 
+    // --- an invoicing-only plan ---------------------------------------------
     {
-        const w = boot('app.html');
+        const w = boot('app.html', null, ['invoicing']);
         await wait(30);
-        check('invoicing keeps its dashboard link',
-            w.document.getElementById('nav-dashboard').style.display !== 'none');
-        check('and there is a route back after leaving it', (() => {
+        check('an invoicing-only plan opens on the invoicing dashboard',
+            w.document.getElementById('dashboard-view').style.display === 'block',
+            w.document.getElementById('dashboard-view').style.display);
+        check('and is shown no HR tabs',
+            w.document.getElementById('nav-people').style.display === 'none');
+        check('and there is a route back after leaving the dashboard', (() => {
             w.showView('invoices-view');
             w.showView('dashboard-view');
             return w.document.getElementById('dashboard-view').style.display === 'block';
         })());
     }
 
+    // --- both, which is one app rather than two -----------------------------
+    {
+        const w = boot('app.html');
+        await wait(30);
+        const d = w.document;
+        check('a business on both plans gets both dashboards',
+            d.getElementById('nav-dashboard').style.display !== 'none' &&
+            d.getElementById('nav-hr-dashboard').style.display !== 'none');
+        check('and reaches HR without leaving the page', (() => {
+            w.showView('invoices-view');
+            w.showView('hr-dashboard-view');
+            return d.getElementById('hr-dashboard-view').style.display === 'block'
+                && d.getElementById('invoices-view').style.display === 'none';
+        })());
+    }
+
     // --- an empty tenant reads as calm, not broken ---------------------------
     {
-        const w = boot('hr.html');
+        const w = boot('app.html', null, ['hr']);
         await wait(30);
         check('an empty board says nothing is waiting',
             /nothing is waiting/i.test(w.document.getElementById('hr-dash-subtitle').textContent),
@@ -131,7 +177,7 @@ function boot(page, board) {
 
     // --- a working day ------------------------------------------------------
     {
-        const w = boot('hr.html', {
+        const w = boot('app.html', {
             headcount: { total: 12, active: 9, onboarding: 2, offboarding: 1 },
             today: {
                 expected: 11, clocked_in: 6,
@@ -147,7 +193,7 @@ function boot(page, board) {
                 starting: [{ name: 'Nia Okoro', date: '2026-08-24', title: 'Analyst' }],
                 interviews: [], expiring_documents: [],
             },
-        });
+        }, ['hr']);
         await wait(30);
 
         const sub = w.document.getElementById('hr-dash-subtitle').textContent;
@@ -187,11 +233,11 @@ function boot(page, board) {
 
     // --- a failed call does not leave it looking loaded ----------------------
     {
-        const html = fs.readFileSync(path.join(ROOT, 'hr.html'), 'utf8')
+        const html = fs.readFileSync(path.join(ROOT, 'app.html'), 'utf8')
             .replace(/<script[^>]*src=[^>]*><\/script>/g, '');
         const dom = new JSDOM(html, {
             runScripts: 'outside-only', pretendToBeVisual: true,
-            url: 'https://localhost/hr.html',
+            url: 'https://localhost/app.html',
         });
         const w = dom.window;
         // Shaped like the real Chart.js: the app sets Chart.defaults before drawing,
@@ -205,6 +251,10 @@ function boot(page, board) {
         w.fetch = () => Promise.reject(new Error('offline'));
         w.eval(fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8'));
         w.document.dispatchEvent(new w.Event('DOMContentLoaded', { bubbles: true }));
+        await wait(30);
+        // With the plan call down too the app falls back to showing everything,
+        // so it lands on the invoicing dashboard. Go to the HR one deliberately.
+        w.showView('hr-dashboard-view');
         await wait(30);
         check('an unreachable server says so rather than showing "Loading..." forever',
             /could not load/i.test(w.document.getElementById('hr-dash-subtitle').textContent),

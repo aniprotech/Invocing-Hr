@@ -19,18 +19,18 @@
             align-items: center;
             justify-content: center;
             background-image:
-                radial-gradient(ellipse 80% 50% at 50% -20%, rgba(120, 119, 198, 0.15), transparent),
-                radial-gradient(ellipse 60% 40% at 80% 60%, rgba(0, 240, 255, 0.05), transparent);
+                radial-gradient(ellipse 80% 50% at 50% -20%, rgba(14, 165, 233, 0.15), transparent),
+                radial-gradient(ellipse 60% 40% at 80% 60%, rgba(56, 189, 248, 0.05), transparent);
             padding: 24px;
         }
         .onboard-container { width: 100%; max-width: 600px; }
         .onboard-card {
             background: rgba(15, 23, 42, 0.8);
-            border: 1px solid rgba(255,255,255,0.08);
+            border: 1px solid rgba(255, 255, 255, 0.08);
             border-radius: 20px;
             padding: 48px 40px;
             backdrop-filter: blur(20px);
-            box-shadow: 0 25px 60px rgba(0,0,0,0.5);
+            box-shadow: 0 25px 60px rgba(0, 0, 0, 0.5);
         }
         .progress-bar {
             display: flex;
@@ -40,12 +40,12 @@
         .progress-step {
             flex: 1;
             height: 4px;
-            background: rgba(255,255,255,0.1);
+            background: rgba(255, 255, 255, 0.1);
             border-radius: 2px;
             transition: background 0.3s;
         }
-        .progress-step.active { background: linear-gradient(90deg, #00f0ff, #7877c6); }
-        .progress-step.done { background: #39ff14; }
+        .progress-step.active { background: linear-gradient(90deg, #38bdf8, #0ea5e9); }
+        .progress-step.done { background: #34d399; }
         .step-title {
             font-size: 1.5rem;
             font-weight: 700;
@@ -70,8 +70,8 @@
         .form-control {
             width: 100%;
             padding: 12px 16px;
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.1);
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 10px;
             color: #f8fafc;
             font-size: 0.95rem;
@@ -80,14 +80,14 @@
             outline: none;
         }
         .form-control:focus {
-            border-color: #00f0ff;
-            box-shadow: 0 0 0 3px rgba(0, 240, 255, 0.1);
+            border-color: #38bdf8;
+            box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.1);
         }
         .form-control::placeholder { color: #475569; }
         .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
         @media (max-width: 768px) { .form-row { grid-template-columns: 1fr; } }
         .logo-upload {
-            border: 2px dashed rgba(255,255,255,0.1);
+            border: 2px dashed rgba(255, 255, 255, 0.1);
             border-radius: 16px;
             padding: 32px;
             text-align: center;
@@ -96,18 +96,18 @@
             position: relative;
             overflow: hidden;
         }
-        .logo-upload:hover { border-color: #00f0ff; background: rgba(0, 240, 255, 0.03); }
+        .logo-upload:hover { border-color: #38bdf8; background: rgba(56, 189, 248, 0.03); }
         .logo-upload input { display: none; }
         .logo-upload .upload-icon {
             width: 64px; height: 64px;
-            background: rgba(0, 240, 255, 0.1);
+            background: rgba(56, 189, 248, 0.1);
             border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
             margin: 0 auto 16px;
         }
-        .logo-upload .upload-icon svg { width: 28px; height: 28px; color: #00f0ff; }
+        .logo-upload .upload-icon svg { width: 28px; height: 28px; color: #38bdf8; }
         .logo-upload p { color: #94a3b8; font-size: 0.9rem; }
         .logo-upload .hint { font-size: 0.75rem; color: #475569; margin-top: 4px; }
         .logo-preview {
@@ -125,7 +125,7 @@
         .btn-primary {
             flex: 1;
             padding: 14px;
-            background: linear-gradient(135deg, #00f0ff, #7877c6);
+            background: linear-gradient(135deg, #38bdf8, #0ea5e9);
             color: #0b0f19;
             border: none;
             border-radius: 10px;
@@ -135,28 +135,28 @@
             transition: all 0.3s;
             font-family: inherit;
         }
-        .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(0, 240, 255, 0.3); }
+        .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(56, 189, 248, 0.3); }
         .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
         .btn-skip {
             padding: 14px 24px;
             background: transparent;
             color: #64748b;
-            border: 1px solid rgba(255,255,255,0.1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 10px;
             font-size: 0.9rem;
             cursor: pointer;
             font-family: inherit;
             transition: all 0.2s;
         }
-        .btn-skip:hover { color: #e2e8f0; border-color: rgba(255,255,255,0.2); }
+        .btn-skip:hover { color: #e2e8f0; border-color: rgba(255, 255, 255, 0.2); }
         .step { display: none; }
         .step.active { display: block; }
         .welcome-badge {
             display: inline-flex;
             align-items: center;
             gap: 6px;
-            background: rgba(57, 255, 20, 0.1);
-            color: #39ff14;
+            background: rgba(52, 211, 153, 0.1);
+            color: #34d399;
             padding: 6px 14px;
             border-radius: 20px;
             font-size: 0.8rem;
@@ -164,11 +164,11 @@
             margin-bottom: 16px;
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=99">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=99">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=99">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=99">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=99">
+    <link rel="stylesheet" href="mobile.css?v=101">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=101">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=101">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=101">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=101">
 </head>
 <body>
     <div class="onboard-container">

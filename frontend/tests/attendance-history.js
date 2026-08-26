@@ -14,11 +14,11 @@ const { jsPDF } = require('jspdf');
 const ROOT = path.resolve(__dirname, '..');
 
 function boot() {
-    const html = fs.readFileSync(path.join(ROOT, 'hr.html'), 'utf8')
+    const html = fs.readFileSync(path.join(ROOT, 'app.html'), 'utf8')
         .replace(/<script[^>]*src=[^>]*><\/script>/g, '');
     const dom = new JSDOM(html, {
         runScripts: 'outside-only', pretendToBeVisual: true,
-        url: 'https://localhost/hr.html',
+        url: 'https://localhost/app.html',
     });
     const w = dom.window;
     w.jspdf = { jsPDF };

@@ -453,7 +453,11 @@ function isViewAvailable(viewId) {
 }
 
 function defaultView() {
-    return window.location.pathname.includes('hr.html') ? 'hr-dashboard-view' : 'dashboard-view';
+    // Whichever dashboard this business actually has. It used to be decided
+    // by the filename, which is why an HR-only tenant opening the app landed
+    // on an invoicing dashboard with nothing on it.
+    if (!hasModule('invoicing') && hasModule('hr')) return 'hr-dashboard-view';
+    return 'dashboard-view';
 }
 
 // Back and Forward. Both events are listened for because a hash change made
@@ -776,19 +780,47 @@ function goToEmployees(statusFilter) {
 }
 window.goToEmployees = goToEmployees;
 
-function enforcePortalSeparation() {
-    var isHrPortal = window.location.pathname.includes('hr.html');
-    var targetPortal = isHrPortal ? 'hr' : 'invoicing';
+// What this business has bought. Invoicing and HR used to be two pages with
+// two logins, so "which do I have" was answered by which URL you opened - the
+// same account saw a different product at a different address, and anybody
+// with both had to sign in twice. They are one app now, and the plan decides
+// what is in it.
+//
+// Everything until the answer arrives, because starting from nothing makes
+// the header flash empty on every load for the tenants who have it all.
+var _modules = ['invoicing', 'hr'];
 
-    var navItems = document.querySelectorAll('.nav-item');
-    navItems.forEach(function(item) {
-        var portal = item.getAttribute('data-portal');
-        if (portal === targetPortal || portal === 'shared') {
-            item.style.display = '';
-        } else if (portal) {
-            item.style.display = 'none';
-        }
+function hasModule(name) {
+    return _modules.indexOf(name) !== -1;
+}
+window.hasModule = hasModule;
+
+function applyModuleAccess(modules) {
+    if (Array.isArray(modules) && modules.length) _modules = modules;
+
+    document.querySelectorAll('.nav-item').forEach(function (item) {
+        var needs = item.getAttribute('data-portal');
+        // 'shared' belongs to everyone, and an item with no tag is not ours
+        // to hide.
+        item.style.display = (!needs || needs === 'shared' || hasModule(needs))
+            ? '' : 'none';
     });
+
+    // A heading with nothing left under it is a menu that opens onto nothing.
+    document.querySelectorAll('.nav-group').forEach(function (group) {
+        var live = group.querySelectorAll('.nav-group-menu .nav-item');
+        var anyVisible = Array.prototype.some.call(live, function (el) {
+            return el.style.display !== 'none';
+        });
+        group.style.display = anyVisible ? '' : 'none';
+    });
+}
+window.applyModuleAccess = applyModuleAccess;
+
+// The name kept, because the rest of the app calls it. What it means has
+// changed: not which page you are on, but what you pay for.
+function enforcePortalSeparation() {
+    applyModuleAccess(_modules);
 }
 window.enforcePortalSeparation = enforcePortalSeparation;
 
@@ -850,7 +882,8 @@ async function fetchDashboardData() {
         var response = await fetch('/api/dashboard-summary');
         if (!response.ok) {
             var container = document.getElementById('cash-flow-container');
-            var loginLink = window.location.pathname.includes('hr.html') ? '/hr-login.html' : '/login.html';
+            // One sign-in for the business now, whichever screen they were on.
+            var loginLink = '/login.html';
             if (container) container.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:40px;"><a href="' + loginLink + '" style="color:var(--accent-cyan);">Sign in</a> to view dashboard</div>';
             return;
         }
@@ -862,8 +895,9 @@ async function fetchDashboardData() {
     }
 }
 
-// Small helper so a missing element on one portal's dashboard never aborts the
-// rest of the render (app.html and hr.html share this code but differ slightly).
+// Small helper so a missing element never aborts the rest of the render. The
+// two dashboards are on the same page now, but only one of them is built at a
+// time, so half these ids are always absent.
 function setText(id, value) {
     var el = document.getElementById(id);
     if (el) el.textContent = value;
@@ -1035,7 +1069,7 @@ function showSearchResults(results, q) {
     if (!bar) return;
     var dropdown = document.createElement('div');
     dropdown.id = 'search-results-dropdown';
-    dropdown.style.cssText = 'position:absolute;top:100%;left:0;right:0;margin-top:4px;background:rgba(17,24,39,0.98);backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,0.12);border-radius:12px;max-height:400px;overflow-y:auto;z-index:9999;box-shadow:0 8px 32px rgba(0,0,0,0.5);';
+    dropdown.style.cssText = 'position:absolute;top:100%;left:0;right:0;margin-top:4px;background:rgba(22, 31, 45, 0.98);backdrop-filter:blur(16px);border:1px solid rgba(255, 255, 255, 0.12);border-radius:12px;max-height:400px;overflow-y:auto;z-index:9999;box-shadow:0 8px 32px rgba(0, 0, 0, 0.5);';
     if (results.length === 0) {
         dropdown.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-secondary);font-size:0.85rem;">No results for "' + esc(q) + '"</div>';
     } else {
@@ -1059,7 +1093,7 @@ function showSearchResults(results, q) {
                         '<div style="font-size:0.85rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + highlight + '</div>' +
                         (r.sub ? '<div style="font-size:0.75rem;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(r.sub) + '</div>' : '') +
                     '</div>' +
-                    (r.status ? '<span style="margin-left:auto;font-size:0.7rem;padding:2px 6px;border-radius:8px;background:rgba(255,255,255,0.08);color:var(--text-secondary);">' + esc(r.status) + '</span>' : '') +
+                    (r.status ? '<span style="margin-left:auto;font-size:0.7rem;padding:2px 6px;border-radius:8px;background:rgba(255, 255, 255, 0.08);color:var(--text-secondary);">' + esc(r.status) + '</span>' : '') +
                 '</div>';
             });
         }
@@ -1069,7 +1103,7 @@ function showSearchResults(results, q) {
     bar.appendChild(dropdown);
     var items = dropdown.querySelectorAll('.search-result-item');
     items.forEach(function(item) {
-        item.addEventListener('mouseenter', function() { item.style.background = 'rgba(255,255,255,0.08)'; });
+        item.addEventListener('mouseenter', function() { item.style.background = 'rgba(255, 255, 255, 0.08)'; });
         item.addEventListener('mouseleave', function() { item.style.background = 'transparent'; });
     });
 }
@@ -1355,8 +1389,8 @@ function renderInvoicePayments(inv) {
     var sym = getCurrencySymbol();
     var html = '';
     if (inv.is_overdue) {
-        html += '<div style="padding:10px 14px;border-radius:8px;background:rgba(239,68,68,0.12);' +
-                'border:1px solid rgba(239,68,68,0.35);color:var(--danger-color);font-size:0.85rem;' +
+        html += '<div style="padding:10px 14px;border-radius:8px;background:rgba(244, 63, 94, 0.12);' +
+                'border:1px solid rgba(244, 63, 94, 0.35);color:var(--danger-color);font-size:0.85rem;' +
                 'font-weight:600;margin-bottom:10px;">Overdue by ' + inv.days_overdue +
                 ' day' + (inv.days_overdue === 1 ? '' : 's') + ' — ' + sym + (inv.due || 0).toFixed(2) + ' outstanding</div>';
     }
@@ -2633,10 +2667,10 @@ async function loadReports() {
         var chartEl = document.getElementById('reports-status-chart');
         if (chartEl) {
             var html = '<div style="display:flex;flex-direction:column;gap:12px;">';
-            var colors = { 'Draft': '#94a3b8', 'Sent': '#00f0ff', 'Awaiting Payment': '#fcd34d', 'Paid': '#39ff14' };
+            var colors = { 'Draft': '#94a3b8', 'Sent': '#38bdf8', 'Awaiting Payment': '#fbbf24', 'Paid': '#34d399' };
             for (var status in statusCounts) {
                 var pct = Math.round((statusCounts[status] / invoices.length) * 100);
-                html += '<div><div style="display:flex;justify-content:space-between;margin-bottom:4px;"><span>' + status + '</span><span>' + statusCounts[status] + ' (' + pct + '%)</span></div><div style="height:8px;background:rgba(255,255,255,0.1);border-radius:4px;overflow:hidden;"><div style="height:100%;width:' + pct + '%;background:' + (colors[status] || '#94a3b8') + ';border-radius:4px;"></div></div></div>';
+                html += '<div><div style="display:flex;justify-content:space-between;margin-bottom:4px;"><span>' + status + '</span><span>' + statusCounts[status] + ' (' + pct + '%)</span></div><div style="height:8px;background:rgba(255, 255, 255, 0.1);border-radius:4px;overflow:hidden;"><div style="height:100%;width:' + pct + '%;background:' + (colors[status] || '#94a3b8') + ';border-radius:4px;"></div></div></div>';
             }
             html += '</div>';
             chartEl.innerHTML = html;
@@ -3279,7 +3313,7 @@ window.populateLevelRoleSelects = populateLevelRoleSelects;
 function levelBadge(level) {
     if (!level) return '';
     return '<span style="display:inline-block;padding:2px 7px;border-radius:5px;font-size:0.7rem;' +
-           'font-weight:700;background:rgba(0,240,255,0.15);color:var(--primary-color);' +
+           'font-weight:700;background:rgba(56, 189, 248, 0.15);color:var(--primary-color);' +
            'margin-left:6px;">' + esc(level) + '</span>';
 }
 window.levelBadge = levelBadge;
@@ -3528,9 +3562,9 @@ var deptIcons = [
     { id: 'heart', svg: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>' },
     { id: 'rocket', svg: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/></svg>' },
 ];
-var deptColors = ['#00f0ff','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#f97316','#06b6d4','#84cc16','#6366f1'];
+var deptColors = ['#38bdf8', '#34d399', '#fbbf24', '#fb7185', '#0284c7', '#7dd3fc', '#fb923c', '#0369a1', '#a3e635', '#075985'];
 var editingDeptId = null;
-var selectedDeptColor = '#00f0ff';
+var selectedDeptColor = '#38bdf8';
 var selectedDeptIcon = 'building';
 
 var allDepartments = [];
@@ -3560,7 +3594,7 @@ function renderDepartments(depts) {
     grid.style.display = 'grid';
     depts.forEach(function(d) {
         var iconObj = deptIcons.find(function(i) { return i.id === d.icon; }) || deptIcons[0];
-        var color = d.color || '#00f0ff';
+        var color = d.color || '#38bdf8';
         grid.insertAdjacentHTML('beforeend',
             '<div class="dept-card" onclick="openDeptDetail(' + d.id + ')" style="background:var(--surface-color);border:1px solid var(--border-color);border-radius:var(--radius-lg);padding:24px;cursor:pointer;transition:all 0.2s;border-top:3px solid ' + color + ';">' +
                 '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">' +
@@ -3569,7 +3603,7 @@ function renderDepartments(depts) {
                     '<div style="font-size:0.78rem;color:var(--text-secondary);">' + esc(d.description || 'No description') + '</div></div>' +
                 '</div>' +
                 '<div style="display:flex;align-items:center;gap:8px;">' +
-                    '<div style="width:32px;height:32px;border-radius:8px;background:rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center;font-size:0.85rem;font-weight:600;">' + (d.employee_count || 0) + '</div>' +
+                    '<div style="width:32px;height:32px;border-radius:8px;background:rgba(255, 255, 255, 0.06);display:flex;align-items:center;justify-content:center;font-size:0.85rem;font-weight:600;">' + (d.employee_count || 0) + '</div>' +
                     '<div style="font-size:0.82rem;color:var(--text-secondary);">' + (d.employee_count === 1 ? 'employee' : 'employees') + '</div>' +
                 '</div>' +
                 '</div>'
@@ -3592,7 +3626,7 @@ function openDeptModal(dept) {
     document.getElementById('dept-modal-title').textContent = dept ? 'Edit Department' : 'Add Department';
     document.getElementById('dept-name').value = dept ? dept.name : '';
     document.getElementById('dept-desc').value = dept ? (dept.description || '') : '';
-    selectedDeptColor = dept ? (dept.color || '#00f0ff') : '#00f0ff';
+    selectedDeptColor = dept ? (dept.color || '#38bdf8') : '#38bdf8';
     selectedDeptIcon = dept ? (dept.icon || 'building') : 'building';
     renderDeptColorPicker();
     renderDeptIconPicker();
@@ -3629,7 +3663,7 @@ function renderDeptIconPicker() {
     deptIcons.forEach(function(i) {
         var isSelected = i.id === selectedDeptIcon;
         el.insertAdjacentHTML('beforeend',
-            '<div onclick="selectDeptIcon(\'' + i.id + '\')" style="width:36px;height:36px;border-radius:8px;background:' + (isSelected ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.05)') + ';display:flex;align-items:center;justify-content:center;cursor:pointer;border:2px solid ' + (isSelected ? selectedDeptColor : 'transparent') + ';transition:all 0.15s;">' + i.svg + '</div>'
+            '<div onclick="selectDeptIcon(\'' + i.id + '\')" style="width:36px;height:36px;border-radius:8px;background:' + (isSelected ? 'rgba(255, 255, 255, 0.15)' : 'rgba(255, 255, 255, 0.05)') + ';display:flex;align-items:center;justify-content:center;cursor:pointer;border:2px solid ' + (isSelected ? selectedDeptColor : 'transparent') + ';transition:all 0.15s;">' + i.svg + '</div>'
         );
     });
 }
@@ -3672,8 +3706,8 @@ async function openDeptDetail(id) {
         document.getElementById('dept-detail-desc').textContent = d.description || 'No description';
         document.getElementById('dept-detail-edit-btn').onclick = function() { closeDeptDetail(); openDeptModal(d); };
         document.getElementById('dept-detail-stats').innerHTML =
-            '<div style="background:rgba(255,255,255,0.04);border-radius:10px;padding:14px;"><div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:4px;">Team Size</div><div style="font-size:1.4rem;font-weight:700;">' + d.employee_count + '</div></div>' +
-            '<div style="background:rgba(255,255,255,0.04);border-radius:10px;padding:14px;"><div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:4px;">Created</div><div style="font-size:0.85rem;font-weight:500;">' + (d.created_at || 'Unknown').split(' ')[0] + '</div></div>';
+            '<div style="background:rgba(255, 255, 255, 0.04);border-radius:10px;padding:14px;"><div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:4px;">Team Size</div><div style="font-size:1.4rem;font-weight:700;">' + d.employee_count + '</div></div>' +
+            '<div style="background:rgba(255, 255, 255, 0.04);border-radius:10px;padding:14px;"><div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:4px;">Created</div><div style="font-size:0.85rem;font-weight:500;">' + (d.created_at || 'Unknown').split(' ')[0] + '</div></div>';
         var empList = document.getElementById('dept-detail-employees');
         empList.innerHTML = '';
         if (d.employees.length === 0) {
@@ -3757,15 +3791,15 @@ function renderOnboardingHub() {
         list.insertAdjacentHTML('beforeend',
             '<div class="widget" style="padding:16px 20px;margin-bottom:12px;cursor:pointer;" onclick="openOnbEmpDetail(' + e.id + ')">' +
                 '<div style="display:flex;align-items:center;gap:16px;">' +
-                    '<div style="width:42px;height:42px;border-radius:10px;background:rgba(0,240,255,0.1);color:var(--primary-color);display:flex;align-items:center;justify-content:center;font-weight:600;">' + (e.name || '?')[0].toUpperCase() + '</div>' +
+                    '<div style="width:42px;height:42px;border-radius:10px;background:rgba(56, 189, 248, 0.1);color:var(--primary-color);display:flex;align-items:center;justify-content:center;font-weight:600;">' + (e.name || '?')[0].toUpperCase() + '</div>' +
                     '<div style="flex:1;min-width:0;">' +
                         '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">' +
                             '<span style="font-weight:600;font-size:0.95rem;">' + esc(e.name) + '</span>' +
-                            '<span style="font-size:0.75rem;padding:2px 8px;border-radius:6px;background:rgba(255,255,255,0.08);color:var(--text-secondary);">' + esc(e.department || 'No dept') + '</span>' +
-                            (e.overdue > 0 ? '<span style="font-size:0.72rem;padding:2px 8px;border-radius:6px;background:rgba(239,68,68,0.15);color:var(--danger-color);">' + e.overdue + ' overdue</span>' : '') +
+                            '<span style="font-size:0.75rem;padding:2px 8px;border-radius:6px;background:rgba(255, 255, 255, 0.08);color:var(--text-secondary);">' + esc(e.department || 'No dept') + '</span>' +
+                            (e.overdue > 0 ? '<span style="font-size:0.72rem;padding:2px 8px;border-radius:6px;background:rgba(244, 63, 94, 0.15);color:var(--danger-color);">' + e.overdue + ' overdue</span>' : '') +
                         '</div>' +
                         '<div style="display:flex;align-items:center;gap:12px;">' +
-                            '<div style="flex:1;height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden;">' +
+                            '<div style="flex:1;height:6px;background:rgba(255, 255, 255, 0.08);border-radius:3px;overflow:hidden;">' +
                                 '<div style="height:100%;width:' + e.progress + '%;background:' + barColor + ';border-radius:3px;transition:width 0.4s;"></div>' +
                             '</div>' +
                             '<span style="font-size:0.82rem;font-weight:600;color:' + barColor + ';">' + e.completed + '/' + e.total + '</span>' +
@@ -3805,7 +3839,7 @@ async function openOnbEmpDetail(empId) {
                 '<span style="font-size:0.85rem;color:var(--text-secondary);">Progress</span>' +
                 '<span style="font-weight:600;color:' + barColor + ';">' + pct + '% (' + completed + '/' + items.length + ')</span>' +
             '</div>' +
-            '<div style="height:8px;background:rgba(255,255,255,0.08);border-radius:4px;overflow:hidden;">' +
+            '<div style="height:8px;background:rgba(255, 255, 255, 0.08);border-radius:4px;overflow:hidden;">' +
                 '<div style="height:100%;width:' + pct + '%;background:' + barColor + ';border-radius:4px;transition:width 0.4s;"></div>' +
             '</div>';
         var list = document.getElementById('onb-emp-items');
@@ -3821,7 +3855,7 @@ async function openOnbEmpDetail(empId) {
             categories[cat].forEach(function(item) {
                 var isOverdue = !item.is_completed && item.due_date && item.due_date < localDate(new Date());
                 list.insertAdjacentHTML('beforeend',
-                    '<div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;margin-bottom:6px;background:rgba(255,255,255,0.02);">' +
+                    '<div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;margin-bottom:6px;background:rgba(255, 255, 255, 0.02);">' +
                         '<input type="checkbox" ' + (item.is_completed ? 'checked' : '') + ' onchange="toggleOnbItem(' + item.id + ', this.checked)" style="accent-color:var(--primary-color);cursor:pointer;">' +
                         '<div style="flex:1;min-width:0;">' +
                             '<div style="font-size:0.9rem;' + (item.is_completed ? 'text-decoration:line-through;color:var(--text-secondary);' : '') + '">' + item.title + '</div>' +
@@ -4719,7 +4753,7 @@ async function loadAttendanceButtons() {
         }
         activeEmps.forEach(function(e) {
             var initials = (e.first_name[0] || '') + (e.last_name[0] || '');
-            container.insertAdjacentHTML('beforeend', '<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;background:rgba(255,255,255,0.03);border:1px solid var(--border-color);border-radius:var(--radius-md);min-width:280px;"><div style="width:40px;height:40px;border-radius:50%;background:var(--primary-color);color:#0b0f19;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.85rem;flex-shrink:0;">' + esc(initials) + '</div><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:0.9rem;">' + esc(e.first_name) + ' ' + esc(e.last_name) + '</div><div style="font-size:0.78rem;color:var(--text-secondary);">' + esc(e.job_title || e.email || '') + '</div></div><button class="btn btn-outline btn-sm" onclick="clockInOut(' + e.id + ')" id="att-btn-' + e.id + '" style="flex-shrink:0;">Clock In</button></div>');
+            container.insertAdjacentHTML('beforeend', '<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;background:rgba(255, 255, 255, 0.03);border:1px solid var(--border-color);border-radius:var(--radius-md);min-width:280px;"><div style="width:40px;height:40px;border-radius:50%;background:var(--primary-color);color:#0b0f19;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.85rem;flex-shrink:0;">' + esc(initials) + '</div><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:0.9rem;">' + esc(e.first_name) + ' ' + esc(e.last_name) + '</div><div style="font-size:0.78rem;color:var(--text-secondary);">' + esc(e.job_title || e.email || '') + '</div></div><button class="btn btn-outline btn-sm" onclick="clockInOut(' + e.id + ')" id="att-btn-' + e.id + '" style="flex-shrink:0;">Clock In</button></div>');
         });
     } catch (e) { console.error('Attendance buttons error:', e); }
 }
@@ -4856,9 +4890,9 @@ function renderOrgTreeNode(emp, depth) {
     wrapper.style.cssText = 'display:inline-flex;flex-direction:column;align-items:center;position:relative;';
     var node = document.createElement('div');
     node.className = 'org-node';
-    node.style.cssText = 'cursor:pointer;padding:14px 20px;border-radius:12px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);text-align:center;min-width:160px;transition:all 0.2s;';
+    node.style.cssText = 'cursor:pointer;padding:14px 20px;border-radius:12px;background:rgba(255, 255, 255, 0.05);border:1px solid rgba(255, 255, 255, 0.1);text-align:center;min-width:160px;transition:all 0.2s;';
     node.onmouseover = function() { this.style.borderColor = 'var(--primary-color)'; this.style.transform = 'translateY(-2px)'; };
-    node.onmouseout = function() { this.style.borderColor = 'rgba(255,255,255,0.1)'; this.style.transform = 'none'; };
+    node.onmouseout = function() { this.style.borderColor = 'rgba(255, 255, 255, 0.1)'; this.style.transform = 'none'; };
     node.setAttribute('onclick', 'viewEmployee(' + emp.id + ')');
     node.innerHTML = '<div class="org-name" style="font-weight:700;font-size:0.9rem;">' + esc(emp.name) + levelBadge(emp.level) + '</div>' +
         '<div class="org-title" style="font-size:0.78rem;color:var(--text-secondary);margin-top:2px;">' + esc(emp.job_title || '-') + '</div>' +
@@ -4867,12 +4901,12 @@ function renderOrgTreeNode(emp, depth) {
     wrapper.appendChild(node);
     if (hasChildren) {
         var line = document.createElement('div');
-        line.style.cssText = 'width:2px;height:20px;background:rgba(255,255,255,0.15);margin:0 auto;';
+        line.style.cssText = 'width:2px;height:20px;background:rgba(255, 255, 255, 0.15);margin:0 auto;';
         wrapper.appendChild(line);
         var childrenRow = document.createElement('div');
         childrenRow.style.cssText = 'display:flex;gap:20px;justify-content:center;position:relative;';
         childrenRow.style.paddingTop = '10px';
-        childrenRow.style.borderTop = '2px solid rgba(255,255,255,0.1)';
+        childrenRow.style.borderTop = '2px solid rgba(255, 255, 255, 0.1)';
         emp.children.forEach(function(child) {
             childrenRow.appendChild(renderOrgTreeNode(child, depth + 1));
         });
@@ -5042,14 +5076,14 @@ async function loadLiveAttendance() {
         var data = Array.isArray(payload) ? payload : [];
         var grid = document.getElementById('live-attendance-grid');
         if (!grid) return;
-        var colors = { present: '#10b981', absent: '#ef4444', completed: '#3b82f6' };
+        var colors = { present: '#34d399', absent: '#f43f5e', completed: '#0284c7' };
         var icons = { office: 'bi-building', remote: 'bi-house', field: 'bi-geo', manual: 'bi-clock' };
         var working = 0;
         grid.innerHTML = data.map(function(emp) {
             var isWorking = emp.clock_in && !emp.clock_out;
             if (isWorking) working++;
-            var borderColor = isWorking ? '#10b981' : (emp.clock_out ? '#3b82f6' : '#e2e8f0');
-            var statusColor = isWorking ? '#10b981' : (emp.clock_out ? '#3b82f6' : '#94a3b8');
+            var borderColor = isWorking ? '#34d399' : (emp.clock_out ? '#0284c7' : '#e2e8f0');
+            var statusColor = isWorking ? '#34d399' : (emp.clock_out ? '#0284c7' : '#94a3b8');
             return '<div style="background:#fff;border:2px solid ' + borderColor + ';border-radius:12px;padding:16px;position:relative;">' +
                 '<div style="position:absolute;top:12px;right:12px;width:10px;height:10px;border-radius:50%;background:' + statusColor + ';"></div>' +
                 '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">' +
@@ -5094,7 +5128,7 @@ async function loadAttendanceAnalytics() {
                     var pct = (d[1].present / maxPresent) * 100;
                     return '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;">' +
                         '<div style="font-size:0.7rem;font-weight:600;color:#334155;">' + d[1].present + '</div>' +
-                        '<div style="width:100%;height:' + pct + '%;background:linear-gradient(180deg,#4361ee,#3a56d4);border-radius:4px 4px 0 0;min-height:4px;"></div>' +
+                        '<div style="width:100%;height:' + pct + '%;background:linear-gradient(180deg,#0ea5e9,#0284c7);border-radius:4px 4px 0 0;min-height:4px;"></div>' +
                         '<div style="font-size:0.65rem;color:#64748b;text-align:center;">' + d[0].slice(5) + '</div>' +
                     '</div>';
                 }).join('') +
@@ -5245,7 +5279,10 @@ window.exportAttendance = exportAttendance;
 // broken app rather than "you need to sign in".
 
 function portalLoginPage() {
-    return window.location.pathname.indexOf('hr.html') >= 0 ? '/hr-login.html' : '/login.html';
+    // Kept as a function because the callers read better for it, but there is
+    // only one door: invoicing and HR stopped being separate products with
+    // separate accounts.
+    return '/login.html';
 }
 
 async function requireAuth() {
@@ -5308,12 +5345,12 @@ async function showImpersonationBannerIfNeeded() {
     bar.style.cssText =
         'position:sticky;top:0;z-index:10000;display:flex;gap:12px;align-items:center;' +
         'flex-wrap:wrap;padding:10px 16px;background:#b45309;color:#fff;' +
-        'font-size:0.85rem;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+        'font-size:0.85rem;font-weight:600;box-shadow:0 2px 8px rgba(0, 0, 0, 0.3);';
     bar.innerHTML =
         '<span>You are viewing <strong>' + esc(who) + '</strong> as an operator. ' +
         'Anything you change here changes their account.</span>' +
         '<button type="button" id="impersonation-exit" style="margin-left:auto;' +
-        'background:rgba(0,0,0,0.25);color:#fff;border:1px solid rgba(255,255,255,0.4);' +
+        'background:rgba(0, 0, 0, 0.25);color:#fff;border:1px solid rgba(255, 255, 255, 0.4);' +
         'border-radius:6px;padding:5px 14px;cursor:pointer;font:inherit;">' +
         'Return to admin</button>';
     document.body.insertBefore(bar, document.body.firstChild);
@@ -5342,6 +5379,21 @@ document.addEventListener('DOMContentLoaded', async function() {
     // Nothing else runs until we know there is a session, so the page
     // never renders an empty shell behind a redirect.
     if (!(await requireAuth())) return;
+
+    // The plan, before anything is drawn from it. Awaited rather than left to
+    // resolve, because the alternative is the full menu appearing and then
+    // half of it vanishing - which looks like a fault rather than a plan.
+    try {
+        var meRes = await fetch('/api/client/me', { credentials: 'same-origin' });
+        if (meRes.ok) {
+            var me = await meRes.json();
+            if (Array.isArray(me.modules)) applyModuleAccess(me.modules);
+        }
+    } catch (e) {
+        // Keep the full menu. A network blip is not a downgrade, and the
+        // server refuses anything they are not entitled to anyway.
+    }
+
     registerServiceWorker();
     // Before anything is rendered from the tenant's data, say whose it is.
     showImpersonationBannerIfNeeded();
@@ -5532,10 +5584,10 @@ function removeRecStage(idx) {
 function renderRecStages() {
     var container = document.getElementById('rec-stages-list');
     if (!recFormStages.length) { container.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem;">No stages defined.</p>'; return; }
-    var stageColors = ['#6366f1', '#f59e0b', '#3b82f6', '#8b5cf6', '#10b981', '#ef4444', '#ec4899', '#06b6d4'];
+    var stageColors = ['#38bdf8', '#34d399', '#fbbf24', '#fb7185', '#0284c7', '#7dd3fc', '#fb923c', '#0369a1', '#a3e635', '#075985'];
     container.innerHTML = recFormStages.map(function(s, i) {
         var color = stageColors[i % stageColors.length];
-        return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:6px 10px;">' +
+        return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;background:rgba(255, 255, 255, 0.03);border:1px solid rgba(255, 255, 255, 0.08);border-radius:8px;padding:6px 10px;">' +
             '<span style="width:12px;height:12px;border-radius:50%;background:' + color + ';flex-shrink:0;"></span>' +
             '<input type="text" value="' + esc(s) + '" class="form-control" style="flex:1;padding:4px 8px;font-size:0.85rem;" onchange="recFormStages[' + i + ']=this.value">' +
             (i > 0 ? '<button class="btn-icon" onclick="moveRecStageUp(' + i + ')" style="color:var(--text-secondary);font-size:0.9rem;" title="Move up">&#9650;</button>' : '<span style="width:24px;"></span>') +
@@ -5680,7 +5732,7 @@ function renderRecSubs(subs) {
         var d = new Date(s.created_at);
         var stage = s.current_stage || 'Applied';
         var stageIdx = recCurrentPipelineStages.indexOf(stage);
-        var stageColors = ['#6366f1', '#f59e0b', '#3b82f6', '#8b5cf6', '#10b981', '#ef4444', '#ec4899', '#06b6d4'];
+        var stageColors = ['#38bdf8', '#34d399', '#fbbf24', '#fb7185', '#0284c7', '#7dd3fc', '#fb923c', '#0369a1', '#a3e635', '#075985'];
         var stageColor = stageColors[stageIdx >= 0 ? stageIdx % stageColors.length : 0];
         return '<tr>' +
             '<td>' + esc(s.candidate_name || '-') + '</td>' +
@@ -5714,7 +5766,7 @@ async function loadRecPipeline() {
         var stages = data.stages || recCurrentPipelineStages;
         var pipeline = data.pipeline || {};
         var board = document.getElementById('rec-pipeline-board');
-        var stageColors = ['#6366f1', '#f59e0b', '#3b82f6', '#8b5cf6', '#10b981', '#ef4444', '#ec4899', '#06b6d4'];
+        var stageColors = ['#38bdf8', '#34d399', '#fbbf24', '#fb7185', '#0284c7', '#7dd3fc', '#fb923c', '#0369a1', '#a3e635', '#075985'];
         board.innerHTML = stages.map(function(stage, i) {
             var color = stageColors[i % stageColors.length];
             var cards = pipeline[stage] || [];
@@ -5725,7 +5777,7 @@ async function loadRecPipeline() {
                         '<span style="width:10px;height:10px;border-radius:50%;background:' + color + ';"></span>' +
                         '<strong style="font-size:0.85rem;">' + esc(stage) + '</strong>' +
                     '</div>' +
-                    '<span style="background:rgba(255,255,255,0.1);padding:2px 8px;border-radius:10px;font-size:0.75rem;font-weight:600;">' + cards.length + '</span>' +
+                    '<span style="background:rgba(255, 255, 255, 0.1);padding:2px 8px;border-radius:10px;font-size:0.75rem;font-weight:600;">' + cards.length + '</span>' +
                 '</div>' +
                 '<div style="padding:12px;display:flex;flex-direction:column;gap:12px;min-height:100px;">' +
                     cards.map(function(c) {
@@ -5979,7 +6031,7 @@ window.hireCandidate = hireCandidate;
 
 function buildStageMoveHtml(subId, currentStage) {
     var stages = recCurrentPipelineStages;
-    var stageColors = ['#6366f1', '#f59e0b', '#3b82f6', '#8b5cf6', '#10b981', '#ef4444', '#ec4899', '#06b6d4'];
+    var stageColors = ['#38bdf8', '#34d399', '#fbbf24', '#fb7185', '#0284c7', '#7dd3fc', '#fb923c', '#0369a1', '#a3e635', '#075985'];
     var html = '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
     stages.forEach(function(s, i) {
         var color = stageColors[i % stageColors.length];
@@ -6170,7 +6222,7 @@ async function loadGoalsView() {
 
         var html = '';
         if (pendingGoals.length > 0) {
-            html += '<div class="glass-widget mb-24"><div class="widget-header"><h3>Pending Department Goals</h3></div><div class="widget-content" style="padding:0;"><div style="padding:12px 16px;font-size:0.82rem;color:var(--text-secondary);background:rgba(252,211,77,0.08);border-bottom:1px solid var(--border-color);">These goals will be auto-assigned to employees when they join their department.</div>' +
+            html += '<div class="glass-widget mb-24"><div class="widget-header"><h3>Pending Department Goals</h3></div><div class="widget-content" style="padding:0;"><div style="padding:12px 16px;font-size:0.82rem;color:var(--text-secondary);background:rgba(251, 191, 36, 0.08);border-bottom:1px solid var(--border-color);">These goals will be auto-assigned to employees when they join their department.</div>' +
                 '<table class="data-table"><thead><tr><th>Department</th><th>Goal</th><th>Target</th><th>Category</th><th>Priority</th><th>Due</th></tr></thead><tbody>' +
                 pendingGoals.map(function(g) {
                     var pColor = g.priority === 'high' ? 'var(--danger-text)' : g.priority === 'low' ? 'var(--success-color)' : 'var(--warning-color)';
@@ -6198,7 +6250,7 @@ async function loadGoalsView() {
                 var pBadge = g.priority === 'high' ? 'badge-danger' : g.priority === 'low' ? 'badge-success' : 'badge-warning';
                 var sBadge = g.status === 'completed' ? 'badge-success' : g.status === 'at_risk' ? 'badge-danger' : 'badge-primary';
                 var sColor = g.status === 'completed' ? 'var(--success-color)' : g.status === 'at_risk' ? 'var(--danger-color)' : 'var(--primary-color)';
-                return '<tr style="cursor:pointer; transition:background 0.2s;" onmouseover="this.style.background=\'rgba(255,255,255,0.02)\'" onmouseout="this.style.background=\'transparent\'" onclick="viewEmployee(' + g.employee_id + ')">' +
+                return '<tr style="cursor:pointer; transition:background 0.2s;" onmouseover="this.style.background=\'rgba(255, 255, 255, 0.02)\'" onmouseout="this.style.background=\'transparent\'" onclick="viewEmployee(' + g.employee_id + ')">' +
                     '<td><strong>' + esc(g.employee_name) + '</strong></td>' +
                     '<td><span style="font-size:0.8rem;color:var(--text-secondary);">' + esc(g.department_name || '-') + '</span></td>' +
                     '<td><strong style="color:var(--text-color);">' + esc(g.title) + '</strong><br><span style="font-size:0.75rem;color:var(--text-secondary);">' + esc(g.description || '') + '</span></td>' +
@@ -6269,11 +6321,11 @@ async function assignDeptGoal() {
             info.style.display = 'block';
             if (data.pending) {
                 info.textContent = 'Goal saved! It will be auto-assigned when employees join ' + data.department + '.';
-                info.style.background = 'rgba(252,211,77,0.1)';
+                info.style.background = 'rgba(251, 191, 36, 0.1)';
                 info.style.color = 'var(--warning-color)';
             } else {
                 info.textContent = 'Goal assigned to ' + data.count + ' employee(s) in department!';
-                info.style.background = 'rgba(0,255,0,0.1)';
+                info.style.background = 'rgba(52, 211, 153, 0.1)';
                 info.style.color = 'var(--success-color)';
             }
             setTimeout(function() {
@@ -6286,7 +6338,7 @@ async function assignDeptGoal() {
     } catch(e) {
         info.style.display = 'block';
         info.textContent = 'Error: ' + e.message;
-        info.style.background = 'rgba(255,0,0,0.1)';
+        info.style.background = 'rgba(244, 63, 94, 0.1)';
         info.style.color = 'var(--danger-color)';
     } finally {
         btn.disabled = false;
@@ -6317,7 +6369,7 @@ function renderEmpGoals() {
         var progress = g.target_value > 0 ? Math.min(Math.round(g.current_value / g.target_value * 100), 100) : 0;
         var pColor = g.priority === 'high' ? 'var(--danger-text)' : g.priority === 'low' ? 'var(--success-color)' : 'var(--warning-color)';
         var sColor = g.status === 'completed' ? 'var(--success-color)' : 'var(--primary-color)';
-        el.insertAdjacentHTML('beforeend', '<div style="padding:12px 0;border-bottom:1px solid var(--border-color);"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><strong style="font-size:0.9rem;">' + esc(g.title) + '</strong><span style="font-size:0.75rem;color:' + sColor + ';">' + g.status.replace('_', ' ') + '</span></div><div style="height:5px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden;"><div style="height:100%;width:' + progress + '%;background:' + sColor + ';border-radius:3px;"></div></div><div style="display:flex;justify-content:space-between;margin-top:4px;font-size:0.78rem;color:var(--text-secondary);"><span>' + g.current_value + ' / ' + g.target_value + ' ' + g.unit + '</span><span style="color:' + pColor + ';">' + g.priority + '</span></div></div>');
+        el.insertAdjacentHTML('beforeend', '<div style="padding:12px 0;border-bottom:1px solid var(--border-color);"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><strong style="font-size:0.9rem;">' + esc(g.title) + '</strong><span style="font-size:0.75rem;color:' + sColor + ';">' + g.status.replace('_', ' ') + '</span></div><div style="height:5px;background:rgba(255, 255, 255, 0.08);border-radius:3px;overflow:hidden;"><div style="height:100%;width:' + progress + '%;background:' + sColor + ';border-radius:3px;"></div></div><div style="display:flex;justify-content:space-between;margin-top:4px;font-size:0.78rem;color:var(--text-secondary);"><span>' + g.current_value + ' / ' + g.target_value + ' ' + g.unit + '</span><span style="color:' + pColor + ';">' + g.priority + '</span></div></div>');
     });
 }
 
@@ -6518,7 +6570,7 @@ async function aiPersonalizeEmail(invoiceNumber, clientName, total, dueDate) {
         if (el) {
             el.innerHTML = '<div style="padding:12px;">' +
                 '<div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:4px;">Subject: ' + esc(data.subject || '') + '</div>' +
-                '<div style="background:rgba(255,255,255,0.03);border:1px solid var(--border-color);border-radius:8px;padding:12px;font-size:0.85rem;white-space:pre-wrap;">' + esc(data.body || '') + '</div>' +
+                '<div style="background:rgba(255, 255, 255, 0.03);border:1px solid var(--border-color);border-radius:8px;padding:12px;font-size:0.85rem;white-space:pre-wrap;">' + esc(data.body || '') + '</div>' +
                 '<div style="display:flex;gap:8px;margin-top:8px;">' +
                     '<button class="btn btn-primary btn-sm" onclick="useAiEmail()">Copy Email</button>' +
                     '<button class="btn btn-outline btn-sm" onclick="aiPersonalizeEmail(\'' + invoiceNumber + '\',\'' + esc(clientName) + '\',' + total + ',\'' + dueDate + '\')">Regenerate</button>' +
@@ -6561,7 +6613,7 @@ async function aiGenerateFollowup(invoiceNumber, clientName, total, daysOverdue)
         if (el) {
             el.innerHTML = '<div style="padding:12px;">' +
                 '<div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:4px;">Subject: ' + esc(data.subject || '') + '</div>' +
-                '<div style="background:rgba(255,255,255,0.03);border:1px solid var(--border-color);border-radius:8px;padding:12px;font-size:0.85rem;white-space:pre-wrap;">' + esc(data.body || '') + '</div>' +
+                '<div style="background:rgba(255, 255, 255, 0.03);border:1px solid var(--border-color);border-radius:8px;padding:12px;font-size:0.85rem;white-space:pre-wrap;">' + esc(data.body || '') + '</div>' +
                 '<button class="btn btn-outline btn-sm" onclick="this.parentElement.remove()" style="margin-top:8px;">Dismiss</button>' +
             '</div>';
             el.style.display = 'block';
@@ -7024,7 +7076,7 @@ function otherCurrencyNote(data, pick) {
             formatCurrency(pick(block), block.currency) + '</strong></span>';
     }).join(' &middot; ');
     return '<div style="margin-bottom:16px;padding:12px 14px;border-radius:8px;' +
-        'background:rgba(255,255,255,0.03);border-left:3px solid var(--warning-color, #f0ad4e);' +
+        'background:rgba(255, 255, 255, 0.03);border-left:3px solid var(--warning-color, #fbbf24);' +
         'font-size:0.86rem;color:var(--text-secondary);">' +
         'Figures below are in <strong>' + (data.currency || '') + '</strong>. ' +
         'Invoiced separately: ' + parts +
@@ -7077,22 +7129,22 @@ async function loadBalanceSheet() {
                 '<div>' +
                     '<h3 style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;margin-bottom:16px;">Assets</h3>' +
                     '<div style="display:flex;flex-direction:column;gap:12px;">' +
-                        '<div style="display:flex;justify-content:space-between;padding:12px;background:rgba(255,255,255,0.03);border-radius:8px;"><span style="color:var(--text-secondary);">Cash Collected</span><span style="font-weight:600;">' + formatCurrency(data.assets.cash_collected) + '</span></div>' +
-                        '<div style="display:flex;justify-content:space-between;padding:12px;background:rgba(255,255,255,0.03);border-radius:8px;"><span style="color:var(--text-secondary);">Accounts Receivable</span><span style="font-weight:600;">' + formatCurrency(data.assets.accounts_receivable) + '</span></div>' +
+                        '<div style="display:flex;justify-content:space-between;padding:12px;background:rgba(255, 255, 255, 0.03);border-radius:8px;"><span style="color:var(--text-secondary);">Cash Collected</span><span style="font-weight:600;">' + formatCurrency(data.assets.cash_collected) + '</span></div>' +
+                        '<div style="display:flex;justify-content:space-between;padding:12px;background:rgba(255, 255, 255, 0.03);border-radius:8px;"><span style="color:var(--text-secondary);">Accounts Receivable</span><span style="font-weight:600;">' + formatCurrency(data.assets.accounts_receivable) + '</span></div>' +
                     '</div>' +
                     '<div style="display:flex;justify-content:space-between;padding:16px;margin-top:12px;border-top:2px solid var(--border-color);font-weight:700;"><span>Total Assets</span><span style="color:var(--primary-color);">' + formatCurrency(data.total_assets) + '</span></div>' +
                 '</div>' +
                 '<div>' +
                     '<h3 style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;margin-bottom:16px;">Liabilities</h3>' +
                     '<div style="display:flex;flex-direction:column;gap:12px;">' +
-                        '<div style="display:flex;justify-content:space-between;padding:12px;background:rgba(255,255,255,0.03);border-radius:8px;"><span style="color:var(--text-secondary);">Accounts Payable</span><span style="font-weight:600;">' + formatCurrency(data.liabilities.accounts_payable) + '</span></div>' +
+                        '<div style="display:flex;justify-content:space-between;padding:12px;background:rgba(255, 255, 255, 0.03);border-radius:8px;"><span style="color:var(--text-secondary);">Accounts Payable</span><span style="font-weight:600;">' + formatCurrency(data.liabilities.accounts_payable) + '</span></div>' +
                     '</div>' +
                     '<div style="display:flex;justify-content:space-between;padding:16px;margin-top:12px;border-top:2px solid var(--border-color);font-weight:700;"><span>Total Liabilities</span><span style="color:var(--warning-color);">' + formatCurrency(data.total_liabilities) + '</span></div>' +
                 '</div>' +
                 '<div>' +
                     '<h3 style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;margin-bottom:16px;">Equity</h3>' +
                     '<div style="display:flex;flex-direction:column;gap:12px;">' +
-                        '<div style="display:flex;justify-content:space-between;padding:12px;background:rgba(255,255,255,0.03);border-radius:8px;"><span style="color:var(--text-secondary);">Retained Earnings</span><span style="font-weight:600;">' + formatCurrency(data.equity.retained_earnings) + '</span></div>' +
+                        '<div style="display:flex;justify-content:space-between;padding:12px;background:rgba(255, 255, 255, 0.03);border-radius:8px;"><span style="color:var(--text-secondary);">Retained Earnings</span><span style="font-weight:600;">' + formatCurrency(data.equity.retained_earnings) + '</span></div>' +
                     '</div>' +
                     '<div style="display:flex;justify-content:space-between;padding:16px;margin-top:12px;border-top:2px solid var(--border-color);font-weight:700;"><span>Total Equity</span><span style="color:var(--success-color);">' + formatCurrency(data.total_equity) + '</span></div>' +
                 '</div>' +
@@ -7156,11 +7208,11 @@ function renderInvoiceChart(revenue, outstanding, invoices) {
             datasets: [{
                 label: 'Revenue Trajectory',
                 data: [revenue*0.2, revenue*0.4, revenue*0.5, revenue*0.8, revenue],
-                borderColor: '#00f0ff',
-                backgroundColor: 'rgba(0, 240, 255, 0.1)',
+                borderColor: '#38bdf8',
+                backgroundColor: 'rgba(56, 189, 248, 0.1)',
                 borderWidth: 2,
                 pointBackgroundColor: '#0b0f19',
-                pointBorderColor: '#00f0ff',
+                pointBorderColor: '#38bdf8',
                 pointBorderWidth: 2,
                 pointRadius: 4,
                 pointHoverRadius: 6,
@@ -7170,11 +7222,11 @@ function renderInvoiceChart(revenue, outstanding, invoices) {
             {
                 label: 'Outstanding',
                 data: [outstanding*0.9, outstanding*0.7, outstanding*0.8, outstanding*1.1, outstanding],
-                borderColor: '#ff003c',
-                backgroundColor: 'rgba(255, 0, 60, 0.1)',
+                borderColor: '#f43f5e',
+                backgroundColor: 'rgba(244, 63, 94, 0.1)',
                 borderWidth: 2,
                 pointBackgroundColor: '#0b0f19',
-                pointBorderColor: '#ff003c',
+                pointBorderColor: '#f43f5e',
                 borderDash: [5, 5],
                 fill: true,
                 tension: 0.4
@@ -7184,11 +7236,11 @@ function renderInvoiceChart(revenue, outstanding, invoices) {
             responsive: true, maintainAspectRatio: false,
             plugins: {
                 legend: { labels: { color: '#f8fafc', font: { family: "'Rajdhani', sans-serif", size: 14 } } },
-                tooltip: { backgroundColor: 'rgba(15,23,42,0.9)', titleFont: { family: "'Rajdhani'" }, bodyFont: { family: "'Space Grotesk'" }, borderColor: '#00f0ff', borderWidth: 1 }
+                tooltip: { backgroundColor: 'rgba(15, 23, 42, 0.9)', titleFont: { family: "'Rajdhani'" }, bodyFont: { family: "'Space Grotesk'" }, borderColor: '#38bdf8', borderWidth: 1 }
             },
             scales: {
-                y: { grid: { color: 'rgba(255,255,255,0.05)' }, border: { dash: [4, 4] } },
-                x: { grid: { color: 'rgba(255,255,255,0.05)' } }
+                y: { grid: { color: 'rgba(255, 255, 255, 0.05)' }, border: { dash: [4, 4] } },
+                x: { grid: { color: 'rgba(255, 255, 255, 0.05)' } }
             }
         }
     });
@@ -7201,7 +7253,7 @@ window.addBankDetailSlot = function(data) {
     var slot = document.createElement('div');
     slot.className = 'bank-detail-slot grid-2 gap-16';
     slot.style.padding = '16px';
-    slot.style.background = 'rgba(255,255,255,0.02)';
+    slot.style.background = 'rgba(255, 255, 255, 0.02)';
     slot.style.border = '1px solid var(--border-color)';
     slot.style.borderRadius = 'var(--radius-md)';
     slot.innerHTML = `
@@ -7947,8 +7999,8 @@ function showFocusBanner(viewId, name) {
     var banner = document.createElement('div');
     banner.className = 'hr-focus-banner';
     banner.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;' +
-        'margin-bottom:16px;border-radius:8px;background:rgba(0,240,255,0.08);' +
-        'border:1px solid rgba(0,240,255,0.3);font-size:0.85rem;';
+        'margin-bottom:16px;border-radius:8px;background:rgba(56, 189, 248, 0.08);' +
+        'border:1px solid rgba(56, 189, 248, 0.3);font-size:0.85rem;';
     banner.innerHTML = 'Showing only <strong>' + esc(name) + '</strong>' +
         '<button type="button" class="btn btn-outline btn-sm" style="margin-left:auto;" ' +
         'onclick="clearEmployeeFocus(&quot;' + viewId + '&quot;)">Show everyone</button>';
@@ -7993,14 +8045,14 @@ function renderEmployeeLeavePanel(emp) {
             '<div style="display:flex;justify-content:space-between;font-size:0.82rem;margin-bottom:4px;">' +
                 '<span style="color:var(--text-secondary);">' + label + '</span>' +
                 '<strong>' + taken + ' / ' + total + ' days</strong></div>' +
-            '<div style="height:6px;background:rgba(255,255,255,0.1);border-radius:3px;overflow:hidden;">' +
+            '<div style="height:6px;background:rgba(255, 255, 255, 0.1);border-radius:3px;overflow:hidden;">' +
                 '<div style="height:100%;width:' + pct + '%;background:' + color + ';border-radius:3px;"></div></div></div>';
     }
 
     var html = '';
     if (emp.on_leave_today) {
-        html += '<div style="padding:8px 12px;border-radius:8px;background:rgba(252,211,77,0.12);' +
-                'border:1px solid rgba(252,211,77,0.35);color:var(--warning-color);font-size:0.82rem;' +
+        html += '<div style="padding:8px 12px;border-radius:8px;background:rgba(251, 191, 36, 0.12);' +
+                'border:1px solid rgba(251, 191, 36, 0.35);color:var(--warning-color);font-size:0.82rem;' +
                 'font-weight:600;margin-bottom:12px;">On approved leave today</div>';
     }
     html += bar('Annual', bal.annual_taken || 0, bal.annual_total || 0, 'var(--primary-color)');
@@ -8042,8 +8094,8 @@ function renderEmployeeAttendancePanel(emp) {
     ];
     var html = '';
     if (a.clocked_in_today) {
-        html += '<div style="padding:8px 12px;border-radius:8px;background:rgba(57,255,20,0.12);' +
-                'border:1px solid rgba(57,255,20,0.35);color:var(--success-color);font-size:0.82rem;' +
+        html += '<div style="padding:8px 12px;border-radius:8px;background:rgba(52, 211, 153, 0.12);' +
+                'border:1px solid rgba(52, 211, 153, 0.35);color:var(--success-color);font-size:0.82rem;' +
                 'font-weight:600;margin-bottom:12px;">Clocked in since ' + esc(a.today_clock_in || '') + '</div>';
     } else if (a.today_clock_in) {
         html += '<div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:12px;">' +
@@ -8441,7 +8493,7 @@ async function loadWallet() {
         if (_wallet.is_empty || _wallet.is_low) {
             banner.style.display = 'block';
             banner.innerHTML = '<div style="padding:12px 16px;border-radius:8px;margin-bottom:24px;' +
-                'background:rgba(252,211,77,0.12);border:1px solid rgba(252,211,77,0.35);' +
+                'background:rgba(251, 191, 36, 0.12);border:1px solid rgba(251, 191, 36, 0.35);' +
                 'display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:0.87rem;">' +
                 '<strong style="color:var(--warning-color);">' +
                 (_wallet.is_empty ? 'Your wallet is empty.' : 'Your balance is running low.') + '</strong>' +
@@ -8751,10 +8803,10 @@ function aiChatBubble(text, who) {
     if (!msgs) return null;
     var el = document.createElement('div');
     if (who === 'user') {
-        el.style.cssText = 'align-self:flex-end;background:rgba(255,255,255,0.1);padding:8px 12px;' +
+        el.style.cssText = 'align-self:flex-end;background:rgba(255, 255, 255, 0.1);padding:8px 12px;' +
             'border-radius:4px;border-right:2px solid var(--text-secondary);max-width:85%;overflow-wrap:anywhere;';
     } else {
-        el.style.cssText = 'align-self:flex-start;background:rgba(0,240,255,0.1);padding:8px 12px;' +
+        el.style.cssText = 'align-self:flex-start;background:rgba(56, 189, 248, 0.1);padding:8px 12px;' +
             'border-radius:4px;border-left:2px solid var(--primary-color);max-width:90%;' +
             'white-space:pre-wrap;overflow-wrap:anywhere;';
     }
@@ -10018,8 +10070,8 @@ function applyRoleToUi() {
     if (!banner) {
         banner = document.createElement('div');
         banner.id = 'readonly-banner';
-        banner.style.cssText = 'background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.35);' +
-            'color:#f59e0b;padding:8px 14px;font-size:0.85rem;text-align:center;';
+        banner.style.cssText = 'background:rgba(251, 191, 36, 0.12);border:1px solid rgba(251, 191, 36, 0.35);' +
+            'color:#fbbf24;padding:8px 14px;font-size:0.85rem;text-align:center;';
         banner.textContent = 'You have read-only access. You can look at everything but not change it.';
         document.body.insertBefore(banner, document.body.firstChild);
     }
@@ -10216,7 +10268,7 @@ function fillThemeForm(theme) {
 
     el('bt-name').value = theme.name || '';
     el('bt-logo_position').value = theme.logo_position || 'right';
-    el('bt-brand_color').value = theme.brand_color || '#4f46e5';
+    el('bt-brand_color').value = theme.brand_color || '#0284c7';
     el('bt-font').value = theme.font || 'helvetica';
     el('bt-tax_breakdown').value = theme.tax_breakdown || 'separate_rates';
     el('bt-address_position').value = theme.address_position || 'default';
@@ -10398,7 +10450,7 @@ function renderThemePreview() {
     var host = el('theme-preview');
     if (!host) return;
     var t = readThemeForm();
-    var brand = t.brand_color || '#4f46e5';
+    var brand = t.brand_color || '#0284c7';
     var fonts = {
         helvetica: 'Helvetica, Arial, sans-serif',
         times: 'Georgia, "Times New Roman", serif',
@@ -10976,7 +11028,7 @@ async function openStaffRequestThread(id) {
             return '<div style="margin-bottom:10px;' + (fromHr ? 'text-align:right;' : '') + '">' +
                 '<div style="display:inline-block;max-width:80%;padding:8px 12px;border-radius:12px;' +
                 (fromHr ? 'background:var(--primary-color);color:#0b0f19;' :
-                    'background:rgba(255,255,255,0.06);') + '">' + esc(m.body) + '</div>' +
+                    'background:rgba(255, 255, 255, 0.06);') + '">' + esc(m.body) + '</div>' +
                 '<div class="bt-note" style="margin:2px 0 0;">' +
                 esc(m.author_name || (fromHr ? 'You' : 'Them')) + ' &middot; ' + esc(m.created_at) +
                 '</div></div>';
