@@ -358,10 +358,18 @@ def test_revenue_report(superadmin):
 
 def test_gateway_readiness_is_visible_to_the_operator(superadmin):
     data = superadmin.get("/api/superadmin/gateways").json()
-    keys = {p["key"] for p in data["providers"]}
-    assert keys == {"stripe", "razorpay", "paypal"}
-    stripe = next(p for p in data["providers"] if p["key"] == "stripe")
-    assert "STRIPE_SECRET_KEY" in stripe["required_env"]
+    rows = {p["key"]: p for p in data["providers"]}
+    assert set(rows) == {"gocardless", "razorpay", "stripe", "paypal"}
+    assert "STRIPE_SECRET_KEY" in rows["stripe"]["required_env"]
+    assert "GOCARDLESS_ACCESS_TOKEN" in rows["gocardless"]["required_env"]
+
+    # The two that take new money are marked apart from the two that only
+    # settle what was taken before, so nobody configures a gateway no screen
+    # will use.
+    assert rows["gocardless"]["role"] == "primary"
+    assert rows["razorpay"]["role"] == "primary"
+    assert rows["stripe"]["role"] == "legacy"
+    assert rows["paypal"]["role"] == "legacy"
 
 
 def test_wallet_is_tenant_scoped(client, account, superadmin):

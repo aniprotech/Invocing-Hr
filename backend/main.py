@@ -9647,6 +9647,53 @@ def razorpay_key_shape(key_id: str, key_secret: str):
     }
 
 
+@app.get("/api/superadmin/gocardless-check")
+def gocardless_check(request: Request):
+    """Ask GoCardless whether this token works, and say what it answered.
+
+    Same reasoning as the Razorpay check: finding out through a failed
+    top-up means guessing which of several things went wrong. This reads
+    the creditor list, which moves no money and needs no test customer.
+    """
+    require_superadmin(request)
+    cfg = gateway_config()["gocardless"]
+    if not cfg["access_token"]:
+        return {"ok": False, "reason": "no_token",
+                "message": "GOCARDLESS_ACCESS_TOKEN is not set."}
+
+    try:
+        res = httpx.get(f"{gocardless_base_url()}/creditors",
+                        headers=gocardless_headers(), timeout=15)
+    except Exception as exc:
+        return {"ok": False, "reason": "unreachable",
+                "message": f"Could not reach GoCardless: {exc}"[:200]}
+
+    if res.status_code == 200:
+        creditors = res.json().get("creditors", [])
+        who = creditors[0].get("name", "") if creditors else ""
+        return {
+            "ok": True,
+            "environment": cfg["environment"],
+            "creditor": who,
+            "webhook_secret_set": bool(cfg["webhook_secret"]),
+            # A working token with no webhook secret is the quiet failure:
+            # payments would be taken and never credited, because the only
+            # thing that adds balance refuses unverified messages.
+            "message": (f"Connected to the {cfg['environment']} environment"
+                        + (f" as {who}" if who else "")
+                        + ("." if cfg["webhook_secret"] else
+                           " - but GOCARDLESS_WEBHOOK_SECRET is not set, so "
+                           "confirmed payments would never be credited.")),
+        }
+
+    if res.status_code in (401, 403):
+        return {"ok": False, "reason": "bad_token",
+                "message": f"GoCardless rejected the token ({res.status_code}). "
+                           f"Check it belongs to the {cfg['environment']} environment."}
+    return {"ok": False, "reason": "error",
+            "message": f"GoCardless answered {res.status_code}: {res.text[:160]}"}
+
+
 @app.get("/api/superadmin/razorpay-check")
 def razorpay_check(request: Request):
     """Ask Razorpay whether these credentials work, and say what it answered.
@@ -10520,18 +10567,42 @@ def superadmin_gateways(request: Request):
     require_superadmin(request)
     cfg = gateway_config()
     enabled = enabled_providers()
+
+    # "role" is what the operator actually needs to know, because these are
+    # no longer interchangeable. GoCardless is how tenants top up their
+    # wallet; Razorpay is how a tenant's own customers pay an invoice when
+    # the platform is collecting. The rest still have live orders to settle
+    # and reconcile, but nothing new is offered through them - a panel that
+    # lists all five as equals invites somebody to configure a gateway that
+    # no screen will ever use.
     return {
         "platform_currency": PLATFORM_CURRENCY,
         "providers": [
-            {"key": "stripe", "enabled": enabled["stripe"],
-             "webhook_ready": bool(cfg["stripe"]["webhook_secret"]),
-             "required_env": ["STRIPE_SECRET_KEY", "STRIPE_PUBLISHABLE_KEY", "STRIPE_WEBHOOK_SECRET"],
-             "webhook_url": "/api/wallet/webhook/stripe"},
-            {"key": "razorpay", "enabled": enabled["razorpay"],
+            {"key": "gocardless", "label": "GoCardless",
+             "role": "primary", "used_for": "Tenant wallet top-ups",
+             "enabled": enabled["gocardless"],
+             "webhook_ready": bool(cfg["gocardless"]["webhook_secret"]),
+             "required_env": ["GOCARDLESS_ACCESS_TOKEN", "GOCARDLESS_WEBHOOK_SECRET",
+                              "GOCARDLESS_ENVIRONMENT"],
+             "webhook_url": "/api/wallet/webhook/gocardless",
+             "note": ("Bank debit, so a payment confirms rather than authorising. "
+                      "Credit lands when GoCardless says confirmed, not on submission."),
+             "environment": cfg["gocardless"]["environment"]},
+            {"key": "razorpay", "label": "Razorpay",
+             "role": "primary", "used_for": "Invoice collection, and automatic charges",
+             "enabled": enabled["razorpay"],
              "webhook_ready": bool(cfg["razorpay"]["webhook_secret"]),
              "required_env": ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET"],
              "webhook_url": "/api/wallet/webhook/razorpay"},
-            {"key": "paypal", "enabled": enabled["paypal"],
+            {"key": "stripe", "label": "Stripe",
+             "role": "legacy", "used_for": "Settling orders taken before the change",
+             "enabled": enabled["stripe"],
+             "webhook_ready": bool(cfg["stripe"]["webhook_secret"]),
+             "required_env": ["STRIPE_SECRET_KEY", "STRIPE_PUBLISHABLE_KEY", "STRIPE_WEBHOOK_SECRET"],
+             "webhook_url": "/api/wallet/webhook/stripe"},
+            {"key": "paypal", "label": "PayPal",
+             "role": "legacy", "used_for": "Settling orders taken before the change",
+             "enabled": enabled["paypal"],
              "webhook_ready": True,   # capture is verified server-side, no webhook needed
              "required_env": ["PAYPAL_CLIENT_ID", "PAYPAL_SECRET", "PAYPAL_MODE"],
              "webhook_url": ""},

@@ -317,11 +317,11 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=97">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=97">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=97">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=97">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=97">
+    <link rel="stylesheet" href="mobile.css?v=98">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=98">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=98">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=98">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=98">
 </head>
 <body>
     <div class="admin-header">
@@ -413,10 +413,12 @@
         <div class="section-header">
             <h2>Billing &amp; Wallets</h2>
             <span style="font-size:0.78rem;color:#64748b;" id="gateway-status"></span>
-            <button class="action-btn" onclick="checkRazorpayKeys()"
-                    style="margin-left:auto;">Test Razorpay keys</button>
+            <button class="action-btn" onclick="checkGoCardlessKeys()"
+                    style="margin-left:auto;">Test GoCardless</button>
+            <button class="action-btn" onclick="checkRazorpayKeys()">Test Razorpay</button>
         </div>
         <div id="razorpay-check" style="font-size:0.78rem;color:#64748b;margin-top:6px;"></div>
+        <div id="gateway-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin:16px 0 4px;"></div>
         <div class="stats-grid" id="revenue-grid"></div>
 
         <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:20px;">
@@ -739,17 +741,87 @@
         }
 
         async function loadGatewayStatus() {
+            var host = document.getElementById('gateway-cards');
             try {
                 var d = await (await fetch('/api/superadmin/gateways')).json();
-                var live = d.providers.filter(function (p) { return p.enabled; })
-                                      .map(function (p) { return p.key; });
+                var providers = d.providers || [];
+
+                // The summary line counts only the two that take new money.
+                // A green "live" that included a legacy gateway would be
+                // saying the platform can be paid when it cannot.
+                var primary = providers.filter(function (p) { return p.role === 'primary'; });
+                var liveNow = primary.filter(function (p) { return p.enabled; });
                 var el = document.getElementById('gateway-status');
-                el.textContent = live.length
-                    ? 'Gateways live: ' + live.join(', ')
-                    : 'No payment gateway configured - add keys to accept top-ups';
-                el.style.color = live.length ? '#39ff14' : '#fcd34d';
-            } catch (e) { /* informational */ }
+                el.textContent = liveNow.length === primary.length
+                    ? 'Both payment gateways are live'
+                    : liveNow.length
+                        ? liveNow.map(function (p) { return p.label; }).join(' and ') + ' live, ' +
+                          primary.filter(function (p) { return !p.enabled; })
+                                 .map(function (p) { return p.label; }).join(' and ') + ' not set up'
+                        : 'No payment gateway is set up - nothing can be collected';
+                el.style.color = liveNow.length === primary.length ? '#39ff14'
+                               : liveNow.length ? '#fcd34d' : '#ff003c';
+
+                if (!host) return;
+                host.innerHTML = providers.map(function (p) {
+                    var legacy = p.role === 'legacy';
+                    var tone = p.enabled ? (legacy ? '#94a3b8' : '#39ff14') : '#64748b';
+                    var missing = (p.required_env || []).join(', ');
+                    return '<div style="background:rgba(15,23,42,0.6);border:1px solid ' +
+                        (p.enabled && !legacy ? 'rgba(57,255,20,0.25)' : 'rgba(255,255,255,0.06)') +
+                        ';border-radius:14px;padding:16px 18px;">' +
+                      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">' +
+                        '<strong style="font-size:0.95rem;">' + esc(p.label || p.key) + '</strong>' +
+                        (legacy ? '<span style="font-size:0.65rem;text-transform:uppercase;' +
+                                  'letter-spacing:0.06em;color:#64748b;border:1px solid rgba(255,255,255,0.12);' +
+                                  'border-radius:6px;padding:1px 6px;">legacy</span>' : '') +
+                        '<span style="margin-left:auto;font-size:0.78rem;font-weight:600;color:' + tone + ';">' +
+                          (p.enabled ? 'configured' : 'not set up') + '</span>' +
+                      '</div>' +
+                      '<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:8px;">' +
+                        esc(p.used_for || '') +
+                        (p.environment ? ' &middot; <strong style="color:' +
+                          (p.environment === 'live' ? '#fcd34d' : '#64748b') + ';">' +
+                          esc(p.environment) + '</strong>' : '') +
+                      '</div>' +
+                      (p.note ? '<div style="font-size:0.73rem;color:#64748b;margin-bottom:8px;">' +
+                                esc(p.note) + '</div>' : '') +
+                      (p.enabled
+                        ? (p.webhook_url
+                            ? '<div style="font-size:0.72rem;color:' +
+                              (p.webhook_ready ? '#64748b' : '#fcd34d') + ';">' +
+                              (p.webhook_ready
+                                ? 'Webhook: ' + esc(p.webhook_url)
+                                : 'Webhook secret missing - ' + esc(p.webhook_url) +
+                                  ' will refuse everything until it is set') +
+                              '</div>'
+                            : '')
+                        : '<div style="font-size:0.72rem;color:#64748b;">Needs ' + esc(missing) + '</div>') +
+                    '</div>';
+                }).join('');
+            } catch (e) {
+                if (host) host.innerHTML = '<div style="color:#64748b;font-size:0.85rem;">' +
+                    'Could not read the gateway status.</div>';
+            }
         }
+
+        // The same question, asked of GoCardless. Reading the creditor list
+        // proves the token without moving money or leaving a test customer
+        // behind.
+        async function checkGoCardlessKeys() {
+            var host = document.getElementById('razorpay-check');
+            host.style.color = '#64748b';
+            host.textContent = 'Asking GoCardless...';
+            try {
+                var d = await (await fetch('/api/superadmin/gocardless-check')).json();
+                host.style.color = d.ok ? (d.webhook_secret_set ? '#39ff14' : '#fcd34d') : '#ff003c';
+                host.textContent = d.message || (d.ok ? 'Connected.' : 'Could not connect.');
+            } catch (e) {
+                host.style.color = '#ff003c';
+                host.textContent = 'Could not reach the server.';
+            }
+        }
+        window.checkGoCardlessKeys = checkGoCardlessKeys;
 
         // Whether a key pair works is a question Razorpay can answer directly,
         // with a call that moves no money. Finding out through a failed top-up

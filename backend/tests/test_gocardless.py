@@ -25,6 +25,17 @@ def configured(monkeypatch):
     yield
 
 
+@pytest.fixture
+def operator_client(client):
+    """A signed-in operator. The gateway panel is theirs alone - a tenant
+    has no business knowing which keys the platform holds."""
+    main.rate_limiter._hits.clear()
+    res = client.post("/api/superadmin/login", json={
+        "identifier": "hello@keyroutes.co", "password": "TestSuper123"})
+    assert res.status_code == 200, res.text
+    return client
+
+
 def signed(body: dict, secret="whsec"):
     raw = json.dumps(body).encode()
     sig = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
@@ -187,3 +198,51 @@ def test_an_event_for_an_unknown_order_is_ignored_not_crashed(tenant, configured
     raw, headers = signed(event("confirmed", 999999))
     res = tenant.post("/api/wallet/webhook/gocardless", content=raw, headers=headers)
     assert res.status_code == 200
+
+
+# --- what the operator panel shows -----------------------------------------
+
+def test_the_gateway_list_names_gocardless_first(operator_client, configured):
+    body = operator_client.get("/api/superadmin/gateways").json()
+    keys = [p["key"] for p in body["providers"]]
+    assert "gocardless" in keys
+    assert keys[0] == "gocardless", "the way tenants actually pay should lead"
+
+
+def test_the_two_that_take_money_are_marked_primary(operator_client, configured):
+    """Five gateways listed as equals invites configuring one no screen uses."""
+    rows = {p["key"]: p for p in
+            operator_client.get("/api/superadmin/gateways").json()["providers"]}
+    assert rows["gocardless"]["role"] == "primary"
+    assert rows["razorpay"]["role"] == "primary"
+    assert rows["stripe"]["role"] == "legacy"
+    assert rows["paypal"]["role"] == "legacy"
+
+
+def test_each_gateway_says_what_it_is_for(operator_client, configured):
+    for row in operator_client.get("/api/superadmin/gateways").json()["providers"]:
+        assert row["used_for"], f"{row['key']} does not say what it is for"
+
+
+def test_the_panel_reports_whether_the_webhook_can_be_verified(operator_client,
+                                                               monkeypatch):
+    """A token that works with no webhook secret is the quiet failure: money
+    is taken and never credited, because the only thing that adds balance
+    refuses unverified messages."""
+    monkeypatch.setenv("GOCARDLESS_ACCESS_TOKEN", "tok")
+    monkeypatch.delenv("GOCARDLESS_WEBHOOK_SECRET", raising=False)
+    rows = {p["key"]: p for p in
+            operator_client.get("/api/superadmin/gateways").json()["providers"]}
+    assert rows["gocardless"]["enabled"] is True
+    assert rows["gocardless"]["webhook_ready"] is False
+
+
+def test_the_credential_check_is_operator_only(client):
+    assert client.get("/api/superadmin/gocardless-check").status_code == 401
+
+
+def test_the_check_says_so_when_there_is_no_token(operator_client, monkeypatch):
+    monkeypatch.delenv("GOCARDLESS_ACCESS_TOKEN", raising=False)
+    body = operator_client.get("/api/superadmin/gocardless-check").json()
+    assert body["ok"] is False
+    assert body["reason"] == "no_token"
