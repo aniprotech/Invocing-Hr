@@ -26,6 +26,15 @@ const { jsPDF } = require('jspdf');
 
 const ROOT = path.resolve(__dirname, '..');
 
+// The boot handler is an async function, so anything it throws after its
+// first await surfaces as an unhandled rejection rather than synchronously.
+// That is not a detail of the test - it is why the reported failure was
+// silent: a browser prints such a rejection to the console and carries on
+// with a half-built page, which is what "blank but no error" was. Node kills
+// the process instead, so they are collected here and asserted on.
+const rejections = [];
+process.on('unhandledRejection', (e) => rejections.push(e));
+
 let failures = 0;
 const check = (label, ok, detail) => {
     if (ok) console.log('ok    ' + label);
@@ -33,8 +42,13 @@ const check = (label, ok, detail) => {
 };
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
+// What a reader actually sees. The stylesheet is what hides these -
+// .view-section is display:none and .view-section.active is display:block -
+// so the class is the signal, not the inline style. jsdom does not load the
+// stylesheet, so reading computed style here would answer nothing; this
+// applies the same rule the stylesheet does.
 const onScreen = d => [...d.querySelectorAll('.view-section')]
-    .filter(v => v.style.display !== 'none' && v.style.display !== '')
+    .filter(v => v.classList.contains('active') && v.style.display !== 'none')
     .map(v => v.id);
 
 // --- 1. Before a line of script runs ---------------------------------------
@@ -76,7 +90,13 @@ function bootWithFetch(fetchImpl, hash) {
     // The console would otherwise carry a page of expected failures.
     w.console = { log() { }, warn() { }, error() { } };
     w.eval(fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8'));
-    w.document.dispatchEvent(new w.Event('DOMContentLoaded', { bubbles: true }));
+    // jsdom dispatches synchronously and lets a listener's exception escape,
+    // which would end this process with a stack trace instead of a result.
+    // A boot that fails is the case under test, so it is caught here and
+    // judged by the DOM assertions below.
+    try {
+        w.document.dispatchEvent(new w.Event('DOMContentLoaded', { bubbles: true }));
+    } catch (e) { /* recorded by the DOM assertions below */ }
     return w;
 }
 
@@ -126,7 +146,8 @@ const sessionOnly = (body) => () => (url) => {
     {
         const src = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
         const boot = src.slice(src.indexOf("document.addEventListener('DOMContentLoaded'"));
-        const router = boot.indexOf('startRouter()');
+        // Named, not called: it goes through the wrapper now.
+        const router = boot.indexOf('startRouter');
         const firstLoader = boot.indexOf('fetchDashboardData');
         check('startRouter runs before the data loaders',
             router !== -1 && firstLoader !== -1 && router < firstLoader,
@@ -142,6 +163,31 @@ const sessionOnly = (body) => () => (url) => {
             /location\.hash/.test(gate),
             'every screen is a hash, so without it they come back to the dashboard');
     }
+
+    // --- 5. Nothing in the boot is left unguarded --------------------------
+    {
+        const src = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+        const body = src.slice(src.indexOf("document.addEventListener('DOMContentLoaded'"));
+        const end = body.indexOf('\n});');
+
+        // Every step the boot takes, as written. A bare call at this level is
+        // a step that can stop the boot on its way past - and stop it quietly,
+        // because the handler is async and the throw becomes a rejection that
+        // a browser only prints to the console.
+        const bare = [];
+        body.slice(0, end).split('\n').forEach((line) => {
+            const m = line.match(/^ {4}([a-zA-Z_][\w.]*)\(\);\s*$/);
+            if (m && m[1] !== 'boot') bare.push(m[1]);
+        });
+        check('every step of the boot is wrapped, so one failure is not all of them',
+            bare.length === 0, bare.join(', '));
+    }
+
+    // The runs above deliberately fail every network call, so the wrapper is
+    // being exercised. Anything escaping it means a step was missed.
+    check('no boot failure escapes as an unhandled rejection',
+        rejections.length === 0,
+        rejections.map(e => (e && e.message) || String(e)).join('; '));
 
     console.log(failures ? `\n${failures} failed` : '\nall good');
     process.exit(failures ? 1 : 0);

@@ -5369,15 +5369,33 @@ async function showImpersonationBannerIfNeeded() {
 window.showImpersonationBannerIfNeeded = showImpersonationBannerIfNeeded;
 
 document.addEventListener('DOMContentLoaded', async function() {
+    // One step failing is one missing piece, never a stopped boot.
+    //
+    // This handler is an async function, so anything it throws after its first
+    // await is an unhandled promise rejection - which a browser reports to the
+    // console and otherwise ignores, leaving a half-built page and no sign of
+    // what went wrong. That is what the blank-page report turned out to be, so
+    // every step is wrapped rather than trusted.
+    var boot = function (label, fn) {
+        try {
+            var out = fn();
+            if (out && typeof out.catch === 'function') {
+                out.catch(function (e) { console.error(label + ' failed', e); });
+            }
+        } catch (e) {
+            console.error(label + ' failed', e);
+        }
+    };
+
     // The header is built from markup alone, so it is done before anything
     // is awaited. It used to run after the session check, which meant a
     // network round-trip of the old ungrouped tabs on every refresh - and
     // none at all if that check failed.
-    enforcePortalSeparation();
-    buildGroupedNav();
+    boot('header', enforcePortalSeparation);
+    boot('header menus', buildGroupedNav);
     // Settings is markup too, so it is ready before anyone navigates to it
     // rather than being assembled on arrival.
-    buildSettingsSections();
+    boot('settings sections', buildSettingsSections);
 
     // Nothing else runs until we know there is a session, so the page
     // never renders an empty shell behind a redirect.
@@ -5402,22 +5420,8 @@ document.addEventListener('DOMContentLoaded', async function() {
     // includes. This runs here rather than at the end of the boot: everything
     // below is a network call, and deciding what to put on screen must not be
     // queued behind a dozen things that can fail.
-    startRouter();
+    boot('opening screen', startRouter);
 
-    // Below here, one failure is one missing panel. Every call gets its own
-    // try/catch for that reason - they used to run in a bare sequence, so the
-    // first to throw took every one after it with it, and what the reader saw
-    // was an empty page rather than the one thing that broke.
-    var boot = function (label, fn) {
-        try {
-            var out = fn();
-            if (out && typeof out.catch === 'function') {
-                out.catch(function (e) { console.error(label + ' failed', e); });
-            }
-        } catch (e) {
-            console.error(label + ' failed', e);
-        }
-    };
 
     boot('service worker', registerServiceWorker);
     // Before anything is rendered from the tenant's data, say whose it is.
@@ -5496,7 +5500,7 @@ document.addEventListener('DOMContentLoaded', async function() {
             }
         }, 30000);
     }
-    startAttRefresh();
+    boot('attendance refresh', startAttRefresh);
 });
 
 // ============ RECRUITMENT ============
