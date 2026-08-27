@@ -188,3 +188,67 @@ def test_turning_ai_off_stops_it_before_the_wallet_is_touched(tenant, operator):
     res = tenant.post("/api/ai/describe-item", json={"text": "a chair"})
     assert res.status_code == 503
     assert "switched off" in res.json()["detail"].lower()
+
+
+# --- The front page -------------------------------------------------------
+# The words on the landing page were a code change and a deploy until now.
+# They are settings like any other, with one extra rule: the page that reads
+# them is the one page nobody has signed in to see.
+
+def test_the_landing_copy_is_public(client):
+    """It is the page a visitor reads before they have a session at all."""
+    res = client.get("/api/platform/landing")
+    assert res.status_code == 200, res.text
+    assert res.json()["landing"]["headline"]
+
+
+def test_only_the_copy_is_public(client):
+    """A public endpoint on the settings table is worth being exact about.
+
+    Every key here is landing copy. Nothing from Money, Policy, AI or anywhere
+    else may arrive through it, whatever gets added to PLATFORM_SETTINGS later.
+    """
+    landing = client.get("/api/platform/landing").json()["landing"]
+    expected = {s.key.split(".", 1)[1] for s in main.PLATFORM_SETTINGS
+                if s.group == "Landing"}
+    assert set(landing) == expected
+
+    other = {s.key.split(".", 1)[1] for s in main.PLATFORM_SETTINGS
+             if s.group not in ("Landing", "Theme")}
+    assert not (set(landing) & other)
+
+
+def test_the_operator_can_rewrite_the_front_page(operator, client):
+    res = operator.put("/api/superadmin/platform-settings", json={
+        "settings": {"landing.headline": "Run your whole company here."}})
+    assert res.status_code == 200, res.text
+    assert client.get("/api/platform/landing").json()["landing"]["headline"] \
+        == "Run your whole company here."
+
+
+def test_an_empty_value_falls_back_to_what_the_page_ships(operator, client):
+    """Clearing the box must not blank the headline on the live site."""
+    operator.put("/api/superadmin/platform-settings",
+                 json={"settings": {"landing.headline": ""}})
+    assert client.get("/api/platform/landing").json()["landing"]["headline"] \
+        == "Everything Your Business Needs."
+
+
+def test_the_notice_bar_is_off_until_it_is_written(client):
+    assert client.get("/api/platform/landing").json()["landing"]["notice"] == ""
+
+
+def test_copy_is_stored_as_typed(operator, client):
+    """The page sets these with textContent, so markup is inert by the time it
+    is rendered. Storing it verbatim is what lets an ampersand or a quote in a
+    headline survive - escaping here would double-escape there."""
+    operator.put("/api/superadmin/platform-settings", json={
+        "settings": {"landing.headline": "Payroll & HR <together>"}})
+    assert client.get("/api/platform/landing").json()["landing"]["headline"] \
+        == "Payroll & HR <together>"
+
+
+def test_a_headline_cannot_be_a_wall_of_text(operator):
+    res = operator.put("/api/superadmin/platform-settings",
+                       json={"settings": {"landing.headline": "x" * 600}})
+    assert res.status_code == 400, res.text

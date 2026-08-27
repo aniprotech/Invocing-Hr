@@ -330,11 +330,11 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=101">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=101">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=101">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=101">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=101">
+    <link rel="stylesheet" href="mobile.css?v=102">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=102">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=102">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=102">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=102">
 </head>
 <body>
     <div class="admin-header">
@@ -1527,8 +1527,12 @@
             var type = s.kind === 'number' ? 'number' : 'text';
             var bounds = (s.min !== null && s.min !== undefined ? ' min="' + s.min + '"' : '') +
                          (s.max !== null && s.max !== undefined ? ' max="' + s.max + '"' : '');
+            // A number is a number, but a text setting is now as likely to be
+            // a headline as an address - 220px was a box you had to scroll
+            // sideways to read your own front page in.
+            var width = type === 'number' ? 'width:220px;' : 'width:100%;min-width:260px;max-width:460px;';
             return '<input type="' + type + '"' + bounds + ' ' + common +
-                   ' class="form-control setting-input" value="' + esc(s.value) + '" style="width:220px;">';
+                   ' class="form-control setting-input" value="' + esc(s.value) + '" style="' + width + '">';
         }
 
         function renderPlatformSettings(groups) {
@@ -1557,7 +1561,7 @@
                                             esc(s.key) + '\')" style="color:#38bdf8;">reset</a>' : '') +
                               '</div>' +
                             '</div>' +
-                            '<div style="min-width:200px;">' + settingField(s) + '</div>' +
+                            '<div style="min-width:200px;flex:1;">' + settingField(s) + '</div>' +
                         '</div>';
                     }).join('') +
                 '</div>';

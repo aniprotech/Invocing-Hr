@@ -394,11 +394,11 @@
         .footer-col a:hover { color: var(--ap-blue-dark); }
         .footer-about { font-size: 13.5px; color: var(--ap-body); line-height: 1.7; max-width: 320px; margin-top: 12px; }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=101">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=101">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=101">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=101">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=101">
+    <link rel="stylesheet" href="mobile.css?v=102">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=102">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=102">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=102">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=102">
 </head>
 <body>
 
@@ -452,20 +452,20 @@
     <section class="hero" id="home">
         <div class="fade-in fade-in-d1 hero-badge">
             <span class="dot"></span>
-            Smart HR &amp; Business Management Platform
+            <span data-cms="eyebrow">Smart HR &amp; Business Management Platform</span>
         </div>
         <!-- The site's own headline. It used to promise invoicing alone,
              which stopped being true the moment the twelve modules below it
              arrived on this page. -->
-        <h1 class="fade-in fade-in-d2">Everything Your Business Needs.<br><span class="gradient">One Powerful Platform.</span></h1>
-        <p class="fade-in fade-in-d3">Manage HR, Attendance, Payroll, Leave, Employee Records, Timesheets, Shift Management, Invoicing and Business Operations from one secure cloud platform.</p>
+        <h1 class="fade-in fade-in-d2"><span data-cms="headline">Everything Your Business Needs.</span><br><span class="gradient" data-cms="headline_accent">One Powerful Platform.</span></h1>
+        <p class="fade-in fade-in-d3" data-cms="subhead">Manage HR, Attendance, Payroll, Leave, Employee Records, Timesheets, Shift Management, Invoicing and Business Operations from one secure cloud platform.</p>
         <div class="fade-in fade-in-d4 hero-cta" id="hero-auth">
             <a href="/login.html" class="btn-white">
-                Open the app
+                <span data-cms="cta_primary">Open the app</span>
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
             </a>
             <a href="/employee-login.html" class="btn-ghost">
-                Employee Portal
+                <span data-cms="cta_secondary">Employee Portal</span>
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
             </a>
         </div>
@@ -496,7 +496,7 @@
         <div class="container">
             <div class="section-title">
                 <span class="eyebrow">Complete Business Platform</span>
-                <h2>Everything You Need. One Platform.</h2>
+                <h2 data-cms="modules_title">Everything You Need. One Platform.</h2>
                 <p>Ani Protech combines powerful business tools into one secure cloud platform, eliminating the need for multiple software subscriptions.</p>
             </div>
             <div class="grid-4">
@@ -561,7 +561,7 @@
         <div class="container">
             <div class="section-title">
                 <span class="eyebrow">Industries We Serve</span>
-                <h2>Built for Every Growing Business</h2>
+                <h2 data-cms="industries_title">Built for Every Growing Business</h2>
                 <p>Whether you are managing a small team or a multi-location enterprise, Ani Protech adapts to your business and helps streamline everyday operations.</p>
             </div>
             <div class="grid-4">
@@ -736,7 +736,7 @@
         <div class="container">
             <div class="section-title">
                 <span class="eyebrow">FAQs</span>
-                <h2>Frequently Asked Questions</h2>
+                <h2 data-cms="faq_title">Frequently Asked Questions</h2>
                 <p>Find answers to the most common questions about Ani Protech.</p>
             </div>
             <div class="faq-list" id="faq-list">
@@ -820,14 +820,14 @@
                 <a class="contact-card" href="mailto:info@aniprotech.co.uk">
                     <span class="contact-icon" aria-hidden="true">&#9993;</span>
                     <span class="contact-label">Email</span>
-                    <span class="contact-value">info@aniprotech.co.uk</span>
+                    <span class="contact-value" data-cms="contact_email">info@aniprotech.co.uk</span>
                 </a>
             </div>
 
             <div class="cta-card">
                 <span class="eyebrow">Free Live Demo</span>
-                <h2>Ready to Transform Your Business?</h2>
-                <p>Discover how Ani Protech can simplify HR, attendance, payroll, invoicing and business operations with one powerful cloud platform.</p>
+                <h2 data-cms="closing_title">Ready to Transform Your Business?</h2>
+                <p data-cms="closing_text">Discover how Ani Protech can simplify HR, attendance, payroll, invoicing and business operations with one powerful cloud platform.</p>
                 <div class="demo-points">
                     <div class="demo-point"><span class="tick" aria-hidden="true">&#10004;</span> Free live product demonstration</div>
                     <div class="demo-point"><span class="tick" aria-hidden="true">&#10004;</span> Tailored solution for your business</div>
@@ -851,7 +851,7 @@
                     </div>
                     <span>Ani Protech</span>
                 </div>
-                <p class="footer-about">One platform for HR, attendance, payroll, invoicing and business management.</p>
+                <p class="footer-about" data-cms="footer_about">One platform for HR, attendance, payroll, invoicing and business management.</p>
             </div>
             <div class="footer-col">
                 <h4>Quick Links</h4>
@@ -872,7 +872,7 @@
             </div>
         </div>
         <div class="footer-inner" style="border-top:1px solid var(--ap-line);">
-            <span class="footer-copy">&copy; 2026 Ani Protech. All rights reserved.</span>
+            <span class="footer-copy" data-cms="footer_copy">&copy; 2026 Ani Protech. All rights reserved.</span>
             <div class="footer-links">
                 <a href="#faq">FAQ</a>
                 <a href="#pricing">Pricing</a>
@@ -976,5 +976,65 @@
             } catch (e) {}
         });
     </script>
+
+<!-- The operator's copy.
+
+     Everything above is the wording this page ships with, which is what a
+     visitor reads while this is in flight and on an install where nothing has
+     been changed. This only ever overwrites.
+
+     textContent throughout, never innerHTML: the operator panel is a web form,
+     and a headline that could carry markup would be a way to put a script on
+     the front page. The server caps the length; this decides it can only ever
+     be words. -->
+<script>
+(function () {
+    function put(key, value) {
+        if (!value) return;                       // unset: keep what shipped
+        var nodes = document.querySelectorAll('[data-cms="' + key + '"]');
+        for (var i = 0; i < nodes.length; i++) nodes[i].textContent = value;
+    }
+
+    function notice(text) {
+        if (!text) return;
+        var bar = document.createElement('div');
+        bar.id = 'landing-notice';
+        bar.setAttribute('role', 'status');
+        bar.textContent = text;
+        bar.style.cssText =
+            'position:relative;z-index:60;padding:10px 16px;text-align:center;' +
+            'font-size:14px;font-weight:600;color:#f8fafc;' +
+            'background:linear-gradient(135deg,#0ea5e9,#0284c7);';
+        document.body.insertBefore(bar, document.body.firstChild);
+        // The header is fixed, so the page has to make room for this or the
+        // bar sits underneath it.
+        var nav = document.querySelector('.nav');
+        if (nav) nav.style.top = bar.offsetHeight + 'px';
+    }
+
+    fetch('/api/platform/landing')
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+            if (!d || !d.landing) return;
+            var c = d.landing;
+            Object.keys(c).forEach(function (k) {
+                if (k !== 'notice') put(k, c[k]);
+            });
+
+            // The address is a link as well as a label.
+            if (c.contact_email) {
+                document.querySelectorAll('a[href^="mailto:"]').forEach(function (a) {
+                    a.setAttribute('href', 'mailto:' + c.contact_email);
+                });
+            }
+            if (c.contact_phone) {
+                var tel = document.querySelector('[data-cms="contact_phone"]');
+                if (tel) tel.textContent = c.contact_phone;
+            }
+            notice(c.notice);
+        })
+        .catch(function () { /* the page already reads correctly without this */ });
+})();
+</script>
 </body>
 </html>

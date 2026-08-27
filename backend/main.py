@@ -15246,6 +15246,51 @@ PLATFORM_SETTINGS = [
     Setting("policy.terms_text", "Terms, in full", "Policy", "longtext", "",
             help="Shown in the app when no link is set."),
 
+    # --- Landing page ------------------------------------------------------
+    # The public site. Copy only: every one of these is written into the page
+    # with textContent, never as markup, so nothing here can put a script on
+    # the front page however it is typed.
+    Setting("landing.eyebrow", "Strapline above the headline", "Landing", "text",
+            "Smart HR & Business Management Platform"),
+    Setting("landing.headline", "Headline", "Landing", "text",
+            "Everything Your Business Needs."),
+    Setting("landing.headline_accent", "Headline, second line", "Landing", "text",
+            "One Powerful Platform.",
+            help="Shown in the accent colour, under the first line."),
+    Setting("landing.subhead", "Paragraph under the headline", "Landing", "longtext",
+            "Manage HR, Attendance, Payroll, Leave, Employee Records, Timesheets, "
+            "Shift Management, Invoicing and Business Operations from one secure "
+            "cloud platform."),
+    Setting("landing.cta_primary", "Main button", "Landing", "text", "Open the app"),
+    Setting("landing.cta_secondary", "Second button", "Landing", "text",
+            "Employee Portal"),
+
+    Setting("landing.modules_title", "Modules section title", "Landing", "text",
+            "Everything You Need. One Platform."),
+    Setting("landing.industries_title", "Industries section title", "Landing", "text",
+            "Built for Every Growing Business"),
+    Setting("landing.faq_title", "FAQ section title", "Landing", "text",
+            "Frequently Asked Questions"),
+
+    Setting("landing.closing_title", "Closing pitch", "Landing", "text",
+            "Ready to Transform Your Business?"),
+    Setting("landing.closing_text", "Closing pitch, in full", "Landing", "longtext",
+            "Discover how Ani Protech can simplify HR, attendance, payroll, "
+            "invoicing and business operations with one powerful cloud platform."),
+
+    Setting("landing.contact_email", "Contact address", "Landing", "text",
+            "info@aniprotech.co.uk"),
+    Setting("landing.contact_phone", "Contact number", "Landing", "text", ""),
+    Setting("landing.footer_about", "Footer blurb", "Landing", "longtext",
+            "One platform for HR, attendance, payroll, invoicing and business "
+            "management."),
+    Setting("landing.footer_copy", "Copyright line", "Landing", "text",
+            "\u00a9 2026 Ani Protech. All rights reserved."),
+
+    Setting("landing.notice", "Notice bar", "Landing", "text", "",
+            help="Shown across the top of the front page. Leave empty for none - "
+                 "it is the fastest way to say something to every visitor."),
+
     # --- AI ----------------------------------------------------------------
     Setting("ai.enabled", "AI features", "AI", "bool", "true",
             help="Turns off every AI action at once, without removing the key."),
@@ -15455,6 +15500,18 @@ def public_platform_theme(db: Session = Depends(get_db)):
     theme = {s.key.split(".", 1)[1]: platform_setting(db, s.key)
              for s in PLATFORM_SETTINGS if s.group == "Theme"}
     return {"theme": theme}
+
+
+@app.get("/api/platform/landing")
+def public_platform_landing(db: Session = Depends(get_db)):
+    """The words on the front page.
+
+    Open, like the theme, and for the same reason: this is the page a visitor
+    reads before they have any session at all. Only the keys under landing are
+    exposed - it is copy, and copy is public by definition.
+    """
+    return {"landing": {s.key.split(".", 1)[1]: platform_setting(db, s.key)
+                        for s in PLATFORM_SETTINGS if s.group == "Landing"}}
 
 
 @app.get("/api/superadmin/collection-mode")

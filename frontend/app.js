@@ -5302,8 +5302,11 @@ async function requireAuth() {
         // load and show its own error rather than bouncing to login.
         return true;
     }
-    // Remember where they were headed so login can return them here.
-    var next = window.location.pathname + window.location.search;
+    // Remember where they were headed so login can return them here - the
+    // hash included. Every screen in the app is a hash, so dropping it sent
+    // somebody who asked for #/hr back to the dashboard after signing in,
+    // which is the one part of the journey they had already told us.
+    var next = window.location.pathname + window.location.search + window.location.hash;
     window.location.replace(portalLoginPage() + '?next=' + encodeURIComponent(next));
     return false;
 }
@@ -5394,28 +5397,55 @@ document.addEventListener('DOMContentLoaded', async function() {
         // server refuses anything they are not entitled to anyway.
     }
 
-    registerServiceWorker();
+    // What the URL asked for - a bookmark, a shared link, or a refresh of the
+    // screen you were already on - falling back to the dashboard their plan
+    // includes. This runs here rather than at the end of the boot: everything
+    // below is a network call, and deciding what to put on screen must not be
+    // queued behind a dozen things that can fail.
+    startRouter();
+
+    // Below here, one failure is one missing panel. Every call gets its own
+    // try/catch for that reason - they used to run in a bare sequence, so the
+    // first to throw took every one after it with it, and what the reader saw
+    // was an empty page rather than the one thing that broke.
+    var boot = function (label, fn) {
+        try {
+            var out = fn();
+            if (out && typeof out.catch === 'function') {
+                out.catch(function (e) { console.error(label + ' failed', e); });
+            }
+        } catch (e) {
+            console.error(label + ' failed', e);
+        }
+    };
+
+    boot('service worker', registerServiceWorker);
     // Before anything is rendered from the tenant's data, say whose it is.
-    showImpersonationBannerIfNeeded();
-    checkAuthStatus();
+    boot('impersonation banner', showImpersonationBannerIfNeeded);
+    boot('session', checkAuthStatus);
     // The PDF renderer needs the theme before anyone can export a document.
-    loadBrandTheme();
-    handleTopUpReturn();
-    loadSettings();
-    fetchDashboardData();
-    fetchInvoices();
-    preloadSearchData();
-    loadSavedLogo();
-    setupLogoUpload();
-    if (document.getElementById('inv-currency-display')) setupCurrencyPicker('invCurrency', 'inv-currency-display', 'inv-currency', 'inv-currency-list', 'inv-currency-search', 'inv-currency-items');
-    if (document.getElementById('setting-currency-display')) setupCurrencyPicker('settingsCurrency', 'setting-currency-display', 'setting-currency', 'setting-currency-list', 'setting-currency-search', 'setting-currency-items');
-    fetch('/api/settings').then(function(r){return r.json()}).then(function(d){if(d.currency){_appCurrency=d.currency;var el=document.getElementById('setting-currency');if(el)el.value=d.currency;if(_curPickers['settingsCurrency'])setCurrencyPickerDisplay('settingsCurrency',d.currency);}}).catch(function(){});
+    boot('brand theme', loadBrandTheme);
+    boot('top-up return', handleTopUpReturn);
+    boot('settings', loadSettings);
+    boot('dashboard', fetchDashboardData);
+    boot('invoices', fetchInvoices);
+    boot('search index', preloadSearchData);
+    boot('saved logo', loadSavedLogo);
+    boot('logo upload', setupLogoUpload);
+    boot('currency pickers', function () {
+        if (document.getElementById('inv-currency-display')) setupCurrencyPicker('invCurrency', 'inv-currency-display', 'inv-currency', 'inv-currency-list', 'inv-currency-search', 'inv-currency-items');
+        if (document.getElementById('setting-currency-display')) setupCurrencyPicker('settingsCurrency', 'setting-currency-display', 'setting-currency', 'setting-currency-list', 'setting-currency-search', 'setting-currency-items');
+    });
+    boot('currency', function () {
+        return fetch('/api/settings').then(function(r){return r.json()}).then(function(d){if(d.currency){_appCurrency=d.currency;var el=document.getElementById('setting-currency');if(el)el.value=d.currency;if(_curPickers['settingsCurrency'])setCurrencyPickerDisplay('settingsCurrency',d.currency);}}).catch(function(){});
+    });
     // The first row is built before this resolves, so loadTaxRates() refreshes
     // the pickers once the tenant's own list arrives.
-    if (typeof loadTaxRates === 'function') loadTaxRates();
-    if (typeof loadAiStatus === 'function') loadAiStatus();
-    if (typeof loadTeam === 'function') loadTeam();
+    if (typeof loadTaxRates === 'function') boot('tax rates', loadTaxRates);
+    if (typeof loadAiStatus === 'function') boot('ai status', loadAiStatus);
+    if (typeof loadTeam === 'function') boot('team', loadTeam);
 
+    boot('line item editors', function () {
     Object.keys(DOC_FORM_SCOPES).forEach(function(scope) {
         var body = document.getElementById(DOC_FORM_SCOPES[scope].body);
         if (!body) return;
@@ -5435,16 +5465,13 @@ document.addEventListener('DOMContentLoaded', async function() {
             }
         });
     });
+    });
     // Set default dates
     var today = localDate(new Date());
     var dueDate = localDate(new Date(Date.now() + 14 * 86400000));    
     var urlParams = new URLSearchParams(window.location.search);
     
 
-    // Restore whatever the URL asked for - a bookmark, a shared link, or a
-    // refresh of the screen you were already on - falling back to this
-    // portal's dashboard when there is no usable hash.
-    startRouter();
     
     var issueEl = document.getElementById('inv-issue-date');
     var dueEl = document.getElementById('inv-due-date');
