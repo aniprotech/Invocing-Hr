@@ -6,7 +6,7 @@
   <title>aniprotech - Employee Portal</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <meta name="theme-color" content="#0b0f19">
-  <link rel="stylesheet" href="tailwind.css?v=105">
+  <link rel="stylesheet" href="tailwind.css?v=106">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -34,11 +34,11 @@
     .notification-badge { animation: notifPulse 2s infinite; }
     @keyframes notifPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.1); } }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=105">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=105">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=105">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=105">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=105">
+    <link rel="stylesheet" href="mobile.css?v=106">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=106">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=106">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=106">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=106">
 </head>
 <body class="bg-gray-50 min-h-screen">
 
@@ -212,7 +212,7 @@
               </div>
             </div>
             <div class="flex flex-col gap-3">
-              <p id="nonWorkingDayNote" class="hidden text-xs text-amber-600 text-center">
+              <p id="nonWorkingDayNote" class="hidden text-xs text-amber-300 text-center max-w-xs">
                 Today is not a working day, so you have not been clocked in. Use Clock In only if you are working.
               </p>
               <div id="clockBtns" class="flex gap-2 flex-wrap justify-center">
@@ -1444,11 +1444,35 @@
 
     var isWorkingDay = true;
 
+    // Why today is not a working day, not just that it is not. A public
+    // holiday and a Sunday both stop the clock, and being told which is the
+    // difference between the portal explaining itself and refusing.
+    function describeDay(day) {
+      var note = document.getElementById('nonWorkingDayNote');
+      if (!note || !day) return;
+      if (day.kind === 'holiday') {
+        note.textContent = day.label
+          ? day.label + ' - the office is closed today, so you have not been clocked in.'
+          : 'The office is closed today, so you have not been clocked in.';
+      } else if (day.kind === 'rest_day') {
+        note.textContent = 'Today is not a working day, so you have not been clocked in. ' +
+          'Use Clock In only if you are working.';
+      } else if (day.kind === 'optional_holiday') {
+        note.textContent = day.label + ' - marked in the calendar, but the office is open.';
+      }
+      // An optional holiday still expects people, so the note is shown for it
+      // even though clocking in is normal.
+      var worthSaying = day.kind !== 'working';
+      note.classList.toggle('hidden', !worthSaying || isClockedIn || todayCompleted);
+    }
+
     function updateClockUI() {
       var btns = document.getElementById('clockBtns');
       var done = document.getElementById('clockDoneMsg');
       var note = document.getElementById('nonWorkingDayNote');
-      if (note) note.classList.toggle('hidden', isWorkingDay || isClockedIn || todayCompleted);
+      if (note && !note.dataset.described) {
+        note.classList.toggle('hidden', isWorkingDay || isClockedIn || todayCompleted);
+      }
       if (todayCompleted) { btns.classList.add('hidden'); done.classList.remove('hidden'); }
       else {
         btns.classList.remove('hidden'); done.classList.add('hidden');
@@ -1544,6 +1568,10 @@
         // before any figure is put on it - otherwise the needle lands on an
         // eight-hour default and then jumps.
         applyShift(data.shift);
+        if (data.day) {
+          describeDay(data.day);
+          document.getElementById('nonWorkingDayNote').dataset.described = '1';
+        }
         updateElapsed(data.shift ? data.shift.worked_hours : (data.elapsed_hours || 0));
         document.getElementById('todayBreak').textContent = data.break_minutes > 0 ? Math.round(data.break_minutes) + 'm' : '0m';
         var th = data.total_hours > 0 ? data.total_hours : 0;

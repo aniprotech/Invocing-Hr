@@ -5710,6 +5710,49 @@ def shift_progress(settings, att, now=None):
     }
 
 
+def holidays_for(db, client_id, on_date):
+    """Every holiday that lands on this date.
+
+    A recurring one matches on month and day, so Christmas entered once covers
+    every year after it. A fixed one matches the whole date.
+    """
+    if not client_id:
+        return []
+    stamp = on_date if isinstance(on_date, str) else on_date.strftime("%Y-%m-%d")
+    suffix = stamp[5:]                      # MM-DD
+    rows = db.query(models.DBHoliday).filter(
+        models.DBHoliday.client_id == client_id).all()
+    return [h for h in rows
+            if h.date == stamp or (h.recurring and (h.date or "")[5:] == suffix)]
+
+
+def day_kind(db, settings, client_id, on_date=None):
+    """What sort of day this is, and why.
+
+    The register used to answer "is anybody expected today" from the working
+    days alone, so a public holiday looked exactly like a company of people who
+    had all failed to turn up - and the dial in the portal asked for a full
+    day's hours nobody was meant to work.
+    """
+    on_date = on_date or datetime.now().date()
+    stamp = on_date if isinstance(on_date, str) else on_date.strftime("%Y-%m-%d")
+    as_date = datetime.strptime(stamp, "%Y-%m-%d").date()
+
+    closed = [h for h in holidays_for(db, client_id, stamp) if not h.optional]
+    if closed:
+        return {"kind": "holiday", "expected": False, "label": closed[0].name,
+                "optional": False}
+
+    optional = [h for h in holidays_for(db, client_id, stamp) if h.optional]
+    if not is_working_day(settings, as_date):
+        return {"kind": "rest_day", "expected": False,
+                "label": "Not a working day", "optional": False}
+    if optional:
+        return {"kind": "optional_holiday", "expected": True,
+                "label": optional[0].name, "optional": True}
+    return {"kind": "working", "expected": True, "label": "", "optional": False}
+
+
 def should_auto_clock_in(settings, on_date=None):
     """Signing in only starts a shift on a working day, and only if the tenant
     wants sign-in to count at all. Someone opening the portal on a Sunday to
@@ -7487,6 +7530,7 @@ def get_live_attendance(request: Request, db: Session = Depends(get_db)):
     # a manager reads here and the hours the person sees on their own screen
     # are the same number judged the same way.
     settings = attendance_settings_for(db, client.id)
+    kind = day_kind(db, settings, client.id, today)
     result = []
     for emp in all_active:
         rec = record_map.get(emp.id)
@@ -7509,7 +7553,10 @@ def get_live_attendance(request: Request, db: Session = Depends(get_db)):
             # Against the hours HR set: short, full, over, and how late.
             "shift": shift_progress(settings, rec),
         })
-    return result
+    # Wrapped, so the page can say "closed for Christmas" instead of drawing a
+    # register of absentees. The list stays where it was for callers that only
+    # want the rows.
+    return JSONResponse({"day": kind, "employees": result})         if request.query_params.get("with_day") else result
 
 @app.get("/api/attendance/analytics")
 def get_attendance_analytics(request: Request, days: int = 30, db: Session = Depends(get_db)):
@@ -7664,13 +7711,144 @@ def update_attendance_settings(request: Request, body: dict = None, db: Session 
 
     # A half day longer than a full one would mark every complete shift as
     # half. Checked after both are set, because either one can be the edit
-    # that creates the conflict.
-    if (settings.half_day_hours or 0) >= (settings.standard_hours or 0):
+    # that creates the conflict - and read through the same fallback the rest
+    # of the app uses, because a row that has just been created has None in
+    # every column until it is inserted. Comparing the raw attributes made
+    # 0 >= 0 true and refused every save on a tenant's first visit.
+    # Read raw, not through shift_rules: that clamps a half day back under the
+    # full one so the app always has a usable schedule, which is right at read
+    # time and wrong here - it would quietly accept lowering the full day
+    # below the half day and then hide what it had done.
+    def asked(name):
+        raw = getattr(settings, name, None)
+        return float(SHIFT_DEFAULTS[name] if raw in (None, "") else raw)
+
+    if asked("half_day_hours") >= asked("standard_hours"):
         raise HTTPException(
             status_code=400,
             detail="A half day has to be shorter than a full day")
     db.commit()
     return {"message": "Settings saved"}
+
+def holiday_to_dict(h):
+    return {"id": h.id, "date": h.date, "name": h.name,
+            "recurring": bool(h.recurring), "optional": bool(h.optional),
+            "note": h.note or ""}
+
+
+@app.get("/api/hr/holidays")
+def list_holidays(request: Request, year: int = None, db: Session = Depends(get_db)):
+    """The calendar, soonest first.
+
+    A year narrows it, which is what the page asks for - but recurring days are
+    always included, because "Christmas" was entered once against some past
+    year and still closes the office this one.
+    """
+    client = get_client_user(request, db)
+    rows = db.query(models.DBHoliday).filter(
+        models.DBHoliday.client_id == client.id).all()
+    if year:
+        rows = [h for h in rows
+                if h.recurring or (h.date or "").startswith(f"{year}-")]
+    rows.sort(key=lambda h: (h.date or "")[5:] if h.recurring else (h.date or ""))
+    return {"holidays": [holiday_to_dict(h) for h in rows]}
+
+
+@app.post("/api/hr/holidays")
+def add_holiday(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+
+    date = str(body.get("date") or "").strip()
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Give a date as YYYY-MM-DD")
+
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Give the holiday a name")
+    if len(name) > 120:
+        raise HTTPException(status_code=400, detail="That name is too long")
+
+    # The same day twice would close the office twice and read as a duplicate
+    # on every screen that lists it.
+    clash = db.query(models.DBHoliday).filter(
+        models.DBHoliday.client_id == client.id,
+        models.DBHoliday.date == date).first()
+    if clash:
+        raise HTTPException(status_code=400,
+                            detail=f"{clash.name} is already on that date")
+
+    row = models.DBHoliday(
+        client_id=client.id, date=date, name=name,
+        recurring=bool(body.get("recurring")),
+        optional=bool(body.get("optional")),
+        note=str(body.get("note") or "")[:500])
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    log_audit(db, client.id, "holiday_added", "holiday", row.id, name, "", request)
+    db.commit()
+    return holiday_to_dict(row)
+
+
+@app.put("/api/hr/holidays/{holiday_id}")
+def update_holiday(holiday_id: int, request: Request, body: dict = None,
+                   db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = db.query(models.DBHoliday).filter(
+        models.DBHoliday.id == holiday_id,
+        models.DBHoliday.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Holiday not found")
+
+    body = body or {}
+    if "name" in body:
+        name = str(body["name"] or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Give the holiday a name")
+        row.name = name[:120]
+    if "date" in body:
+        date = str(body["date"] or "").strip()
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Give a date as YYYY-MM-DD")
+        row.date = date
+    if "recurring" in body:
+        row.recurring = bool(body["recurring"])
+    if "optional" in body:
+        row.optional = bool(body["optional"])
+    if "note" in body:
+        row.note = str(body["note"] or "")[:500]
+
+    db.commit()
+    return holiday_to_dict(row)
+
+
+@app.delete("/api/hr/holidays/{holiday_id}")
+def delete_holiday(holiday_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = db.query(models.DBHoliday).filter(
+        models.DBHoliday.id == holiday_id,
+        models.DBHoliday.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Holiday not found")
+    name = row.name
+    db.delete(row)
+    log_audit(db, client.id, "holiday_removed", "holiday", holiday_id, name, "", request)
+    db.commit()
+    return {"deleted": holiday_id}
+
+
+@app.get("/api/hr/day-kind")
+def read_day_kind(request: Request, date: str = None, db: Session = Depends(get_db)):
+    """What sort of day this is, for anything that needs to ask."""
+    client = get_client_user(request, db)
+    return day_kind(db, attendance_settings_for(db, client.id), client.id,
+                    date or datetime.now().strftime("%Y-%m-%d"))
+
 
 @app.get("/api/attendance/settings")
 def get_attendance_settings(request: Request, db: Session = Depends(get_db)):
@@ -8054,13 +8232,18 @@ def employee_today_attendance(request: Request, db: Session = Depends(get_db)):
     ).first()
     # The portal says why the Clock In button is waiting rather than filled in.
     settings = attendance_settings_for(db, client_id)
-    working_day = is_working_day(settings)
+    # Why today is or is not a working day, rather than only whether it is. A
+    # public holiday and a Sunday are both "not working", and telling somebody
+    # which is the difference between the portal explaining itself and just
+    # refusing.
+    kind = day_kind(db, settings, client_id, today)
+    working_day = kind["expected"]
     if not att:
         # The gauge is sent even before the day starts, so the portal can show
         # the target somebody is about to work toward rather than an empty
         # dial that only appears once they have clocked in.
         return {"clocked_in": False, "is_working_day": working_day,
-                "shift": shift_progress(settings, None)}
+                "day": kind, "shift": shift_progress(settings, None)}
     now_str = datetime.now().strftime("%H:%M:%S")
     elapsed = 0
     if att.clock_in and not att.clock_out:
@@ -8087,6 +8270,7 @@ def employee_today_attendance(request: Request, db: Session = Depends(get_db)):
         "elapsed_hours": elapsed,
         "status": att.status,
         "is_working_day": working_day,
+        "day": kind,
         # Measured against the hours HR set, by the same function the HR
         # attendance list uses - so the figure an employee sees on the gauge
         # is the figure their manager sees on the register.

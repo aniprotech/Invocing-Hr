@@ -248,3 +248,31 @@ def test_hr_and_the_employee_are_shown_the_same_judgement(tenant):
     assert row["shift"]["target_hours"] == 6, \
         "the register is measuring against a different day than HR set"
     assert row["shift"]["expected_in"]
+
+
+def test_saving_something_unrelated_on_a_fresh_tenant_works(tenant):
+    """The first save a business ever makes, touching none of the hours.
+
+    A settings row created in memory has None in every column until it is
+    inserted, so validating the raw attributes made "half day >= full day"
+    read as 0 >= 0 and refused it. Every tenant's first visit to the page.
+    """
+    res = tenant.put("/api/attendance/settings", json={"office_name": "Depot"})
+    assert res.status_code == 200, res.text
+    assert tenant.get("/api/attendance/settings").json()["office_name"] == "Depot"
+
+
+def test_changing_only_the_full_day_keeps_the_half_day_valid(tenant):
+    """Raising the full day alone must not trip the check on the old half."""
+    tenant.put("/api/attendance/settings",
+               json={"standard_hours": 8, "half_day_hours": 4})
+    res = tenant.put("/api/attendance/settings", json={"standard_hours": 10})
+    assert res.status_code == 200, res.text
+    assert tenant.get("/api/attendance/settings").json()["standard_hours"] == 10
+
+
+def test_lowering_the_full_day_under_the_half_day_is_still_refused(tenant):
+    tenant.put("/api/attendance/settings",
+               json={"standard_hours": 10, "half_day_hours": 6})
+    res = tenant.put("/api/attendance/settings", json={"standard_hours": 5})
+    assert res.status_code == 400, res.text

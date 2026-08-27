@@ -5137,6 +5137,81 @@ async function loadAttendanceAnalytics() {
     } catch (e) { console.error('Attendance analytics load failed:', e); }
 }
 
+// --- Holiday calendar ---
+// Days the office is shut. Kept beside the attendance settings because it is
+// the same question - what is a working day - answered a different way.
+
+async function loadHolidays() {
+    var host = document.getElementById('holiday-list');
+    if (!host) return;
+    try {
+        var res = await fetch('/api/hr/holidays');
+        if (!res.ok) throw new Error('Could not load the calendar');
+        var rows = (await res.json()).holidays || [];
+        if (!rows.length) {
+            host.innerHTML = '<p style="color:var(--text-secondary);font-size:0.9rem;">' +
+                'No holidays yet. Days you add here are not counted as absences, ' +
+                'and staff are not asked for hours on them.</p>';
+            return;
+        }
+        host.innerHTML = '<div style="display:flex;flex-direction:column;gap:8px;">' +
+            rows.map(function (h) {
+                return '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;' +
+                            'padding:10px 14px;border:1px solid var(--border-color);' +
+                            'border-radius:10px;background:var(--surface-color);">' +
+                    '<span style="font-weight:600;min-width:110px;">' + esc(h.date) + '</span>' +
+                    '<span style="flex:1;min-width:140px;">' + esc(h.name) + '</span>' +
+                    (h.recurring ? '<span class="status-pill" style="background:rgba(56, 189, 248, 0.15);color:var(--primary-color);">Every year</span>' : '') +
+                    (h.optional ? '<span class="status-pill" style="background:rgba(251, 191, 36, 0.15);color:var(--warning-color);">Office open</span>' : '') +
+                    '<button class="btn-icon" title="Remove" onclick="removeHoliday(' + h.id + ')" ' +
+                            'style="color:var(--danger-text);">&times;</button>' +
+                '</div>';
+            }).join('') + '</div>';
+    } catch (e) {
+        host.innerHTML = '<p style="color:var(--danger-text);font-size:0.9rem;">' +
+            esc(e.message) + '</p>';
+    }
+}
+window.loadHolidays = loadHolidays;
+
+async function addHoliday() {
+    var date = document.getElementById('hol-date').value;
+    var name = document.getElementById('hol-name').value.trim();
+    if (!date || !name) { showToast('Give the day a date and a name', 'error'); return; }
+    try {
+        var res = await fetch('/api/hr/holidays', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                date: date, name: name,
+                recurring: document.getElementById('hol-recurring').checked,
+                optional: document.getElementById('hol-optional').checked,
+            }),
+        });
+        if (!res.ok) {
+            // The server says which day is already taken, which is the one
+            // thing the person needs to know to fix it.
+            var why = await res.json().catch(function () { return {}; });
+            throw new Error(why.detail || 'Could not add that day');
+        }
+        document.getElementById('hol-name').value = '';
+        document.getElementById('hol-recurring').checked = false;
+        document.getElementById('hol-optional').checked = false;
+        showToast('Added to the calendar', 'success');
+        loadHolidays();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.addHoliday = addHoliday;
+
+async function removeHoliday(id) {
+    if (!confirm('Remove this day from the calendar?')) return;
+    try {
+        var res = await fetch('/api/hr/holidays/' + id, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Could not remove that day');
+        loadHolidays();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.removeHoliday = removeHoliday;
+
 // --- Attendance Settings ---
 async function loadAttendanceSettings() {
     try {
@@ -5164,6 +5239,7 @@ async function loadAttendanceSettings() {
         var auto = document.getElementById('set-auto-clock-in');
         if (auto) auto.checked = data.auto_clock_in !== false;
     } catch (e) { console.error('Attendance settings load failed:', e); }
+    loadHolidays();
 }
 
 // Ticked days, as the ISO numbers the server stores. An empty selection would

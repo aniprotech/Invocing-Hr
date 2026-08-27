@@ -608,6 +608,31 @@ class DBAttendanceSettings(Base):
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
+class DBHoliday(Base):
+    """A day the business is closed.
+
+    Without these a public holiday is indistinguishable from everybody failing
+    to turn up: the register shows a company of absentees, and the dial in the
+    portal asks for eight hours nobody was meant to work.
+
+    Dates are stored as written. A holiday that falls on the same date every
+    year - Christmas, New Year - is marked recurring and matched on month and
+    day, so it does not have to be entered again each January.
+    """
+    __tablename__ = "holidays"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    date = Column(String, nullable=False, index=True)      # YYYY-MM-DD
+    name = Column(String, nullable=False)
+    recurring = Column(Boolean, default=False)
+    # Whether staff are still expected to work it. A holiday that is optional
+    # is not an absence either way, but it does not close the office.
+    optional = Column(Boolean, default=False)
+    note = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
 class DBClientLoginLog(Base):
     __tablename__ = "client_login_logs"
 
