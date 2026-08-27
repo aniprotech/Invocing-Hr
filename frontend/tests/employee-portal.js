@@ -236,6 +236,95 @@ function boot(overrides) {
             /ask hr/i.test(text) && /credit/i.test(text), text);
     }
 
+    // --- the dial for the working day --------------------------------------
+    // "3h 12m" is a fact with nothing to measure it against. HR sets the
+    // production hours now, so the same figure can be shown as a proportion of
+    // the day - which is the question somebody actually has: am I nearly done.
+    {
+        const { w } = boot();
+        const SWEEP = 240;
+        const C = 2 * Math.PI * 54;
+        const drawn = () => parseFloat(w.document.getElementById('gaugeArc')
+            .getAttribute('stroke-dasharray').split(' ')[0]);
+        const swept = () => drawn() / (C * SWEEP / 360);
+        const needleAngle = () => parseFloat(w.document.getElementById('gaugeNeedle')
+            .getAttribute('transform').match(/-?[\d.]+/)[0]);
+        const stateText = () => w.document.getElementById('gaugeState').textContent;
+
+        w.applyShift({ target_hours: 7.5, worked_hours: 3, state: 'working' });
+
+        check('the dial is drawn against the hours HR set, not a fixed eight',
+            w.document.getElementById('gaugeTarget').textContent === 'of 7h 30m',
+            w.document.getElementById('gaugeTarget').textContent);
+        check('the arc covers the fraction of the day worked',
+            Math.abs(swept() - 3 / 7.5) < 0.001, swept().toFixed(4));
+        check('and the needle agrees with the arc',
+            Math.abs(needleAngle() - (-120 + (3 / 7.5) * SWEEP)) < 0.1, needleAngle());
+        check('the readout is the same figure in words',
+            w.document.getElementById('elapsedTime').textContent === '3h 00m',
+            w.document.getElementById('elapsedTime').textContent);
+        check('the dial is marked in hours of that day',
+            w.document.getElementById('gaugeTicks').children.length === 8,
+            w.document.getElementById('gaugeTicks').children.length + ' marks for 7.5h');
+
+        // A needle past the last mark reads as a fault, not as a long day.
+        w.applyShift({ target_hours: 8, worked_hours: 12, state: 'complete' });
+        check('a long day stops at the end of the dial',
+            Math.abs(swept() - 1) < 0.001, swept().toFixed(4));
+        check('and the needle stops with it',
+            Math.abs(needleAngle() - 120) < 0.1, needleAngle());
+        check('with the hours over said in words instead',
+            /4h 00m over/.test(stateText()), stateText());
+
+        // Read from the inline style, which is where the colour is now set.
+        // Reading the attribute is what let a real bug through: the attribute
+        // changed and the painted colour did not, because a CSS transition on
+        // stroke swallows presentation-attribute changes - invisible here,
+        // where nothing transitions, and plain in a browser.
+        const colourFor = (state, worked) => {
+            w.applyShift({ target_hours: 8, worked_hours: worked, state });
+            return w.document.getElementById('gaugeArc').style.stroke;
+        };
+        const tones = [colourFor('not_started', 0), colourFor('working', 3),
+                       colourFor('on_break', 3), colourFor('complete', 8)];
+        check('each state of the day is a different colour',
+            new Set(tones).size === 4, tones.join(' '));
+
+        w.applyShift({ target_hours: 8, worked_hours: 0, state: 'not_started' });
+        check('an unstarted day shows the target rather than an empty dial',
+            w.document.getElementById('gaugeTarget').textContent === 'of 8h 00m' && drawn() === 0,
+            w.document.getElementById('gaugeTarget').textContent);
+        check('and says so', /not started/i.test(stateText()), stateText());
+
+        // The server said "working" a moment ago. Passing the target while
+        // still clocked in has to read as overtime without waiting for a poll.
+        w.applyShift({ target_hours: 4, worked_hours: 3.9, state: 'working' });
+        w.updateElapsed(4.5);
+        check('passing the target mid-shift reads as overtime straight away',
+            /over/i.test(stateText()), stateText());
+    }
+
+    // --- the target comes from the server, not from the page ----------------
+    {
+        const { w } = boot({
+            '/api/employee/attendance/today': {
+                clocked_in: true, clock_in: '09:00:00', clock_out: '',
+                is_on_break: false, break_minutes: 0, elapsed_hours: 2,
+                status: 'present', is_working_day: true,
+                shift: {
+                    target_hours: 6, worked_hours: 2, remaining_hours: 4,
+                    overtime_hours: 0, fraction: 0.3333, percent: 33,
+                    state: 'working', late_minutes: 0, left_early_minutes: 0,
+                    expected_in: '09:00', expected_out: '15:00',
+                },
+            },
+        });
+        await wait(80);
+        check('a six-hour day is a six-hour dial',
+            w.document.getElementById('gaugeTarget').textContent === 'of 6h 00m',
+            w.document.getElementById('gaugeTarget').textContent);
+    }
+
     console.log(failures ? `\n${failures} failed` : '\nall good');
     process.exit(failures ? 1 : 0);
 })();

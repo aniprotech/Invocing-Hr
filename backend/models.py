@@ -582,6 +582,19 @@ class DBAttendanceSettings(Base):
     work_start = Column(String, default="09:00")
     work_end = Column(String, default="17:30")
     grace_minutes = Column(Float, default=15.0)
+    # The production hours a full day is measured against. work_start and
+    # work_end say when the day runs; this says how much of it is work, which
+    # is not the same number once breaks come out of the middle - 09:00 to
+    # 17:30 with an unpaid half hour is eight hours, not eight and a half.
+    # Everything that judges a shift - short, full, overtime, the gauge in the
+    # employee portal - measures against this one figure.
+    standard_hours = Column(Float, default=8.0)
+    # Below this a day counts as a half day rather than a full one.
+    half_day_hours = Column(Float, default=4.0)
+    # Whether time on break counts toward the target. Off is the common
+    # arrangement - an unpaid lunch - and is what the existing hour totals
+    # already assume, so it stays the default.
+    paid_breaks = Column(Boolean, default=False)
     auto_clockout_hours = Column(Float, default=10.0)
     max_overtime_hours = Column(Float, default=4.0)
     allow_remote = Column(Boolean, default=True)

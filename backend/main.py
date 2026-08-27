@@ -5564,6 +5564,152 @@ def is_working_day(settings, on_date=None):
     return on_date.isoweekday() in parse_working_days(raw or DEFAULT_WORKING_DAYS)
 
 
+# What HR asked for, with the built-in answer when they have not said.
+SHIFT_DEFAULTS = {
+    "work_start": "09:00", "work_end": "17:30", "grace_minutes": 15.0,
+    "standard_hours": 8.0, "half_day_hours": 4.0, "paid_breaks": False,
+    "max_overtime_hours": 4.0,
+}
+
+
+def shift_rules(settings):
+    """The schedule as numbers, whatever state the settings row is in.
+
+    Read through one function because a tenant who has never opened the
+    settings page has no row at all, and a tenant who saved before these
+    columns existed has nulls in them. Both have to come out as a usable
+    schedule rather than as a crash three screens away.
+    """
+    def value(name):
+        raw = getattr(settings, name, None) if settings is not None else None
+        return SHIFT_DEFAULTS[name] if raw in (None, "") else raw
+
+    standard = float(value("standard_hours") or 0)
+    # A day of zero or negative hours is not a schedule, and would make every
+    # ratio below a division by zero.
+    if standard <= 0:
+        standard = SHIFT_DEFAULTS["standard_hours"]
+    standard = min(standard, 24.0)
+
+    half = float(value("half_day_hours") or 0)
+    # A half day longer than a full one would mark every complete shift as
+    # half. Clamp rather than refuse: the schedule still has to work.
+    if half <= 0 or half >= standard:
+        half = round(standard / 2, 2)
+
+    return {
+        "work_start": str(value("work_start") or SHIFT_DEFAULTS["work_start"]),
+        "work_end": str(value("work_end") or SHIFT_DEFAULTS["work_end"]),
+        "grace_minutes": float(value("grace_minutes") or 0),
+        "standard_hours": standard,
+        "half_day_hours": half,
+        "paid_breaks": bool(value("paid_breaks")),
+        "max_overtime_hours": float(value("max_overtime_hours") or 0),
+    }
+
+
+def _minutes(hhmm):
+    """"09:30" as minutes past midnight, or None if it is not a time."""
+    try:
+        parts = str(hhmm).strip().split(":")
+        return int(parts[0]) * 60 + int(parts[1])
+    except (ValueError, IndexError):
+        return None
+
+
+def shift_progress(settings, att, now=None):
+    """How today is going, measured against the hours HR set.
+
+    Everything that judges a shift reads this: the gauge in the employee
+    portal, the status on the HR attendance list, whether a day counts as
+    short, full or overtime. One function because the alternative is each
+    screen doing its own arithmetic and quietly disagreeing with the others -
+    which is how somebody ends up disputing a figure that two pages of the
+    same product state differently.
+    """
+    rules = shift_rules(settings)
+    now = now or datetime.now()
+    target = rules["standard_hours"]
+
+    worked = 0.0
+    clock_in = getattr(att, "clock_in", "") or "" if att is not None else ""
+    clock_out = getattr(att, "clock_out", "") or "" if att is not None else ""
+    on_break = bool(getattr(att, "is_on_break", False)) if att is not None else False
+
+    if att is not None:
+        if clock_out:
+            worked = float(getattr(att, "total_hours", 0) or 0)
+        elif clock_in:
+            try:
+                day = getattr(att, "date", None) or now.strftime("%Y-%m-%d")
+                started = datetime.strptime(day + " " + clock_in, "%Y-%m-%d %H:%M:%S")
+                worked = (now - started).total_seconds() / 3600
+                if not rules["paid_breaks"]:
+                    worked -= float(getattr(att, "break_minutes", 0) or 0) / 60
+                    if on_break and getattr(att, "break_start", ""):
+                        bs = datetime.strptime(
+                            day + " " + att.break_start, "%Y-%m-%d %H:%M:%S")
+                        worked -= (now - bs).total_seconds() / 3600
+                worked = max(0.0, worked)
+            except (ValueError, TypeError):
+                worked = 0.0
+
+    worked = round(worked, 2)
+    remaining = round(max(0.0, target - worked), 2)
+    overtime = round(max(0.0, worked - target), 2)
+
+    # For the needle. Capped at 1 so a long day does not sweep past the dial,
+    # with `over` carrying the part that did not fit.
+    fraction = round(min(worked / target, 1.0), 4) if target else 0.0
+
+    # Late, measured from the end of the grace period rather than from the
+    # start time - the grace is there to be used, and counting it as lateness
+    # would make it meaningless.
+    late_minutes = 0
+    start_at = _minutes(rules["work_start"])
+    if clock_in and start_at is not None:
+        came = _minutes(clock_in)
+        if came is not None:
+            late_minutes = max(0, came - start_at - int(rules["grace_minutes"]))
+
+    left_early_minutes = 0
+    end_at = _minutes(rules["work_end"])
+    if clock_out and end_at is not None:
+        went = _minutes(clock_out)
+        if went is not None:
+            left_early_minutes = max(0, end_at - went)
+
+    if not clock_in:
+        state = "not_started"
+    elif on_break:
+        state = "on_break"
+    elif not clock_out:
+        state = "overtime" if overtime > 0 else "working"
+    elif worked >= target:
+        state = "complete"
+    elif worked >= rules["half_day_hours"]:
+        state = "short"
+    else:
+        state = "half_day"
+
+    return {
+        "target_hours": target,
+        "worked_hours": worked,
+        "remaining_hours": remaining,
+        "overtime_hours": overtime,
+        "fraction": fraction,
+        "percent": int(round(fraction * 100)),
+        "state": state,
+        "late_minutes": late_minutes,
+        "left_early_minutes": left_early_minutes,
+        "expected_in": rules["work_start"],
+        "expected_out": rules["work_end"],
+        "grace_minutes": rules["grace_minutes"],
+        "half_day_hours": rules["half_day_hours"],
+        "paid_breaks": rules["paid_breaks"],
+    }
+
+
 def should_auto_clock_in(settings, on_date=None):
     """Signing in only starts a shift on a working day, and only if the tenant
     wants sign-in to count at all. Someone opening the portal on a Sunday to
@@ -7337,6 +7483,10 @@ def get_live_attendance(request: Request, db: Session = Depends(get_db)):
         models.DBAttendance.date == today,
     ).all()
     record_map = {r.employee_id: r for r in today_records}
+    # The same schedule the employee portal draws its dial from, so the hours
+    # a manager reads here and the hours the person sees on their own screen
+    # are the same number judged the same way.
+    settings = attendance_settings_for(db, client.id)
     result = []
     for emp in all_active:
         rec = record_map.get(emp.id)
@@ -7356,6 +7506,8 @@ def get_live_attendance(request: Request, db: Session = Depends(get_db)):
             "location_label": rec.location_label if rec else "",
             "ip_address": rec.ip_address if rec else "",
             "check_type": rec.check_type if rec else "",
+            # Against the hours HR set: short, full, over, and how late.
+            "shift": shift_progress(settings, rec),
         })
     return result
 
@@ -7492,9 +7644,31 @@ def update_attendance_settings(request: Request, body: dict = None, db: Session 
                 # Normalised, so a stray value cannot leave a tenant with no
                 # working days at all.
                 val = clean_working_days(val)
-            elif key == "auto_clock_in":
+            elif key in ("auto_clock_in", "paid_breaks"):
                 val = bool(val)
+            elif key in ("standard_hours", "half_day_hours"):
+                # A day of no hours is not a schedule - every ratio measured
+                # against it would be a division by zero, and the portal gauge
+                # would have nothing to point at. Refused here rather than
+                # patched over later, so the person setting it finds out.
+                try:
+                    val = float(val)
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400,
+                                        detail=f"{key} must be a number")
+                if val <= 0 or val > 24:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Hours in a day must be between 0 and 24")
             setattr(settings, key, val)
+
+    # A half day longer than a full one would mark every complete shift as
+    # half. Checked after both are set, because either one can be the edit
+    # that creates the conflict.
+    if (settings.half_day_hours or 0) >= (settings.standard_hours or 0):
+        raise HTTPException(
+            status_code=400,
+            detail="A half day has to be shorter than a full day")
     db.commit()
     return {"message": "Settings saved"}
 
@@ -7509,6 +7683,9 @@ def get_attendance_settings(request: Request, db: Session = Depends(get_db)):
             "grace_minutes": 15.0, "auto_clockout_hours": 10.0, "max_overtime_hours": 4.0,
             "allow_remote": True, "require_location": True,
             "working_days": DEFAULT_WORKING_DAYS, "auto_clock_in": True,
+            "standard_hours": SHIFT_DEFAULTS["standard_hours"],
+            "half_day_hours": SHIFT_DEFAULTS["half_day_hours"],
+            "paid_breaks": SHIFT_DEFAULTS["paid_breaks"],
         }
     return {
         "office_name": settings.office_name, "office_lat": settings.office_lat,
@@ -7520,6 +7697,11 @@ def get_attendance_settings(request: Request, db: Session = Depends(get_db)):
         "allow_remote": settings.allow_remote, "require_location": settings.require_location,
         "working_days": clean_working_days(settings.working_days),
         "auto_clock_in": bool(settings.auto_clock_in),
+        # Through shift_rules, so a row saved before these columns existed
+        # reads as the defaults rather than as nulls.
+        "standard_hours": shift_rules(settings)["standard_hours"],
+        "half_day_hours": shift_rules(settings)["half_day_hours"],
+        "paid_breaks": shift_rules(settings)["paid_breaks"],
     }
 
 @app.put("/api/employees/{emp_id}/set-password")
@@ -7871,9 +8053,14 @@ def employee_today_attendance(request: Request, db: Session = Depends(get_db)):
         models.DBAttendance.client_id == client_id,
     ).first()
     # The portal says why the Clock In button is waiting rather than filled in.
-    working_day = is_working_day(attendance_settings_for(db, client_id))
+    settings = attendance_settings_for(db, client_id)
+    working_day = is_working_day(settings)
     if not att:
-        return {"clocked_in": False, "is_working_day": working_day}
+        # The gauge is sent even before the day starts, so the portal can show
+        # the target somebody is about to work toward rather than an empty
+        # dial that only appears once they have clocked in.
+        return {"clocked_in": False, "is_working_day": working_day,
+                "shift": shift_progress(settings, None)}
     now_str = datetime.now().strftime("%H:%M:%S")
     elapsed = 0
     if att.clock_in and not att.clock_out:
@@ -7899,6 +8086,11 @@ def employee_today_attendance(request: Request, db: Session = Depends(get_db)):
         "overtime_hours": att.overtime_hours,
         "elapsed_hours": elapsed,
         "status": att.status,
+        "is_working_day": working_day,
+        # Measured against the hours HR set, by the same function the HR
+        # attendance list uses - so the figure an employee sees on the gauge
+        # is the figure their manager sees on the register.
+        "shift": shift_progress(settings, att),
     }
 
 @app.get("/api/employee/dashboard")

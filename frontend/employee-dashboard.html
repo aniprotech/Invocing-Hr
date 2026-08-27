@@ -6,7 +6,7 @@
   <title>aniprotech - Employee Portal</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <meta name="theme-color" content="#0b0f19">
-  <link rel="stylesheet" href="tailwind.css?v=104">
+  <link rel="stylesheet" href="tailwind.css?v=105">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -34,11 +34,11 @@
     .notification-badge { animation: notifPulse 2s infinite; }
     @keyframes notifPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.1); } }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=104">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=104">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=104">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=104">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=104">
+    <link rel="stylesheet" href="mobile.css?v=105">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=105">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=105">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=105">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=105">
 </head>
 <body class="bg-gray-50 min-h-screen">
 
@@ -161,7 +161,43 @@
             </div>
             <div class="text-center">
               <div class="text-white/50 text-xs uppercase tracking-wider mb-1">Time Worked Today</div>
-              <div id="elapsedTime" class="text-3xl sm:text-4xl font-bold tabular-nums">0h 00m 00s</div>
+
+              <!-- The dial. A 240-degree sweep drawn with stroke-dasharray on
+                   two arcs of the same circle: the track, and the part of it
+                   that has been worked. r=54 so the circumference is a round
+                   339.29, which the script below divides rather than
+                   remeasures. -->
+              <div class="relative mx-auto" style="width:200px;height:142px;">
+                <svg viewBox="0 0 140 140" class="absolute inset-0 w-full h-full overflow-visible"
+                     role="img" aria-labelledby="gaugeTitle">
+                  <title id="gaugeTitle">Hours worked today against the target</title>
+                  <g transform="rotate(150 70 70)">
+                    <circle cx="70" cy="70" r="54" fill="none"
+                            stroke="rgba(255,255,255,0.12)" stroke-width="11"
+                            stroke-linecap="round"
+                            stroke-dasharray="226.19 113.10"/>
+                    <circle id="gaugeArc" cx="70" cy="70" r="54" fill="none"
+                            stroke="#38bdf8" stroke-width="11" stroke-linecap="round"
+                            stroke-dasharray="0 339.29"
+                            style="transition:stroke-dasharray 0.6s ease, stroke 0.3s ease"/>
+                  </g>
+                  <!-- Hour marks, written by the script once the target is
+                       known: a dial for a 6-hour day needs six of them. -->
+                  <g id="gaugeTicks" stroke="rgba(255,255,255,0.35)" stroke-width="2"></g>
+                  <g id="gaugeNeedle" style="transition:transform 0.6s ease" transform="rotate(-120 70 70)">
+                    <line x1="70" y1="70" x2="70" y2="26" stroke="#f8fafc"
+                          stroke-width="2.5" stroke-linecap="round"/>
+                    <circle cx="70" cy="70" r="5" fill="#f8fafc"/>
+                  </g>
+                </svg>
+                <div class="absolute inset-x-0" style="top:52px;">
+                  <div id="elapsedTime" class="text-3xl sm:text-4xl font-bold tabular-nums leading-none">0h 00m</div>
+                  <div id="gaugeTarget" class="text-white/45 text-xs mt-1">of 8h</div>
+                </div>
+              </div>
+
+              <div id="gaugeState" class="mt-1 text-xs font-semibold text-white/60">Not started</div>
+
               <div id="breakInfo" class="hidden mt-2">
                 <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/20 text-amber-300 text-sm font-medium">
                   <span class="w-2 h-2 rounded-full bg-amber-400 pulse-dot"></span>
@@ -1290,16 +1326,108 @@
       document.getElementById('locText').textContent = 'Geolocation not supported';
     }
 
+    // The dial's geometry, in one place. A 240-degree sweep of a circle with
+    // r=54: the arc is that fraction of the circumference, and the needle
+    // swings from -120 to +120 degrees across it.
+    var GAUGE = { sweep: 240, circumference: 2 * Math.PI * 54 };
+    var shiftTargetHours = 8;      // replaced by whatever HR has set
+    var shiftState = 'not_started';
+
+    function fmtHours(hours) {
+      var h = Math.floor(hours), m = Math.round((hours - h) * 60);
+      if (m === 60) { h += 1; m = 0; }
+      return h + 'h ' + (m < 10 ? '0' : '') + m + 'm';
+    }
+
+    // One mark per hour of the target, so the dial reads as the day it is
+    // measuring rather than as a generic percentage.
+    function drawGaugeTicks(target) {
+      var host = document.getElementById('gaugeTicks');
+      if (!host) return;
+      var marks = [];
+      var step = target > 12 ? 2 : 1;          // a 16-hour dial does not need 16
+      for (var hour = 0; hour <= target + 0.001; hour += step) {
+        var angle = -120 + (hour / target) * GAUGE.sweep;
+        var rad = (angle - 90) * Math.PI / 180;
+        var inner = hour === 0 || hour >= target - 0.001 ? 41 : 44;
+        marks.push('<line x1="' + (70 + Math.cos(rad) * inner).toFixed(1) +
+                   '" y1="' + (70 + Math.sin(rad) * inner).toFixed(1) +
+                   '" x2="' + (70 + Math.cos(rad) * 47).toFixed(1) +
+                   '" y2="' + (70 + Math.sin(rad) * 47).toFixed(1) + '"/>');
+      }
+      host.innerHTML = marks.join('');
+    }
+
+    var GAUGE_LOOK = {
+      not_started: { colour: '#94a3b8', label: 'Not started' },
+      working:     { colour: '#38bdf8', label: 'Working' },
+      on_break:    { colour: '#fbbf24', label: 'On break' },
+      complete:    { colour: '#34d399', label: 'Full day done' },
+      overtime:    { colour: '#a3e635', label: 'Into overtime' },
+      short:       { colour: '#fbbf24', label: 'Short of a full day' },
+      half_day:    { colour: '#fb7185', label: 'Half day' }
+    };
+
     function updateElapsed(hours) {
       if (hours < 0) hours = 0;
-      var h = Math.floor(hours), m = Math.round((hours - h) * 60);
-      document.getElementById('elapsedTime').textContent = h + 'h ' + (m < 10 ? '0' : '') + m + 'm';
+      document.getElementById('elapsedTime').textContent = fmtHours(hours);
+
+      var target = shiftTargetHours > 0 ? shiftTargetHours : 8;
+      // Capped: a needle past the last mark reads as a fault, not as a long
+      // day. The hours over are said in words underneath instead.
+      var fraction = Math.min(hours / target, 1);
+
+      var arc = document.getElementById('gaugeArc');
+      var needle = document.getElementById('gaugeNeedle');
+      var stateEl = document.getElementById('gaugeState');
+      if (!arc || !needle) return;
+
+      // While the day is running the state follows the clock rather than
+      // waiting for the server: the needle would otherwise sit on "working"
+      // for a minute after the target passed.
+      var state = shiftState;
+      if (state === 'working' && hours >= target) state = 'overtime';
+
+      var look = GAUGE_LOOK[state] || GAUGE_LOOK.working;
+      var drawn = GAUGE.circumference * (GAUGE.sweep / 360) * fraction;
+      arc.setAttribute('stroke-dasharray', drawn.toFixed(2) + ' ' + GAUGE.circumference.toFixed(2));
+      // As an inline style, not the stroke attribute. A CSS transition on
+      // stroke swallows changes made through the presentation attribute - the
+      // attribute updates, the painted colour never does, and the dial stays
+      // the colour it started as through every state of the day. It looked
+      // right in a DOM test, where there are no transitions to swallow it.
+      arc.style.stroke = look.colour;
+      needle.setAttribute('transform',
+        'rotate(' + (-120 + fraction * GAUGE.sweep).toFixed(2) + ' 70 70)');
+
+      if (stateEl) {
+        var over = hours - target;
+        stateEl.textContent = over > 0.008
+          ? look.label + ' - ' + fmtHours(over) + ' over'
+          : look.label;
+        stateEl.style.color = look.colour;
+      }
+    }
+
+    // What HR decided, applied to the dial.
+    function applyShift(shift) {
+      if (!shift) return;
+      shiftTargetHours = shift.target_hours || 8;
+      shiftState = shift.state || 'not_started';
+      var t = document.getElementById('gaugeTarget');
+      if (t) t.textContent = 'of ' + fmtHours(shiftTargetHours);
+      drawGaugeTicks(shiftTargetHours);
+      updateElapsed(shift.worked_hours || 0);
     }
 
     function startElapsedTimer() {
       if (elapsedInterval) clearInterval(elapsedInterval);
       var base = parseElapsed(document.getElementById('elapsedTime').textContent);
-      elapsedInterval = setInterval(function() { if (isOnBreak || !isClockedIn) return; base += 1/3600; updateElapsed(base); }, 1000);
+      elapsedInterval = setInterval(function() {
+        if (isOnBreak || !isClockedIn) return;
+        base += 1 / 3600;
+        updateElapsed(base);
+      }, 1000);
     }
 
     function parseElapsed(text) { var m = text.match(/(\d+)h\s*(\d+)m/); return m ? parseInt(m[1]) + parseInt(m[2])/60 : 0; }
@@ -1411,7 +1539,12 @@
         isClockedIn = data.clocked_in; todayCompleted = data.status === 'completed'; isOnBreak = data.is_on_break;
         isWorkingDay = data.is_working_day !== false;
         if (data.break_start && data.is_on_break) { breakStartTime = new Date(); var p = data.break_start.split(':'); breakStartTime.setHours(parseInt(p[0]),parseInt(p[1]),parseInt(p[2]||0)); startBreakTimer(); }
-        updateClockUI(); updateElapsed(data.elapsed_hours || 0);
+        updateClockUI();
+        // The schedule first, so the dial is drawn against the right target
+        // before any figure is put on it - otherwise the needle lands on an
+        // eight-hour default and then jumps.
+        applyShift(data.shift);
+        updateElapsed(data.shift ? data.shift.worked_hours : (data.elapsed_hours || 0));
         document.getElementById('todayBreak').textContent = data.break_minutes > 0 ? Math.round(data.break_minutes) + 'm' : '0m';
         var th = data.total_hours > 0 ? data.total_hours : 0;
         document.getElementById('todayHours').textContent = Math.floor(th) + 'h ' + Math.round((th - Math.floor(th)) * 60) + 'm';

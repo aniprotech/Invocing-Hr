@@ -5150,6 +5150,9 @@ async function loadAttendanceSettings() {
         document.getElementById('set-start').value = data.work_start || '09:00';
         document.getElementById('set-end').value = data.work_end || '17:30';
         document.getElementById('set-grace').value = data.grace_minutes || 15;
+        document.getElementById('set-standard-hours').value = data.standard_hours || 8;
+        document.getElementById('set-half-day-hours').value = data.half_day_hours || 4;
+        document.getElementById('set-paid-breaks').checked = !!data.paid_breaks;
         document.getElementById('set-auto-co').value = data.auto_clockout_hours || 10;
         document.getElementById('set-max-ot').value = data.max_overtime_hours || 4;
         document.getElementById('set-allow-remote').checked = data.allow_remote !== false;
@@ -5184,6 +5187,9 @@ async function saveAttendanceSettings() {
             work_start: document.getElementById('set-start').value,
             work_end: document.getElementById('set-end').value,
             grace_minutes: parseFloat(document.getElementById('set-grace').value) || 15,
+            standard_hours: parseFloat(document.getElementById('set-standard-hours').value) || 8,
+            half_day_hours: parseFloat(document.getElementById('set-half-day-hours').value) || 4,
+            paid_breaks: document.getElementById('set-paid-breaks').checked,
             auto_clockout_hours: parseFloat(document.getElementById('set-auto-co').value) || 10,
             max_overtime_hours: parseFloat(document.getElementById('set-max-ot').value) || 4,
             allow_remote: document.getElementById('set-allow-remote').checked,
@@ -5193,8 +5199,13 @@ async function saveAttendanceSettings() {
                 ? document.getElementById('set-auto-clock-in').checked : true,
         };
         var res = await fetch('/api/attendance/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        if (res.ok) showToast('Settings saved successfully', 'success');
-        else showToast('Failed to save settings', 'error');
+        if (res.ok) { showToast('Settings saved successfully', 'success'); return; }
+        // The server refuses a schedule that cannot work - a day of no hours,
+        // a half day longer than a full one - and says which. Passing that on
+        // beats "Failed to save settings", which was true of every refusal
+        // and useful for none of them.
+        var why = await res.json().catch(function () { return {}; });
+        showToast(why.detail || 'Failed to save settings', 'error');
     } catch (e) { showToast('Error saving settings', 'error'); }
 }
 window.saveAttendanceSettings = saveAttendanceSettings;

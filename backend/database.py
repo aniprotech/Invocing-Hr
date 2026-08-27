@@ -67,6 +67,26 @@ def ensure_columns():
                 conn.commit()
                 print("Added 'modules' column to clients table")
 
+            # attendance_settings: the production hours a day is measured
+            # against. Existing tenants get the defaults, which match what
+            # every judgement in the app was already assuming.
+            for column, ddl, default in (
+                ("standard_hours", "FLOAT DEFAULT 8.0", "8.0"),
+                ("half_day_hours", "FLOAT DEFAULT 4.0", "4.0"),
+                ("paid_breaks", "BOOLEAN DEFAULT FALSE", "FALSE"),
+            ):
+                result = conn.execute(text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name='attendance_settings' AND column_name='%s'" % column))
+                if not result.fetchone():
+                    conn.execute(text(
+                        "ALTER TABLE attendance_settings ADD COLUMN %s %s" % (column, ddl)))
+                    conn.execute(text(
+                        "UPDATE attendance_settings SET %s = %s WHERE %s IS NULL"
+                        % (column, default, column)))
+                    conn.commit()
+                    print("Added '%s' column to attendance_settings" % column)
+
             # line_items.name
             result = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='line_items' AND column_name='name'"))
             if not result.fetchone():
