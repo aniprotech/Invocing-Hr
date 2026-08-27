@@ -94,7 +94,7 @@
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            color: #64748b;
+            color: #94a3b8;
             margin-bottom: 8px;
         }
         .stat-card .stat-value {
@@ -108,6 +108,38 @@
             font-size: 0.8rem;
             color: #475569;
             margin-top: 4px;
+        }
+        /* A card that leads somewhere says so before it is clicked. The
+           plain ones stay exactly as they were - if everything looks
+           clickable, nothing does. */
+        button.stat-card {
+            font: inherit;
+            text-align: left;
+            width: 100%;
+            cursor: pointer;
+            transition: border-color 0.15s, transform 0.15s, background 0.15s;
+        }
+        button.stat-card:hover {
+            border-color: rgba(56, 189, 248, 0.45);
+            background: rgba(15, 23, 42, 0.85);
+            transform: translateY(-2px);
+        }
+        button.stat-card:focus-visible {
+            outline: 2px solid #38bdf8;
+            outline-offset: 2px;
+        }
+        button.stat-card .stat-go {
+            font-size: 0.7rem;
+            color: #38bdf8;
+            margin-top: 8px;
+            opacity: 0;
+            transition: opacity 0.15s;
+        }
+        button.stat-card:hover .stat-go,
+        button.stat-card:focus-visible .stat-go { opacity: 1; }
+        @media (prefers-reduced-motion: reduce) {
+            button.stat-card { transition: none; }
+            button.stat-card:hover { transform: none; }
         }
         .stat-card.accent { border-left: 3px solid #38bdf8; }
         .stat-card.success { border-left: 3px solid #34d399; }
@@ -152,7 +184,7 @@
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            color: #64748b;
+            color: #94a3b8;
             border-bottom: 1px solid rgba(255, 255, 255, 0.06);
             background: rgba(255, 255, 255, 0.02);
         }
@@ -180,7 +212,7 @@
             color: #f8fafc;
         }
         .client-email {
-            color: #64748b;
+            color: #94a3b8;
             font-size: 0.8rem;
         }
         .status-badge {
@@ -231,7 +263,7 @@
             padding: 60px 20px;
             color: #475569;
         }
-        .empty-state h3 { color: #64748b; margin-bottom: 8px; }
+        .empty-state h3 { color: #94a3b8; margin-bottom: 8px; }
 
         /* Modal */
         .modal-overlay {
@@ -264,7 +296,7 @@
             float: right;
             background: none;
             border: none;
-            color: #64748b;
+            color: #94a3b8;
             font-size: 1.5rem;
             cursor: pointer;
         }
@@ -279,7 +311,7 @@
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            color: #64748b;
+            color: #94a3b8;
             margin-bottom: 4px;
         }
         .detail-item span {
@@ -297,7 +329,7 @@
             font-size: 0.7rem;
             font-weight: 700;
             text-transform: uppercase;
-            color: #64748b;
+            color: #94a3b8;
             border-bottom: 1px solid rgba(255, 255, 255, 0.06);
         }
         .invoices-mini-table td {
@@ -330,11 +362,11 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=103">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=103">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=103">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=103">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=103">
+    <link rel="stylesheet" href="mobile.css?v=104">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=104">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=104">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=104">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=104">
 </head>
 <body>
     <div class="admin-header">
@@ -366,7 +398,7 @@
             .admin-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 24px;
                 border-bottom: 1px solid rgba(255, 255, 255, 0.08); padding-bottom: 0; }
             .admin-tab-btn { background: none; border: none; border-bottom: 2px solid transparent;
-                color: #64748b; font-size: 0.85rem; font-weight: 600; padding: 10px 16px;
+                color: #94a3b8; font-size: 0.85rem; font-weight: 600; padding: 10px 16px;
                 cursor: pointer; white-space: nowrap; font-family: inherit; }
             .admin-tab-btn:hover { color: #94a3b8; }
             .admin-tab-btn.active { color: #38bdf8; border-bottom-color: #38bdf8; }
@@ -379,70 +411,78 @@
 
         <section class="admin-panel" id="panel-overview">
         <div class="stats-grid">
-            <div class="stat-card accent">
+            <button type="button" class="stat-card accent" onclick="goToPanel('clients', 'all')">
                 <div class="stat-label">Total Clients</div>
                 <div class="stat-value" id="stat-total">0</div>
-            </div>
-            <div class="stat-card success">
+                <div class="stat-go">Every client &rarr;</div>
+            </button>
+            <button type="button" class="stat-card success" onclick="goToPanel('clients', 'active')">
                 <div class="stat-label">Active Clients</div>
                 <div class="stat-value" id="stat-active">0</div>
-            </div>
-            <div class="stat-card warning">
+                <div class="stat-go">The active ones &rarr;</div>
+            </button>
+            <button type="button" class="stat-card warning" onclick="goToPanel('billing')">
                 <div class="stat-label">Total Invoices</div>
                 <div class="stat-value" id="stat-invoices">0</div>
-            </div>
-            <div class="stat-card danger">
+                <div class="stat-go">Billing &rarr;</div>
+            </button>
+            <button type="button" class="stat-card danger" onclick="goToPanel('clients', 'owing')">
                 <div class="stat-label">Outstanding</div>
                 <div class="stat-value" id="stat-outstanding">0</div>
-            </div>
+                <div class="stat-go">Who owes it &rarr;</div>
+            </button>
         </div>
         <div class="section-header" style="margin-top:32px;">
             <h2>Platform Usage</h2>
-            <span style="font-size:0.78rem;color:#64748b;">Across every tenant</span>
+            <span style="font-size:0.78rem;color:#94a3b8;">Across every tenant</span>
         </div>
         <div class="stats-grid" id="platform-grid"></div>
 
         <div class="stats-grid" style="margin-top:16px;">
-            <div class="stat-card accent">
+            <button type="button" class="stat-card accent" onclick="goToPanel('activity')">
                 <div class="stat-label">Today Logins</div>
                 <div class="stat-value" id="stat-logins-today">0</div>
-            </div>
-            <div class="stat-card success">
+                <div class="stat-go">The log &rarr;</div>
+            </button>
+            <button type="button" class="stat-card success" onclick="goToPanel('activity')">
                 <div class="stat-label">This Week</div>
                 <div class="stat-value" id="stat-logins-week">0</div>
-            </div>
-            <div class="stat-card warning">
+                <div class="stat-go">The log &rarr;</div>
+            </button>
+            <button type="button" class="stat-card warning" onclick="goToPanel('activity', 'failed')">
                 <div class="stat-label">Failed Logins</div>
                 <div class="stat-value" id="stat-logins-failed">0</div>
-            </div>
-            <div class="stat-card danger">
+                <div class="stat-go">What failed &rarr;</div>
+            </button>
+            <button type="button" class="stat-card danger" onclick="goToPanel('clients', 'never')">
                 <div class="stat-label">Never Logged In</div>
                 <div class="stat-value" id="stat-never-login">0</div>
-            </div>
+                <div class="stat-go">Who has not &rarr;</div>
+            </button>
         </div>
         </section>
 
         <section class="admin-panel" id="panel-billing">
         <div class="section-header">
             <h2>Billing &amp; Wallets</h2>
-            <span style="font-size:0.78rem;color:#64748b;" id="gateway-status"></span>
+            <span style="font-size:0.78rem;color:#94a3b8;" id="gateway-status"></span>
             <button class="action-btn" onclick="checkGoCardlessKeys()"
                     style="margin-left:auto;">Test GoCardless</button>
             <button class="action-btn" onclick="checkRazorpayKeys()">Test Razorpay</button>
         </div>
-        <div id="razorpay-check" style="font-size:0.78rem;color:#64748b;margin-top:6px;"></div>
+        <div id="razorpay-check" style="font-size:0.78rem;color:#94a3b8;margin-top:6px;"></div>
         <div id="gateway-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin:16px 0 4px;"></div>
         <div class="stats-grid" id="revenue-grid"></div>
 
         <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:20px;">
             <div style="flex:1;min-width:320px;background:rgba(15, 23, 42, 0.6);border:1px solid rgba(255, 255, 255, 0.06);border-radius:16px;padding:20px 24px;">
                 <h3 style="font-size:0.95rem;margin-bottom:4px;">What each action costs</h3>
-                <p style="font-size:0.75rem;color:#64748b;margin-bottom:14px;">Applies to every tenant. Free allowance resets each calendar month.</p>
+                <p style="font-size:0.75rem;color:#94a3b8;margin-bottom:14px;">Applies to every tenant. Free allowance resets each calendar month.</p>
                 <div id="pricing-list"></div>
             </div>
             <div style="flex:1;min-width:320px;background:rgba(15, 23, 42, 0.6);border:1px solid rgba(255, 255, 255, 0.06);border-radius:16px;padding:20px 24px;">
                 <h3 style="font-size:0.95rem;margin-bottom:4px;">Tenant wallets</h3>
-                <p style="font-size:0.75rem;color:#64748b;margin-bottom:14px;">Lowest balance first. Adjustments appear on the tenant statement.</p>
+                <p style="font-size:0.75rem;color:#94a3b8;margin-bottom:14px;">Lowest balance first. Adjustments appear on the tenant statement.</p>
                 <div id="wallets-list"></div>
             </div>
         </div>
@@ -451,7 +491,7 @@
             <h2>AI</h2>
             <button class="action-btn" onclick="checkAi()" style="margin-left:auto;">Check AI</button>
         </div>
-        <div id="ai-status" style="font-size:0.8rem;color:#64748b;">Not checked yet.</div>
+        <div id="ai-status" style="font-size:0.8rem;color:#94a3b8;">Not checked yet.</div>
         </section>
 
         <section class="admin-panel" id="panel-trends">
@@ -489,7 +529,7 @@
             .bar-fill { width: 100%; min-height: 2px; border-radius: 6px; transition: height 0.4s ease; }
             .bar-rev { background: linear-gradient(180deg, #38bdf8, #0ea5e9); }
             .bar-login { background: linear-gradient(180deg, #34d399, #0ea5e9); }
-            .bar-label { font-size: 0.65rem; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; text-align: center; }
+            .bar-label { font-size: 0.65rem; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; text-align: center; }
             .bar-val { font-size: 0.7rem; color: #94a3b8; font-weight: 600; }
             @media (max-width: 768px) { .trend-row { grid-template-columns: 1fr; } }
         </style>
@@ -501,7 +541,7 @@
             <h2>Login Activity</h2>
             <input type="text" class="search-box" placeholder="Search logs..." oninput="filterLogs(this.value)">
         </div>
-        <div class="table-responsive"><table class="clients-table">
+        <div id="logs-filter-notice"></div><div class="table-responsive"><table class="clients-table">
             <thead>
                 <tr>
                     <th>Email</th>
@@ -524,6 +564,7 @@
             <h2>All Clients</h2>
             <input type="text" class="search-box" placeholder="Search clients..." oninput="filterClients(this.value)">
         </div>
+        <div id="clients-filter-notice"></div>
 
         <table class="clients-table">
             <thead>
@@ -552,16 +593,16 @@
         <section class="admin-panel" id="panel-control">
             <div class="section-header">
                 <h2>Application settings</h2>
-                <span style="font-size:0.78rem;color:#64748b;">Applies to every tenant, straight away</span>
+                <span style="font-size:0.78rem;color:#94a3b8;">Applies to every tenant, straight away</span>
                 <button class="action-btn" onclick="loadPlatformSettings()" style="margin-left:auto;">Reload</button>
             </div>
-            <p style="font-size:0.8rem;color:#64748b;margin:0 0 18px;max-width:70ch;">
+            <p style="font-size:0.8rem;color:#94a3b8;margin:0 0 18px;max-width:70ch;">
               API keys, the session secret and the database URL are not here on
               purpose. A value that can be read back out of a web page is a
               value that leaks with the page, so those stay in the environment.
             </p>
             <div id="platform-settings-body">
-              <div style="padding:28px;color:#64748b;font-size:0.85rem;">Loading&hellip;</div>
+              <div style="padding:28px;color:#94a3b8;font-size:0.85rem;">Loading&hellip;</div>
             </div>
         </section>
 
@@ -569,7 +610,7 @@
             /* Both tables used to print every row they had. Fine at five
                tenants, unreadable at five hundred. */
             .pager { display: flex; align-items: center; gap: 12px; padding: 14px 4px;
-                font-size: 0.78rem; color: #64748b; flex-wrap: wrap; }
+                font-size: 0.78rem; color: #94a3b8; flex-wrap: wrap; }
             .pager button { background: rgba(255, 255, 255, 0.04); color: #94a3b8;
                 border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px;
                 padding: 5px 12px; cursor: pointer; font-size: 0.78rem; font-family: inherit; }
@@ -601,7 +642,7 @@
             <h2>Change Password</h2>
             <div class="error-msg" id="pwd-error" style="display:none;background:rgba(244, 63, 94, 0.1);border:1px solid rgba(244, 63, 94, 0.3);color:#fda4af;padding:10px 14px;border-radius:8px;font-size:0.85rem;margin-bottom:16px;"></div>
             <div class="form-group" style="margin-bottom:14px;">
-                <label style="display:block;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#64748b;margin-bottom:6px;">New Password</label>
+                <label style="display:block;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#94a3b8;margin-bottom:6px;">New Password</label>
                 <input type="password" id="pwd-new" class="search-box" style="width:100%;" placeholder="At least 6 characters">
             </div>
             <div class="btn-row" style="display:flex;justify-content:flex-end;gap:8px;">
@@ -653,17 +694,24 @@
                 var res = await fetch('/api/superadmin/platform-stats');
                 if (!res.ok) return;
                 var d = await res.json();
+                // The last two entries are where the figure leads: a panel,
+                // and how to narrow it once there. A card with no destination
+                // stays a plain div, so only the ones that go somewhere look
+                // as though they do.
                 var cards = [
-                    ['accent', 'Employees', d.hr.employees, d.hr.departments + ' departments'],
-                    ['success', 'Payslips Issued', d.hr.payslips, 'Payroll paid ' + d.hr.payroll_paid.toLocaleString()],
-                    ['warning', 'Open Roles', d.recruitment.open_jobs, d.recruitment.applications + ' applications'],
-                    ['accent', 'Active (30d)', d.tenants.active_last_30_days, 'of ' + d.tenants.total + ' tenants']
+                    ['accent', 'Employees', d.hr.employees, d.hr.departments + ' departments', 'clients', 'hr'],
+                    ['success', 'Payslips Issued', d.hr.payslips, 'Payroll paid ' + d.hr.payroll_paid.toLocaleString(), 'clients', 'hr'],
+                    ['warning', 'Open Roles', d.recruitment.open_jobs, d.recruitment.applications + ' applications', 'trends', ''],
+                    ['accent', 'Active (30d)', d.tenants.active_last_30_days, 'of ' + d.tenants.total + ' tenants', 'clients', 'active']
                 ];
                 document.getElementById('platform-grid').innerHTML = cards.map(function (c) {
-                    return '<div class="stat-card ' + c[0] + '">' +
-                           '<div class="stat-label">' + c[1] + '</div>' +
-                           '<div class="stat-value">' + c[2] + '</div>' +
-                           '<div class="stat-sub">' + esc(c[3]) + '</div></div>';
+                    var body = '<div class="stat-label">' + c[1] + '</div>' +
+                               '<div class="stat-value">' + c[2] + '</div>' +
+                               '<div class="stat-sub">' + esc(c[3]) + '</div>';
+                    if (!c[4]) return '<div class="stat-card ' + c[0] + '">' + body + '</div>';
+                    return '<button type="button" class="stat-card ' + c[0] + '" ' +
+                           'onclick="goToPanel(\'' + c[4] + '\', \'' + (c[5] || '') + '\')">' +
+                           body + '<div class="stat-go">Show me &rarr;</div></button>';
                 }).join('');
             } catch (e) { /* the strip is informational */ }
         }
@@ -673,7 +721,7 @@
         async function loadClientOverview(id) {
             var host = document.getElementById('modal-overview');
             if (!host) return;
-            host.innerHTML = '<div style="color:#64748b;font-size:0.85rem;">Loading usage...</div>';
+            host.innerHTML = '<div style="color:#94a3b8;font-size:0.85rem;">Loading usage...</div>';
             try {
                 var res = await fetch('/api/superadmin/clients/' + id + '/overview');
                 if (!res.ok) { host.innerHTML = ''; return; }
@@ -682,7 +730,7 @@
                     return '<div style="flex:1;min-width:190px;background:rgba(255, 255, 255, 0.03);' +
                            'border:1px solid rgba(255, 255, 255, 0.06);border-radius:12px;padding:14px 16px;">' +
                            '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;' +
-                           'letter-spacing:0.5px;color:#64748b;margin-bottom:8px;">' + title + '</div>' +
+                           'letter-spacing:0.5px;color:#94a3b8;margin-bottom:8px;">' + title + '</div>' +
                            pairs.map(function (pair) {
                                return '<div style="display:flex;justify-content:space-between;gap:12px;font-size:0.82rem;padding:2px 0;">' +
                                       '<span style="color:#94a3b8;">' + pair[0] + '</span>' +
@@ -779,7 +827,7 @@
                 if (!host) return;
                 host.innerHTML = providers.map(function (p) {
                     var legacy = p.role === 'legacy';
-                    var tone = p.enabled ? (legacy ? '#94a3b8' : '#34d399') : '#64748b';
+                    var tone = p.enabled ? (legacy ? '#94a3b8' : '#34d399') : '#94a3b8';
                     var missing = (p.required_env || []).join(', ');
                     return '<div style="background:rgba(15, 23, 42, 0.6);border:1px solid ' +
                         (p.enabled && !legacy ? 'rgba(52, 211, 153, 0.25)' : 'rgba(255, 255, 255, 0.06)') +
@@ -787,7 +835,7 @@
                       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">' +
                         '<strong style="font-size:0.95rem;">' + esc(p.label || p.key) + '</strong>' +
                         (legacy ? '<span style="font-size:0.65rem;text-transform:uppercase;' +
-                                  'letter-spacing:0.06em;color:#64748b;border:1px solid rgba(255, 255, 255, 0.12);' +
+                                  'letter-spacing:0.06em;color:#94a3b8;border:1px solid rgba(255, 255, 255, 0.12);' +
                                   'border-radius:6px;padding:1px 6px;">legacy</span>' : '') +
                         '<span style="margin-left:auto;font-size:0.78rem;font-weight:600;color:' + tone + ';">' +
                           (p.enabled ? 'configured' : 'not set up') + '</span>' +
@@ -795,26 +843,26 @@
                       '<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:8px;">' +
                         esc(p.used_for || '') +
                         (p.environment ? ' &middot; <strong style="color:' +
-                          (p.environment === 'live' ? '#fbbf24' : '#64748b') + ';">' +
+                          (p.environment === 'live' ? '#fbbf24' : '#94a3b8') + ';">' +
                           esc(p.environment) + '</strong>' : '') +
                       '</div>' +
-                      (p.note ? '<div style="font-size:0.73rem;color:#64748b;margin-bottom:8px;">' +
+                      (p.note ? '<div style="font-size:0.73rem;color:#94a3b8;margin-bottom:8px;">' +
                                 esc(p.note) + '</div>' : '') +
                       (p.enabled
                         ? (p.webhook_url
                             ? '<div style="font-size:0.72rem;color:' +
-                              (p.webhook_ready ? '#64748b' : '#fbbf24') + ';">' +
+                              (p.webhook_ready ? '#94a3b8' : '#fbbf24') + ';">' +
                               (p.webhook_ready
                                 ? 'Webhook: ' + esc(p.webhook_url)
                                 : 'Webhook secret missing - ' + esc(p.webhook_url) +
                                   ' will refuse everything until it is set') +
                               '</div>'
                             : '')
-                        : '<div style="font-size:0.72rem;color:#64748b;">Needs ' + esc(missing) + '</div>') +
+                        : '<div style="font-size:0.72rem;color:#94a3b8;">Needs ' + esc(missing) + '</div>') +
                     '</div>';
                 }).join('');
             } catch (e) {
-                if (host) host.innerHTML = '<div style="color:#64748b;font-size:0.85rem;">' +
+                if (host) host.innerHTML = '<div style="color:#94a3b8;font-size:0.85rem;">' +
                     'Could not read the gateway status.</div>';
             }
         }
@@ -824,7 +872,7 @@
         // behind.
         async function checkGoCardlessKeys() {
             var host = document.getElementById('razorpay-check');
-            host.style.color = '#64748b';
+            host.style.color = '#94a3b8';
             host.textContent = 'Asking GoCardless...';
             try {
                 var d = await (await fetch('/api/superadmin/gocardless-check')).json();
@@ -842,7 +890,7 @@
         // means guessing at which of several things went wrong.
         async function checkRazorpayKeys() {
             var host = document.getElementById('razorpay-check');
-            host.style.color = '#64748b';
+            host.style.color = '#94a3b8';
             host.textContent = 'Asking Razorpay...';
             var d;
             try {
@@ -864,19 +912,19 @@
 
             host.style.color = d.ok ? '#34d399' : '#f43f5e';
             host.innerHTML = esc(d.reason || '') +
-                (about ? '<div style="color:#64748b;margin-top:4px;">' + about + '</div>' : '') +
+                (about ? '<div style="color:#94a3b8;margin-top:4px;">' + about + '</div>' : '') +
                 ((shape.notes || []).length
                     ? '<div style="color:#fbbf24;margin-top:4px;">' +
                       shape.notes.map(esc).join('<br>') + '</div>' : '') +
-                (d.hint ? '<div style="color:#64748b;margin-top:4px;">' + esc(d.hint) + '</div>' : '') +
-                (d.next ? '<div style="color:#64748b;margin-top:4px;">' + esc(d.next) + '</div>' : '');
+                (d.hint ? '<div style="color:#94a3b8;margin-top:4px;">' + esc(d.hint) + '</div>' : '') +
+                (d.next ? '<div style="color:#94a3b8;margin-top:4px;">' + esc(d.next) + '</div>' : '');
         }
 
         // The check makes one real call to the model, so a pass means the
         // feature works rather than that the settings look plausible.
         async function checkAi() {
             var host = document.getElementById('ai-status');
-            host.style.color = '#64748b';
+            host.style.color = '#94a3b8';
             host.textContent = 'Asking the model...';
 
             var d;
@@ -889,7 +937,7 @@
             }
 
             var parts = ['<div>' + esc(d.detail || '') + '</div>'];
-            parts.push('<div style="color:#64748b;margin-top:4px;">Model: ' +
+            parts.push('<div style="color:#94a3b8;margin-top:4px;">Model: ' +
                 esc(d.model || '(none)') +
                 (d.model === d.model_default ? ' (the built-in default)' : '') + '</div>');
 
@@ -902,7 +950,7 @@
                     esc(d.model_env_var || 'GROQ_MODEL') + ' to one of the below and restart.</div>');
             }
             if ((d.available_models || []).length) {
-                parts.push('<div style="color:#64748b;margin-top:6px;">Models this key can use:</div>' +
+                parts.push('<div style="color:#94a3b8;margin-top:6px;">Models this key can use:</div>' +
                     '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;">' +
                     d.available_models.map(function (m) {
                         return '<code style="background:rgba(255, 255, 255, 0.06);padding:3px 7px;' +
@@ -911,11 +959,11 @@
                                esc(m) + '</code>';
                     }).join('') + '</div>');
             } else if (d.configured) {
-                parts.push('<div style="color:#64748b;margin-top:4px;">' +
+                parts.push('<div style="color:#94a3b8;margin-top:4px;">' +
                     'Could not list the models, which usually means the key itself was refused.</div>');
             }
             if (!d.configured) {
-                parts.push('<div style="color:#64748b;margin-top:4px;">' +
+                parts.push('<div style="color:#94a3b8;margin-top:4px;">' +
                     esc(d.key_hint || '') + '</div>');
             }
 
@@ -924,24 +972,24 @@
             // and the ones above the line cost nothing - moves work off the
             // paid provider at the bottom.
             if ((d.providers || []).length) {
-                parts.push('<div style="color:#64748b;margin-top:12px;margin-bottom:4px;">' +
+                parts.push('<div style="color:#94a3b8;margin-top:12px;margin-bottom:4px;">' +
                     'Asked in this order, cheapest first:</div>');
                 parts.push('<div style="display:flex;flex-direction:column;gap:4px;">' +
                     d.providers.map(function (pr) {
                         var live = pr.configured;
                         return '<div style="display:flex;gap:8px;align-items:baseline;' +
                                 'font-size:0.75rem;' + (live ? '' : 'opacity:0.5;') + '">' +
-                            '<span style="width:16px;color:#64748b;">' +
+                            '<span style="width:16px;color:#94a3b8;">' +
                                 (pr.position ? pr.position + '.' : '&mdash;') + '</span>' +
-                            '<span style="color:' + (live ? '#f8fafc' : '#64748b') + ';font-weight:600;">' +
+                            '<span style="color:' + (live ? '#f8fafc' : '#94a3b8') + ';font-weight:600;">' +
                                 esc(pr.label) + '</span>' +
                             '<span style="color:' + (pr.free ? '#34d399' : '#fbbf24') + ';">' +
                                 (pr.free ? 'free tier' : 'billed') + '</span>' +
-                            '<span style="color:#64748b;">' + esc(pr.model) + '</span>' +
+                            '<span style="color:#94a3b8;">' + esc(pr.model) + '</span>' +
                             (pr.name === d.answered_by
                                 ? '<span style="color:#34d399;">&larr; answered</span>'
                                 : '') +
-                            (live ? '' : '<span style="color:#64748b;">set ' +
+                            (live ? '' : '<span style="color:#94a3b8;">set ' +
                                 esc(pr.env_var) + '</span>') +
                         '</div>';
                     }).join('') + '</div>');
@@ -951,7 +999,7 @@
             // us" gets an answer here rather than an invoice later.
             var c = d.cache || {};
             if (c.calls) {
-                parts.push('<div style="color:#64748b;margin-top:10px;font-size:0.75rem;">' +
+                parts.push('<div style="color:#94a3b8;margin-top:10px;font-size:0.75rem;">' +
                     esc(String(c.hits)) + ' of ' + esc(String(c.calls)) +
                     ' requests answered from cache (' +
                     Math.round((c.hit_rate || 0) * 100) + '%), ' +
@@ -972,7 +1020,7 @@
                            'border-bottom:1px solid rgba(255, 255, 255, 0.05);flex-wrap:wrap;">' +
                         '<div style="flex:1;min-width:130px;">' +
                             '<div style="font-size:0.85rem;font-weight:600;">' + esc(r.label) + '</div>' +
-                            '<div style="font-size:0.7rem;color:#64748b;">' + esc(r.module) + ' &middot; ' + esc(r.action_key) + '</div>' +
+                            '<div style="font-size:0.7rem;color:#94a3b8;">' + esc(r.module) + ' &middot; ' + esc(r.action_key) + '</div>' +
                         '</div>' +
                         '<input type="number" step="0.01" min="0" value="' + r.unit_price + '" id="price-' + r.id + '" ' +
                             'title="Price per unit" style="width:80px;padding:5px 8px;background:rgba(255, 255, 255, 0.05);' +
@@ -984,7 +1032,7 @@
                     '</div>';
                 }).join('');
             } catch (e) {
-                host.innerHTML = '<p style="color:#64748b;font-size:0.8rem;">Could not load pricing.</p>';
+                host.innerHTML = '<p style="color:#94a3b8;font-size:0.8rem;">Could not load pricing.</p>';
             }
         }
 
@@ -1008,7 +1056,7 @@
             try {
                 var rows = await (await fetch('/api/superadmin/wallets')).json();
                 if (!rows.length) {
-                    host.innerHTML = '<p style="color:#64748b;font-size:0.8rem;">No tenants yet.</p>';
+                    host.innerHTML = '<p style="color:#94a3b8;font-size:0.8rem;">No tenants yet.</p>';
                     return;
                 }
                 host.innerHTML = rows.map(function (w) {
@@ -1016,7 +1064,7 @@
                            'border-bottom:1px solid rgba(255, 255, 255, 0.05);flex-wrap:wrap;">' +
                         '<div style="flex:1;min-width:130px;">' +
                             '<div style="font-size:0.85rem;font-weight:600;">' + esc(w.company_name) + '</div>' +
-                            '<div style="font-size:0.7rem;color:#64748b;">spent ' + w.lifetime_spent.toFixed(2) + '</div>' +
+                            '<div style="font-size:0.7rem;color:#94a3b8;">spent ' + w.lifetime_spent.toFixed(2) + '</div>' +
                         '</div>' +
                         '<strong style="color:' + (w.is_low ? '#fbbf24' : '#34d399') + ';font-size:0.9rem;">' +
                             w.balance.toFixed(2) + '</strong>' +
@@ -1024,7 +1072,7 @@
                     '</div>';
                 }).join('');
             } catch (e) {
-                host.innerHTML = '<p style="color:#64748b;font-size:0.8rem;">Could not load wallets.</p>';
+                host.innerHTML = '<p style="color:#94a3b8;font-size:0.8rem;">Could not load wallets.</p>';
             }
         }
 
@@ -1057,7 +1105,7 @@
             var panel = document.getElementById('wallet-panel');
             var body = document.getElementById('wallet-panel-body');
             panel.style.display = 'flex';
-            body.innerHTML = '<p style="color:#64748b;font-size:0.8rem;">Loading...</p>';
+            body.innerHTML = '<p style="color:#94a3b8;font-size:0.8rem;">Loading...</p>';
 
             var data;
             try {
@@ -1075,12 +1123,12 @@
             var rows = (data.transactions || []).map(function (t) {
                 var credit = t.direction === 'credit';
                 return '<tr>' +
-                    '<td style="padding:4px 6px;color:#64748b;font-size:0.7rem;">' + esc(t.created_at) + '</td>' +
+                    '<td style="padding:4px 6px;color:#94a3b8;font-size:0.7rem;">' + esc(t.created_at) + '</td>' +
                     '<td style="padding:4px 6px;font-size:0.75rem;">' + esc(t.description || t.action_key) + '</td>' +
                     '<td style="padding:4px 6px;text-align:right;font-size:0.75rem;color:' +
                     (credit ? '#34d399' : '#fbbf24') + ';">' +
                     (credit ? '+' : '-') + Number(t.amount).toFixed(2) + '</td>' +
-                    '<td style="padding:4px 6px;text-align:right;font-size:0.7rem;color:#64748b;">' +
+                    '<td style="padding:4px 6px;text-align:right;font-size:0.7rem;color:#94a3b8;">' +
                     Number(t.balance_after).toFixed(2) + '</td>' +
                     '</tr>';
             }).join('');
@@ -1092,10 +1140,10 @@
             body.innerHTML =
                 '<div style="margin-bottom:12px;">' +
                 '<div style="font-weight:600;">' + esc(data.client.name) + '</div>' +
-                '<div style="font-size:0.75rem;color:#64748b;">' + esc(data.client.email) + '</div>' +
+                '<div style="font-size:0.75rem;color:#94a3b8;">' + esc(data.client.email) + '</div>' +
                 '<div style="margin-top:8px;font-size:1.4rem;font-weight:700;">' +
                 Number(data.balance).toFixed(2) +
-                ' <span style="font-size:0.8rem;color:#64748b;">' + esc(data.currency) + '</span></div>' +
+                ' <span style="font-size:0.8rem;color:#94a3b8;">' + esc(data.currency) + '</span></div>' +
                 currencyControl(data.currency, Number(data.balance) || 0) +
                 '</div>' +
                 '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">' + presets + '</div>' +
@@ -1112,7 +1160,7 @@
                     ? '<h4 style="margin:16px 0 6px;font-size:0.8rem;color:#94a3b8;">Recent activity</h4>' +
                     '<div style="max-height:220px;overflow:auto;"><table style="width:100%;border-collapse:collapse;">' +
                     rows + '</table></div>'
-                    : '<p style="margin-top:16px;font-size:0.75rem;color:#64748b;">Nothing has moved through this wallet yet.</p>');
+                    : '<p style="margin-top:16px;font-size:0.75rem;color:#94a3b8;">Nothing has moved through this wallet yet.</p>');
         }
 
         // A wallet can only change currency while it is empty - a balance is a
@@ -1126,7 +1174,7 @@
             }).join('');
 
             if (balance !== 0) {
-                return '<div style="margin-top:10px;font-size:0.72rem;color:#64748b;">' +
+                return '<div style="margin-top:10px;font-size:0.72rem;color:#94a3b8;">' +
                        'Currency is fixed at ' + esc(current) + ' while the wallet holds ' +
                        'money. Adjust the balance to zero to change it.</div>';
             }
@@ -1136,7 +1184,7 @@
                 'border:1px solid rgba(255, 255, 255, 0.1);background:#0b0f19;color:#f8fafc;' +
                 'font-size:0.78rem;">' + options + '</select>' +
                 '<button class="action-btn" onclick="applyWalletCurrency()">Change</button>' +
-                '<span id="wallet-currency-note" style="font-size:0.7rem;color:#64748b;"></span>' +
+                '<span id="wallet-currency-note" style="font-size:0.7rem;color:#94a3b8;"></span>' +
                 '</div>';
         }
 
@@ -1147,7 +1195,7 @@
                 note.textContent = 'Already ' + code + '.';
                 return;
             }
-            note.style.color = '#64748b';
+            note.style.color = '#94a3b8';
             note.textContent = 'Changing...';
             try {
                 var res = await fetch('/api/superadmin/wallets/' + walletPanelFor + '/currency', {
@@ -1251,7 +1299,7 @@
                     '<td><span class="status-badge ' + (c.is_onboarded ? 'status-onboarded' : 'status-pending') + '">' + (c.is_onboarded ? 'Complete' : 'Pending') + '</span></td>' +
                     '<td>' + esc(c.invoice_count) + '</td>' +
                     '<td>£' + esc((c.outstanding || 0).toLocaleString()) + '</td>' +
-                    '<td style="color:#64748b;font-size:0.8rem;">' + esc((c.created_at || '').substring(0, 10)) + '<br><span style="font-size:0.7rem;">Login #' + esc(c.login_count || 0) + '</span></td>' +
+                    '<td style="color:#94a3b8;font-size:0.8rem;">' + esc((c.created_at || '').substring(0, 10)) + '<br><span style="font-size:0.7rem;">Login #' + esc(c.login_count || 0) + '</span></td>' +
                     '<td>' +
                         '<button class="action-btn" onclick="viewClient(' + c.id + ')">View</button>' +
                         '<button class="action-btn" style="color:#38bdf8;border-color:rgba(56, 189, 248, 0.3);" onclick="impersonateClient(' + c.id + ')">Login as</button>' +
@@ -1320,15 +1368,65 @@
         }
         window.setClientPlan = setClientPlan;
 
-        function filterClients(q) {
-            if (!q) { renderClients(allClients); return; }
-            q = q.toLowerCase();
-            var filtered = allClients.filter(function(c) {
+        // What the list is currently narrowed to, and what each one means.
+        // Landing on "every client" after clicking a figure that said 14 were
+        // active is not an answer to what was asked.
+        var CLIENT_FILTERS = {
+            all:      { label: 'All clients',        test: function () { return true; } },
+            active:   { label: 'Active clients',     test: function (c) { return !!c.is_active; } },
+            disabled: { label: 'Disabled clients',   test: function (c) { return !c.is_active; } },
+            owing:    { label: 'Clients with money outstanding',
+                        test: function (c) { return (c.outstanding || 0) > 0; } },
+            never:    { label: 'Never signed in',    test: function (c) { return !(c.login_count || 0); } },
+            hr:       { label: 'Clients whose plan includes HR',
+                        test: function (c) { return planValue(c).indexOf('hr') !== -1; } },
+        };
+        var _clientFilter = 'all';
+        var _clientSearch = '';
+
+        function applyClientFilters() {
+            var f = CLIENT_FILTERS[_clientFilter] || CLIENT_FILTERS.all;
+            var q = _clientSearch.toLowerCase();
+            renderClients(allClients.filter(function (c) {
+                if (!f.test(c)) return false;
+                if (!q) return true;
                 return (c.company_name || '').toLowerCase().includes(q) ||
                        (c.email || '').toLowerCase().includes(q) ||
                        (c.contact_name || '').toLowerCase().includes(q);
-            });
-            renderClients(filtered);
+            }));
+            showClientFilterNotice();
+        }
+
+        // Says what you are looking at and how to get back to everything. A
+        // filtered list that does not admit it is filtered is how somebody
+        // concludes half their clients have vanished.
+        function showClientFilterNotice() {
+            var host = document.getElementById('clients-filter-notice');
+            if (!host) return;
+            if (_clientFilter === 'all') { host.innerHTML = ''; return; }
+            var f = CLIENT_FILTERS[_clientFilter];
+            host.innerHTML =
+                '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;' +
+                     'padding:9px 14px;margin-bottom:12px;border-radius:10px;' +
+                     'background:rgba(56, 189, 248, 0.08);' +
+                     'border:1px solid rgba(56, 189, 248, 0.25);font-size:0.8rem;">' +
+                  '<span style="color:#f8fafc;font-weight:600;">' + esc(f.label) + '</span>' +
+                  '<button type="button" onclick="setClientFilter(\'all\')" ' +
+                          'style="margin-left:auto;background:none;border:none;color:#38bdf8;' +
+                                 'cursor:pointer;font:inherit;text-decoration:underline;">' +
+                    'Show all clients</button>' +
+                '</div>';
+        }
+
+        function setClientFilter(kind) {
+            _clientFilter = CLIENT_FILTERS[kind] ? kind : 'all';
+            applyClientFilters();
+        }
+        window.setClientFilter = setClientFilter;
+
+        function filterClients(q) {
+            _clientSearch = q || '';
+            applyClientFilters();
         }
 
         async function viewClient(id) {
@@ -1498,21 +1596,59 @@
                     '<span style="background:rgba(148, 163, 184, 0.2);color:#94a3b8;padding:2px 8px;border-radius:4px;font-size:0.75rem;">Password</span>';
                 return '<tr>' +
                     '<td style="font-weight:500;">' + esc(l.email) + '</td>' +
-                    '<td style="color:#64748b;">' + esc(l.user_type) + '</td>' +
+                    '<td style="color:#94a3b8;">' + esc(l.user_type) + '</td>' +
                     '<td>' + methodBadge + '</td>' +
-                    '<td style="color:#64748b;font-family:monospace;font-size:0.8rem;">' + esc(l.ip_address || '-') + '</td>' +
+                    '<td style="color:#94a3b8;font-family:monospace;font-size:0.8rem;">' + esc(l.ip_address || '-') + '</td>' +
                     '<td><span style="color:' + statusColor + ';font-weight:600;">' + esc(l.status) + '</span></td>' +
-                    '<td style="color:#64748b;font-size:0.8rem;">' + esc(l.created_at || '') + '</td>' +
+                    '<td style="color:#94a3b8;font-size:0.8rem;">' + esc(l.created_at || '') + '</td>' +
                 '</tr>';
             }).join('');
         }
 
-        function filterLogs(q) {
-            if (!q) { renderLogs(allLogs); return; }
-            q = q.toLowerCase();
-            renderLogs(allLogs.filter(function(l) {
-                return (l.email || '').toLowerCase().includes(q) || (l.ip_address || '').toLowerCase().includes(q);
+        // The same narrowing as the client list. "Failed Logins: 12" is worth
+        // clicking only if it lands you on those twelve.
+        var LOG_FILTERS = {
+            all:    { label: 'All login activity', test: function () { return true; } },
+            failed: { label: 'Failed sign-ins',
+                      test: function (l) { return (l.status || '') !== 'success'; } },
+        };
+        var _logFilter = 'all';
+        var _logSearch = '';
+
+        function applyLogFilters() {
+            var f = LOG_FILTERS[_logFilter] || LOG_FILTERS.all;
+            var q = _logSearch.toLowerCase();
+            renderLogs(allLogs.filter(function (l) {
+                if (!f.test(l)) return false;
+                if (!q) return true;
+                return (l.email || '').toLowerCase().includes(q) ||
+                       (l.ip_address || '').toLowerCase().includes(q);
             }));
+            var host = document.getElementById('logs-filter-notice');
+            if (!host) return;
+            if (_logFilter === 'all') { host.innerHTML = ''; return; }
+            host.innerHTML =
+                '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;' +
+                     'padding:9px 14px;margin-bottom:12px;border-radius:10px;' +
+                     'background:rgba(56, 189, 248, 0.08);' +
+                     'border:1px solid rgba(56, 189, 248, 0.25);font-size:0.8rem;">' +
+                  '<span style="color:#f8fafc;font-weight:600;">' + esc(f.label) + '</span>' +
+                  '<button type="button" onclick="setLogFilter(\'all\')" ' +
+                          'style="margin-left:auto;background:none;border:none;color:#38bdf8;' +
+                                 'cursor:pointer;font:inherit;text-decoration:underline;">' +
+                    'Show everything</button>' +
+                '</div>';
+        }
+
+        function setLogFilter(kind) {
+            _logFilter = LOG_FILTERS[kind] ? kind : 'all';
+            applyLogFilters();
+        }
+        window.setLogFilter = setLogFilter;
+
+        function filterLogs(q) {
+            _logSearch = q || '';
+            applyLogFilters();
         }
 
         // --- Application settings ----------------------------------------
@@ -1531,7 +1667,7 @@
                 _settings = data.settings || [];
                 renderPlatformSettings(data.groups || []);
             } catch (e) {
-                host.innerHTML = '<div style="padding:28px;color:#64748b;">Could not load the settings.</div>';
+                host.innerHTML = '<div style="padding:28px;color:#94a3b8;">Could not load the settings.</div>';
             }
         }
         window.loadPlatformSettings = loadPlatformSettings;
@@ -1589,12 +1725,12 @@
                             ? '<span style="color:#34d399;">set here</span>'
                             : s.from_env
                                 ? '<span style="color:#94a3b8;">from ' + esc(s.env) + '</span>'
-                                : '<span style="color:#64748b;">default</span>';
+                                : '<span style="color:#94a3b8;">default</span>';
                         return '<div style="display:flex;gap:16px;align-items:flex-start;padding:12px 0;' +
                                'border-top:1px solid rgba(255, 255, 255, 0.05);flex-wrap:wrap;">' +
                             '<div style="flex:1;min-width:220px;">' +
                               '<div style="font-size:0.88rem;font-weight:600;">' + esc(s.label) + '</div>' +
-                              (s.help ? '<div style="font-size:0.75rem;color:#64748b;margin-top:3px;max-width:60ch;">'
+                              (s.help ? '<div style="font-size:0.75rem;color:#94a3b8;margin-top:3px;max-width:60ch;">'
                                         + esc(s.help) + '</div>' : '') +
                               '<div style="font-size:0.7rem;margin-top:4px;">' + origin +
                                 (s.is_set ? ' &middot; <a href="#" onclick="event.preventDefault();resetSetting(\'' +
@@ -1609,7 +1745,7 @@
             '<div style="display:flex;gap:10px;align-items:center;padding:4px 0 20px;">' +
               '<button class="action-btn" style="background:#38bdf8;color:#0b0f19;font-weight:700;' +
               'border:none;padding:9px 20px;" onclick="savePlatformSettings()">Save changes</button>' +
-              '<span id="settings-status" style="font-size:0.8rem;color:#64748b;"></span>' +
+              '<span id="settings-status" style="font-size:0.8rem;color:#94a3b8;"></span>' +
             '</div>';
 
             // The swatch prints its own value, so the hex is readable.
@@ -1671,6 +1807,40 @@
             control:  [loadPlatformSettings]
         };
         var _tabLoaded = {};
+
+        // Where a figure on the overview leads.
+        //
+        // Every number there used to be a dead end: it told you fourteen
+        // clients were active and left you to go and find them. This switches
+        // panel and then narrows the list to the thing that was clicked -
+        // after the panel's loader has run, because on a first visit there is
+        // nothing to narrow yet.
+        function goToPanel(tab, filter) {
+            showTab(tab);
+            if (!filter) {
+                if (tab === 'clients') setClientFilter('all');
+                if (tab === 'activity') setLogFilter('all');
+                return;
+            }
+            var apply = function () {
+                if (tab === 'clients') setClientFilter(filter);
+                else if (tab === 'activity') setLogFilter(filter);
+            };
+            // The loaders are async and were kicked off by showTab. Waiting on
+            // the rows themselves rather than on a fixed delay, so a slow
+            // network does not land somebody on an unfiltered list.
+            var rows = tab === 'clients' ? 'clients-tbody' : 'login-logs-tbody';
+            var waited = 0;
+            (function settle() {
+                var host = document.getElementById(rows);
+                var ready = host && host.querySelectorAll('tr').length &&
+                            !/Loading/.test(host.textContent);
+                if (ready || waited > 4000) { apply(); return; }
+                waited += 60;
+                setTimeout(settle, 60);
+            })();
+        }
+        window.goToPanel = goToPanel;
 
         function showTab(name) {
             if (!TAB_LOADERS[name]) name = 'overview';
