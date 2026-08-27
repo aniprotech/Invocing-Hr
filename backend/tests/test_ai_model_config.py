@@ -77,8 +77,17 @@ def test_a_retired_model_reads_as_a_retired_model():
     error, which tells an operator nothing they can act on."""
     import llm
     assert "model_gone" in llm.LLM_MESSAGES
-    message = llm.LLM_MESSAGES["model_gone"]
-    assert "GROQ_MODEL" in message, "it should name the thing to change"
+    message = llm.LLM_MESSAGES["model_gone"].lower()
+
+    # It used to name GROQ_MODEL, because that was the one thing to change.
+    # With a chain of providers - each with its own model setting - naming one
+    # of them would be wrong advice as often as right, so the message says what
+    # broke and points at the page that lists them all. The property is what
+    # matters and is what is asserted: never a shrug.
+    assert "no longer exists" in message, "it should say what actually broke"
+    assert "status page" in message, "it should say where to go and fix it"
+    assert message.strip() not in ("the ai is unavailable right now.",
+                                   "ai service unavailable")
 
 
 # --- what the operator page shows ---------------------------------------------

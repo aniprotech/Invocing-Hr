@@ -9333,50 +9333,85 @@ class PricingRuleIn(BaseModel):
 
 @app.get("/api/superadmin/ai-status")
 def ai_status(request: Request):
-    """Whether the AI features can actually run, without exposing the key.
+    """Which providers can answer, in the order they will be asked.
 
-    All five AI endpoints degrade to a canned response when the key is absent,
-    which is safe but indistinguishable from a broken model - this says which.
+    The AI used to be one paid provider on one large model, so this said "is
+    the key good". It is a chain now, free tiers first, so the useful questions
+    are which links are live, which one is actually doing the work, and how
+    much of the traffic never left the building because it was cached.
     """
     require_superadmin(request)
     import llm
-    key = llm.GROQ_API_KEY or ""
-    configured = bool(key)
-    looks_valid = key.startswith("gsk_") and len(key) > 20
 
-    reachable, detail = False, "Not configured"
+    chain = []
+    for spec in llm.PROVIDERS:
+        configured = llm.provider_configured(spec)
+        chain.append({
+            "name": spec["name"],
+            "label": spec["label"],
+            "free": spec["free"],
+            "configured": configured,
+            "model": llm.provider_model(spec),
+            "model_env_var": spec.get("model_env", ""),
+            "env_var": spec["key_env"],
+            "key_hint": spec["key_hint"],
+            # Where it actually sits in the queue, or nothing if it is not in it.
+            "position": next((i + 1 for i, a in enumerate(llm.active_providers())
+                              if a["name"] == spec["name"]), None),
+        })
+
+    active = llm.active_providers()
+    configured = bool(active)
+
+    reachable, detail, answered_by = False, "Not configured", ""
     if configured:
         try:
-            probe = llm.llm_chat([{"role": "user", "content": "ping"}], max_tokens=5)
+            # Uncached deliberately: a cached probe would report the chain as
+            # healthy long after every provider in it had stopped answering.
+            probe = llm.llm_chat([{"role": "user", "content": "ping"}],
+                                 max_tokens=5, use_cache=False)
             reachable = probe is not None
+            answered_by = llm.llm_last_provider()
             if reachable:
-                detail = "Model responded"
+                detail = f"Answered by {answered_by}"
             elif llm.llm_last_error() == "model_gone":
                 # The one failure an operator can fix in a minute, so it says
                 # exactly that instead of "the API call failed".
                 detail = llm.llm_error_message()
             else:
-                detail = "Key set but the API call failed - check the key and quota"
+                detail = ("Keys are set but no provider answered - check quota "
+                          "and the keys below")
         except Exception as exc:
             detail = f"Call failed: {exc}"[:160]
 
-    # Hosted models get retired. Listing what this key can actually use means
-    # the replacement is chosen from reality rather than from memory.
-    models = llm.available_models() if configured else []
+    # Hosted models get retired. Listing what a key can actually use means the
+    # replacement is chosen from reality rather than from memory. Only for the
+    # provider at the head of the queue - it is the one doing the work.
+    head = active[0]["name"] if active else "groq"
+    models_available = llm.available_models(head) if configured else []
+    head_model = llm.provider_model(llm.PROVIDERS_BY_NAME[head])
 
     return {
-        "provider": "groq",
-        "model": llm.MODEL,
-        "model_default": llm.DEFAULT_MODEL,
-        "model_is_available": (llm.MODEL in models) if models else None,
-        "available_models": models[:40],
-        "model_env_var": "GROQ_MODEL",
+        "provider": head,
+        "providers": chain,
+        "free_first": [a["name"] for a in active],
+        "answered_by": answered_by,
+        "model": head_model,
+        "model_default": llm.PROVIDERS_BY_NAME[head]["default_model"],
+        "model_is_available": (head_model in models_available) if models_available else None,
+        "available_models": models_available[:40],
+        "model_env_var": llm.PROVIDERS_BY_NAME[head].get("model_env", ""),
         "configured": configured,
-        "key_format_ok": looks_valid,
         "reachable": reachable,
-        "detail": detail if configured else "GROQ_API_KEY is not set. AI features return a fallback response.",
-        "env_var": "GROQ_API_KEY",
-        "key_hint": "Groq keys begin with gsk_ and are issued at console.groq.com/keys",
+        "detail": detail if configured else (
+            "No AI provider has a key. Add one - the free ones cost nothing - "
+            "and AI features switch on. Until then they return a fallback."),
+        "env_var": llm.PROVIDERS_BY_NAME[head]["key_env"],
+        "key_hint": llm.PROVIDERS_BY_NAME[head]["key_hint"],
+        # What the chain and the cache have saved. An operator asking "is this
+        # costing us" has an answer here rather than an invoice later.
+        "cache": llm.cache_stats(),
+        "order_env_var": "AI_PROVIDER_ORDER",
         "features": [
             "AI resume screening", "AI onboarding checklist",
             "AI invoice email drafting", "AI payment follow-up",

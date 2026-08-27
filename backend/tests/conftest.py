@@ -51,6 +51,35 @@ def _reset_rate_limiter():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _no_live_ai_calls(monkeypatch):
+    """No test may reach a real model provider.
+
+    backend/.env carries a real GROQ_API_KEY and load_dotenv() puts it in the
+    environment at import, so the suite was quietly making live API calls -
+    test_listing_models_without_a_key_is_empty_not_an_error was fetching the
+    actual model list from Groq and getting fourteen real entries back. That
+    spends the quota the whole free-first chain exists to protect, makes the
+    result depend on somebody else's uptime, and means the run is not
+    reproducible on a machine without the key.
+
+    Every provider key is cleared here. A test that wants a provider sets one
+    itself, and stubs the transport with it - which is what the ones in
+    test_llm_chain.py do.
+    """
+    import llm
+    for spec in llm.PROVIDERS:
+        monkeypatch.delenv(spec["key_env"], raising=False)
+        if spec.get("model_env"):
+            monkeypatch.delenv(spec["model_env"], raising=False)
+    monkeypatch.delenv("AI_PROVIDER_ORDER", raising=False)
+    # Answers are cached in process, so one test could otherwise be served an
+    # answer another one arranged.
+    llm.cache_clear()
+    yield
+    llm.cache_clear()
+
+
 @pytest.fixture
 def client():
     with TestClient(main.app) as c:

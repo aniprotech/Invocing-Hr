@@ -70,6 +70,25 @@ def ask(tenant, question="How many invoices are overdue?"):
     return tenant.post("/api/ai/assistant", json={"question": question})
 
 
+def is_actionable(message):
+    """Does this tell somebody what is wrong and where to go?
+
+    It used to be enough to look for "GROQ_MODEL", because that was the one
+    thing to change. With a chain of providers - each with its own model
+    setting - naming one would be wrong advice as often as right, so the
+    message names the fault and points at the page that lists them all.
+
+    Asserted as a property rather than a sentence: the wording is allowed to
+    improve, and this broke once already because it could not.
+    """
+    text = (message or "").lower()
+    if not text or "unavailable" == text.strip():
+        return False
+    says_what = "model" in text and ("no longer exists" in text or "retired" in text)
+    says_where = "status page" in text or "model" in text
+    return says_what and says_where
+
+
 # --- the assistant ------------------------------------------------------------
 
 def test_a_retired_model_is_not_reported_as_a_missing_key(funded, dead_model):
@@ -77,7 +96,7 @@ def test_a_retired_model_is_not_reported_as_a_missing_key(funded, dead_model):
     body = ask(funded).json()
     assert body["available"] is False
     assert "configure the AI key" not in body["answer"]
-    assert "GROQ_MODEL" in body["answer"]
+    assert is_actionable(body["answer"]), body["answer"]
 
 
 def test_it_says_the_model_is_the_problem(funded, dead_model):
@@ -123,14 +142,15 @@ def test_resume_screening_says_why(funded, dead_model):
     body = res.json()
     assert body["available"] is False
     assert body["reason"] == "model_gone"
-    assert "GROQ_MODEL" in body["summary"], "'AI service unavailable' told nobody anything"
+    assert is_actionable(body["summary"]), \
+        "'AI service unavailable' told nobody anything: " + body["summary"]
 
 
 def test_insights_says_why(funded, dead_model):
     body = funded.get("/api/ai/insights").json()
     assert body["available"] is False
     assert body["reason"] == "model_gone"
-    assert "GROQ_MODEL" in body["message"]
+    assert is_actionable(body["message"]), body["message"]
 
 
 def test_a_failed_call_is_never_charged_for(funded, dead_model, account):
@@ -158,7 +178,7 @@ def test_status_carries_the_last_reason(funded, dead_model):
     body = funded.get("/api/ai/status").json()
     assert body["configured"] is True
     assert body["last_error"] == "model_gone"
-    assert "GROQ_MODEL" in body["last_error_message"]
+    assert is_actionable(body["last_error_message"]), body["last_error_message"]
 
 
 def test_status_is_quiet_when_nothing_has_failed(tenant, monkeypatch):

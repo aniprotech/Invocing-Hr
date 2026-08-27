@@ -330,11 +330,11 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=102">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=102">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=102">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=102">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=102">
+    <link rel="stylesheet" href="mobile.css?v=103">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=103">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=103">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=103">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=103">
 </head>
 <body>
     <div class="admin-header">
@@ -917,6 +917,46 @@
             if (!d.configured) {
                 parts.push('<div style="color:#64748b;margin-top:4px;">' +
                     esc(d.key_hint || '') + '</div>');
+            }
+
+            // The chain, in the order it is asked. A provider without a key is
+            // still listed: the point of showing it is that adding one key -
+            // and the ones above the line cost nothing - moves work off the
+            // paid provider at the bottom.
+            if ((d.providers || []).length) {
+                parts.push('<div style="color:#64748b;margin-top:12px;margin-bottom:4px;">' +
+                    'Asked in this order, cheapest first:</div>');
+                parts.push('<div style="display:flex;flex-direction:column;gap:4px;">' +
+                    d.providers.map(function (pr) {
+                        var live = pr.configured;
+                        return '<div style="display:flex;gap:8px;align-items:baseline;' +
+                                'font-size:0.75rem;' + (live ? '' : 'opacity:0.5;') + '">' +
+                            '<span style="width:16px;color:#64748b;">' +
+                                (pr.position ? pr.position + '.' : '&mdash;') + '</span>' +
+                            '<span style="color:' + (live ? '#f8fafc' : '#64748b') + ';font-weight:600;">' +
+                                esc(pr.label) + '</span>' +
+                            '<span style="color:' + (pr.free ? '#34d399' : '#fbbf24') + ';">' +
+                                (pr.free ? 'free tier' : 'billed') + '</span>' +
+                            '<span style="color:#64748b;">' + esc(pr.model) + '</span>' +
+                            (pr.name === d.answered_by
+                                ? '<span style="color:#34d399;">&larr; answered</span>'
+                                : '') +
+                            (live ? '' : '<span style="color:#64748b;">set ' +
+                                esc(pr.env_var) + '</span>') +
+                        '</div>';
+                    }).join('') + '</div>');
+            }
+
+            // What the cache has saved. An operator asking "is this costing
+            // us" gets an answer here rather than an invoice later.
+            var c = d.cache || {};
+            if (c.calls) {
+                parts.push('<div style="color:#64748b;margin-top:10px;font-size:0.75rem;">' +
+                    esc(String(c.hits)) + ' of ' + esc(String(c.calls)) +
+                    ' requests answered from cache (' +
+                    Math.round((c.hit_rate || 0) * 100) + '%), ' +
+                    esc(String(c.entries)) + ' held for ' +
+                    Math.round((c.ttl_seconds || 0) / 60) + ' min</div>');
             }
 
             host.style.color = d.reachable ? '#34d399' : '#f43f5e';
