@@ -633,6 +633,52 @@ class DBHoliday(Base):
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
+class DBCalendarEvent(Base):
+    """One thing HR put on the calendar directly, rather than something the
+    app already knows about (a holiday, a goal, an interview).
+
+    Everything else on the calendar is derived from a record that exists for
+    its own reason. This table is for the rest: "renew the fire extinguisher
+    contract", "board meeting", a reminder with nothing else behind it.
+    """
+    __tablename__ = "calendar_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    date = Column(String, nullable=False, index=True)      # YYYY-MM-DD
+    time = Column(String, default="")                      # HH:MM, optional
+    title = Column(String, nullable=False)
+    description = Column(String, default="")
+    # reminder | meeting | deadline | other - what dot it gets on the grid.
+    kind = Column(String, default="reminder")
+    # How long before the date to email a heads-up. 0 turns the reminder off,
+    # so a plain note on the calendar does not have to be an email as well.
+    notify_days_before = Column(Integer, default=1)
+    created_by = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBCalendarReminderSent(Base):
+    """One row per reminder actually emailed, so the job that sends them can
+    run as often as it likes without sending the same one twice.
+
+    Covers every kind of deadline the calendar surfaces - a custom event, a
+    goal, a document about to expire - by source table and row id rather than
+    a foreign key to any one of them, since no single table holds them all.
+    """
+    __tablename__ = "calendar_reminders_sent"
+    __table_args__ = (
+        UniqueConstraint('source_type', 'source_id',
+                         name='uq_calendar_reminder_source'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    source_type = Column(String, nullable=False)   # calendar_event | goal | document
+    source_id = Column(Integer, nullable=False)
+    sent_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
 class DBClientLoginLog(Base):
     __tablename__ = "client_login_logs"
 

@@ -327,6 +327,7 @@ var NAV_FOR_VIEW = {
     'attendance-view': 'nav-people',
     'leave-view': 'nav-leave',
     'goals-view': 'nav-goals',
+    'calendar-view': 'nav-calendar',
     'onboarding-hub-view': 'nav-onboarding',
     'recruitment-view': 'nav-recruitment',
     'payroll-view': 'nav-payroll',
@@ -365,6 +366,7 @@ var ROUTE_SLUGS = {
     'orgchart-view': 'org-chart',
     'leave-view': 'leave',
     'goals-view': 'goals',
+    'calendar-view': 'calendar',
     'payroll-view': 'payroll',
     'recruitment-view': 'recruitment',
     'onboarding-hub-view': 'onboarding',
@@ -4915,6 +4917,205 @@ function renderOrgTreeNode(emp, depth) {
     return wrapper;
 }
 
+// --- Calendar --------------------------------------------------------------
+// One view of everything with a date: holidays, leave, interviews, goal and
+// document deadlines, and whatever HR has typed in directly. Most of it reads
+// back from wherever it actually lives; only the entries HR added here can be
+// edited or deleted here.
+
+var CALENDAR_COLORS = {
+    holiday: '#f43f5e', leave: '#fb923c', interview: '#7dd3fc',
+    goal: '#34d399', department_goal: '#34d399',
+    onboarding: '#fbbf24', document_due: '#fbbf24', document_expiry: '#fbbf24',
+    reminder: '#38bdf8', meeting: '#38bdf8', deadline: '#38bdf8', other: '#38bdf8',
+};
+
+var _calendarMonth = null;          // first-of-month Date currently shown
+var _calendarEvents = [];           // every event fetched for the visible month
+var _calendarSelectedDate = null;   // YYYY-MM-DD, or null
+
+function calendarMonthLabel(d) {
+    return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+}
+
+async function loadCalendarView() {
+    if (!_calendarMonth) {
+        var today = new Date();
+        _calendarMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+        _calendarSelectedDate = localDate(today);
+    }
+    var label = document.getElementById('calendar-month-label');
+    if (label) label.textContent = calendarMonthLabel(_calendarMonth);
+
+    var start = localDate(_calendarMonth);
+    var end = localDate(new Date(_calendarMonth.getFullYear(), _calendarMonth.getMonth() + 1, 0));
+    try {
+        var res = await fetch('/api/hr/calendar?start=' + start + '&end=' + end);
+        if (!res.ok) throw new Error('Could not load the calendar');
+        _calendarEvents = (await res.json()).events || [];
+    } catch (e) {
+        _calendarEvents = [];
+        showToast(e.message, 'error');
+    }
+    renderCalendarGrid();
+    renderCalendarDayList();
+}
+window.loadCalendarView = loadCalendarView;
+
+function calendarShiftMonth(delta) {
+    if (!_calendarMonth) _calendarMonth = new Date();
+    _calendarMonth = new Date(_calendarMonth.getFullYear(), _calendarMonth.getMonth() + delta, 1);
+    loadCalendarView();
+}
+window.calendarShiftMonth = calendarShiftMonth;
+
+function calendarEventsOn(dateStr) {
+    return _calendarEvents.filter(function (e) { return e.date === dateStr; });
+}
+
+function renderCalendarGrid() {
+    var host = document.getElementById('calendar-grid');
+    if (!host || !_calendarMonth) return;
+
+    var year = _calendarMonth.getFullYear(), month = _calendarMonth.getMonth();
+    var firstOfMonth = new Date(year, month, 1);
+    // Grid opens on the Monday on or before the 1st, and always shows six full
+    // weeks - a fixed height means the buttons above it do not jump around as
+    // the month changes length.
+    var startOffset = (firstOfMonth.getDay() + 6) % 7;
+    var gridStart = new Date(year, month, 1 - startOffset);
+    var today = localDate(new Date());
+
+    var names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    var html = names.map(function (n) {
+        return '<div class="calendar-day-name">' + n + '</div>';
+    }).join('');
+
+    for (var i = 0; i < 42; i++) {
+        var d = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + i);
+        var dateStr = localDate(d);
+        var inMonth = d.getMonth() === month;
+        var evs = calendarEventsOn(dateStr);
+        var cls = 'calendar-cell' + (inMonth ? '' : ' is-outside-month') +
+            (dateStr === today ? ' is-today' : '') +
+            (dateStr === _calendarSelectedDate ? ' is-selected' : '') +
+            (evs.length ? ' has-events' : '');
+        var dots = evs.slice(0, 4).map(function (e) {
+            return '<span class="calendar-dot" style="background:' +
+                (CALENDAR_COLORS[e.kind] || '#38bdf8') + ';"></span>';
+        }).join('');
+        var more = evs.length > 4 ? '<span class="calendar-cell-more">+' + (evs.length - 4) + '</span>' : '';
+        html += '<div class="' + cls + '" onclick="selectCalendarDay(\'' + dateStr + '\')">' +
+            '<span class="calendar-cell-date">' + d.getDate() + '</span>' +
+            '<span class="calendar-cell-dots">' + dots + more + '</span>' +
+        '</div>';
+    }
+    host.innerHTML = html;
+}
+
+function selectCalendarDay(dateStr) {
+    _calendarSelectedDate = dateStr;
+    renderCalendarGrid();
+    renderCalendarDayList();
+}
+window.selectCalendarDay = selectCalendarDay;
+
+function renderCalendarDayList() {
+    var heading = document.getElementById('calendar-day-heading');
+    var host = document.getElementById('calendar-day-list');
+    if (!heading || !host) return;
+
+    if (!_calendarSelectedDate) { heading.textContent = 'Select a day'; host.innerHTML = ''; return; }
+
+    var d = new Date(_calendarSelectedDate + 'T00:00:00');
+    heading.textContent = d.toLocaleDateString(undefined, {
+        weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+    });
+
+    var evs = calendarEventsOn(_calendarSelectedDate);
+    if (!evs.length) {
+        host.innerHTML = '<p style="color:var(--text-secondary);font-size:0.9rem;">Nothing on the calendar this day.</p>';
+        return;
+    }
+    host.innerHTML = evs.map(function (e) {
+        var color = CALENDAR_COLORS[e.kind] || '#38bdf8';
+        var openTo = e.editable
+            ? 'openCalendarEventModal(' + JSON.stringify(e).replace(/"/g, '&quot;') + ')'
+            : (e.view ? 'showView(\'' + e.view + '\')' : '');
+        return '<div ' + (openTo ? 'onclick="' + openTo + '" style="cursor:pointer;" ' : '') +
+                    'style="display:flex;gap:12px;align-items:flex-start;padding:10px 12px;' +
+                        'border:1px solid var(--border-color);border-radius:10px;background:var(--surface-color);">' +
+                '<span style="width:9px;height:9px;border-radius:50%;background:' + color + ';margin-top:6px;flex-shrink:0;"></span>' +
+                '<div style="flex:1;min-width:0;">' +
+                    '<div style="font-weight:600;">' + esc(e.title) + (e.time ? ' &middot; ' + esc(e.time) : '') + '</div>' +
+                    (e.subtitle ? '<div style="color:var(--text-secondary);font-size:0.85rem;">' + esc(e.subtitle) + '</div>' : '') +
+                '</div>' +
+                (e.editable ? '<span style="font-size:0.7rem;color:var(--text-secondary);">Edit</span>' : '') +
+            '</div>';
+    }).join('');
+}
+
+function openCalendarEventModal(ev) {
+    document.getElementById('calendar-event-modal-title').textContent =
+        ev ? 'Edit calendar entry' : 'Add to calendar';
+    document.getElementById('cal-ev-id').value = ev ? ev.source_id : '';
+    document.getElementById('cal-ev-title').value = ev ? ev.title : '';
+    document.getElementById('cal-ev-date').value = ev ? ev.date : (_calendarSelectedDate || localDate(new Date()));
+    document.getElementById('cal-ev-time').value = ev ? ev.time : '';
+    document.getElementById('cal-ev-kind').value = ev ? ev.kind : 'reminder';
+    document.getElementById('cal-ev-notify').value = '1';
+    document.getElementById('cal-ev-description').value = ev ? ev.subtitle : '';
+    document.getElementById('cal-ev-delete-btn').style.display = ev ? '' : 'none';
+    document.getElementById('calendar-event-modal').style.display = 'flex';
+}
+window.openCalendarEventModal = openCalendarEventModal;
+
+function closeCalendarEventModal() {
+    document.getElementById('calendar-event-modal').style.display = 'none';
+}
+window.closeCalendarEventModal = closeCalendarEventModal;
+
+async function saveCalendarEvent() {
+    var id = document.getElementById('cal-ev-id').value;
+    var body = {
+        title: document.getElementById('cal-ev-title').value.trim(),
+        date: document.getElementById('cal-ev-date').value,
+        time: document.getElementById('cal-ev-time').value,
+        kind: document.getElementById('cal-ev-kind').value,
+        notify_days_before: parseInt(document.getElementById('cal-ev-notify').value, 10) || 0,
+        description: document.getElementById('cal-ev-description').value.trim(),
+    };
+    if (!body.title || !body.date) { showToast('Give it a title and a date', 'error'); return; }
+
+    try {
+        var res = await fetch(id ? '/api/hr/calendar-events/' + id : '/api/hr/calendar-events', {
+            method: id ? 'PUT' : 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+            var why = await res.json().catch(function () { return {}; });
+            throw new Error(why.detail || 'Could not save that');
+        }
+        closeCalendarEventModal();
+        showToast('Saved', 'success');
+        loadCalendarView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.saveCalendarEvent = saveCalendarEvent;
+
+async function deleteCalendarEventFromModal() {
+    var id = document.getElementById('cal-ev-id').value;
+    if (!id || !confirm('Remove this from the calendar?')) return;
+    try {
+        var res = await fetch('/api/hr/calendar-events/' + id, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Could not remove that');
+        closeCalendarEventModal();
+        loadCalendarView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.deleteCalendarEventFromModal = deleteCalendarEventFromModal;
+
 // --- View Switcher HR hooks ---
 var origShowView = showView;
 showView = function(viewId) {
@@ -4922,6 +5123,7 @@ showView = function(viewId) {
     if (viewId === 'employees-view') { fetchEmployees(currentEmpFilter); loadHRStats(); }
     if (viewId === 'leave-view') loadLeaveView();
     if (viewId === 'goals-view') loadGoalsView();
+    if (viewId === 'calendar-view') loadCalendarView();
     if (viewId === 'departments-view') fetchDepartments();
     if (viewId === 'onboarding-hub-view') { loadOnboardingHub(); loadDocumentQueue(); loadExpiringDocuments(); loadOnboardingPipeline(); }
     if (viewId === 'payroll-view') { fetchPayslips(currentPsFilter); loadPayrollAnomalies(); }
@@ -7988,10 +8190,10 @@ window.reopenCandidate = reopenCandidate;
 var HR_REFRESH_MAP = {
     employees:   ['employees-view', 'departments-view', 'orgchart-view', 'onboarding-hub-view', 'payroll-view'],
     departments: ['departments-view', 'employees-view', 'orgchart-view'],
-    leave:       ['leave-view', 'employees-view'],
+    leave:       ['leave-view', 'employees-view', 'calendar-view'],
     attendance:  ['attendance-view', 'employees-view'],
     payroll:     ['payroll-view', 'employees-view'],
-    goals:       ['goals-view', 'employees-view'],
+    goals:       ['goals-view', 'employees-view', 'calendar-view'],
     onboarding:  ['onboarding-hub-view', 'employees-view'],
     recruitment: ['recruitment-view', 'employees-view', 'onboarding-hub-view', 'orgchart-view']
 };
@@ -8004,6 +8206,7 @@ var HR_VIEW_LOADERS = {
     'payroll-view':        function () { fetchPayslips(currentPsFilter); },
     'leave-view':          function () { loadLeaveView(); },
     'goals-view':          function () { loadGoalsView(); },
+    'calendar-view':       function () { loadCalendarView(); },
     'attendance-view':     function () { loadAttendanceStats(); loadAttendance(); },
     'recruitment-view':    function () { loadRecAnalytics(); }
 };

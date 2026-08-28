@@ -3486,6 +3486,135 @@ def job_interview_reminders(db, now):
     return "{} interview reminder(s) sent".format(sent)
 
 
+def _calendar_reminder_sent(db, source_type, source_id):
+    return db.query(models.DBCalendarReminderSent).filter(
+        models.DBCalendarReminderSent.source_type == source_type,
+        models.DBCalendarReminderSent.source_id == source_id).first() is not None
+
+
+def _record_calendar_reminder(db, client_id, source_type, source_id):
+    """Written and committed before the email goes out, the same order the
+    interview reminders use - so two workers racing on the same job cannot
+    both send it, and a send that then fails does not get retried forever."""
+    db.add(models.DBCalendarReminderSent(
+        client_id=client_id, source_type=source_type, source_id=source_id))
+    try:
+        db.commit()
+        return True
+    except IntegrityError:
+        db.rollback()
+        return False
+
+
+def _send_calendar_reminder(client, subject, lines):
+    """One plain-English email about one thing coming up. Everything on the
+    calendar reaches this the same way, so a new source type is a new list of
+    lines rather than a new template."""
+    from_email = os.getenv("FROM_EMAIL", "hello@keyroutes.co")
+    company = client.company_name or "there"
+    body = "Hello {},\n\n{}\n\n{}\n".format(
+        company, subject, "\n".join(lines))
+    to = getattr(client, "email", "")
+    if not to or not validate_email_address(to):
+        return False
+    send_email_background(to, subject, body,
+                          "aniprotech <{}>".format(from_email), None, None,
+                          "", "", client_id=client.id)
+    return True
+
+
+@scheduled_job("calendar_reminders")
+def job_calendar_reminders(db, now):
+    """A heads-up before something on the calendar arrives, sent once.
+
+    Three kinds of thing go quiet until the day itself if nobody is reminded:
+    a custom entry HR added and then forgot about, a goal whose due date has
+    crept up, and a document about to expire - the last of these had a
+    reminder window on the requirement (expiry_reminder_days) since the field
+    was added, with nothing that ever read it.
+    """
+    today = now.date()
+    sent = 0
+
+    for ev in db.query(models.DBCalendarEvent).filter(
+            models.DBCalendarEvent.notify_days_before > 0).all():
+        d = _parse_date(ev.date)
+        if not d or d < today:
+            continue
+        if (d - today).days != ev.notify_days_before:
+            continue
+        if _calendar_reminder_sent(db, "calendar_event", ev.id):
+            continue
+        client = db.query(models.DBClient).filter(
+            models.DBClient.id == ev.client_id).first()
+        if not client:
+            continue
+        if _record_calendar_reminder(db, ev.client_id, "calendar_event", ev.id):
+            ok = _send_calendar_reminder(
+                client, "Coming up: {}".format(ev.title),
+                ["On {}{}.".format(ev.date, " at " + ev.time if ev.time else ""),
+                 ev.description or ""])
+            sent += 1 if ok else 0
+
+    # A goal is reminded once, three days out - close enough to matter, far
+    # enough to still do something about it.
+    GOAL_REMINDER_DAYS = 3
+    for g, emp in db.query(models.DBEmployeeGoal, models.DBEmployee).join(
+            models.DBEmployee, models.DBEmployeeGoal.employee_id == models.DBEmployee.id
+    ).filter(models.DBEmployeeGoal.status != "completed").all():
+        d = _parse_date(g.due_date)
+        if not d or d < today or (d - today).days != GOAL_REMINDER_DAYS:
+            continue
+        if _calendar_reminder_sent(db, "goal", g.id):
+            continue
+        client = db.query(models.DBClient).filter(
+            models.DBClient.id == g.client_id).first()
+        if not client:
+            continue
+        if _record_calendar_reminder(db, g.client_id, "goal", g.id):
+            name = f"{emp.first_name} {emp.last_name}".strip() or "Someone"
+            ok = _send_calendar_reminder(
+                client, "Goal due soon: {}".format(g.title),
+                ["{} is due on {}.".format(name, g.due_date),
+                 "Currently at {:g} of {:g} {}.".format(
+                     g.current_value, g.target_value, g.unit)])
+            sent += 1 if ok else 0
+
+    # A document uses the reminder window HR set on its requirement, or the
+    # 30-day default the field itself has always had.
+    for req, emp in db.query(models.DBDocumentRequest, models.DBEmployee).join(
+            models.DBEmployee, models.DBDocumentRequest.employee_id == models.DBEmployee.id
+    ).filter(
+        models.DBDocumentRequest.requires_expiry == True,        # noqa: E712
+        models.DBDocumentRequest.expires_on != "",
+    ).all():
+        d = _parse_date(req.expires_on)
+        if not d or d < today:
+            continue
+        window = 30
+        if req.requirement_id:
+            rule = db.query(models.DBDocumentRequirement).filter(
+                models.DBDocumentRequirement.id == req.requirement_id).first()
+            if rule:
+                window = rule.expiry_reminder_days or 30
+        if (d - today).days != window:
+            continue
+        if _calendar_reminder_sent(db, "document", req.id):
+            continue
+        client = db.query(models.DBClient).filter(
+            models.DBClient.id == req.client_id).first()
+        if not client:
+            continue
+        if _record_calendar_reminder(db, req.client_id, "document", req.id):
+            name = f"{emp.first_name} {emp.last_name}".strip() or "Someone"
+            ok = _send_calendar_reminder(
+                client, "Document expiring: {}".format(req.name),
+                ["{}'s {} expires on {}.".format(name, req.name, req.expires_on)])
+            sent += 1 if ok else 0
+
+    return "{} calendar reminder(s) sent".format(sent)
+
+
 @app.get("/api/recruitment/interviews/{interview_id}/reminders")
 def interview_reminders(interview_id: int, request: Request,
                         db: Session = Depends(get_db)):
@@ -5753,6 +5882,190 @@ def day_kind(db, settings, client_id, on_date=None):
     return {"kind": "working", "expected": True, "label": "", "optional": False}
 
 
+# What each source becomes on the calendar: the label, and whether it is the
+# app's own record (read-only here) or something HR typed in directly.
+CALENDAR_KIND_LABELS = {
+    "holiday": "Holiday", "leave": "Leave", "interview": "Interview",
+    "goal": "Goal due", "department_goal": "Team goal due",
+    "onboarding": "Onboarding task", "document_due": "Document due",
+    "document_expiry": "Document expiring",
+    "reminder": "Reminder", "meeting": "Meeting", "deadline": "Deadline",
+    "other": "Note",
+}
+
+
+def calendar_events_for_range(db, client_id, settings, start, end):
+    """Everything on the calendar between two dates, inclusive.
+
+    Most of this already exists somewhere else for its own reason - a leave
+    request, a goal's due date, a document about to expire - and had no single
+    place you could see it alongside everything else due the same week. This
+    reads each of those tables once and returns one shape for all of them, plus
+    whatever HR has put on the calendar directly.
+    """
+    out = []
+
+    # --- holidays: fixed ones in range, recurring ones matched by month/day
+    for h in db.query(models.DBHoliday).filter(
+            models.DBHoliday.client_id == client_id).all():
+        if h.recurring:
+            for year in range(start.year, end.year + 1):
+                try:
+                    on = datetime.strptime(
+                        f"{year}-{(h.date or '')[5:]}", "%Y-%m-%d").date()
+                except ValueError:
+                    continue
+                if start <= on <= end:
+                    out.append({
+                        "id": f"holiday-{h.id}-{year}", "date": on.strftime("%Y-%m-%d"),
+                        "time": "", "title": h.name,
+                        "subtitle": "Office closed" if not h.optional else "Optional - office open",
+                        "kind": "holiday", "source_type": "holiday", "source_id": h.id,
+                        "editable": False, "view": "",
+                    })
+        else:
+            d = _parse_date(h.date)
+            if d and start <= d <= end:
+                out.append({
+                    "id": f"holiday-{h.id}", "date": h.date, "time": "",
+                    "title": h.name,
+                    "subtitle": "Office closed" if not h.optional else "Optional - office open",
+                    "kind": "holiday", "source_type": "holiday", "source_id": h.id,
+                    "editable": False, "view": "",
+                })
+
+    # --- leave: anything overlapping the range, approved or still pending
+    for lv in db.query(models.DBLeaveRequest, models.DBEmployee).join(
+            models.DBEmployee, models.DBLeaveRequest.employee_id == models.DBEmployee.id
+    ).filter(
+        models.DBLeaveRequest.client_id == client_id,
+        models.DBLeaveRequest.status.in_(["approved", "pending"]),
+    ).all():
+        lv, emp = lv
+        s_date, e_date = _parse_date(lv.start_date), _parse_date(lv.end_date)
+        if not s_date or not e_date or e_date < start or s_date > end:
+            continue
+        name = f"{emp.first_name} {emp.last_name}".strip() or "Someone"
+        out.append({
+            "id": f"leave-{lv.id}", "date": lv.start_date, "time": "",
+            "title": f"{name} - {lv.leave_type} leave",
+            "subtitle": (f"{lv.start_date} to {lv.end_date}"
+                        + (" (awaiting a decision)" if lv.status == "pending" else "")),
+            "kind": "leave", "source_type": "leave", "source_id": lv.id,
+            "editable": False, "view": "leave-view",
+        })
+
+    # --- interviews: still scheduled, inside the range
+    for iv in db.query(models.DBInterview).filter(
+            models.DBInterview.client_id == client_id,
+            models.DBInterview.status == "scheduled").all():
+        try:
+            when = datetime.strptime(iv.scheduled_at[:16], "%Y-%m-%d %H:%M")
+        except (TypeError, ValueError):
+            continue
+        if not (start <= when.date() <= end):
+            continue
+        out.append({
+            "id": f"interview-{iv.id}", "date": when.strftime("%Y-%m-%d"),
+            "time": when.strftime("%H:%M"), "title": iv.round_name or "Interview",
+            "subtitle": iv.interviewer_name or "",
+            "kind": "interview", "source_type": "interview", "source_id": iv.id,
+            "editable": False, "view": "recruitment-view",
+        })
+
+    # --- goals: due, not yet completed
+    for g, emp in db.query(models.DBEmployeeGoal, models.DBEmployee).join(
+            models.DBEmployee, models.DBEmployeeGoal.employee_id == models.DBEmployee.id
+    ).filter(
+        models.DBEmployeeGoal.client_id == client_id,
+        models.DBEmployeeGoal.status != "completed",
+    ).all():
+        d = _parse_date(g.due_date)
+        if not d or not (start <= d <= end):
+            continue
+        name = f"{emp.first_name} {emp.last_name}".strip() or "Someone"
+        out.append({
+            "id": f"goal-{g.id}", "date": g.due_date, "time": "",
+            "title": g.title, "subtitle": f"{name} - {g.current_value:g}/{g.target_value:g} {g.unit}",
+            "kind": "goal", "source_type": "goal", "source_id": g.id,
+            "editable": False, "view": "goals-view",
+        })
+
+    for dg in db.query(models.DBDepartmentGoal).filter(
+            models.DBDepartmentGoal.client_id == client_id).all():
+        d = _parse_date(dg.due_date)
+        if not d or not (start <= d <= end):
+            continue
+        dept = db.query(models.DBDepartment).filter(
+            models.DBDepartment.id == dg.department_id).first()
+        out.append({
+            "id": f"department_goal-{dg.id}", "date": dg.due_date, "time": "",
+            "title": dg.title, "subtitle": (dept.name if dept else "") + " team goal",
+            "kind": "department_goal", "source_type": "department_goal", "source_id": dg.id,
+            "editable": False, "view": "goals-view",
+        })
+
+    # --- onboarding: due, not yet done
+    for item, emp in db.query(models.DBOnboardingItem, models.DBEmployee).join(
+            models.DBEmployee, models.DBOnboardingItem.employee_id == models.DBEmployee.id
+    ).filter(
+        models.DBOnboardingItem.client_id == client_id,
+        models.DBOnboardingItem.is_completed == False,   # noqa: E712
+    ).all():
+        d = _parse_date(item.due_date)
+        if not d or not (start <= d <= end):
+            continue
+        name = f"{emp.first_name} {emp.last_name}".strip() or "Someone"
+        out.append({
+            "id": f"onboarding-{item.id}", "date": item.due_date, "time": "",
+            "title": item.title, "subtitle": name,
+            "kind": "onboarding", "source_type": "onboarding", "source_id": item.id,
+            "editable": False, "view": "onboarding-hub-view",
+        })
+
+    # --- documents: still owed, or already issued and going out of date
+    for req, emp in db.query(models.DBDocumentRequest, models.DBEmployee).join(
+            models.DBEmployee, models.DBDocumentRequest.employee_id == models.DBEmployee.id
+    ).filter(models.DBDocumentRequest.client_id == client_id).all():
+        name = f"{emp.first_name} {emp.last_name}".strip() or "Someone"
+        if req.status in ("pending", "rejected"):
+            d = _parse_date(req.due_date)
+            if d and start <= d <= end:
+                out.append({
+                    "id": f"document_due-{req.id}", "date": req.due_date, "time": "",
+                    "title": f"{req.name} due", "subtitle": name,
+                    "kind": "document_due", "source_type": "document_due", "source_id": req.id,
+                    "editable": False, "view": "employees-view",
+                })
+        if req.requires_expiry and req.expires_on:
+            d = _parse_date(req.expires_on)
+            if d and start <= d <= end:
+                out.append({
+                    "id": f"document_expiry-{req.id}", "date": req.expires_on, "time": "",
+                    "title": f"{req.name} expires", "subtitle": name,
+                    "kind": "document_expiry", "source_type": "document_expiry", "source_id": req.id,
+                    "editable": False, "view": "employees-view",
+                })
+
+    # --- HR's own entries
+    for ev in db.query(models.DBCalendarEvent).filter(
+            models.DBCalendarEvent.client_id == client_id).all():
+        d = _parse_date(ev.date)
+        if not d or not (start <= d <= end):
+            continue
+        out.append({
+            "id": f"calendar_event-{ev.id}", "date": ev.date, "time": ev.time or "",
+            "title": ev.title, "subtitle": ev.description or "",
+            "kind": ev.kind, "source_type": "calendar_event", "source_id": ev.id,
+            "editable": True, "view": "",
+        })
+
+    for e in out:
+        e["kind_label"] = CALENDAR_KIND_LABELS.get(e["kind"], e["kind"].title())
+    out.sort(key=lambda e: (e["date"], e["time"] or "99:99"))
+    return out
+
+
 def should_auto_clock_in(settings, on_date=None):
     """Signing in only starts a shift on a working day, and only if the tenant
     wants sign-in to count at all. Someone opening the portal on a Sunday to
@@ -7848,6 +8161,148 @@ def read_day_kind(request: Request, date: str = None, db: Session = Depends(get_
     client = get_client_user(request, db)
     return day_kind(db, attendance_settings_for(db, client.id), client.id,
                     date or datetime.now().strftime("%Y-%m-%d"))
+
+
+def calendar_event_to_dict(ev):
+    return {"id": ev.id, "date": ev.date, "time": ev.time or "",
+            "title": ev.title, "description": ev.description or "",
+            "kind": ev.kind, "notify_days_before": ev.notify_days_before,
+            "created_by": ev.created_by or ""}
+
+
+@app.get("/api/hr/calendar")
+def read_calendar(request: Request, start: str = None, end: str = None,
+                  db: Session = Depends(get_db)):
+    """Everything with a date, between two dates.
+
+    Defaults to the current month either side is missing, which is what the
+    grid asks for on first load - a bare visit needs no query string.
+    """
+    client = get_client_user(request, db)
+    today = datetime.now().date()
+    start_date = _parse_date(start) or today.replace(day=1)
+    if end:
+        end_date = _parse_date(end)
+    else:
+        # The last day of start_date's month, without a calendar library:
+        # the 28th plus four days always lands in the next month, and the
+        # first of that month minus a day is always the last of this one.
+        next_month = (start_date.replace(day=28) + timedelta(days=4)).replace(day=1)
+        end_date = next_month - timedelta(days=1)
+    if not end_date or end_date < start_date:
+        raise HTTPException(status_code=400, detail="end must be on or after start")
+    if (end_date - start_date).days > 366:
+        raise HTTPException(status_code=400, detail="Ask for at most a year at a time")
+
+    settings = attendance_settings_for(db, client.id)
+    events = calendar_events_for_range(db, client.id, settings, start_date, end_date)
+    return {"start": start_date.strftime("%Y-%m-%d"),
+            "end": end_date.strftime("%Y-%m-%d"), "events": events}
+
+
+@app.post("/api/hr/calendar-events")
+def add_calendar_event(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+
+    date = str(body.get("date") or "").strip()
+    if not _parse_date(date):
+        raise HTTPException(status_code=400, detail="Give a date as YYYY-MM-DD")
+
+    title = str(body.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Give it a title")
+    if len(title) > 200:
+        raise HTTPException(status_code=400, detail="That title is too long")
+
+    kind = str(body.get("kind") or "reminder").strip()
+    if kind not in ("reminder", "meeting", "deadline", "other"):
+        raise HTTPException(status_code=400, detail="Not a kind of calendar entry")
+
+    time = str(body.get("time") or "").strip()
+    if time and not re.fullmatch(r"[0-2]\d:[0-5]\d", time):
+        raise HTTPException(status_code=400, detail="Give a time as HH:MM")
+
+    try:
+        notify = int(body.get("notify_days_before", 1))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="notify_days_before must be a number")
+    if notify < 0 or notify > 90:
+        raise HTTPException(status_code=400, detail="notify_days_before must be between 0 and 90")
+
+    row = models.DBCalendarEvent(
+        client_id=client.id, date=date, time=time, title=title,
+        description=str(body.get("description") or "")[:1000], kind=kind,
+        notify_days_before=notify,
+        created_by=(getattr(client, "contact_name", "") or client.company_name or "HR")[:120])
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return calendar_event_to_dict(row)
+
+
+@app.put("/api/hr/calendar-events/{event_id}")
+def update_calendar_event(event_id: int, request: Request, body: dict = None,
+                          db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = db.query(models.DBCalendarEvent).filter(
+        models.DBCalendarEvent.id == event_id,
+        models.DBCalendarEvent.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Calendar entry not found")
+
+    body = body or {}
+    if "date" in body:
+        date = str(body["date"] or "").strip()
+        if not _parse_date(date):
+            raise HTTPException(status_code=400, detail="Give a date as YYYY-MM-DD")
+        row.date = date
+    if "title" in body:
+        title = str(body["title"] or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Give it a title")
+        row.title = title[:200]
+    if "time" in body:
+        time = str(body["time"] or "").strip()
+        if time and not re.fullmatch(r"[0-2]\d:[0-5]\d", time):
+            raise HTTPException(status_code=400, detail="Give a time as HH:MM")
+        row.time = time
+    if "kind" in body:
+        kind = str(body["kind"] or "reminder").strip()
+        if kind not in ("reminder", "meeting", "deadline", "other"):
+            raise HTTPException(status_code=400, detail="Not a kind of calendar entry")
+        row.kind = kind
+    if "description" in body:
+        row.description = str(body["description"] or "")[:1000]
+    if "notify_days_before" in body:
+        try:
+            notify = int(body["notify_days_before"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="notify_days_before must be a number")
+        if notify < 0 or notify > 90:
+            raise HTTPException(status_code=400, detail="notify_days_before must be between 0 and 90")
+        row.notify_days_before = notify
+
+    db.commit()
+    return calendar_event_to_dict(row)
+
+
+@app.delete("/api/hr/calendar-events/{event_id}")
+def delete_calendar_event(event_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = db.query(models.DBCalendarEvent).filter(
+        models.DBCalendarEvent.id == event_id,
+        models.DBCalendarEvent.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Calendar entry not found")
+    db.delete(row)
+    # A reminder already sent for this one is not sent again for a future
+    # entry that happens to reuse the id, so its record can go with it.
+    db.query(models.DBCalendarReminderSent).filter(
+        models.DBCalendarReminderSent.source_type == "calendar_event",
+        models.DBCalendarReminderSent.source_id == event_id).delete()
+    db.commit()
+    return {"deleted": event_id}
 
 
 @app.get("/api/attendance/settings")

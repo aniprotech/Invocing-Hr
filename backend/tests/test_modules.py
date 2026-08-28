@@ -72,6 +72,16 @@ def test_an_invoicing_only_business_is_refused_hr(tenant):
     assert tenant.get("/api/payslips").status_code == 403
 
 
+def test_an_invoicing_only_business_is_refused_the_calendar(tenant):
+    """Every leave request, goal deadline and document expiry the calendar
+    reads back is HR data, so the whole thing gates with the rest of HR."""
+    set_modules(tenant, "invoicing")
+    assert tenant.get("/api/hr/calendar").status_code == 403
+    assert tenant.post("/api/hr/calendar-events",
+                       json={"date": "2026-09-01", "title": "X"}).status_code == 403
+    assert tenant.get("/api/hr/holidays").status_code == 403
+
+
 def test_but_keeps_its_own_module(tenant):
     set_modules(tenant, "invoicing")
     assert tenant.get("/api/invoices").status_code == 200

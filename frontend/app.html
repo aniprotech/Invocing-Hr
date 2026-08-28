@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=106">
-    <link rel="stylesheet" href="mobile.css?v=106">
+    <link rel="stylesheet" href="styles.css?v=107">
+    <link rel="stylesheet" href="mobile.css?v=107">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,10 +57,10 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=106">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=106">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=106">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=106">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=107">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=107">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=107">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=107">
 </head>
 <body>
     <a class="skip-link" href="#main-content-region">Skip to main content</a>
@@ -128,6 +128,7 @@
                         <button type="button" class="nav-item nav-group-toggle" aria-expanded="false">People</button>
                         <div class="nav-group-menu">
                             <a href="#/hr" class="nav-item" id="nav-hr-dashboard" data-portal="hr">HR dashboard</a>
+                            <a href="#/calendar" class="nav-item" id="nav-calendar" data-portal="hr">Calendar</a>
                             <a href="#/people" class="nav-item" id="nav-people" data-portal="hr">Employees</a>
                             <a href="#/org-chart" class="nav-item" id="nav-org" data-portal="hr">Org Chart</a>
                             <a href="#/leave" class="nav-item" id="nav-leave" data-portal="hr">Leave</a>
@@ -1965,6 +1966,104 @@
                     </div>
                 </div>
 
+                <!-- ========== CALENDAR ========== -->
+                <!-- Everything with a date, in one place. Most of what shows
+                     up here is a row somewhere else - a leave request, a
+                     goal's due date, a document about to expire - read
+                     through /api/hr/calendar rather than re-entered. The
+                     entries HR types in directly (a reminder, a meeting) are
+                     the only ones this page can edit or delete; the rest link
+                     back to the screen that owns them. -->
+                <div id="calendar-view" class="view-section dashboard" style="display:none;">
+                    <div class="invoices-header-area">
+                        <div>
+                            <h1>Calendar</h1>
+                            <p class="subtitle">Holidays, leave, goals, interviews and anything else with a date</p>
+                        </div>
+                        <div class="invoices-actions">
+                            <button class="btn btn-primary" onclick="openCalendarEventModal()">Add reminder</button>
+                        </div>
+                    </div>
+
+                    <div class="widget" style="padding:16px 20px;">
+                        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
+                            <div style="display:flex;align-items:center;gap:10px;">
+                                <button class="btn-icon" onclick="calendarShiftMonth(-1)" aria-label="Previous month">&larr;</button>
+                                <h3 id="calendar-month-label" style="margin:0;min-width:160px;text-align:center;">&nbsp;</h3>
+                                <button class="btn-icon" onclick="calendarShiftMonth(1)" aria-label="Next month">&rarr;</button>
+                            </div>
+                            <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:0.78rem;color:var(--text-secondary);">
+                                <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#f43f5e;margin-right:5px;"></span>Holiday</span>
+                                <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#fb923c;margin-right:5px;"></span>Leave</span>
+                                <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#7dd3fc;margin-right:5px;"></span>Interview</span>
+                                <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#34d399;margin-right:5px;"></span>Goal</span>
+                                <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#fbbf24;margin-right:5px;"></span>Document</span>
+                                <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#38bdf8;margin-right:5px;"></span>Your entry</span>
+                            </div>
+                        </div>
+                        <div id="calendar-grid" class="calendar-grid"></div>
+                    </div>
+
+                    <div class="widget" style="margin-top:20px;padding:16px 20px;">
+                        <div class="widget-header"><h3 id="calendar-day-heading">Select a day</h3></div>
+                        <div id="calendar-day-list" style="display:flex;flex-direction:column;gap:8px;"></div>
+                    </div>
+                </div>
+
+                <!-- One entry HR typed in directly - a reminder, a meeting,
+                     a deadline that has no record of its own. -->
+                <div id="calendar-event-modal" class="modal-overlay" style="display:none;">
+                    <div class="modal-content" style="max-width:480px;">
+                        <div class="modal-header">
+                            <h3 id="calendar-event-modal-title">Add to calendar</h3>
+                            <button class="btn-icon" onclick="closeCalendarEventModal()" aria-label="Close">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <input type="hidden" id="cal-ev-id">
+                            <div class="form-group">
+                                <label>Title</label>
+                                <input type="text" id="cal-ev-title" class="form-control" maxlength="200" placeholder="e.g. Board meeting">
+                            </div>
+                            <div class="grid-2 gap-16">
+                                <div class="form-group"><label>Date</label><input type="date" id="cal-ev-date" class="form-control"></div>
+                                <div class="form-group"><label>Time (optional)</label><input type="time" id="cal-ev-time" class="form-control"></div>
+                            </div>
+                            <div class="grid-2 gap-16">
+                                <div class="form-group">
+                                    <label>Kind</label>
+                                    <select id="cal-ev-kind" class="form-control">
+                                        <option value="reminder">Reminder</option>
+                                        <option value="meeting">Meeting</option>
+                                        <option value="deadline">Deadline</option>
+                                        <option value="other">Other</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Email a reminder</label>
+                                    <select id="cal-ev-notify" class="form-control">
+                                        <option value="0">Don't email</option>
+                                        <option value="1" selected>1 day before</option>
+                                        <option value="2">2 days before</option>
+                                        <option value="3">3 days before</option>
+                                        <option value="7">1 week before</option>
+                                        <option value="14">2 weeks before</option>
+                                        <option value="30">1 month before</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>Notes (optional)</label>
+                                <textarea id="cal-ev-description" class="form-control" rows="2" maxlength="1000"></textarea>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button class="btn btn-outline" id="cal-ev-delete-btn" style="display:none;color:var(--danger-text);" onclick="deleteCalendarEventFromModal()">Delete</button>
+                            <button class="btn btn-outline" onclick="closeCalendarEventModal()">Cancel</button>
+                            <button class="btn btn-primary" onclick="saveCalendarEvent()">Save</button>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- ========== DEPARTMENTS ========== -->
                 <div id="departments-view" class="view-section dashboard" style="display:none;">
                     <div class="invoices-header-area">
@@ -3009,7 +3108,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="app.js?v=106"></script>
+    <script src="app.js?v=107"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
