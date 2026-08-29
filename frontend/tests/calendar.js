@@ -234,6 +234,69 @@ function withFixedToday(w, iso) {
             del && del.url);
     }
 
+    // --- the reminder setting survives an edit ---------------------------------
+    {
+        const { w } = boot([]);
+        withFixedToday(w, '2026-06-10T09:00:00');
+        await wait(80);
+        w.showView('calendar-view');
+        await wait(80);
+
+        w.openCalendarEventModal({
+            id: 'calendar_event-7', date: '2026-06-15', time: '', title: 'Insurance',
+            subtitle: '', kind: 'reminder', source_type: 'calendar_event',
+            source_id: 7, editable: true, view: '', notify_days_before: 14,
+        });
+        check('the form restores the reminder the entry was saved with',
+            w.document.getElementById('cal-ev-notify').value === '14',
+            w.document.getElementById('cal-ev-notify').value);
+
+        // A new entry still opens on the sensible default.
+        w.openCalendarEventModal();
+        check('a new entry still defaults to one day before',
+            w.document.getElementById('cal-ev-notify').value === '1',
+            w.document.getElementById('cal-ev-notify').value);
+    }
+
+    // --- the day panel stays inside the month on screen -------------------------
+    {
+        const { w } = boot([]);
+        withFixedToday(w, '2026-06-10T09:00:00');
+        await wait(80);
+        w.showView('calendar-view');
+        await wait(80);
+
+        const monthBefore = w.document.getElementById('calendar-month-label').textContent;
+        w.calendarShiftMonth(1);
+        await wait(120);
+        const monthAfter = w.document.getElementById('calendar-month-label').textContent;
+        const heading = w.document.getElementById('calendar-day-heading').textContent;
+
+        check('paging forward moves the grid', monthBefore !== monthAfter,
+            monthBefore + ' -> ' + monthAfter);
+        check('and the day panel follows it rather than stranding a date off screen',
+            heading.includes(monthAfter.split(' ')[0]),
+            'grid says "' + monthAfter + '", panel says "' + heading + '"');
+    }
+
+    // --- each row says what sort of thing it is ---------------------------------
+    {
+        const { w } = boot([
+            { id: 'leave-3', date: '2026-06-15', time: '', title: 'Ada Reid - annual leave',
+              subtitle: '2026-06-15 to 2026-06-17', kind: 'leave', kind_label: 'Leave',
+              source_type: 'leave', source_id: 3, editable: false, view: 'leave-view' },
+        ]);
+        withFixedToday(w, '2026-06-10T09:00:00');
+        await wait(80);
+        w.showView('calendar-view');
+        await wait(80);
+        w.selectCalendarDay('2026-06-15');
+
+        const text = w.document.getElementById('calendar-day-list').textContent;
+        check('the row names the kind, not only the colour of its dot',
+            /Leave/.test(text), text);
+    }
+
     // --- a goal change refreshes an open calendar -------------------------------
     {
         const { w } = boot([]);

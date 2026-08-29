@@ -6058,6 +6058,10 @@ def calendar_events_for_range(db, client_id, settings, start, end):
             "title": ev.title, "subtitle": ev.description or "",
             "kind": ev.kind, "source_type": "calendar_event", "source_id": ev.id,
             "editable": True, "view": "",
+            # Sent because the edit form has to put it back. Without it the
+            # modal has nothing to restore and every edit silently reset the
+            # reminder to the default.
+            "notify_days_before": ev.notify_days_before,
         })
 
     for e in out:

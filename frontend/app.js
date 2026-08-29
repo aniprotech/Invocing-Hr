@@ -4965,6 +4965,17 @@ window.loadCalendarView = loadCalendarView;
 function calendarShiftMonth(delta) {
     if (!_calendarMonth) _calendarMonth = new Date();
     _calendarMonth = new Date(_calendarMonth.getFullYear(), _calendarMonth.getMonth() + delta, 1);
+
+    // The panel below the grid has to show a day the grid is showing. Left
+    // alone the selection stayed on the old month, so paging forward left a
+    // heading for a date not on screen - and its event list was filtered
+    // against the new month's data, so it read "nothing on the calendar this
+    // day" about a day that was not being asked about.
+    var today = new Date();
+    var sameMonth = today.getFullYear() === _calendarMonth.getFullYear() &&
+        today.getMonth() === _calendarMonth.getMonth();
+    _calendarSelectedDate = localDate(sameMonth ? today : _calendarMonth);
+
     loadCalendarView();
 }
 window.calendarShiftMonth = calendarShiftMonth;
@@ -5048,7 +5059,14 @@ function renderCalendarDayList() {
                 '<span style="width:9px;height:9px;border-radius:50%;background:' + color + ';margin-top:6px;flex-shrink:0;"></span>' +
                 '<div style="flex:1;min-width:0;">' +
                     '<div style="font-weight:600;">' + esc(e.title) + (e.time ? ' &middot; ' + esc(e.time) : '') + '</div>' +
-                    (e.subtitle ? '<div style="color:var(--text-secondary);font-size:0.85rem;">' + esc(e.subtitle) + '</div>' : '') +
+                    // What sort of thing this is. A row reading "Ada Reid -
+                    // annual leave" and one reading "Ada Reid - 40/100 %" are
+                    // otherwise told apart only by the colour of the dot.
+                    '<div style="color:var(--text-secondary);font-size:0.85rem;">' +
+                        (e.kind_label ? '<span style="color:' + color + ';">' + esc(e.kind_label) + '</span>' : '') +
+                        (e.kind_label && e.subtitle ? ' &middot; ' : '') +
+                        (e.subtitle ? esc(e.subtitle) : '') +
+                    '</div>' +
                 '</div>' +
                 (e.editable ? '<span style="font-size:0.7rem;color:var(--text-secondary);">Edit</span>' : '') +
             '</div>';
@@ -5063,7 +5081,11 @@ function openCalendarEventModal(ev) {
     document.getElementById('cal-ev-date').value = ev ? ev.date : (_calendarSelectedDate || localDate(new Date()));
     document.getElementById('cal-ev-time').value = ev ? ev.time : '';
     document.getElementById('cal-ev-kind').value = ev ? ev.kind : 'reminder';
-    document.getElementById('cal-ev-notify').value = '1';
+    // Restored from the entry, not reset. Defaulting this on every edit
+    // meant changing a title silently moved the reminder back to 1 day.
+    document.getElementById('cal-ev-notify').value =
+        (ev && ev.notify_days_before !== undefined && ev.notify_days_before !== null)
+            ? String(ev.notify_days_before) : '1';
     document.getElementById('cal-ev-description').value = ev ? ev.subtitle : '';
     document.getElementById('cal-ev-delete-btn').style.display = ev ? '' : 'none';
     document.getElementById('calendar-event-modal').style.display = 'flex';

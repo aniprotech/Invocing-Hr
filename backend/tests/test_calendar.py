@@ -233,6 +233,24 @@ def test_a_holiday_appears_on_the_calendar(tenant):
     assert events[0]["kind"] == "holiday" and events[0]["editable"] is False
 
 
+def test_an_entry_reports_its_reminder_setting(tenant):
+    """The edit form has to put it back. Without this on the wire the modal
+    had nothing to restore, so every edit reset the reminder to the default."""
+    tenant.post("/api/hr/calendar-events", json={
+        "date": "2026-09-10", "title": "Insurance", "notify_days_before": 14})
+    events = get_events(tenant, "2026-09-01", "2026-09-30")
+    assert events[0]["notify_days_before"] == 14
+
+
+def test_editing_a_title_leaves_the_reminder_alone(tenant):
+    row = tenant.post("/api/hr/calendar-events", json={
+        "date": "2026-09-10", "title": "Insurance", "notify_days_before": 14}).json()
+    tenant.put(f"/api/hr/calendar-events/{row['id']}", json={"title": "Insurance renewal"})
+    events = get_events(tenant, "2026-09-01", "2026-09-30")
+    assert events[0]["title"] == "Insurance renewal"
+    assert events[0]["notify_days_before"] == 14
+
+
 def test_every_event_carries_a_human_readable_kind(tenant):
     tenant.post("/api/hr/holidays", json={"date": "2026-12-25", "name": "Christmas Day"})
     events = get_events(tenant, "2026-12-01", "2026-12-31")
