@@ -31,6 +31,10 @@ function boot() {
         ok: true, status: 200,
         json: () => Promise.resolve({}), text: () => Promise.resolve('{}'),
     });
+    // The pages load dialogs.js from a <script src>, which this harness strips.
+    // Without it every alert/confirm/prompt call site throws.
+    if (!w.requestAnimationFrame) w.requestAnimationFrame = function (cb) { return setTimeout(cb, 0); };
+    w.eval(fs.readFileSync(path.join(ROOT, 'dialogs.js'), 'utf8'));
     w.eval(fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8'));
     return w;
 }

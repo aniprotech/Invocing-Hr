@@ -39,17 +39,18 @@
     <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=108">
     <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=108">
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=108">
+    <script src="/dialogs.js?v=1"></script>
 </head>
 <body class="bg-gray-50 min-h-screen">
 
   <!-- Top Navigation -->
   <nav class="gradient-dark sticky top-0 z-50 shadow-lg shadow-dark-900/50">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6">
-      <div class="flex items-center justify-between h-16">
+    <div class="max-w-6xl mx-auto px-4 sm:px-6">
+      <div class="flex items-center justify-between h-14">
         <div class="flex items-center gap-3">
           <!-- Was a generic office block. This is the actual mark. -->
-          <div class="w-9 h-9 text-brand-400 flex items-center justify-center">
-            <svg class="w-9 h-9" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" aria-hidden="true"><circle cx="32" cy="32" r="25.5" stroke-dasharray="134 26.2" transform="rotate(68 32 32)"/><circle cx="28.5" cy="33" r="9"/><path d="M37.5 24.5 V 40"/><circle cx="47" cy="47" r="2.6" fill="currentColor" stroke="none"/></svg>
+          <div class="w-8 h-8 text-brand-400 flex items-center justify-center">
+            <svg class="w-8 h-8" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" aria-hidden="true"><circle cx="32" cy="32" r="25.5" stroke-dasharray="134 26.2" transform="rotate(68 32 32)"/><circle cx="28.5" cy="33" r="9"/><path d="M37.5 24.5 V 40"/><circle cx="47" cy="47" r="2.6" fill="currentColor" stroke="none"/></svg>
           </div>
           <span class="text-lg font-bold text-white hidden sm:block">aniprotech</span>
         </div>
@@ -71,7 +72,7 @@
           </div>
           <!-- User Menu -->
           <div class="flex items-center gap-2">
-            <div id="userAvatar" class="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold text-sm shadow-lg shadow-brand-500/20">?</div>
+            <div id="userAvatar" class="w-8 h-8 rounded-xl bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white font-bold text-sm shadow-lg shadow-brand-500/20">?</div>
             <div class="hidden sm:block">
               <div id="userName" class="text-sm font-semibold text-white leading-tight">Loading...</div>
               <div id="userRole" class="text-[11px] text-white/40"></div>
@@ -87,7 +88,7 @@
 
   <!-- Tabs -->
   <div class="bg-white border-b border-gray-200 sticky top-16 z-40">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6">
+    <div class="max-w-6xl mx-auto px-4 sm:px-6">
       <div class="flex gap-1 overflow-x-auto py-2 scrollbar-hide" id="tabs">
         <button onclick="switchTab('overview')" class="tab-btn tab-active px-4 py-2.5 rounded-xl text-sm font-medium whitespace-nowrap transition-all flex items-center gap-2" data-tab="overview">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
@@ -121,6 +122,14 @@
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
           Team
         </button>
+        <button onclick="switchTab('calendar')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="calendar">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+          Calendar
+        </button>
+        <button onclick="switchTab('notices')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="notices">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z"/></svg>
+          Notices
+        </button>
         <button onclick="switchTab('assistant')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="assistant">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
           Assistant
@@ -139,16 +148,16 @@
   </div>
 
   <!-- Main Content -->
-  <div class="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6 py-5">
 
     <!-- Tab: Overview -->
     <div id="tab-overview" class="tab-panel fade-in">
       <!-- Clock Section -->
-      <div class="clock-gradient rounded-2xl p-6 sm:p-8 text-white mb-6 relative overflow-hidden shadow-2xl shadow-dark-900/50">
+      <div class="clock-gradient rounded-2xl p-5 sm:p-6 text-white mb-4 relative overflow-hidden shadow-2xl shadow-dark-900/50">
         <div class="absolute top-0 right-0 w-64 h-64 bg-brand-500/10 rounded-full -translate-y-1/2 translate-x-1/2"></div>
         <div class="absolute bottom-0 left-0 w-48 h-48 bg-brand-400/5 rounded-full translate-y-1/2 -translate-x-1/2"></div>
         <div class="relative z-10">
-          <div class="flex flex-col sm:flex-row items-center justify-between gap-6">
+          <div class="flex flex-col sm:flex-row items-center justify-between gap-4">
             <div class="text-center sm:text-left">
               <div id="liveTime" class="text-5xl sm:text-6xl font-bold tabular-nums tracking-tight">--:--:--</div>
               <div id="liveDate" class="text-white/50 mt-1 text-sm"></div>
@@ -239,10 +248,10 @@
       </div>
 
       <!-- Stats Grid -->
-      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
         <button type="button" onclick="switchTab('attendance')" aria-label="View attendance: hours worked today" class="text-left w-full bg-white rounded-2xl p-5 border border-gray-100 stat-glow transition-all duration-300 cursor-pointer hover:border-brand-300 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2">
           <div class="flex items-center gap-3 mb-3">
-            <div class="w-10 h-10 rounded-xl bg-brand-50 flex items-center justify-center"><svg class="w-5 h-5 text-brand-500" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" aria-hidden="true"><circle cx="32" cy="32" r="25.5" stroke-dasharray="134 26.2" transform="rotate(68 32 32)"/><circle cx="28.5" cy="33" r="9"/><path d="M37.5 24.5 V 40"/><circle cx="47" cy="47" r="2.6" fill="currentColor" stroke="none"/></svg></div>
+            <div class="w-9 h-9 rounded-xl bg-brand-50 flex items-center justify-center"><svg class="w-5 h-5 text-brand-500" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" aria-hidden="true"><circle cx="32" cy="32" r="25.5" stroke-dasharray="134 26.2" transform="rotate(68 32 32)"/><circle cx="28.5" cy="33" r="9"/><path d="M37.5 24.5 V 40"/><circle cx="47" cy="47" r="2.6" fill="currentColor" stroke="none"/></svg></div>
             <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">Today</span>
           </div>
           <div id="todayHours" class="text-2xl font-bold text-gray-900">0h 0m</div>
@@ -250,7 +259,7 @@
         </button>
         <button type="button" onclick="switchTab('attendance')" aria-label="View attendance: break time today" class="text-left w-full bg-white rounded-2xl p-5 border border-gray-100 stat-glow transition-all duration-300 cursor-pointer hover:border-brand-300 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2">
           <div class="flex items-center gap-3 mb-3">
-            <div class="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center"><svg class="w-5 h-5 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div>
+            <div class="w-9 h-9 rounded-xl bg-amber-50 flex items-center justify-center"><svg class="w-5 h-5 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div>
             <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">Break</span>
           </div>
           <div id="todayBreak" class="text-2xl font-bold text-amber-500">0m</div>
@@ -258,7 +267,7 @@
         </button>
         <button type="button" onclick="switchTab('attendance')" aria-label="View attendance: hours this month" class="text-left w-full bg-white rounded-2xl p-5 border border-gray-100 stat-glow transition-all duration-300 cursor-pointer hover:border-brand-300 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2">
           <div class="flex items-center gap-3 mb-3">
-            <div class="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center"><svg class="w-5 h-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg></div>
+            <div class="w-9 h-9 rounded-xl bg-emerald-50 flex items-center justify-center"><svg class="w-5 h-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg></div>
             <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">Month</span>
           </div>
           <div id="monthHours" class="text-2xl font-bold text-gray-900">0h</div>
@@ -266,7 +275,7 @@
         </button>
         <button type="button" onclick="switchTab('attendance')" aria-label="View attendance: days present this month" class="text-left w-full bg-white rounded-2xl p-5 border border-gray-100 stat-glow transition-all duration-300 cursor-pointer hover:border-brand-300 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2">
           <div class="flex items-center gap-3 mb-3">
-            <div class="w-10 h-10 rounded-xl bg-purple-50 flex items-center justify-center"><svg class="w-5 h-5 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div>
+            <div class="w-9 h-9 rounded-xl bg-purple-50 flex items-center justify-center"><svg class="w-5 h-5 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div>
             <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">Present</span>
           </div>
           <div id="daysPresent" class="text-2xl font-bold text-gray-900">0</div>
@@ -275,9 +284,9 @@
       </div>
 
       <!-- Weekly Chart + Quick Actions -->
-      <div class="grid lg:grid-cols-3 gap-6 mb-6">
+      <div class="grid lg:grid-cols-3 gap-4 mb-4">
         <!-- Weekly Chart -->
-        <div class="lg:col-span-2 bg-white rounded-2xl p-6 border border-gray-100">
+        <div class="lg:col-span-2 bg-white rounded-2xl p-5 border border-gray-100">
           <h3 class="font-semibold text-gray-900 mb-4 flex items-center gap-2">
             <svg class="w-5 h-5 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
             This Week
@@ -287,26 +296,26 @@
         </div>
 
         <!-- Quick Actions -->
-        <div class="bg-white rounded-2xl p-6 border border-gray-100">
+        <div class="bg-white rounded-2xl p-5 border border-gray-100">
           <h3 class="font-semibold text-gray-900 mb-4 flex items-center gap-2">
             <svg class="w-5 h-5 text-brand-500" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" aria-hidden="true"><circle cx="32" cy="32" r="25.5" stroke-dasharray="134 26.2" transform="rotate(68 32 32)"/><circle cx="28.5" cy="33" r="9"/><path d="M37.5 24.5 V 40"/><circle cx="47" cy="47" r="2.6" fill="currentColor" stroke="none"/></svg>
             Quick Actions
           </h3>
           <div class="space-y-2">
             <button onclick="switchTab('leave');setTimeout(function(){document.getElementById('leaveModal').classList.remove('hidden')},300)" class="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-gray-50 transition-all text-left group">
-              <div class="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center group-hover:bg-blue-100 transition-colors"><svg class="w-5 h-5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg></div>
+              <div class="w-9 h-9 rounded-xl bg-blue-50 flex items-center justify-center group-hover:bg-blue-100 transition-colors"><svg class="w-5 h-5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg></div>
               <div><div class="text-sm font-medium text-gray-900">Request Leave</div><div class="text-xs text-gray-400">Submit a new request</div></div>
             </button>
             <button onclick="switchTab('payslips')" class="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-gray-50 transition-all text-left group">
-              <div class="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center group-hover:bg-emerald-100 transition-colors"><svg class="w-5 h-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2z"/></svg></div>
+              <div class="w-9 h-9 rounded-xl bg-emerald-50 flex items-center justify-center group-hover:bg-emerald-100 transition-colors"><svg class="w-5 h-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2z"/></svg></div>
               <div><div class="text-sm font-medium text-gray-900">View Payslips</div><div class="text-xs text-gray-400">Check your pay history</div></div>
             </button>
             <button onclick="switchTab('documents')" class="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-gray-50 transition-all text-left group">
-              <div class="w-10 h-10 rounded-xl bg-purple-50 flex items-center justify-center group-hover:bg-purple-100 transition-colors"><svg class="w-5 h-5 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg></div>
+              <div class="w-9 h-9 rounded-xl bg-purple-50 flex items-center justify-center group-hover:bg-purple-100 transition-colors"><svg class="w-5 h-5 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg></div>
               <div><div class="text-sm font-medium text-gray-900">Documents</div><div class="text-xs text-gray-400">Payslips, contracts & more</div></div>
             </button>
             <button onclick="switchTab('team')" class="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-gray-50 transition-all text-left group">
-              <div class="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center group-hover:bg-amber-100 transition-colors"><svg class="w-5 h-5 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg></div>
+              <div class="w-9 h-9 rounded-xl bg-amber-50 flex items-center justify-center group-hover:bg-amber-100 transition-colors"><svg class="w-5 h-5 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg></div>
               <div><div class="text-sm font-medium text-gray-900">My Team</div><div class="text-xs text-gray-400">See who's online</div></div>
             </button>
           </div>
@@ -314,15 +323,15 @@
       </div>
 
       <!-- Recent Activity + Team Presence -->
-      <div class="grid lg:grid-cols-2 gap-6">
-        <div class="bg-white rounded-2xl p-6 border border-gray-100">
+      <div class="grid lg:grid-cols-2 gap-4">
+        <div class="bg-white rounded-2xl p-5 border border-gray-100">
           <h3 class="font-semibold text-gray-900 mb-4 flex items-center gap-2">
             <svg class="w-5 h-5 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
             Recent Attendance
           </h3>
           <div id="recentAttendance" class="space-y-2"></div>
         </div>
-        <div class="bg-white rounded-2xl p-6 border border-gray-100">
+        <div class="bg-white rounded-2xl p-5 border border-gray-100">
           <h3 class="font-semibold text-gray-900 mb-4 flex items-center gap-2">
             <svg class="w-5 h-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
             Team Presence
@@ -335,7 +344,7 @@
     <!-- Tab: Attendance History -->
     <div id="tab-attendance" class="tab-panel hidden fade-in">
       <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-        <div class="p-6 border-b border-gray-100">
+        <div class="p-5 border-b border-gray-100">
           <h3 class="font-semibold text-gray-900">Attendance History</h3>
         </div>
         <div class="overflow-x-auto">
@@ -365,11 +374,11 @@
     <div id="tab-leave" class="tab-panel hidden fade-in">
       <!-- Days remaining, before the history of days used. Nobody plans a
            holiday from a count of what they have already taken. -->
-      <div id="leaveRemaining" class="mb-6"></div>
-      <div class="grid lg:grid-cols-3 gap-6">
+      <div id="leaveRemaining" class="mb-4"></div>
+      <div class="grid lg:grid-cols-3 gap-4">
         <div class="lg:col-span-2">
           <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-            <div class="p-6 border-b border-gray-100 flex items-center justify-between">
+            <div class="p-5 border-b border-gray-100 flex items-center justify-between">
               <h3 class="font-semibold text-gray-900">Leave Requests</h3>
               <button onclick="document.getElementById('leaveModal').classList.remove('hidden')" class="px-4 py-2 bg-brand-500 text-white text-sm font-medium rounded-xl hover:bg-brand-600 transition-colors">+ New Request</button>
             </div>
@@ -377,7 +386,7 @@
           </div>
         </div>
         <div class="space-y-4">
-          <div class="bg-white rounded-2xl p-6 border border-gray-100">
+          <div class="bg-white rounded-2xl p-5 border border-gray-100">
             <h4 class="font-semibold text-gray-900 mb-4">Leave Balance</h4>
             <div class="space-y-4">
               <div>
@@ -402,8 +411,8 @@
     <!-- Tab: Documents -->
     <div id="tab-documents" class="tab-panel hidden fade-in">
       <!-- What HR has asked this person to provide -->
-      <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden mb-6">
-        <div class="p-6 border-b border-gray-100 flex items-center gap-3 flex-wrap">
+      <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden mb-4">
+        <div class="p-5 border-b border-gray-100 flex items-center gap-3 flex-wrap">
           <div>
             <h3 class="font-semibold text-gray-900">Required Documents</h3>
             <p class="text-xs text-gray-400 mt-0.5" id="reqHint">Upload what HR needs from you.</p>
@@ -411,12 +420,12 @@
           <span id="reqBadge" class="ml-auto text-xs font-semibold px-3 py-1 rounded-full bg-gray-100 text-gray-500"></span>
         </div>
         <div id="reqList" class="divide-y divide-gray-50">
-          <div class="p-8 text-center text-gray-400 text-sm">Loading...</div>
+          <div class="p-6 text-center text-gray-400 text-sm">Loading...</div>
         </div>
       </div>
 
       <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-        <div class="p-6 border-b border-gray-100">
+        <div class="p-5 border-b border-gray-100">
           <h3 class="font-semibold text-gray-900">All My Documents</h3>
         </div>
         <div id="docList" class="divide-y divide-gray-50"></div>
@@ -428,7 +437,7 @@
       <!-- Asked for only when HR has said this document expires -->
       <div id="expiryModal" class="fixed inset-0 z-50 hidden">
         <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" onclick="closeExpiryModal()"></div>
-        <div class="relative max-w-sm mx-auto mt-32 bg-white rounded-2xl p-6 shadow-xl">
+        <div class="relative max-w-sm mx-auto mt-32 bg-white rounded-2xl p-5 shadow-xl">
           <h3 class="font-semibold text-gray-900 mb-1" id="expiryTitle">Expiry date</h3>
           <p class="text-xs text-gray-500 mb-4" id="expiryHint">
             Enter the expiry date printed on the document.
@@ -447,10 +456,10 @@
 
     <!-- Tab: Onboarding -->
     <div id="tab-onboarding" class="tab-panel hidden fade-in">
-      <div class="bg-white rounded-2xl p-6 border border-gray-100 mb-6">
+      <div class="bg-white rounded-2xl p-5 border border-gray-100 mb-4">
         <div class="flex items-center gap-4">
-          <div class="relative w-16 h-16">
-            <svg class="w-16 h-16 -rotate-90" viewBox="0 0 36 36">
+          <div class="relative w-14 h-14">
+            <svg class="w-14 h-14 -rotate-90" viewBox="0 0 36 36">
               <circle cx="18" cy="18" r="16" fill="none" stroke="#e5e7eb" stroke-width="2.5"/>
               <circle id="onbCircle" cx="18" cy="18" r="16" fill="none" stroke="#0ea5e9" stroke-width="2.5" stroke-dasharray="100.53" stroke-dashoffset="100.53" stroke-linecap="round"/>
             </svg>
@@ -468,14 +477,50 @@
     <!-- Tab: Team -->
     <!-- Ask about your own record. Everything it is told is this one person's;
          it has nothing about anybody else and says so if asked. -->
+    <!-- The month, and the days already free. Booking annual leave over a
+         public holiday spends a day nobody needed to spend. -->
+    <div id="tab-calendar" class="tab-panel hidden fade-in">
+      <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden mb-4">
+        <div class="p-4 border-b border-gray-100 flex items-center gap-3 flex-wrap">
+          <button onclick="shiftCalendarMonth(-1)" aria-label="Previous month"
+                  class="px-3 py-1.5 rounded-lg border border-gray-200 text-sm hover:bg-gray-50">&larr;</button>
+          <h3 class="font-semibold text-gray-900" id="calTitle">&nbsp;</h3>
+          <button onclick="shiftCalendarMonth(1)" aria-label="Next month"
+                  class="px-3 py-1.5 rounded-lg border border-gray-200 text-sm hover:bg-gray-50">&rarr;</button>
+          <button onclick="goToThisMonth()"
+                  class="ml-auto px-3 py-1.5 rounded-lg text-sm text-brand-600 hover:bg-brand-50">Today</button>
+        </div>
+        <div class="p-4">
+          <div class="grid grid-cols-7 gap-1 mb-1" id="calHeadings"></div>
+          <div class="grid grid-cols-7 gap-1" id="calGrid"></div>
+        </div>
+      </div>
+      <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+        <div class="p-4 border-b border-gray-100"><h3 class="font-semibold text-gray-900">What is on</h3></div>
+        <div id="calList" class="divide-y divide-gray-100"></div>
+      </div>
+    </div>
+
+    <!-- A notification once dismissed is gone; this is where it can be read
+         again. -->
+    <div id="tab-notices" class="tab-panel hidden fade-in">
+      <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+        <div class="p-5 border-b border-gray-100">
+          <h3 class="font-semibold text-gray-900">Notices</h3>
+          <p class="text-xs text-gray-400 mt-0.5">Everything the company has sent you.</p>
+        </div>
+        <div id="noticeList" class="divide-y divide-gray-100"></div>
+      </div>
+    </div>
+
     <div id="tab-assistant" class="tab-panel hidden fade-in">
       <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-        <div class="p-6 border-b border-gray-100">
+        <div class="p-5 border-b border-gray-100">
           <h3 class="font-semibold text-gray-900">Ask about your own record</h3>
           <p class="text-xs text-gray-400 mt-0.5">Leave, pay, hours, documents and goals.
              For anything it cannot answer, use Ask HR.</p>
         </div>
-        <div id="asstLog" class="p-6 space-y-3 max-h-96 overflow-y-auto"></div>
+        <div id="asstLog" class="p-5 space-y-3 max-h-96 overflow-y-auto"></div>
         <div id="asstSuggestions" class="px-6 pb-3 flex flex-wrap gap-2"></div>
         <div class="p-4 border-t border-gray-100 flex gap-2">
           <input id="asstInput" type="text" maxlength="500" placeholder="How much leave do I have left?"
@@ -523,24 +568,24 @@
     <!-- Tab: Profile -->
     <div id="tab-profile" class="tab-panel hidden fade-in">
       <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-        <div class="gradient-dark p-8 text-center">
-          <div id="profileAvatar" class="w-20 h-20 rounded-2xl bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white text-2xl font-bold mx-auto shadow-xl shadow-brand-500/30">?</div>
+        <div class="gradient-dark p-6 text-center">
+          <div id="profileAvatar" class="w-16 h-16 rounded-2xl bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white text-xl font-bold mx-auto shadow-lg shadow-brand-500/30">?</div>
           <h2 id="profileName" class="text-xl font-bold text-white mt-4">Loading...</h2>
           <p id="profileTitle" class="text-white/50 text-sm"></p>
         </div>
-        <div class="p-6">
+        <div class="p-5">
           <div class="grid sm:grid-cols-2 gap-4" id="profileDetails"></div>
         </div>
       </div>
 
       <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden mt-6">
-        <div class="p-6 border-b border-gray-100">
+        <div class="p-5 border-b border-gray-100">
           <h3 class="font-semibold text-gray-900">Keep your details right</h3>
           <p class="text-xs text-gray-400 mt-0.5">
             Contact details save straight away. Bank details go to HR first,
             because that is where your wages are paid.</p>
         </div>
-        <div class="p-6 grid sm:grid-cols-2 gap-4">
+        <div class="p-5 grid sm:grid-cols-2 gap-4">
           <label class="block">
             <span class="text-[11px] text-gray-400 uppercase tracking-wider font-medium">Phone</span>
             <input id="me-phone" type="text" maxlength="40"
@@ -594,7 +639,7 @@
   <!-- Leave Request Modal -->
   <div id="leaveModal" class="hidden fixed inset-0 z-[100] flex items-center justify-center p-4">
     <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" onclick="document.getElementById('leaveModal').classList.add('hidden')"></div>
-    <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 fade-in">
+    <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-md p-5 fade-in">
       <h3 class="text-lg font-semibold text-gray-900 mb-4">Request Leave</h3>
       <form onsubmit="submitLeave(event)">
         <div class="space-y-4">
@@ -672,7 +717,7 @@
           }
         }
         if (!rows.length) {
-          list.innerHTML = '<div class="p-8 text-center text-gray-400 text-sm">No documents requested.</div>';
+          list.innerHTML = '<div class="p-6 text-center text-gray-400 text-sm">No documents requested.</div>';
           return;
         }
 
@@ -713,7 +758,7 @@
           '</div>';
         }).join('');
       } catch (e) {
-        list.innerHTML = '<div class="p-8 text-center text-gray-400 text-sm">Could not load your documents.</div>';
+        list.innerHTML = '<div class="p-6 text-center text-gray-400 text-sm">Could not load your documents.</div>';
       }
     }
 
@@ -753,7 +798,7 @@
         var a = document.createElement('a');
         a.href = url; a.download = d.file_name || 'template'; a.click();
         URL.revokeObjectURL(url);
-      } catch (e) { alert(e.message); }
+      } catch (e) { await uiAlert(e.message); }
     }
 
     function closeExpiryModal() {
@@ -763,11 +808,11 @@
       _pendingExpiry = '';
     }
 
-    function confirmExpiryAndUpload() {
+    async function confirmExpiryAndUpload() {
       var value = document.getElementById('expiryInput').value;
-      if (!value) { alert('Enter the expiry date shown on the document.'); return; }
+      if (!value) { await uiAlert('Enter the expiry date shown on the document.'); return; }
       if (new Date(value) <= new Date()) {
-        alert('That date has already passed. Please upload a current document.');
+        await uiAlert('That date has already passed. Please upload a current document.');
         return;
       }
       _pendingExpiry = value;
@@ -898,6 +943,150 @@
       if (tab === 'requests') loadStaffRequests();
       if (tab === 'payslips') loadPayslips();
       if (tab === 'assistant') startAssistant();
+      if (tab === 'calendar') loadCalendar();
+      if (tab === 'notices') loadNotices();
+    }
+
+    // --- Calendar ----------------------------------------------------------
+    // It was HR's alone, so nobody could see when the office was closed - and
+    // people were booking annual leave over days that were already free.
+
+    var _calMonth = null;   // first of the month being shown
+
+    function monthStart(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
+    function isoDate(d) {
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') +
+             '-' + String(d.getDate()).padStart(2, '0');
+    }
+
+    function shiftCalendarMonth(by) {
+      _calMonth = new Date(_calMonth.getFullYear(), _calMonth.getMonth() + by, 1);
+      loadCalendar();
+    }
+    function goToThisMonth() { _calMonth = monthStart(new Date()); loadCalendar(); }
+
+    var CAL_TONE = {
+      holiday: 'bg-emerald-100 text-emerald-700',
+      leave: 'bg-blue-100 text-blue-700',
+      goal: 'bg-purple-100 text-purple-700',
+      onboarding: 'bg-amber-100 text-amber-700',
+      document_due: 'bg-amber-100 text-amber-700',
+      document_expiry: 'bg-red-100 text-red-700',
+    };
+
+    async function loadCalendar() {
+      if (!_calMonth) _calMonth = monthStart(new Date());
+      var first = _calMonth;
+      var last = new Date(first.getFullYear(), first.getMonth() + 1, 0);
+      document.getElementById('calTitle').textContent =
+        first.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+
+      var events = [];
+      try {
+        var res = await apiGet('/api/employee/calendar?start=' + isoDate(first) +
+                               '&end=' + isoDate(last));
+        if (res.ok) {
+          var data = await res.json();
+          events = Array.isArray(data.events) ? data.events : [];
+        }
+      } catch (e) { /* the grid still draws, just empty */ }
+
+      var byDay = {};
+      events.forEach(function (e) { (byDay[e.date] = byDay[e.date] || []).push(e); });
+
+      var headings = document.getElementById('calHeadings');
+      headings.innerHTML = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+        .map(function (d) {
+          return '<div class="text-center text-[11px] font-semibold text-gray-400 py-1">' + d + '</div>';
+        }).join('');
+
+      // Monday-first: getDay() is Sunday-first, so Sunday becomes the seventh.
+      var lead = (first.getDay() + 6) % 7;
+      var cells = [];
+      for (var i = 0; i < lead; i++) cells.push('<div></div>');
+
+      var todayIso = isoDate(new Date());
+      for (var day = 1; day <= last.getDate(); day++) {
+        var iso = isoDate(new Date(first.getFullYear(), first.getMonth(), day));
+        var mine = byDay[iso] || [];
+        var isToday = iso === todayIso;
+        cells.push(
+          '<button type="button" onclick="showCalendarDay(&quot;' + iso + '&quot;)" ' +
+          'class="min-h-[68px] p-1.5 rounded-lg border text-left align-top ' +
+          (isToday ? 'border-brand-400 bg-brand-50' : 'border-gray-100 hover:bg-gray-50') + '">' +
+          '<div class="text-[11px] font-semibold ' +
+          (isToday ? 'text-brand-700' : 'text-gray-500') + '">' + day + '</div>' +
+          mine.slice(0, 2).map(function (e) {
+            return '<div class="mt-0.5 px-1 py-0.5 rounded text-[10px] truncate ' +
+              (CAL_TONE[e.kind] || 'bg-gray-100 text-gray-600') + '">' +
+              esc(e.title) + '</div>';
+          }).join('') +
+          (mine.length > 2 ? '<div class="text-[10px] text-gray-400 mt-0.5">+' +
+            (mine.length - 2) + ' more</div>' : '') +
+          '</button>');
+      }
+      document.getElementById('calGrid').innerHTML = cells.join('');
+
+      renderCalendarList(events, 'Nothing on this month.');
+      window._calEvents = events;
+    }
+
+    function renderCalendarList(events, emptyText) {
+      var host = document.getElementById('calList');
+      if (!events.length) {
+        host.innerHTML = '<div class="p-6 text-center text-gray-400 text-sm">' +
+                         esc(emptyText) + '</div>';
+        return;
+      }
+      host.innerHTML = events.map(function (e) {
+        return '<div class="p-4 flex items-start gap-3">' +
+          '<span class="px-2 py-0.5 rounded-full text-[10px] font-medium ' +
+          (CAL_TONE[e.kind] || 'bg-gray-100 text-gray-600') + '">' +
+          esc(e.kind_label || e.kind) + '</span>' +
+          '<div class="flex-1 min-w-0">' +
+            '<div class="text-sm font-semibold text-gray-900">' + esc(e.title) + '</div>' +
+            '<div class="text-xs text-gray-400 mt-0.5">' + esc(e.date) +
+            (e.time ? ' at ' + esc(e.time) : '') +
+            (e.subtitle ? ' &middot; ' + esc(e.subtitle) : '') + '</div>' +
+          '</div>' +
+          (e.tab ? '<button onclick="switchTab(&quot;' + esc(e.tab) + '&quot;)" ' +
+            'class="text-xs text-brand-600 hover:underline whitespace-nowrap">Open</button>' : '') +
+        '</div>';
+      }).join('');
+    }
+
+    function showCalendarDay(iso) {
+      var all = window._calEvents || [];
+      var day = all.filter(function (e) { return e.date === iso; });
+      renderCalendarList(day, 'Nothing on ' + iso + '.');
+    }
+
+    // --- Notices -----------------------------------------------------------
+
+    async function loadNotices() {
+      var host = document.getElementById('noticeList');
+      if (!host) return;
+      var rows = [];
+      try {
+        var res = await apiGet('/api/employee/announcements');
+        if (res.ok) {
+          var body = await res.json();
+          rows = Array.isArray(body) ? body : [];
+        }
+      } catch (e) { /* fall through to the empty state */ }
+
+      if (!rows.length) {
+        host.innerHTML = '<div class="p-6 text-center text-gray-400 text-sm">Nothing has been sent yet.</div>';
+        return;
+      }
+      host.innerHTML = rows.map(function (n) {
+        return '<div class="p-5">' +
+          '<div class="text-sm font-semibold text-gray-900">' + esc(n.title) + '</div>' +
+          '<div class="text-sm text-gray-600 mt-1 whitespace-pre-wrap">' + esc(n.message) + '</div>' +
+          '<div class="text-[11px] text-gray-400 mt-2">' + esc(n.created_at) +
+          (n.sent_by ? ' &middot; ' + esc(n.sent_by) : '') + '</div>' +
+        '</div>';
+      }).join('');
     }
 
     // --- Payslips ----------------------------------------------------------
@@ -915,11 +1104,11 @@
         if (!res.ok) throw new Error('nope');
         _payslips = await res.json();
       } catch (e) {
-        host.innerHTML = '<div class="p-8 text-center text-gray-400 text-sm">Could not load your payslips.</div>';
+        host.innerHTML = '<div class="p-6 text-center text-gray-400 text-sm">Could not load your payslips.</div>';
         return;
       }
       if (!_payslips.length) {
-        host.innerHTML = '<div class="p-8 text-center text-gray-400 text-sm">No payslips yet.</div>';
+        host.innerHTML = '<div class="p-6 text-center text-gray-400 text-sm">No payslips yet.</div>';
         return;
       }
       host.innerHTML = _payslips.map(function (p) {
@@ -945,10 +1134,10 @@
         var res = await apiGet('/api/employee/payslips/' + id);
         if (!res.ok) throw new Error('nope');
         ps = await res.json();
-      } catch (e) { alert('Could not load that payslip.'); return; }
+      } catch (e) { await uiAlert('Could not load that payslip.'); return; }
 
       if (!window.jspdf || !window.jspdf.jsPDF) {
-        alert('The PDF library did not load. Check your connection and try again.');
+        await uiAlert('The PDF library did not load. Check your connection and try again.');
         return;
       }
       var doc = new window.jspdf.jsPDF({ unit: 'pt', format: 'a4' });
@@ -1230,7 +1419,7 @@
           badge.classList.toggle('hidden', waiting === 0);
         }
         if (!rows.length) {
-          host.innerHTML = '<p class="text-sm text-gray-500 text-center py-6">' +
+          host.innerHTML = '<p class="text-sm text-gray-500 text-center py-5">' +
             'Nothing raised yet.</p>';
           return;
         }
@@ -1485,7 +1674,7 @@
     }
 
     async function clockIn() {
-      if (todayCompleted) return alert('Shift completed for today.');
+      if (todayCompleted) return await uiAlert('Shift completed for today.');
       try {
         var res = await apiPost('/api/employee/attendance/clock-in', { latitude: currentLocation.lat, longitude: currentLocation.lng, location_label: currentLocation.label, device_info: navigator.userAgent });
         var data = await res.json();
@@ -1493,7 +1682,7 @@
         isClockedIn = true; todayCompleted = false; isOnBreak = false;
         updateClockUI(); updateElapsed(0); startElapsedTimer();
         loadDashboard();
-      } catch (e) { alert(e.message); }
+      } catch (e) { await uiAlert(e.message); }
     }
 
     async function clockOut() {
@@ -1508,7 +1697,7 @@
         var th = data.total_hours || 0; if (th < 0) th = 0;
         updateElapsed(th);
         loadDashboard();
-      } catch (e) { alert(e.message); }
+      } catch (e) { await uiAlert(e.message); }
     }
 
     async function startBreak() {
@@ -1518,7 +1707,7 @@
         if (!res.ok) throw new Error(data.detail || 'Failed');
         isOnBreak = true; breakStartTime = new Date();
         startBreakTimer(); updateClockUI();
-      } catch (e) { alert(e.message); }
+      } catch (e) { await uiAlert(e.message); }
     }
 
     async function stopBreak() {
@@ -1530,7 +1719,7 @@
         if (breakInterval) clearInterval(breakInterval);
         document.getElementById('todayBreak').textContent = data.break_minutes > 0 ? Math.round(data.break_minutes) + 'm' : '0m';
         updateClockUI(); startElapsedTimer();
-      } catch (e) { alert(e.message); }
+      } catch (e) { await uiAlert(e.message); }
     }
 
     async function loadProfile() {
@@ -1714,7 +1903,7 @@
       document.getElementById('onbStatus').textContent = completed + ' of ' + total + ' tasks complete';
       var circumference = 2 * Math.PI * 16;
       document.getElementById('onbCircle').style.strokeDashoffset = circumference - (pct / 100) * circumference;
-      if (items.length === 0) { onbList.innerHTML = '<div class="bg-white rounded-2xl p-8 border border-gray-100 text-center text-gray-400">No onboarding items yet</div>'; return; }
+      if (items.length === 0) { onbList.innerHTML = '<div class="bg-white rounded-2xl p-6 border border-gray-100 text-center text-gray-400">No onboarding items yet</div>'; return; }
       onbList.innerHTML = '';
       items.forEach(function(item) {
         onbList.innerHTML += '<div class="bg-white rounded-xl p-4 border border-gray-100 flex items-center gap-4 transition-all hover:shadow-md ' + (item.is_completed?'opacity-60':'') + '"><div class="w-8 h-8 rounded-full ' + (item.is_completed?'bg-emerald-500':'bg-gray-200') + ' flex items-center justify-center text-white text-sm font-bold flex-shrink-0">' + (item.is_completed?'<svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>':'') + '</div><div class="flex-1"><div class="text-sm font-semibold text-gray-900">' + esc(item.title) + '</div><div class="text-xs text-gray-400">' + esc(item.category||'') + '</div></div><span class="px-2 py-0.5 text-xs font-medium rounded-full ' + (item.is_completed?'bg-emerald-100 text-emerald-700':'bg-gray-100 text-gray-500') + '">' + (item.is_completed?'Done':'Pending') + '</span></div>';
@@ -1746,14 +1935,14 @@
         if (!res.ok) return;
         var goals = await res.json();
         var grid = document.getElementById('goalsGrid');
-        if (goals.length === 0) { grid.innerHTML = '<div class="bg-white rounded-2xl p-8 border border-gray-100 text-center text-gray-400"><svg class="w-12 h-12 mx-auto mb-3 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg><p>No goals assigned yet</p></div>'; return; }
+        if (goals.length === 0) { grid.innerHTML = '<div class="bg-white rounded-2xl p-6 border border-gray-100 text-center text-gray-400"><svg class="w-12 h-12 mx-auto mb-3 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg><p>No goals assigned yet</p></div>'; return; }
         grid.innerHTML = '';
         goals.forEach(function(g) {
           var progress = g.target_value > 0 ? Math.min(Math.round(g.current_value / g.target_value * 100), 100) : 0;
           var pColors = { high: 'bg-red-500', medium: 'bg-amber-500', low: 'bg-emerald-500' };
           var pBgs = { high: 'bg-red-50 text-red-700', medium: 'bg-amber-50 text-amber-700', low: 'bg-emerald-50 text-emerald-700' };
           var sColors = { completed: 'bg-emerald-100 text-emerald-700', in_progress: 'bg-brand-100 text-brand-700', pending: 'bg-gray-100 text-gray-500' };
-          grid.innerHTML += '<div class="bg-white rounded-2xl p-6 border border-gray-100 hover:shadow-lg transition-all"><div class="flex items-start justify-between mb-4"><div><h4 class="font-semibold text-gray-900">' + esc(g.title) + '</h4><p class="text-sm text-gray-500 mt-1">' + esc(g.description||'') + '</p></div><span class="px-2 py-0.5 text-xs font-medium rounded-full ' + (sColors[g.status]||'bg-gray-100 text-gray-500') + '">' + esc(g.status.replace('_',' ')) + '</span></div><div class="mb-3"><div class="flex justify-between text-sm mb-1"><span class="text-gray-500">' + g.current_value + ' / ' + g.target_value + ' ' + esc(g.unit) + '</span><span class="font-semibold text-gray-900">' + progress + '%</span></div><div class="h-2.5 bg-gray-100 rounded-full overflow-hidden"><div class="h-full bg-gradient-to-r from-brand-500 to-brand-400 rounded-full transition-all duration-500" style="width:' + progress + '%"></div></div></div><div class="flex items-center gap-2 text-xs text-gray-400"><span class="px-2 py-0.5 rounded-full ' + (pBgs[g.priority]||'bg-gray-100 text-gray-500') + '">' + esc(g.priority) + '</span><span>' + esc(g.due_date||'No deadline') + '</span></div></div>';
+          grid.innerHTML += '<div class="bg-white rounded-2xl p-5 border border-gray-100 hover:shadow-lg transition-all"><div class="flex items-start justify-between mb-4"><div><h4 class="font-semibold text-gray-900">' + esc(g.title) + '</h4><p class="text-sm text-gray-500 mt-1">' + esc(g.description||'') + '</p></div><span class="px-2 py-0.5 text-xs font-medium rounded-full ' + (sColors[g.status]||'bg-gray-100 text-gray-500') + '">' + esc(g.status.replace('_',' ')) + '</span></div><div class="mb-3"><div class="flex justify-between text-sm mb-1"><span class="text-gray-500">' + g.current_value + ' / ' + g.target_value + ' ' + esc(g.unit) + '</span><span class="font-semibold text-gray-900">' + progress + '%</span></div><div class="h-2.5 bg-gray-100 rounded-full overflow-hidden"><div class="h-full bg-gradient-to-r from-brand-500 to-brand-400 rounded-full transition-all duration-500" style="width:' + progress + '%"></div></div></div><div class="flex items-center gap-2 text-xs text-gray-400"><span class="px-2 py-0.5 rounded-full ' + (pBgs[g.priority]||'bg-gray-100 text-gray-500') + '">' + esc(g.priority) + '</span><span>' + esc(g.due_date||'No deadline') + '</span></div></div>';
         });
       } catch (e) { console.error(e); }
     }
@@ -1772,7 +1961,7 @@
         document.getElementById('sickBar').style.width = (st/stotal*100) + '%';
         var list = document.getElementById('leaveList');
         var leaves = data.requests || [];
-        if (leaves.length === 0) { list.innerHTML = '<div class="p-8 text-center text-gray-400 text-sm">No leave requests yet</div>'; return; }
+        if (leaves.length === 0) { list.innerHTML = '<div class="p-6 text-center text-gray-400 text-sm">No leave requests yet</div>'; return; }
         list.innerHTML = '';
         leaves.forEach(function(l) {
           var sColors = { pending: 'bg-amber-100 text-amber-700', approved: 'bg-emerald-100 text-emerald-700', rejected: 'bg-red-100 text-red-700' };
@@ -1786,14 +1975,14 @@
       var start = document.getElementById('leaveStart').value;
       var end = document.getElementById('leaveEnd').value;
       var days = Math.ceil((new Date(end) - new Date(start)) / 86400000) + 1;
-      if (days < 1) return alert('Invalid dates');
+      if (days < 1) return await uiAlert('Invalid dates');
       try {
         var res = await apiPost('/api/employee/leave', { leave_type: document.getElementById('leaveType').value, start_date: start, end_date: end, days: days, reason: document.getElementById('leaveReason').value });
         var data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Failed');
         document.getElementById('leaveModal').classList.add('hidden');
         loadLeave();
-      } catch (e) { alert(e.message); }
+      } catch (e) { await uiAlert(e.message); }
     }
 
     async function loadDocuments() {
@@ -1802,11 +1991,11 @@
         if (!res.ok) return;
         var docs = await res.json();
         var list = document.getElementById('docList');
-        if (docs.length === 0) { list.innerHTML = '<div class="p-8 text-center text-gray-400 text-sm">No documents uploaded yet</div>'; return; }
+        if (docs.length === 0) { list.innerHTML = '<div class="p-6 text-center text-gray-400 text-sm">No documents uploaded yet</div>'; return; }
         list.innerHTML = '';
         var typeIcons = { contract: 'text-blue-500', payslip: 'text-emerald-500', certificate: 'text-purple-500', tax: 'text-amber-500', other: 'text-gray-400' };
         docs.forEach(function(d) {
-          list.innerHTML += '<div class="p-4 flex items-center justify-between hover:bg-gray-50 transition-colors"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-xl bg-gray-50 flex items-center justify-center"><svg class="w-5 h-5 ' + (typeIcons[d.doc_type]||'text-gray-400') + '" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg></div><div><div class="text-sm font-semibold text-gray-900">' + esc(d.title) + '</div><div class="text-xs text-gray-400">' + esc(d.doc_type||'') + ' &middot; ' + esc(d.uploaded_by) + '</div></div></div><button onclick="downloadDoc(' + d.id + ')" class="px-3 py-1.5 text-xs font-medium text-brand-600 hover:bg-brand-50 rounded-lg transition-colors">Download</button></div>';
+          list.innerHTML += '<div class="p-4 flex items-center justify-between hover:bg-gray-50 transition-colors"><div class="flex items-center gap-3"><div class="w-9 h-9 rounded-xl bg-gray-50 flex items-center justify-center"><svg class="w-5 h-5 ' + (typeIcons[d.doc_type]||'text-gray-400') + '" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg></div><div><div class="text-sm font-semibold text-gray-900">' + esc(d.title) + '</div><div class="text-xs text-gray-400">' + esc(d.doc_type||'') + ' &middot; ' + esc(d.uploaded_by) + '</div></div></div><button onclick="downloadDoc(' + d.id + ')" class="px-3 py-1.5 text-xs font-medium text-brand-600 hover:bg-brand-50 rounded-lg transition-colors">Download</button></div>';
         });
       } catch (e) { console.error(e); }
     }
@@ -1822,7 +2011,7 @@
         var url = URL.createObjectURL(blob);
         var a = document.createElement('a'); a.href = url; a.download = data.file_name || 'document'; a.click();
         URL.revokeObjectURL(url);
-      } catch (e) { alert('Download failed'); }
+      } catch (e) { await uiAlert('Download failed'); }
     }
 
     async function loadNotifications() {
@@ -1836,7 +2025,7 @@
         else { badge.classList.add('hidden'); }
         var list = document.getElementById('notif-list');
         var notes = data.notifications || [];
-        if (notes.length === 0) { list.innerHTML = '<div class="p-8 text-center text-gray-400 text-sm">No notifications</div>'; return; }
+        if (notes.length === 0) { list.innerHTML = '<div class="p-6 text-center text-gray-400 text-sm">No notifications</div>'; return; }
         list.innerHTML = '';
         var typeColors = { info: 'bg-brand-50 text-brand-500', success: 'bg-emerald-50 text-emerald-500', warning: 'bg-amber-50 text-amber-500', error: 'bg-red-50 text-red-500' };
         notes.forEach(function(n) {
@@ -1861,7 +2050,7 @@
         if (!res.ok) return;
         var team = await res.json();
         var grid = document.getElementById('teamGrid');
-        if (team.length === 0) { grid.innerHTML = '<div class="col-span-full bg-white rounded-2xl p-8 border border-gray-100 text-center text-gray-400">No team members found</div>'; return; }
+        if (team.length === 0) { grid.innerHTML = '<div class="col-span-full bg-white rounded-2xl p-6 border border-gray-100 text-center text-gray-400">No team members found</div>'; return; }
         grid.innerHTML = '';
         team.forEach(function(t) {
           var statusColor = t.is_online ? (t.is_on_break ? 'bg-amber-400' : 'bg-emerald-400') : 'bg-gray-300';
@@ -1915,10 +2104,10 @@
         var grid = document.getElementById('profileDetails');
         grid.innerHTML = '';
         details.forEach(function(d) {
-          grid.innerHTML += '<div class="flex items-start gap-3 p-3 rounded-xl bg-gray-50"><div class="w-9 h-9 rounded-lg bg-white flex items-center justify-center flex-shrink-0 shadow-sm"><svg class="w-4 h-4 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="' + d.icon + '"/></svg></div><div><div class="text-[11px] text-gray-400 uppercase tracking-wider font-medium">' + esc(d.label) + '</div><div class="text-sm font-medium text-gray-900 mt-0.5">' + esc(d.value || '-') + '</div></div></div>';
+          grid.innerHTML += '<div class="flex items-start gap-3 p-3 rounded-xl bg-gray-50"><div class="w-8 h-8 rounded-lg bg-white flex items-center justify-center flex-shrink-0 shadow-sm"><svg class="w-4 h-4 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="' + d.icon + '"/></svg></div><div><div class="text-[11px] text-gray-400 uppercase tracking-wider font-medium">' + esc(d.label) + '</div><div class="text-sm font-medium text-gray-900 mt-0.5">' + esc(d.value || '-') + '</div></div></div>';
         });
         if (p.goals_count > 0) {
-          grid.innerHTML += '<div class="sm:col-span-2 flex items-center gap-3 p-3 rounded-xl bg-brand-50"><div class="w-9 h-9 rounded-lg bg-white flex items-center justify-center flex-shrink-0 shadow-sm"><svg class="w-4 h-4 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg></div><div><div class="text-[11px] text-brand-600 uppercase tracking-wider font-medium">Goal Progress</div><div class="text-sm font-semibold text-brand-700">' + p.goals_count + ' goals &middot; ' + p.goal_progress + '% average</div></div></div>';
+          grid.innerHTML += '<div class="sm:col-span-2 flex items-center gap-3 p-3 rounded-xl bg-brand-50"><div class="w-8 h-8 rounded-lg bg-white flex items-center justify-center flex-shrink-0 shadow-sm"><svg class="w-4 h-4 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg></div><div><div class="text-[11px] text-brand-600 uppercase tracking-wider font-medium">Goal Progress</div><div class="text-sm font-semibold text-brand-700">' + p.goals_count + ' goals &middot; ' + p.goal_progress + '% average</div></div></div>';
         }
       } catch (e) { console.error(e); }
     }
@@ -1954,7 +2143,7 @@
        goes to HR as a request, which is the same shape as a bank-detail
        change for the same reason. -->
   <div id="correctionModal" class="hidden fixed inset-0 z-[9000] bg-black/50 items-center justify-center p-4">
-    <div class="bg-white rounded-2xl w-full max-w-md p-6 shadow-xl" role="dialog"
+    <div class="bg-white rounded-2xl w-full max-w-md p-5 shadow-xl" role="dialog"
          aria-modal="true" aria-labelledby="corrTitle">
       <div class="flex items-start justify-between mb-1">
         <h3 id="corrTitle" class="font-semibold text-gray-900">Fix this day</h3>

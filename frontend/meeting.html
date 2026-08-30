@@ -241,6 +241,7 @@ body {
     <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=108">
     <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=108">
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=108">
+    <script src="/dialogs.js?v=1"></script>
 </head>
 <body class="bg-[#0b0f19] text-slate-100 font-sans h-screen overflow-hidden">
 
@@ -1554,8 +1555,8 @@ function hostMuteAll() {
     document.getElementById('host-controls-modal').classList.add('hidden');
     showToast('Muted all participants', 'success');
 }
-function hostRemoveUser(userId) {
-    if (confirm('Remove this participant from the meeting?')) {
+async function hostRemoveUser(userId) {
+    if (await uiConfirm('Remove this participant from the meeting?')) {
         wsSend({ type: 'remove-user', target: userId });
     }
 }

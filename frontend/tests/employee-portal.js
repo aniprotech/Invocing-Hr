@@ -68,6 +68,24 @@ function boot(overrides) {
             suggestions: ['How much annual leave do I have left?'],
         },
         '/api/employee/assistant': { answer: 'You have 20 days left.', available: true },
+        '/api/employee/calendar': {
+            start: '2026-08-01', end: '2026-08-31',
+            events: [
+                { id: 'holiday-1', date: '2026-08-31', time: '', title: 'Summer Bank Holiday',
+                  subtitle: 'Office closed', kind: 'holiday', kind_label: 'Holiday',
+                  mine: false, tab: 'leave' },
+                { id: 'leave-1', date: '2026-08-10', time: '', title: 'Your annual leave',
+                  subtitle: '2026-08-10 to 2026-08-12', kind: 'leave', kind_label: 'Leave',
+                  mine: true, tab: 'leave' },
+                { id: 'leave-2', date: '2026-08-18', time: '', title: 'Sam Ali is away',
+                  subtitle: '2026-08-18 to 2026-08-19', kind: 'leave', kind_label: 'Leave',
+                  mine: false, tab: 'leave' },
+            ],
+        },
+        '/api/employee/announcements': [
+            { id: 1, title: 'Office closed Friday', message: 'Boiler repairs.',
+              sent_by: 'hr@acme.test', is_read: false, created_at: '2026-08-20 09:00' },
+        ],
     }, overrides || {});
 
     const html = fs.readFileSync(path.join(ROOT, 'employee-dashboard.html'), 'utf8')
@@ -98,6 +116,10 @@ function boot(overrides) {
             json: () => Promise.resolve(body), text: () => Promise.resolve('{}'),
         });
     };
+    // The pages load dialogs.js from a <script src>, which this harness strips.
+    // Without it every alert/confirm/prompt call site throws.
+    if (!w.requestAnimationFrame) w.requestAnimationFrame = function (cb) { return setTimeout(cb, 0); };
+    w.eval(fs.readFileSync(path.join(ROOT, 'dialogs.js'), 'utf8'));
 
     const scripts = [...w.document.querySelectorAll('script')]
         .filter(s => !s.src).map(s => s.textContent).join('\n');
@@ -323,6 +345,79 @@ function boot(overrides) {
         check('a six-hour day is a six-hour dial',
             w.document.getElementById('gaugeTarget').textContent === 'of 6h 00m',
             w.document.getElementById('gaugeTarget').textContent);
+    }
+
+    // --- the calendar --------------------------------------------------------
+    {
+        const { w, sent } = boot();
+        w.switchTab('calendar');
+        await wait(90);
+
+        const asked = sent.find(r => r.url === '/api/employee/calendar');
+        check('the calendar asks for a month', !!asked);
+        check('and asks the employee endpoint, never HR’s',
+            !sent.some(r => r.url === '/api/hr/calendar'));
+
+        const grid = w.document.getElementById('calGrid');
+        check('a grid of days is drawn', grid.querySelectorAll('button').length >= 28,
+            String(grid.querySelectorAll('button').length));
+        check('the month is named',
+            /\w+ \d{4}/.test(w.document.getElementById('calTitle').textContent),
+            w.document.getElementById('calTitle').textContent);
+
+        const list = w.document.getElementById('calList').textContent;
+        check('a company holiday is on it', /Summer Bank Holiday/.test(list));
+        check('their own leave is on it', /Your annual leave/.test(list));
+        check('a colleague shows as away, with no leave type',
+            /Sam Ali is away/.test(list) && !/Sam Ali.*sick/i.test(list), list.slice(0, 120));
+
+        // Clicking a day narrows the list to that day.
+        w.showCalendarDay('2026-08-10');
+        const narrowed = w.document.getElementById('calList').textContent;
+        check('clicking a day shows only that day',
+            /Your annual leave/.test(narrowed) && !/Summer Bank Holiday/.test(narrowed),
+            narrowed.slice(0, 120));
+    }
+
+    {
+        const { w } = boot({
+            '/api/employee/calendar': { start: '', end: '', events: [] },
+        });
+        w.switchTab('calendar');
+        await wait(90);
+        check('an empty month reads as empty, not broken',
+            /nothing on/i.test(w.document.getElementById('calList').textContent),
+            w.document.getElementById('calList').textContent);
+        check('and the grid is still drawn',
+            w.document.getElementById('calGrid').querySelectorAll('button').length >= 28);
+    }
+
+    {
+        // A month that will not load must not leave a blank page behind.
+        const { w } = boot({ '/api/employee/calendar': { __status: 500 } });
+        w.switchTab('calendar');
+        await wait(90);
+        check('a failed month still draws the grid',
+            w.document.getElementById('calGrid').querySelectorAll('button').length >= 28);
+    }
+
+    // --- notices -------------------------------------------------------------
+    {
+        const { w } = boot();
+        w.switchTab('notices');
+        await wait(80);
+        const text = w.document.getElementById('noticeList').textContent;
+        check('an announcement can be read again', /Office closed Friday/.test(text), text);
+        check('with what it actually said', /Boiler repairs/.test(text));
+        check('and who sent it', /hr@acme\.test/.test(text));
+    }
+
+    {
+        const { w } = boot({ '/api/employee/announcements': [] });
+        w.switchTab('notices');
+        await wait(80);
+        check('nothing sent yet reads as empty',
+            /nothing has been sent/i.test(w.document.getElementById('noticeList').textContent));
     }
 
     console.log(failures ? `\n${failures} failed` : '\nall good');

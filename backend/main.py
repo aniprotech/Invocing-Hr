@@ -697,6 +697,99 @@ def client_logout(request: Request):
     request.session.pop("client_id", None)
     return {"message": "Logged out"}
 
+@app.get("/api/client/password-status")
+def client_password_status(request: Request, db: Session = Depends(get_db)):
+    """Whether this account can already sign in with a password.
+
+    The two states read differently on screen - "create a password" for a
+    Google-only account, "change your password" for one that has one - and
+    the page cannot tell them apart without asking.
+    """
+    client = get_client_user(request, db)
+    member_id = request.session.get("member_id")
+    if member_id:
+        member = db.query(models.DBTeamMember).filter(
+            models.DBTeamMember.id == member_id,
+            models.DBTeamMember.client_id == client.id).first()
+        if not member:
+            raise HTTPException(status_code=404, detail="Member not found")
+        return {"has_password": bool(member.password_hash), "email": member.email,
+                "is_owner": False}
+    return {"has_password": bool(client.password_hash), "email": client.email,
+            "is_owner": True}
+
+
+@app.post("/api/client/set-password")
+def client_set_password(request: Request, body: dict = None,
+                        db: Session = Depends(get_db)):
+    """Set or change the password for whoever is signed in.
+
+    Sign-in was Google only, so an account had no password of its own and no
+    way to make one - which also meant no way in at all if the Google account
+    was ever lost.
+
+    Two rules worth being exact about:
+
+    Changing an existing password requires the current one. Without that, a
+    session someone else has got hold of turns into a permanent takeover: they
+    set a password and keep the account after the real owner signs out.
+    Setting a first password does not, because there is nothing to prove yet
+    and the Google session is the proof.
+
+    A colleague signed in as a team member changes their own password, not the
+    owner's. member_id is on the session precisely so the two cannot be
+    confused, and the owner's credentials are what the whole tenancy hangs off.
+    """
+    client = get_client_user(request, db)
+    body = body or {}
+
+    ip = request.client.host if request.client else "unknown"
+    if rate_limiter.is_rate_limited(f"setpw:{ip}", max_requests=10, window=300):
+        raise HTTPException(status_code=429,
+                            detail="Too many attempts. Try again in a few minutes.")
+
+    member_id = request.session.get("member_id")
+    if member_id:
+        who = db.query(models.DBTeamMember).filter(
+            models.DBTeamMember.id == member_id,
+            models.DBTeamMember.client_id == client.id).first()
+        if not who:
+            raise HTTPException(status_code=404, detail="Member not found")
+    else:
+        who = client
+
+    new_password = str(body.get("new_password") or "")
+    current = str(body.get("current_password") or "")
+
+    if who.password_hash:
+        if not current:
+            raise HTTPException(status_code=400,
+                                detail="Enter your current password")
+        if not verify_password(current, who.password_hash):
+            log_login(db, client.id, getattr(who, "email", ""), "client",
+                      "password_change", request, "failed")
+            db.commit()
+            raise HTTPException(status_code=401,
+                                detail="That is not your current password")
+
+    validate_password_strength(new_password)
+
+    # A "change" that changes nothing is almost always a mistake, and saying so
+    # is kinder than a success message that did not do what was expected.
+    if who.password_hash and verify_password(new_password, who.password_hash):
+        raise HTTPException(status_code=400,
+                            detail="That is already your password")
+
+    had_one = bool(who.password_hash)
+    who.password_hash = hash_password(new_password)
+    log_audit(db, client.id,
+              "password_changed" if had_one else "password_created",
+              "account", client.id, getattr(who, "email", ""), "", request)
+    db.commit()
+    return {"message": "Password changed" if had_one else "Password created",
+            "has_password": True}
+
+
 @app.get("/api/client/me")
 def client_me(request: Request, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
@@ -14822,6 +14915,218 @@ SELF_SERVICE_FIELDS = ("phone", "address", "emergency_contact", "emergency_phone
 # Where the money goes. A change to one of these is a change to where somebody's
 # wages land, so it is proposed rather than applied.
 APPROVAL_FIELDS = ("bank_name", "bank_account", "tax_id")
+
+
+def employee_calendar_events(db, emp, start, end):
+    """One person's dates: the company's, and their own.
+
+    Deliberately not calendar_events_for_range with a filter over the top. That
+    one carries every colleague's leave, every goal with its progress figures,
+    and the interview schedule; a filter would have to be updated every time a
+    kind is added, and forgetting means a leak. This builds up instead of
+    cutting down, so anything new is absent until somebody puts it here.
+    """
+    out = []
+    cid = emp.client_id
+
+    # --- when the office is shut: everybody's business ----------------------
+    for h in db.query(models.DBHoliday).filter(
+            models.DBHoliday.client_id == cid).all():
+        days = []
+        if h.recurring:
+            for year in range(start.year, end.year + 1):
+                try:
+                    days.append(datetime.strptime(
+                        f"{year}-{(h.date or '')[5:]}", "%Y-%m-%d").date())
+                except ValueError:
+                    continue
+        else:
+            d = _parse_date(h.date)
+            if d:
+                days.append(d)
+        for on in days:
+            if not (start <= on <= end):
+                continue
+            out.append({
+                "id": f"holiday-{h.id}-{on.year}", "date": on.strftime("%Y-%m-%d"),
+                "time": "", "title": h.name,
+                "subtitle": "Office closed" if not h.optional else "Optional - office open",
+                "kind": "holiday", "mine": False, "tab": "leave",
+            })
+
+    # --- leave ---------------------------------------------------------------
+    # Their own in full. A colleague's says only that they are away: the type
+    # of leave is health information about somebody else, and "sick" beside a
+    # name is not a peer's to read.
+    for lv, other in db.query(models.DBLeaveRequest, models.DBEmployee).join(
+            models.DBEmployee,
+            models.DBLeaveRequest.employee_id == models.DBEmployee.id).filter(
+        models.DBLeaveRequest.client_id == cid,
+        models.DBLeaveRequest.status.in_(["approved", "pending"]),
+    ).all():
+        s_date, e_date = _parse_date(lv.start_date), _parse_date(lv.end_date)
+        if not s_date or not e_date or e_date < start or s_date > end:
+            continue
+        mine = other.id == emp.id
+        if mine:
+            title = f"Your {lv.leave_type} leave"
+            subtitle = (f"{lv.start_date} to {lv.end_date}"
+                        + (" (awaiting a decision)" if lv.status == "pending" else ""))
+        else:
+            # Pending leave is not yet a fact about anybody, so a colleague's
+            # only appears once it has been agreed.
+            if lv.status != "approved":
+                continue
+            name = f"{other.first_name} {other.last_name}".strip() or "A colleague"
+            title = f"{name} is away"
+            subtitle = f"{lv.start_date} to {lv.end_date}"
+        out.append({
+            "id": f"leave-{lv.id}", "date": lv.start_date, "time": "",
+            "title": title, "subtitle": subtitle,
+            "kind": "leave", "mine": mine, "tab": "leave",
+        })
+
+    # --- their goals ---------------------------------------------------------
+    for g in db.query(models.DBEmployeeGoal).filter(
+            models.DBEmployeeGoal.employee_id == emp.id,
+            models.DBEmployeeGoal.status != "completed").all():
+        d = _parse_date(g.due_date)
+        if not d or not (start <= d <= end):
+            continue
+        out.append({
+            "id": f"goal-{g.id}", "date": g.due_date, "time": "", "title": g.title,
+            "subtitle": f"{g.current_value:g}/{g.target_value:g} {g.unit or ''}".strip(),
+            "kind": "goal", "mine": True, "tab": "goals",
+        })
+
+    # --- their onboarding ----------------------------------------------------
+    for item in db.query(models.DBOnboardingItem).filter(
+            models.DBOnboardingItem.employee_id == emp.id,
+            models.DBOnboardingItem.is_completed == False,   # noqa: E712
+    ).all():
+        d = _parse_date(item.due_date)
+        if not d or not (start <= d <= end):
+            continue
+        out.append({
+            "id": f"onboarding-{item.id}", "date": item.due_date, "time": "",
+            "title": item.title, "subtitle": item.category or "",
+            "kind": "onboarding", "mine": True, "tab": "onboarding",
+        })
+
+    # --- their documents: owed, and going out of date ------------------------
+    for req in db.query(models.DBDocumentRequest).filter(
+            models.DBDocumentRequest.employee_id == emp.id).all():
+        if req.status in ("pending", "rejected") and req.due_date:
+            d = _parse_date(req.due_date)
+            if d and start <= d <= end:
+                out.append({
+                    "id": f"document_due-{req.id}", "date": req.due_date, "time": "",
+                    "title": req.name, "subtitle": "Due to be sent in",
+                    "kind": "document_due", "mine": True, "tab": "documents",
+                })
+        if req.expires_on:
+            d = _parse_date(req.expires_on)
+            if d and start <= d <= end:
+                out.append({
+                    "id": f"document_expiry-{req.id}", "date": req.expires_on,
+                    "time": "", "title": req.name, "subtitle": "Expires",
+                    "kind": "document_expiry", "mine": True, "tab": "documents",
+                })
+
+    # --- what HR has put on the calendar -------------------------------------
+    for ev in db.query(models.DBCalendarEvent).filter(
+            models.DBCalendarEvent.client_id == cid).all():
+        d = _parse_date(ev.date)
+        if not d or not (start <= d <= end):
+            continue
+        out.append({
+            "id": f"calendar_event-{ev.id}", "date": ev.date, "time": ev.time or "",
+            "title": ev.title, "subtitle": ev.description or "",
+            "kind": ev.kind, "mine": False, "tab": "",
+        })
+
+    for e in out:
+        e["kind_label"] = CALENDAR_KIND_LABELS.get(e["kind"], e["kind"].title())
+    out.sort(key=lambda e: (e["date"], e["time"] or "99:99"))
+    return out
+
+
+@app.get("/api/employee/calendar")
+def employee_calendar(request: Request, start: str = None, end: str = None,
+                      db: Session = Depends(get_db)):
+    """The month, from the employee's side. Defaults to the current one."""
+    emp = current_employee(request, db)
+    today = datetime.now().date()
+    start_date = _parse_date(start) or today.replace(day=1)
+    if end:
+        end_date = _parse_date(end)
+    else:
+        next_month = (start_date.replace(day=28) + timedelta(days=4)).replace(day=1)
+        end_date = next_month - timedelta(days=1)
+    if not end_date or end_date < start_date:
+        raise HTTPException(status_code=400, detail="end must be on or after start")
+    if (end_date - start_date).days > 366:
+        raise HTTPException(status_code=400, detail="Ask for at most a year at a time")
+
+    return {"start": start_date.strftime("%Y-%m-%d"),
+            "end": end_date.strftime("%Y-%m-%d"),
+            "events": employee_calendar_events(db, emp, start_date, end_date)}
+
+
+@app.get("/api/employee/holidays")
+def employee_holidays(request: Request, year: int = None,
+                      db: Session = Depends(get_db)):
+    """When the office is closed.
+
+    The most-asked question in any staff portal, and it had no answer here -
+    so people were booking annual leave over days that were already free.
+    """
+    emp = current_employee(request, db)
+    year = year or datetime.now().year
+    rows = db.query(models.DBHoliday).filter(
+        models.DBHoliday.client_id == emp.client_id).all()
+
+    out = []
+    for h in rows:
+        if h.recurring:
+            try:
+                on = datetime.strptime(
+                    f"{year}-{(h.date or '')[5:]}", "%Y-%m-%d").date()
+            except ValueError:
+                continue
+        else:
+            on = _parse_date(h.date)
+            if not on or on.year != year:
+                continue
+        out.append({
+            "date": on.strftime("%Y-%m-%d"), "name": h.name,
+            "optional": bool(h.optional), "recurring": bool(h.recurring),
+            # An optional day is one you may work, so it still costs leave to
+            # take - worth saying rather than leaving somebody to assume.
+            "office_closed": not h.optional,
+        })
+    out.sort(key=lambda r: r["date"])
+    return {"year": year, "holidays": out}
+
+
+@app.get("/api/employee/announcements")
+def employee_announcements(request: Request, db: Session = Depends(get_db)):
+    """Everything the company has told this person, in one place.
+
+    Announcements went out as notifications, which is right for telling
+    somebody now - but a notification once dismissed is gone, and there was
+    nowhere to go back to and read what was said.
+    """
+    emp = current_employee(request, db)
+    rows = db.query(models.DBNotification).filter(
+        models.DBNotification.employee_id == emp.id,
+        models.DBNotification.type == "announcement",
+    ).order_by(models.DBNotification.id.desc()).limit(50).all()
+    return [{
+        "id": n.id, "title": n.title, "message": n.message,
+        "sent_by": n.sent_by or "", "is_read": bool(n.is_read),
+        "created_at": n.created_at,
+    } for n in rows]
 
 
 @app.get("/api/employee/leave-balance")

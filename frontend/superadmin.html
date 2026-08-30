@@ -367,6 +367,7 @@
     <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=108">
     <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=108">
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=108">
+    <script src="/dialogs.js?v=1"></script>
 </head>
 <body>
     <div class="admin-header">
@@ -774,12 +775,12 @@
 
         // Impersonate first, then open the portal, so the session is right.
         async function openPortalAs(id, path) {
-            if (!confirm('Open this tenant portal as them? You will be signed in as the client.')) return;
+            if (!await uiConfirm('Open this tenant portal as them? You will be signed in as the client.')) return;
             try {
                 var res = await fetch('/api/superadmin/impersonate/' + id, { method: 'POST' });
                 if (!res.ok) throw new Error('failed');
                 window.open(path, '_blank', 'noopener');
-            } catch (e) { alert('Could not open that portal'); }
+            } catch (e) { await uiAlert('Could not open that portal'); }
         }
 
 
@@ -1047,8 +1048,8 @@
                 var d = await res.json();
                 if (!res.ok) throw new Error(d.detail || 'Failed');
                 loadRevenue();
-                alert(d.message);
-            } catch (e) { alert(e.message); }
+                await uiAlert(d.message);
+            } catch (e) { await uiAlert(e.message); }
         }
 
         async function loadWallets() {
@@ -1361,7 +1362,7 @@
                 // report the ones that did not go through.
             } catch (e) {
                 select.value = was;   // it did not change, so do not show that it did
-                alert('Could not change the plan: ' + e.message);
+                await uiAlert('Could not change the plan: ' + e.message);
             } finally {
                 select.disabled = false;
             }
@@ -1454,7 +1455,7 @@
                 document.getElementById('modal-invoices').innerHTML = invHtml;
                 loadClientOverview(id);
                 document.getElementById('client-modal').classList.add('show');
-            } catch (e) { alert('Error loading client'); }
+            } catch (e) { await uiAlert('Error loading client'); }
         }
 
         function closeModal() {
@@ -1466,19 +1467,19 @@
                 await fetch('/api/superadmin/clients/' + id + '/toggle', { method: 'PUT' });
                 loadClients();
                 loadInsights();
-            } catch (e) { alert('Error'); }
+            } catch (e) { await uiAlert('Error'); }
         }
 
         async function impersonateClient(id) {
-            if (!confirm('Log in as this client to help them? You can return to the admin panel afterwards.')) return;
+            if (!await uiConfirm('Log in as this client to help them? You can return to the admin panel afterwards.')) return;
             try {
                 var res = await fetch('/api/superadmin/impersonate/' + id, { method: 'POST' });
                 if (res.ok) {
                     window.location.href = '/app.html';
                 } else {
-                    alert('Could not log in as this client.');
+                    await uiAlert('Could not log in as this client.');
                 }
-            } catch (e) { alert('Error'); }
+            } catch (e) { await uiAlert('Error'); }
         }
 
         function renderTrendChart(containerId, values, max, cls) {
@@ -1531,21 +1532,21 @@
                 });
                 if (res.ok) {
                     closePasswordModal();
-                    alert('Password updated.');
+                    await uiAlert('Password updated.');
                 } else {
                     err.textContent = 'Could not update password.';
                     err.style.display = 'block';
                 }
-            } catch (e) { alert('Error'); }
+            } catch (e) { await uiAlert('Error'); }
         }
 
         async function deleteClient(id) {
-            if (!confirm('Are you sure you want to delete this client and all their data?')) return;
+            if (!await uiConfirm('Are you sure you want to delete this client and all their data?')) return;
             try {
                 await fetch('/api/superadmin/clients/' + id, { method: 'DELETE' });
                 loadClients();
                 loadInsights();
-            } catch (e) { alert('Error'); }
+            } catch (e) { await uiAlert('Error'); }
         }
 
         async function logout() {

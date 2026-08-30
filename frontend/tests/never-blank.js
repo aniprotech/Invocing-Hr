@@ -89,6 +89,10 @@ function bootWithFetch(fetchImpl, hash) {
     w.fetch = fetchImpl(w);
     // The console would otherwise carry a page of expected failures.
     w.console = { log() { }, warn() { }, error() { } };
+    // The pages load dialogs.js from a <script src>, which this harness strips.
+    // Without it every alert/confirm/prompt call site throws.
+    if (!w.requestAnimationFrame) w.requestAnimationFrame = function (cb) { return setTimeout(cb, 0); };
+    w.eval(fs.readFileSync(path.join(ROOT, 'dialogs.js'), 'utf8'));
     w.eval(fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8'));
     // jsdom dispatches synchronously and lets a listener's exception escape,
     // which would end this process with a stack trace instead of a result.

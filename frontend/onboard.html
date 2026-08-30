@@ -169,6 +169,7 @@
     <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=108">
     <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=108">
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=108">
+    <script src="/dialogs.js?v=1"></script>
 </head>
 <body>
     <div class="onboard-container">
@@ -287,10 +288,10 @@
             }
         });
 
-        function handleLogoUpload(e) {
+        async function handleLogoUpload(e) {
             var file = e.target.files[0];
             if (!file) return;
-            if (file.size > 2 * 1024 * 1024) { alert('File too large. Max 2MB.'); return; }
+            if (file.size > 2 * 1024 * 1024) { await uiAlert('File too large. Max 2MB.'); return; }
             var reader = new FileReader();
             reader.onload = function(ev) {
                 logoData = ev.target.result;
@@ -323,11 +324,11 @@
                 if (res.ok) {
                     window.location.href = '/app.html';
                 } else {
-                    alert('Error saving');
+                    await uiAlert('Error saving');
                     btn.disabled = false; btn.textContent = 'Finish Setup ✓';
                 }
             } catch (err) {
-                alert('Network error');
+                await uiAlert('Network error');
                 btn.disabled = false; btn.textContent = 'Finish Setup ✓';
             }
         }

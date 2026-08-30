@@ -172,6 +172,7 @@
     <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=108">
     <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=108">
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=108">
+    <script src="/dialogs.js?v=1"></script>
 </head>
 <body class="min-h-screen">
 
@@ -300,6 +301,54 @@
             <span class="h-px flex-1" style="background:var(--ap-line);"></span>
           </div>
 
+          <!-- Email and password. The endpoints behind these have existed
+               since the beginning; the page simply never offered them, so an
+               account that lost its Google access had no way back in. -->
+          <form id="password-form" onsubmit="return submitPasswordForm(event)" class="grid gap-3">
+            <div id="signup-only" class="hidden">
+              <label for="pw-company" class="block text-[0.8rem] font-semibold mb-1" style="color:var(--ap-ink);">Company name</label>
+              <input type="text" id="pw-company" autocomplete="organization"
+                     class="w-full rounded-xl border px-4 py-3 text-sm min-h-[48px]"
+                     style="border-color:var(--ap-line);color:var(--ap-ink);">
+            </div>
+            <div>
+              <label for="pw-email" class="block text-[0.8rem] font-semibold mb-1" style="color:var(--ap-ink);">Email</label>
+              <input type="email" id="pw-email" required autocomplete="username"
+                     class="w-full rounded-xl border px-4 py-3 text-sm min-h-[48px]"
+                     style="border-color:var(--ap-line);color:var(--ap-ink);">
+            </div>
+            <div>
+              <label for="pw-password" class="block text-[0.8rem] font-semibold mb-1" style="color:var(--ap-ink);">Password</label>
+              <input type="password" id="pw-password" required
+                     class="w-full rounded-xl border px-4 py-3 text-sm min-h-[48px]"
+                     style="border-color:var(--ap-line);color:var(--ap-ink);">
+              <p id="pw-rules" class="hidden mt-1 text-[0.75rem]" style="color:var(--ap-muted);">
+                At least 8 characters, with one capital letter and one number.
+              </p>
+            </div>
+
+            <button type="submit" id="pw-submit"
+                    class="w-full rounded-xl px-4 py-3 text-sm font-semibold text-white min-h-[48px]"
+                    style="background:var(--ap-blue);">Sign in</button>
+          </form>
+
+          <div class="mt-3 flex items-center justify-between text-[0.8rem]">
+            <button type="button" id="pw-mode-toggle" onclick="togglePasswordMode()"
+                    class="font-semibold underline" style="color:var(--ap-blue-dark);background:none;border:none;cursor:pointer;padding:0;">
+              Create an account
+            </button>
+            <button type="button" id="pw-forgot" onclick="sendResetLink()"
+                    style="color:var(--ap-muted);background:none;border:none;cursor:pointer;padding:0;font:inherit;">
+              Forgot password?
+            </button>
+          </div>
+
+          <div class="flex items-center gap-3 my-7" aria-hidden="true">
+            <span class="h-px flex-1" style="background:var(--ap-line);"></span>
+            <span class="text-xs font-semibold" style="color:var(--ap-muted);">OR</span>
+            <span class="h-px flex-1" style="background:var(--ap-line);"></span>
+          </div>
+
           <div class="grid gap-2.5">
             <a href="/employee-login.html" aria-label="Employee Portal sign in"
                class="ap-feature ap-card flex items-center justify-between px-4 py-3.5 min-h-[52px]">
@@ -378,6 +427,122 @@
         // this page is where they should stay.
         if (me.client_id) window.location.href = nextTarget('/app.html');
     })();
+
+    // Signing in, or signing up, with an email and a password.
+    //
+    // One form for both, because they differ by one field and one endpoint.
+    // Registering does not sign you in - /api/client/register creates the
+    // account and nothing more - so a successful sign-up logs in immediately
+    // afterwards rather than leaving somebody on a page saying "done" with no
+    // way forward.
+    var signingUp = false;
+
+    function togglePasswordMode() {
+        signingUp = !signingUp;
+        document.getElementById('signup-only').classList.toggle('hidden', !signingUp);
+        document.getElementById('pw-rules').classList.toggle('hidden', !signingUp);
+        document.getElementById('pw-submit').textContent = signingUp ? 'Create account' : 'Sign in';
+        document.getElementById('pw-mode-toggle').textContent =
+            signingUp ? 'I already have an account' : 'Create an account';
+        // There is no password to have forgotten while creating one.
+        document.getElementById('pw-forgot').classList.toggle('hidden', signingUp);
+        document.getElementById('pw-password').setAttribute(
+            'autocomplete', signingUp ? 'new-password' : 'current-password');
+        hideMessages();
+    }
+    window.togglePasswordMode = togglePasswordMode;
+
+    function hideMessages() {
+        var err = document.getElementById('error-msg');
+        var ok = document.getElementById('success-msg');
+        if (err) err.classList.add('hidden');
+        if (ok) ok.classList.add('hidden');
+    }
+
+    function showError(message) {
+        var err = document.getElementById('error-msg');
+        if (!err) return;
+        err.textContent = message;
+        err.classList.remove('hidden');
+    }
+
+    // reset-password.html is the page a reset link lands on - it needs a
+    // ?token= and shows "this link has expired" without one. So the request is
+    // made from here, using the address already typed in.
+    async function sendResetLink() {
+        hideMessages();
+        var email = document.getElementById('pw-email').value.trim();
+        if (!email) {
+            showError('Enter your email address first, then choose Forgot password.');
+            document.getElementById('pw-email').focus();
+            return;
+        }
+        var btn = document.getElementById('pw-forgot');
+        btn.disabled = true;
+        try {
+            var res = await fetch('/api/client/forgot-password', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: email }),
+            });
+            var data = await res.json().catch(function () { return {}; });
+            if (!res.ok) throw new Error(data.detail || 'Could not send a reset link');
+            var ok = document.getElementById('success-msg');
+            // Deliberately the same words whether or not the address has an
+            // account - the server answers that way so this cannot be used to
+            // find out who banks here, and saying more here would undo it.
+            ok.textContent = data.message ||
+                'If that email has an account, a reset link is on its way.';
+            ok.classList.remove('hidden');
+        } catch (e) {
+            showError(e.message);
+        } finally {
+            btn.disabled = false;
+        }
+    }
+    window.sendResetLink = sendResetLink;
+
+    async function submitPasswordForm(event) {
+        event.preventDefault();
+        hideMessages();
+
+        var email = document.getElementById('pw-email').value.trim();
+        var password = document.getElementById('pw-password').value;
+        var company = document.getElementById('pw-company').value.trim();
+        var btn = document.getElementById('pw-submit');
+        btn.disabled = true;
+
+        try {
+            if (signingUp) {
+                if (!company) throw new Error('Give your company a name');
+                var reg = await fetch('/api/client/register', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: email, password: password,
+                                           company_name: company }),
+                });
+                if (!reg.ok) {
+                    var reason = await reg.json().catch(function () { return {}; });
+                    throw new Error(reason.detail || 'Could not create that account');
+                }
+            }
+
+            var res = await fetch('/api/client/login', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: email, password: password }),
+            });
+            if (!res.ok) {
+                var why = await res.json().catch(function () { return {}; });
+                throw new Error(why.detail || 'Could not sign in');
+            }
+            // The same destination the Google path uses, so a deep link
+            // survives either way in.
+            window.location.href = nextTarget('/app.html');
+        } catch (e) {
+            showError(e.message);
+            btn.disabled = false;
+        }
+        return false;
+    }
+    window.submitPasswordForm = submitPasswordForm;
 
     // Show loading on Google button click
     document.getElementById('google-btn').addEventListener('click', function() {

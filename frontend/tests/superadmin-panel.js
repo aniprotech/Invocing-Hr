@@ -71,6 +71,14 @@ function boot(opts) {
             };
         },
     });
+    // The page loads dialogs.js from a <script src> and jsdom does not fetch
+    // resources, so it is supplied here - after parsing, because the module
+    // needs a document to put its stylesheet in.
+    if (!dom.window.requestAnimationFrame) {
+        dom.window.requestAnimationFrame = function (cb) { return setTimeout(cb, 0); };
+    }
+    dom.window.eval(fs.readFileSync(path.join(ROOT, 'dialogs.js'), 'utf8'));
+
     // jsdom does not navigate, so the signed-out redirect shows up only as
     // its "Not implemented: navigation" notice. What matters here is what was
     // fetched, which is asserted directly.
@@ -245,7 +253,8 @@ const rows = (w, id) => w.document.querySelectorAll('#' + id + ' tr').length;
             }
             return realFetch(url, init);
         };
-        w.alert = () => { };   // jsdom has no dialogs
+        // The real dialog is loaded; auto-answer it so the flow continues.
+        w.uiAlert = () => Promise.resolve(true);
 
         const before = hrOnly.value;
         hrOnly.value = 'invoicing';

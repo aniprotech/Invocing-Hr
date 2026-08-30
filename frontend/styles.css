@@ -230,7 +230,60 @@ h1, h2, h3, h4, p, td, th, li, .stat-value { overflow-wrap: anywhere; }
 .search-bar input:focus { outline: none; background-color: rgba(255, 255, 255, 0.15); border-color: var(--primary-color); width: 200px; padding-right: 14px; }
 
 /* User */
-.user-profile { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: var(--radius-md); flex-shrink: 0; }
+.user-profile { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: var(--radius-md); flex-shrink: 0; position: relative; }
+
+/* The avatar opens a menu, so it is a button. It was a div beside a bare
+   logout icon: the only thing you could do with your own account was leave
+   it, and a div cannot be tabbed to or opened from the keyboard. */
+.user-menu-trigger {
+    display: flex; align-items: center; gap: 5px;
+    background: none; border: none; padding: 2px; border-radius: 999px;
+    cursor: pointer; color: var(--text-secondary); font: inherit;
+}
+.user-menu-trigger:hover { color: var(--text-primary); }
+.user-menu-trigger:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+.user-menu-caret { transition: transform 0.15s ease; }
+.user-profile.open .user-menu-caret { transform: rotate(180deg); }
+
+.user-menu {
+    display: none; position: absolute; top: calc(100% + 8px); right: 0;
+    min-width: 232px; flex-direction: column; gap: 2px;
+    background: var(--surface-solid);
+    border: 1px solid var(--border-color); border-radius: var(--radius-md);
+    padding: 6px; box-shadow: var(--shadow-lg); z-index: var(--layer-menu);
+    text-align: left;
+}
+.user-profile.open .user-menu { display: flex; }
+.user-menu-head { padding: 8px 10px 6px; }
+.user-menu-name { font-weight: 700; font-size: 0.88rem; color: var(--text-primary); }
+.user-menu-email {
+    font-size: 0.78rem; color: var(--text-secondary);
+    /* An address longer than the menu must not stretch it off the screen. */
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 210px;
+}
+.user-menu-role {
+    display: inline-block; margin-top: 6px; padding: 1px 8px; border-radius: 999px;
+    font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.04em;
+    background: rgba(56, 189, 248, 0.15); color: var(--primary-color);
+}
+.user-menu-sep { height: 1px; background: var(--border-color); margin: 4px 2px; }
+.user-menu-item {
+    display: block; width: 100%; text-align: left;
+    background: none; border: none; font: inherit; cursor: pointer;
+    color: var(--text-primary); font-size: 0.85rem;
+    padding: 8px 10px; border-radius: 8px;
+}
+.user-menu-item:hover { background: rgba(255, 255, 255, 0.06); }
+.user-menu-item:focus-visible { outline: 2px solid var(--primary-color); outline-offset: -2px; }
+.user-menu-item.is-danger { color: var(--danger-text); }
+.user-menu-item.is-danger:hover { background: rgba(244, 63, 94, 0.12); }
+
+@media (max-width: 480px) {
+    /* On a narrow screen a right-anchored menu can still run off the edge,
+       so it is pinned to the viewport rather than to the button. */
+    .user-menu { right: -8px; min-width: 210px; }
+}
 .avatar {
     width: 30px; height: 30px; border-radius: 50%; background-color: var(--primary-color);
     /* Dark on the cyan, not white. Cyan is a light colour: white on it is

@@ -602,7 +602,7 @@ async function decideBankChange(id, decision) {
     // it is asked for - and only for the rejection.
     var note = '';
     if (decision === 'reject') {
-        note = prompt('Why is this being turned down? The employee sees this.') || '';
+        note = await uiPrompt('Why is this being turned down? The employee sees this.') || '';
         if (!note.trim()) return;
     }
     try {
@@ -854,6 +854,17 @@ async function checkAuthStatus() {
                 var name = data.user.name || data.user.email;
                 var avatar = document.getElementById('user-avatar');
                 if (avatar) { avatar.textContent = name[0].toUpperCase(); avatar.title = name; }
+                var nameEl = document.getElementById('user-menu-name');
+                var emailEl = document.getElementById('user-menu-email');
+                if (nameEl) nameEl.textContent = name;
+                // Only when it says something the name does not.
+                if (emailEl) {
+                    emailEl.textContent = (data.user.email && data.user.email !== name)
+                        ? data.user.email : '';
+                }
+                // How this account signs in, which decides whether the menu
+                // offers to create a password or to change one.
+                refreshPasswordMenuLabel();
             }
         } else {
             if (loginBtn) loginBtn.style.display = 'inline-block';
@@ -872,6 +883,150 @@ async function checkAuthStatus() {
         }
     } catch (e) {}
 }
+
+// --- The account menu ------------------------------------------------------
+// The avatar used to sit beside a bare logout icon, so the only thing you
+// could do with your own account was leave it - and the icon did it without
+// asking.
+
+function closeUserMenu() {
+    var wrap = document.getElementById('user-info');
+    var btn = document.getElementById('user-menu-btn');
+    if (wrap) wrap.classList.remove('open');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+window.closeUserMenu = closeUserMenu;
+
+function toggleUserMenu(event) {
+    if (event) event.stopPropagation();   // or the outside-click handler shuts it again
+    var wrap = document.getElementById('user-info');
+    var btn = document.getElementById('user-menu-btn');
+    if (!wrap) return;
+    var opening = !wrap.classList.contains('open');
+    wrap.classList.toggle('open', opening);
+    if (btn) btn.setAttribute('aria-expanded', opening ? 'true' : 'false');
+}
+window.toggleUserMenu = toggleUserMenu;
+
+// Clicking anywhere else, or pressing Escape, closes it - a menu that can only
+// be dismissed by clicking the thing that opened it is a menu people leave open.
+document.addEventListener('click', function (e) {
+    var wrap = document.getElementById('user-info');
+    if (wrap && wrap.classList.contains('open') && !wrap.contains(e.target)) {
+        closeUserMenu();
+    }
+});
+document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    closeUserMenu();
+    var modal = document.getElementById('password-modal');
+    if (modal && modal.style.display !== 'none') closePasswordModal();
+});
+
+// Jumping from the menu to the part of Settings being asked for, rather than
+// dropping somebody on the settings page to find it themselves.
+function openAccountFromMenu(section) {
+    closeUserMenu();
+    showView('settings-view');
+    if (typeof showSettingsSection === 'function') {
+        try { showSettingsSection(section); } catch (e) { /* section may not exist */ }
+    }
+}
+window.openAccountFromMenu = openAccountFromMenu;
+
+// --- Password --------------------------------------------------------------
+// Sign-in was Google only, so an account had no password of its own and no way
+// to make one - and no way in at all if the Google account was ever lost.
+
+var _hasPassword = null;   // null until asked, so the label never guesses
+
+async function refreshPasswordMenuLabel() {
+    var label = document.getElementById('user-menu-password-label');
+    if (!label) return;
+    try {
+        var res = await fetch('/api/client/password-status');
+        if (!res.ok) return;
+        var data = await res.json();
+        _hasPassword = !!data.has_password;
+        label.textContent = _hasPassword ? 'Change password' : 'Create a password';
+
+        var role = document.getElementById('user-menu-role');
+        if (role && data.is_owner === false) {
+            role.textContent = 'Team member';
+            role.style.display = '';
+        }
+    } catch (e) { /* the menu still works without the label being exact */ }
+}
+window.refreshPasswordMenuLabel = refreshPasswordMenuLabel;
+
+function openPasswordModal() {
+    closeUserMenu();
+    var creating = _hasPassword === false;
+    document.getElementById('password-modal-title').textContent =
+        creating ? 'Create a password' : 'Change password';
+    document.getElementById('password-modal-intro').textContent = creating
+        ? 'You sign in with Google. Adding a password gives you a second way in if that account is ever lost.'
+        : 'You will need your current password to change it.';
+    // There is nothing to prove when there is no password yet.
+    document.getElementById('password-current-group').style.display =
+        creating ? 'none' : '';
+
+    ['pw-current', 'pw-new', 'pw-confirm'].forEach(function (id) {
+        document.getElementById(id).value = '';
+    });
+    setPasswordError('');
+    document.getElementById('password-modal').style.display = 'flex';
+    document.getElementById(creating ? 'pw-new' : 'pw-current').focus();
+}
+window.openPasswordModal = openPasswordModal;
+
+function closePasswordModal() {
+    document.getElementById('password-modal').style.display = 'none';
+}
+window.closePasswordModal = closePasswordModal;
+
+function setPasswordError(message) {
+    var box = document.getElementById('password-modal-error');
+    if (!box) return;
+    box.textContent = message || '';
+    box.style.display = message ? 'block' : 'none';
+}
+
+async function savePassword() {
+    var current = document.getElementById('pw-current').value;
+    var next = document.getElementById('pw-new').value;
+    var confirmed = document.getElementById('pw-confirm').value;
+
+    // Caught here rather than at the server, because the server has no way to
+    // know the second box was meant to match the first.
+    if (next !== confirmed) { setPasswordError('The two new passwords do not match.'); return; }
+    if (!next) { setPasswordError('Enter a new password.'); return; }
+
+    var btn = document.getElementById('pw-save-btn');
+    btn.disabled = true;
+    setPasswordError('');
+    try {
+        var body = { new_password: next };
+        if (_hasPassword !== false) body.current_password = current;
+        var res = await fetch('/api/client/set-password', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+            var why = await res.json().catch(function () { return {}; });
+            throw new Error(why.detail || 'Could not change the password');
+        }
+        _hasPassword = true;
+        closePasswordModal();
+        showToast('Password saved', 'success');
+        refreshPasswordMenuLabel();
+    } catch (e) {
+        setPasswordError(e.message);
+    } finally {
+        btn.disabled = false;
+    }
+}
+window.savePassword = savePassword;
 
 function handleLogout() {
     window.location.href = '/api/auth/logout';
@@ -2319,7 +2474,7 @@ window.sendWhatsApp = sendWhatsApp;
 
 // --- Delete Invoice ---
 async function deleteInvoice(number) {
-    if (!confirm('Delete invoice ' + number + '?')) return;
+    if (!await uiConfirm('Delete invoice ' + number + '?')) return;
     try {
         var res = await fetch('/api/invoices/' + encodeURIComponent(number), { method: 'DELETE' });
         if (res.ok) { showToast('Invoice deleted', 'success'); fetchInvoices(); showView('invoices-view'); }
@@ -2330,7 +2485,7 @@ window.deleteInvoice = deleteInvoice;
 
 // --- Mark as Paid ---
 async function markAsPaid(number) {
-    if (!confirm('Mark invoice ' + number + ' as paid?')) return;
+    if (!await uiConfirm('Mark invoice ' + number + ' as paid?')) return;
     try {
         var res = await fetch('/api/invoices/' + encodeURIComponent(number) + '/mark-paid', { method: 'POST' });
         if (res.ok) { showToast('Marked as paid', 'success'); fetchInvoices(); viewInvoice(number); }
@@ -2346,12 +2501,12 @@ async function recordPayment(number) {
     number = number || (document.getElementById('view-inv-number-val') || {}).textContent;
     if (!number) return;
     var outstanding = _viewOutstanding || 0;
-    var raw = prompt('Payment amount' + (outstanding ? ' (outstanding: ' + outstanding.toFixed(2) + ')' : '') + ':',
+    var raw = await uiPrompt('Payment amount' + (outstanding ? ' (outstanding: ' + outstanding.toFixed(2) + ')' : '') + ':',
                      outstanding ? outstanding.toFixed(2) : '');
     if (raw === null) return;
     var amount = parseFloat(raw);
     if (isNaN(amount) || amount <= 0) { showToast('Enter a valid amount', 'error'); return; }
-    var reference = prompt('Reference (optional):', '') || '';
+    var reference = await uiPrompt('Reference (optional):', '') || '';
     try {
         var res = await fetch('/api/invoices/' + encodeURIComponent(number) + '/payments', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2367,7 +2522,7 @@ async function recordPayment(number) {
 window.recordPayment = recordPayment;
 
 async function reversePayment(number, paymentId) {
-    if (!confirm('Reverse this payment?')) return;
+    if (!await uiConfirm('Reverse this payment?')) return;
     try {
         var res = await fetch('/api/invoices/' + encodeURIComponent(number) + '/payments/' + paymentId, { method: 'DELETE' });
         var data = await res.json();
@@ -2741,7 +2896,7 @@ async function loadGmailStatus() {
 window.loadGmailStatus = loadGmailStatus;
 
 async function disconnectGmail() {
-    if (!confirm('Disconnect Gmail? Emails will stop sending until you re-authorize with the correct Google account.')) return;
+    if (!await uiConfirm('Disconnect Gmail? Emails will stop sending until you re-authorize with the correct Google account.')) return;
     try {
         var res = await fetch('/api/gmail/disconnect', { method: 'POST' });
         if (res.ok) {
@@ -3394,7 +3549,7 @@ window.submitNewEmployee = submitNewEmployee;
 
 async function startOffboarding() {
     if (!currentEmployeeId) return;
-    if (!confirm('Start offboarding for this employee?')) return;
+    if (!await uiConfirm('Start offboarding for this employee?')) return;
     try {
         var res = await fetch('/api/employees/' + currentEmployeeId + '/offboard', { method: 'POST' });
         if (res.ok) { showToast('Offboarding started', 'success'); hrDataChanged('employees', { employeeId: currentEmployeeId }); }
@@ -3405,7 +3560,7 @@ window.startOffboarding = startOffboarding;
 
 async function resetEmpPassword() {
     if (!currentEmployeeId) return;
-    var newPass = prompt('Enter new password for this employee:');
+    var newPass = await uiPrompt('Enter new password for this employee:');
     if (!newPass || newPass.length < 4) { showToast('Password must be at least 4 characters', 'error'); return; }
     try {
         var res = await fetch('/api/employees/' + currentEmployeeId + '/reset-password', {
@@ -3544,7 +3699,7 @@ window.confirmResetPassword = confirmResetPassword;
 
 async function deleteCurrentEmployee() {
     if (!currentEmployeeId) return;
-    if (!confirm('Delete this employee and all related data?')) return;
+    if (!await uiConfirm('Delete this employee and all related data?')) return;
     try {
         var res = await fetch('/api/employees/' + currentEmployeeId, { method: 'DELETE' });
         if (res.ok) { showToast('Employee deleted', 'success'); showView('employees-view'); hrDataChanged('employees'); }
@@ -3736,7 +3891,7 @@ function closeDeptDetail() {
 window.closeDeptDetail = closeDeptDetail;
 
 async function deleteDepartment(id, name) {
-    if (!confirm('Delete department "' + name + '"? Employees will be unassigned.')) return;
+    if (!await uiConfirm('Delete department "' + name + '"? Employees will be unassigned.')) return;
     try {
         var res = await fetch('/api/departments/' + id, { method: 'DELETE' });
         if (res.ok) { showToast('Department deleted', 'success'); hrDataChanged('departments'); }
@@ -3895,7 +4050,7 @@ async function toggleOnbItem(itemId, isCompleted) {
 window.toggleOnbItem = toggleOnbItem;
 
 async function deleteOnbItem(itemId) {
-    if (!confirm('Delete this item?')) return;
+    if (!await uiConfirm('Delete this item?')) return;
     try {
         await fetch('/api/onboarding/' + itemId, { method: 'DELETE' });
         var empId = document.getElementById('onb-emp-modal').dataset.empId;
@@ -3908,11 +4063,11 @@ window.deleteOnbItem = deleteOnbItem;
 async function addOnbItemToEmp() {
     var empId = document.getElementById('onb-emp-modal').dataset.empId;
     if (!empId) return;
-    var title = prompt('Task title:');
+    var title = await uiPrompt('Task title:');
     if (!title) return;
-    var category = prompt('Category (e.g. Legal, IT, General):') || 'General';
-    var assignee = prompt('Assigned to:') || '';
-    var dueDate = prompt('Due date (YYYY-MM-DD, optional):') || '';
+    var category = await uiPrompt('Category (e.g. Legal, IT, General):') || 'General';
+    var assignee = await uiPrompt('Assigned to:') || '';
+    var dueDate = await uiPrompt('Due date (YYYY-MM-DD, optional):') || '';
     try {
         await fetch('/api/employees/' + empId + '/onboarding', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3979,7 +4134,7 @@ async function loadBulkFromTemplate() {
         var templates = await res.json();
         if (templates.length === 0) { showToast('No templates found. Create one first.', 'error'); return; }
         var names = templates.map(function(t, i) { return (i + 1) + '. ' + t.name; }).join('\n');
-        var choice = prompt('Choose template:\n' + names + '\nEnter number:');
+        var choice = await uiPrompt('Choose template:\n' + names + '\nEnter number:');
         if (!choice) return;
         var idx = parseInt(choice) - 1;
         if (idx >= 0 && idx < templates.length) {
@@ -4056,9 +4211,9 @@ function closeOnbTemplatesModal() {
 window.closeOnbTemplatesModal = closeOnbTemplatesModal;
 
 async function createNewTemplate() {
-    var name = prompt('Template name:');
+    var name = await uiPrompt('Template name:');
     if (!name) return;
-    var itemsJson = prompt('Enter items (one per line, format: Title | Category | Assigned To):');
+    var itemsJson = await uiPrompt('Enter items (one per line, format: Title | Category | Assigned To):');
     if (!itemsJson) return;
     var items = itemsJson.split('\n').map(function(line) {
         var parts = line.split('|').map(function(s) { return s.trim(); });
@@ -4076,7 +4231,7 @@ async function createNewTemplate() {
 window.createNewTemplate = createNewTemplate;
 
 async function deleteOnbTemplate(id) {
-    if (!confirm('Delete this template?')) return;
+    if (!await uiConfirm('Delete this template?')) return;
     try {
         await fetch('/api/onboarding/templates/' + id, { method: 'DELETE' });
         showOnboardingTemplates();
@@ -4119,13 +4274,13 @@ window.searchPayslips = searchPayslips;
 async function batchGeneratePayslips() {
     var today = localDate(new Date());
     var firstOfMonth = today.slice(0, 8) + '01';
-    var periodStart = prompt('Period start date (YYYY-MM-DD):', firstOfMonth);
+    var periodStart = await uiPrompt('Period start date (YYYY-MM-DD):', firstOfMonth);
     if (!periodStart) return;
-    var periodEnd = prompt('Period end date (YYYY-MM-DD):', today);
+    var periodEnd = await uiPrompt('Period end date (YYYY-MM-DD):', today);
     if (!periodEnd) return;
-    var payDate = prompt('Pay date (YYYY-MM-DD):', today);
+    var payDate = await uiPrompt('Pay date (YYYY-MM-DD):', today);
     if (!payDate) return;
-    if (!confirm('Run payroll for all active employees, ' + periodStart + ' to ' + periodEnd + '?')) return;
+    if (!await uiConfirm('Run payroll for all active employees, ' + periodStart + ' to ' + periodEnd + '?')) return;
     showToast('Running payroll...', 'info');
     try {
         var res = await fetch('/api/payroll/run', {
@@ -4143,7 +4298,7 @@ async function batchGeneratePayslips() {
         // Zero-value payslips nearly always mean missing hours, so make the
         // operator acknowledge them rather than shipping a silent nil payment.
         if (data.warnings && data.warnings.length) {
-            alert('Check these payslips before approving:\n\n' +
+            await uiAlert('Check these payslips before approving:\n\n' +
                   data.warnings.map(function(w) { return '• ' + w.name + ' (' + w.number + '): ' + w.reason; }).join('\n'));
         }
         fetchPayslips(currentPsFilter);
@@ -4381,7 +4536,7 @@ async function submitGeneratePayslip() {
         // 409 means an existing payslip already covers this period - let the
         // user knowingly override rather than silently double-paying.
         if (out.res.status === 409) {
-            if (!confirm((out.data.detail || 'A payslip already covers this period.') + '\n\nCreate it anyway?')) return;
+            if (!await uiConfirm((out.data.detail || 'A payslip already covers this period.') + '\n\nCreate it anyway?')) return;
             out = await post(true);
         }
         if (out.res.ok) {
@@ -4430,7 +4585,7 @@ window.sendPayslipEmail = sendPayslipEmail;
 
 async function markPayslipPaid() {
     if (!currentPayslipId) return;
-    if (!confirm('Mark payslip as paid?')) return;
+    if (!await uiConfirm('Mark payslip as paid?')) return;
     try {
         var res = await fetch('/api/payslips/' + currentPayslipId + '/mark-paid', { method: 'POST' });
         if (res.ok) { showToast('Marked as paid', 'success'); viewPayslip(currentPayslipId); }
@@ -4441,7 +4596,7 @@ window.markPayslipPaid = markPayslipPaid;
 
 async function deletePayslip() {
     if (!currentPayslipId) return;
-    if (!confirm('Delete this payslip?')) return;
+    if (!await uiConfirm('Delete this payslip?')) return;
     try {
         var res = await fetch('/api/payslips/' + currentPayslipId, { method: 'DELETE' });
         if (res.ok) { showToast('Payslip deleted', 'success'); showView('payroll-view'); hrDataChanged('payroll'); }
@@ -5128,7 +5283,7 @@ window.saveCalendarEvent = saveCalendarEvent;
 
 async function deleteCalendarEventFromModal() {
     var id = document.getElementById('cal-ev-id').value;
-    if (!id || !confirm('Remove this from the calendar?')) return;
+    if (!id || !await uiConfirm('Remove this from the calendar?')) return;
     try {
         var res = await fetch('/api/hr/calendar-events/' + id, { method: 'DELETE' });
         if (!res.ok) throw new Error('Could not remove that');
@@ -5427,7 +5582,7 @@ async function addHoliday() {
 window.addHoliday = addHoliday;
 
 async function removeHoliday(id) {
-    if (!confirm('Remove this day from the calendar?')) return;
+    if (!await uiConfirm('Remove this day from the calendar?')) return;
     try {
         var res = await fetch('/api/hr/holidays/' + id, { method: 'DELETE' });
         if (!res.ok) throw new Error('Could not remove that day');
@@ -5877,8 +6032,10 @@ function copyRecFormLink(token) {
     var url = window.location.origin + '/recruitment.html?token=' + token;
     navigator.clipboard.writeText(url).then(function() {
         showToast('Link copied! Share it with candidates.', 'success');
-    }).catch(function() {
-        prompt('Copy this link:', url);
+    }).catch(function () {
+        // Clipboard access can be refused outright; showing the link is the
+        // fallback, and it is theirs to copy by hand.
+        uiPrompt('Copy this link:', url, { confirmText: 'Done' });
     });
 }
 
@@ -6027,7 +6184,7 @@ async function toggleRecForm(id, isActive) {
 }
 
 async function deleteRecForm(id) {
-    if (!confirm('Delete this form and all its submissions?')) return;
+    if (!await uiConfirm('Delete this form and all its submissions?')) return;
     try {
         var res = await fetch('/api/recruitment/forms/' + id, { method: 'DELETE' });
         if (!res.ok) { showToast('Failed to delete', 'error'); return; }
@@ -6347,11 +6504,11 @@ window.setCandidateRating = setCandidateRating;
 // Turn a successful candidate into an employee without retyping their details.
 async function hireCandidate() {
     if (!recCurrentSubId) return;
-    var jobTitle = prompt('Job title for the new employee:', '');
+    var jobTitle = await uiPrompt('Job title for the new employee:', '');
     if (jobTitle === null) return;
-    var startDate = prompt('Start date (YYYY-MM-DD):', localDate(new Date()));
+    var startDate = await uiPrompt('Start date (YYYY-MM-DD):', localDate(new Date()));
     if (startDate === null) return;
-    var salary = prompt('Salary per pay period (0 if hourly):', '0');
+    var salary = await uiPrompt('Salary per pay period (0 if hourly):', '0');
     if (salary === null) return;
     try {
         var res = await fetch('/api/recruitment/submissions/' + recCurrentSubId + '/hire', {
@@ -6438,7 +6595,7 @@ window.showMoveStageMenu = showMoveStageMenu;
 // ==================== LEAVE REQUESTS ====================
 
 async function actionLeave(id, action, empName) {
-    if (!confirm('Are you sure you want to ' + action + ' this leave request for ' + empName + '?')) return;
+    if (!await uiConfirm('Are you sure you want to ' + action + ' this leave request for ' + empName + '?')) return;
     try {
         var res = await fetch('/api/leave/requests/' + id + '/action', {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
@@ -6635,7 +6792,7 @@ async function assignDeptGoal() {
     var deptId = document.getElementById('dept-goal-dept').value;
     var title = document.getElementById('dept-goal-title').value.trim();
     if (!deptId || !title) {
-        alert('Please select a department and enter a title');
+        await uiAlert('Please select a department and enter a title');
         return;
     }
     var btn = document.querySelector('#dept-goal-modal .btn-primary');
@@ -7253,7 +7410,7 @@ async function editBill(id) {
 window.editBill = editBill;
 
 async function markBillPaid(id) {
-    if (!confirm('Mark this bill as paid?')) return;
+    if (!await uiConfirm('Mark this bill as paid?')) return;
     try {
         var res = await fetch('/api/bills/' + id + '/pay', { method: 'POST', credentials: 'same-origin' });
         if (res.ok) { showToast('Bill marked as paid', 'success'); loadBills(); }
@@ -7263,7 +7420,7 @@ async function markBillPaid(id) {
 window.markBillPaid = markBillPaid;
 
 async function deleteBill(id, number) {
-    if (!confirm('Delete bill ' + number + '?')) return;
+    if (!await uiConfirm('Delete bill ' + number + '?')) return;
     try {
         var res = await fetch('/api/bills/' + id, { method: 'DELETE', credentials: 'same-origin' });
         if (res.ok) { showToast('Bill deleted', 'success'); loadBills(); }
@@ -7372,7 +7529,7 @@ async function editContact(id) {
 window.editContact = editContact;
 
 async function deleteContact(id, name) {
-    if (!confirm('Delete contact "' + name + '"?')) return;
+    if (!await uiConfirm('Delete contact "' + name + '"?')) return;
     try {
         var res = await fetch('/api/contacts/' + id, { method: 'DELETE', credentials: 'same-origin' });
         if (res.ok) { showToast('Contact deleted', 'success'); loadContacts(); }
@@ -7610,10 +7767,10 @@ window.addBankDetailSlot = function(data) {
 
 
 // --- Legal Settings Logic ---
-function handleSettingsSignatureUpload(event) {
+async function handleSettingsSignatureUpload(event) {
     var file = event.target.files[0];
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) { alert('Signature image must be under 2MB.'); return; }
+    if (file.size > 2 * 1024 * 1024) { await uiAlert('Signature image must be under 2MB.'); return; }
     var reader = new FileReader();
     reader.onload = function(e) {
         var b64 = e.target.result;
@@ -7864,7 +8021,7 @@ async function saveJob() {
 window.saveJob = saveJob;
 
 async function deleteJob(jobId) {
-    if (!confirm('Delete this job?')) return;
+    if (!await uiConfirm('Delete this job?')) return;
     try {
         var res = await fetch('/api/recruitment/jobs/' + jobId, { method: 'DELETE' });
         var data = await res.json();
@@ -8005,11 +8162,11 @@ async function saveInterview() {
 window.saveInterview = saveInterview;
 
 async function recordInterviewOutcome(ivId) {
-    var outcome = prompt('Outcome — pass, fail or hold:', 'pass');
+    var outcome = await uiPrompt('Outcome — pass, fail or hold:', 'pass');
     if (outcome === null) return;
-    var score = prompt('Score out of 5:', '3');
+    var score = await uiPrompt('Score out of 5:', '3');
     if (score === null) return;
-    var feedback = prompt('Feedback (optional):', '') || '';
+    var feedback = await uiPrompt('Feedback (optional):', '') || '';
     try {
         var res = await fetch('/api/recruitment/interviews/' + ivId, {
             method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -8025,7 +8182,7 @@ async function recordInterviewOutcome(ivId) {
 window.recordInterviewOutcome = recordInterviewOutcome;
 
 async function deleteInterview(ivId) {
-    if (!confirm('Remove this interview?')) return;
+    if (!await uiConfirm('Remove this interview?')) return;
     try {
         await fetch('/api/recruitment/interviews/' + ivId, { method: 'DELETE' });
         renderCandidateInterviews(recCurrentSubId);
@@ -8111,7 +8268,7 @@ window.saveOffer = saveOffer;
 async function setOfferStatus(offerId, status) {
     var body = { status: status };
     if (status === 'declined') {
-        var reason = prompt('Reason for declining (optional):', '');
+        var reason = await uiPrompt('Reason for declining (optional):', '');
         if (reason === null) return;
         body.decline_reason = reason;
     }
@@ -8172,7 +8329,7 @@ window.sendCandidateEmail = sendCandidateEmail;
 // --- Reject / reopen -------------------------------------------------------
 async function rejectCandidate() {
     if (!recCurrentSubId) return;
-    var reason = prompt('Why are you rejecting this candidate?\n(Recorded against the application.)', '');
+    var reason = await uiPrompt('Why are you rejecting this candidate?\n(Recorded against the application.)', '');
     if (reason === null) return;
     if (!reason.trim()) { showToast('A reason is required', 'error'); return; }
     try {
@@ -8558,7 +8715,7 @@ async function reviewDocument(reqId, decision) {
     var note = '';
     if (decision === 'reject') {
         // The employee has to know what to fix, so a reason is required.
-        note = prompt('Why is this being rejected?\n(The employee sees this.)', '');
+        note = await uiPrompt('Why is this being rejected?\n(The employee sees this.)', '');
         if (note === null) return;
         if (!note.trim()) { showToast('A reason is required', 'error'); return; }
     }
@@ -8717,7 +8874,7 @@ async function saveRequirement() {
 window.saveRequirement = saveRequirement;
 
 async function deleteRequirement(id) {
-    if (!confirm('Remove this document requirement?\nAnything already submitted is kept.')) return;
+    if (!await uiConfirm('Remove this document requirement?\nAnything already submitted is kept.')) return;
     try {
         var res = await fetch('/api/onboarding/requirements/' + id, { method: 'DELETE' });
         var data = await res.json();
@@ -9784,7 +9941,7 @@ window.setQuoteStatus = setQuoteStatus;
 
 async function convertQuoteToInvoice() {
     if (!currentQuote) return;
-    if (!confirm('Create an invoice from quote ' + currentQuote.number + '?')) return;
+    if (!await uiConfirm('Create an invoice from quote ' + currentQuote.number + '?')) return;
     try {
         var res = await fetch('/api/quotes/' + encodeURIComponent(currentQuote.number) + '/convert', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -9802,7 +9959,7 @@ window.convertQuoteToInvoice = convertQuoteToInvoice;
 
 async function deleteQuote() {
     if (!currentQuote) return;
-    if (!confirm('Delete quote ' + currentQuote.number + '? This cannot be undone.')) return;
+    if (!await uiConfirm('Delete quote ' + currentQuote.number + '? This cannot be undone.')) return;
     try {
         var res = await fetch('/api/quotes/' + encodeURIComponent(currentQuote.number), {
             method: 'DELETE', credentials: 'same-origin',
@@ -10068,7 +10225,7 @@ async function nudgeStarter(empId) {
 window.nudgeStarter = nudgeStarter;
 
 async function finishOnboarding(empId) {
-    if (!confirm('Mark onboarding complete? They become an active employee.')) return;
+    if (!await uiConfirm('Mark onboarding complete? They become an active employee.')) return;
     try {
         var res = await fetch('/api/employees/' + empId + '/complete-onboarding', {
             method: 'POST', credentials: 'same-origin',
@@ -10294,9 +10451,9 @@ async function makeInvoiceRecurring() {
     });
     if (!line_items.length) { showToast('Add at least one line item', 'error'); return; }
 
-    var frequency = prompt('How often? weekly, monthly, quarterly or yearly', 'monthly');
+    var frequency = await uiPrompt('How often? weekly, monthly, quarterly or yearly', 'monthly');
     if (!frequency) return;
-    var firstIssue = prompt('First issue date (YYYY-MM-DD)',
+    var firstIssue = await uiPrompt('First issue date (YYYY-MM-DD)',
         (document.getElementById('inv-issue-date') || {}).value ||
         localDate(new Date()));
     if (!firstIssue) return;
@@ -10331,7 +10488,7 @@ async function makeInvoiceRecurring() {
 window.makeInvoiceRecurring = makeInvoiceRecurring;
 
 async function stopRecurring(id) {
-    if (!confirm('Stop this recurring invoice? Invoices already raised are kept.')) return;
+    if (!await uiConfirm('Stop this recurring invoice? Invoices already raised are kept.')) return;
     try {
         var res = await fetch('/api/recurring-invoices/' + id, {
             method: 'DELETE', credentials: 'same-origin',
@@ -10421,11 +10578,11 @@ function applyRoleToUi() {
 }
 
 async function inviteTeamMember() {
-    var email = prompt('Their work email address');
+    var email = await uiPrompt('Their work email address');
     if (!email) return;
-    var role = prompt('Role: admin or viewer', 'admin');
+    var role = await uiPrompt('Role: admin or viewer', 'admin');
     if (!role) return;
-    var name = prompt('Their name (optional)') || '';
+    var name = await uiPrompt('Their name (optional)') || '';
     try {
         var res = await fetch('/api/team/invite', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -10465,7 +10622,7 @@ async function updateTeamMember(id, body, okMessage) {
 }
 
 async function removeTeamMember(id) {
-    if (!confirm('Remove them from the team? They will not be able to sign in.')) return;
+    if (!await uiConfirm('Remove them from the team? They will not be able to sign in.')) return;
     try {
         var res = await fetch('/api/team/' + id, { method: 'DELETE', credentials: 'same-origin' });
         var data = await res.json().catch(function () { return {}; });
@@ -10927,7 +11084,7 @@ async function saveBrandingTheme() {
 window.saveBrandingTheme = saveBrandingTheme;
 
 async function newBrandingTheme() {
-    var name = prompt('Name for the new theme');
+    var name = await uiPrompt('Name for the new theme');
     if (!name) return;
     try {
         var res = await fetch('/api/branding-themes', {
@@ -10948,7 +11105,7 @@ window.newBrandingTheme = newBrandingTheme;
 async function deleteBrandingTheme() {
     var t = currentTheme();
     if (!t) return;
-    if (!confirm('Delete the theme "' + t.name + '"?')) return;
+    if (!await uiConfirm('Delete the theme "' + t.name + '"?')) return;
     try {
         var res = await fetch('/api/branding-themes/' + t.id, {
             method: 'DELETE', credentials: 'same-origin'
@@ -11300,7 +11457,7 @@ window.sendAnnouncement = sendAnnouncement;
 // repeating why anything was returned - so the reply can be right first time.
 async function chaseDocuments(employeeId) {
     if (!employeeId) return;
-    var extra = prompt('Anything to add? (optional)') || '';
+    var extra = await uiPrompt('Anything to add? (optional)') || '';
     try {
         var res = await fetch('/api/hr/employees/' + employeeId + '/chase-documents', {
             method: 'POST',
@@ -11509,7 +11666,7 @@ async function savePaymentGateway(provider) {
 window.savePaymentGateway = savePaymentGateway;
 
 async function removePaymentGateway(provider) {
-    if (!confirm('Remove these keys? Invoices will stop offering online payment.')) return;
+    if (!await uiConfirm('Remove these keys? Invoices will stop offering online payment.')) return;
     try {
         var res = await fetch('/api/payment-gateways/' + provider, {
             method: 'DELETE', credentials: 'same-origin'
