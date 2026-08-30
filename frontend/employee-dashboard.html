@@ -6,7 +6,7 @@
   <title>aniprotech - Employee Portal</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <meta name="theme-color" content="#0b0f19">
-  <link rel="stylesheet" href="tailwind.css?v=108">
+  <link rel="stylesheet" href="tailwind.css?v=110">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -34,11 +34,11 @@
     .notification-badge { animation: notifPulse 2s infinite; }
     @keyframes notifPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.1); } }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=108">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=108">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=108">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=108">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=108">
+    <link rel="stylesheet" href="mobile.css?v=110">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=110">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=110">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=110">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=110">
     <script src="/dialogs.js?v=1"></script>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -121,6 +121,11 @@
         <button onclick="switchTab('team')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="team">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
           Team
+        </button>
+        <button onclick="switchTab('surveys')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="surveys">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>
+          Surveys
+          <span id="surveyBadge" class="hidden ml-1 px-1.5 py-0.5 rounded-full bg-brand-500 text-white text-[10px]">0</span>
         </button>
         <button onclick="switchTab('calendar')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="calendar">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
@@ -479,6 +484,13 @@
          it has nothing about anybody else and says so if asked. -->
     <!-- The month, and the days already free. Booking annual leave over a
          public holiday spends a day nobody needed to spend. -->
+    <!-- Surveys. What the promise says decides how somebody answers the
+         next question, so it is on the form itself rather than in a policy. -->
+    <div id="tab-surveys" class="tab-panel hidden fade-in">
+      <div id="surveyList" class="grid gap-4"></div>
+      <div id="surveyForm" class="hidden"></div>
+    </div>
+
     <div id="tab-calendar" class="tab-panel hidden fade-in">
       <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden mb-4">
         <div class="p-4 border-b border-gray-100 flex items-center gap-3 flex-wrap">
@@ -944,7 +956,170 @@
       if (tab === 'payslips') loadPayslips();
       if (tab === 'assistant') startAssistant();
       if (tab === 'calendar') loadCalendar();
+      if (tab === 'surveys') loadMySurveys();
       if (tab === 'notices') loadNotices();
+    }
+
+
+    // --- Surveys -----------------------------------------------------------
+    // The promise about anonymity is shown on the form, not in a policy
+    // somewhere: it is what decides how somebody answers the next question.
+
+    var _survey = null;
+
+    async function loadMySurveys() {
+      var list = document.getElementById('surveyList');
+      var form = document.getElementById('surveyForm');
+      if (!list) return;
+      form.classList.add('hidden');
+      list.classList.remove('hidden');
+
+      var rows = [];
+      try {
+        var res = await apiGet('/api/employee/surveys');
+        if (res.ok) {
+          var body = await res.json();
+          rows = Array.isArray(body) ? body : [];
+        }
+      } catch (e) { /* the empty state covers it */ }
+
+      var waiting = rows.filter(function (r) { return !r.responded; });
+      var badge = document.getElementById('surveyBadge');
+      if (badge) {
+        badge.textContent = waiting.length;
+        badge.classList.toggle('hidden', !waiting.length);
+      }
+
+      if (!rows.length) {
+        list.innerHTML = '<div class="bg-white rounded-2xl border border-gray-100 p-6 text-center text-gray-400 text-sm">Nothing to answer right now.</div>';
+        return;
+      }
+
+      list.innerHTML = rows.map(function (r) {
+        return '<div class="bg-white rounded-2xl border border-gray-100 p-5">' +
+          '<div class="font-semibold text-gray-900">' + esc(r.title) + '</div>' +
+          (r.description ? '<div class="text-sm text-gray-500 mt-1">' + esc(r.description) + '</div>' : '') +
+          '<div class="text-xs mt-2 ' + (r.anonymous ? 'text-emerald-600' : 'text-gray-400') + '">' +
+            (r.anonymous ? 'Anonymous - your answers are stored without your name'
+                         : 'Your name is recorded with your answers') +
+          '</div>' +
+          '<div class="mt-3">' +
+            (r.responded
+              ? '<span class="text-xs text-gray-400">Answered - thank you</span>'
+              : '<button onclick="openSurvey(' + r.id + ')" class="px-4 py-2 rounded-xl bg-brand-500 text-white text-sm font-semibold hover:bg-brand-600 transition-colors">Answer</button>') +
+          '</div></div>';
+      }).join('');
+    }
+
+    async function openSurvey(id) {
+      var list = document.getElementById('surveyList');
+      var form = document.getElementById('surveyForm');
+      try {
+        var res = await apiGet('/api/employee/surveys/' + id);
+        if (!res.ok) { await uiAlert('That survey is no longer open.'); return; }
+        _survey = await res.json();
+      } catch (e) { await uiAlert('Could not open that survey.'); return; }
+
+      list.classList.add('hidden');
+      form.classList.remove('hidden');
+
+      form.innerHTML =
+        '<div class="bg-white rounded-2xl border border-gray-100 overflow-hidden">' +
+          '<div class="p-5 border-b border-gray-100">' +
+            '<h3 class="font-semibold text-gray-900">' + esc(_survey.title) + '</h3>' +
+            (_survey.description ? '<p class="text-sm text-gray-500 mt-1">' + esc(_survey.description) + '</p>' : '') +
+            '<div class="mt-3 p-3 rounded-xl text-xs ' +
+              (_survey.anonymous ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-50 text-gray-500') + '">' +
+              esc(_survey.promise) + '</div>' +
+          '</div>' +
+          '<div class="p-5 space-y-5">' +
+            _survey.questions.map(surveyQuestionHtml).join('') +
+          '</div>' +
+          '<div id="surveyError" class="hidden px-5 pb-2 text-sm text-red-600"></div>' +
+          '<div class="p-4 border-t border-gray-100 flex gap-2 justify-end">' +
+            '<button onclick="loadMySurveys()" class="px-4 py-2 rounded-xl border border-gray-200 text-sm">Not now</button>' +
+            '<button id="surveySend" onclick="submitSurvey()" class="px-5 py-2 rounded-xl bg-brand-500 text-white text-sm font-semibold hover:bg-brand-600 transition-colors">Send</button>' +
+          '</div>' +
+        '</div>';
+    }
+
+    function surveyQuestionHtml(q) {
+      var body;
+      if (q.kind === 'scale') {
+        body = '<div class="flex gap-2 mt-2">' + [1, 2, 3, 4, 5].map(function (n) {
+          return '<label class="flex-1 text-center cursor-pointer">' +
+            '<input type="radio" name="sq-' + q.id + '" value="' + n + '" class="sr-only peer">' +
+            '<div class="py-2 rounded-xl border border-gray-200 text-sm peer-checked:bg-brand-500 ' +
+              'peer-checked:text-white peer-checked:border-brand-500">' + n + '</div>' +
+          '</label>';
+        }).join('') + '</div>' +
+        '<div class="flex justify-between text-[11px] text-gray-400 mt-1"><span>Not at all</span><span>Very</span></div>';
+      } else if (q.kind === 'yes_no') {
+        body = '<div class="flex gap-2 mt-2">' + ['Yes', 'No'].map(function (v) {
+          return '<label class="flex-1 text-center cursor-pointer">' +
+            '<input type="radio" name="sq-' + q.id + '" value="' + v + '" class="sr-only peer">' +
+            '<div class="py-2 rounded-xl border border-gray-200 text-sm peer-checked:bg-brand-500 ' +
+              'peer-checked:text-white peer-checked:border-brand-500">' + v + '</div>' +
+          '</label>';
+        }).join('') + '</div>';
+      } else {
+        body = '<textarea id="sq-' + q.id + '" rows="3" maxlength="4000" ' +
+          'class="mt-2 w-full px-3 py-2 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" ' +
+          'placeholder="In your own words"></textarea>';
+      }
+      return '<div>' +
+        '<div class="text-sm font-medium text-gray-900">' + esc(q.text) +
+        (q.required ? '' : ' <span class="text-xs text-gray-400">(optional)</span>') + '</div>' +
+        body + '</div>';
+    }
+
+    async function submitSurvey() {
+      if (!_survey) return;
+      var answers = {};
+      for (var i = 0; i < _survey.questions.length; i++) {
+        var q = _survey.questions[i];
+        var value = '';
+        if (q.kind === 'text') {
+          var box = document.getElementById('sq-' + q.id);
+          value = box ? box.value.trim() : '';
+        } else {
+          var picked = document.querySelector('input[name="sq-' + q.id + '"]:checked');
+          value = picked ? picked.value : '';
+        }
+        if (q.required && !value) {
+          var err = document.getElementById('surveyError');
+          err.textContent = 'Still to answer: ' + q.text;
+          err.classList.remove('hidden');
+          return;
+        }
+        if (value) answers[q.id] = value;
+      }
+
+      var btn = document.getElementById('surveySend');
+      btn.disabled = true;
+      try {
+        var res = await fetch('/api/employee/surveys/' + _survey.id + '/respond', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin', body: JSON.stringify({ answers: answers })
+        });
+        var d = await res.json();
+        if (!res.ok) {
+          var e2 = document.getElementById('surveyError');
+          e2.textContent = d.detail || 'That did not send.';
+          e2.classList.remove('hidden');
+          return;
+        }
+        await uiAlert(d.anonymous
+          ? 'Thank you. Your answers were stored without your name.'
+          : 'Thank you.', { title: 'Sent' });
+        loadMySurveys();
+      } catch (e) {
+        var e3 = document.getElementById('surveyError');
+        e3.textContent = 'That did not send.';
+        e3.classList.remove('hidden');
+      } finally {
+        btn.disabled = false;
+      }
     }
 
     // --- Calendar ----------------------------------------------------------

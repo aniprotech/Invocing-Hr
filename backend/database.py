@@ -1380,5 +1380,123 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 48: {sys.exc_info()[1]}")
 
+            # Equipment, and who is holding it. Who holds a thing is read from
+            # the assignment with no returned_at, never stored on the asset.
+            try:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS assets (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        tag VARCHAR NOT NULL,
+                        name VARCHAR NOT NULL,
+                        category VARCHAR DEFAULT 'other',
+                        serial_number VARCHAR DEFAULT '',
+                        notes VARCHAR DEFAULT '',
+                        purchase_date VARCHAR DEFAULT '',
+                        purchase_cost DOUBLE PRECISION DEFAULT 0,
+                        currency VARCHAR DEFAULT 'GBP',
+                        state VARCHAR DEFAULT 'available',
+                        condition VARCHAR DEFAULT 'good',
+                        created_at VARCHAR DEFAULT (NOW()::TEXT),
+                        CONSTRAINT uq_client_asset_tag UNIQUE (client_id, tag)
+                    )
+                """))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS asset_assignments (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        asset_id INTEGER REFERENCES assets(id) NOT NULL,
+                        employee_id INTEGER REFERENCES employees(id) NOT NULL,
+                        issued_at VARCHAR DEFAULT (NOW()::TEXT),
+                        issued_by VARCHAR DEFAULT '',
+                        condition_out VARCHAR DEFAULT 'good',
+                        returned_at VARCHAR DEFAULT '',
+                        returned_to VARCHAR DEFAULT '',
+                        condition_in VARCHAR DEFAULT '',
+                        notes VARCHAR DEFAULT '',
+                        created_at VARCHAR DEFAULT (NOW()::TEXT)
+                    )
+                """))
+                # The question asked most often is "what is still out", so the
+                # index is on exactly that.
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_assignments_open "
+                    "ON asset_assignments (client_id, returned_at)"))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_assignments_employee "
+                    "ON asset_assignments (employee_id, returned_at)"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 49: {sys.exc_info()[1]}")
+
+            # Surveys. employee_id on a response is nullable on purpose: on an
+            # anonymous survey it is left null, and that absence is the whole
+            # guarantee. Who has answered lives on survey_recipients, which
+            # records that somebody replied and never what they said.
+            try:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS surveys (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        title VARCHAR NOT NULL,
+                        description VARCHAR DEFAULT '',
+                        anonymous BOOLEAN DEFAULT TRUE,
+                        status VARCHAR DEFAULT 'draft',
+                        audience VARCHAR DEFAULT 'everyone',
+                        department_id INTEGER REFERENCES departments(id),
+                        opens_at VARCHAR DEFAULT '',
+                        closes_at VARCHAR DEFAULT '',
+                        created_by VARCHAR DEFAULT '',
+                        created_at VARCHAR DEFAULT (NOW()::TEXT)
+                    )
+                """))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS survey_questions (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        survey_id INTEGER REFERENCES surveys(id) NOT NULL,
+                        position INTEGER DEFAULT 0,
+                        text VARCHAR NOT NULL,
+                        kind VARCHAR DEFAULT 'scale',
+                        options TEXT DEFAULT '',
+                        required BOOLEAN DEFAULT TRUE
+                    )
+                """))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS survey_recipients (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        survey_id INTEGER REFERENCES surveys(id) NOT NULL,
+                        employee_id INTEGER REFERENCES employees(id) NOT NULL,
+                        responded BOOLEAN DEFAULT FALSE,
+                        responded_on VARCHAR DEFAULT '',
+                        CONSTRAINT uq_survey_recipient UNIQUE (survey_id, employee_id)
+                    )
+                """))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS survey_responses (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        survey_id INTEGER REFERENCES surveys(id) NOT NULL,
+                        employee_id INTEGER REFERENCES employees(id),
+                        submitted_on VARCHAR DEFAULT (NOW()::TEXT)
+                    )
+                """))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS survey_answers (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        response_id INTEGER REFERENCES survey_responses(id) NOT NULL,
+                        question_id INTEGER REFERENCES survey_questions(id) NOT NULL,
+                        value TEXT DEFAULT ''
+                    )
+                """))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_survey_recipients_open "
+                    "ON survey_recipients (survey_id, responded)"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 50: {sys.exc_info()[1]}")
+
     except Exception as e:
         print(f"Column check skipped: {e}")

@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=108">
-    <link rel="stylesheet" href="mobile.css?v=108">
+    <link rel="stylesheet" href="styles.css?v=110">
+    <link rel="stylesheet" href="mobile.css?v=110">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,10 +57,10 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=108">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=108">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=108">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=108">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=110">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=110">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=110">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=110">
     <script src="/dialogs.js?v=1"></script>
 </head>
 <body>
@@ -132,6 +132,8 @@
                             <a href="#/calendar" class="nav-item" id="nav-calendar" data-portal="hr">Calendar</a>
                             <a href="#/people" class="nav-item" id="nav-people" data-portal="hr">Employees</a>
                             <a href="#/org-chart" class="nav-item" id="nav-org" data-portal="hr">Org Chart</a>
+                            <a href="#/assets" class="nav-item" id="nav-assets" data-portal="hr">Assets</a>
+                            <a href="#/surveys" class="nav-item" id="nav-surveys" data-portal="hr">Surveys</a>
                             <a href="#/leave" class="nav-item" id="nav-leave" data-portal="hr">Leave</a>
                             <a href="#/goals" class="nav-item" id="nav-goals" data-portal="hr">Goals</a>
                             <a href="#/staff-requests" class="nav-item" id="nav-staff-requests" data-portal="hr">Requests</a>
@@ -201,6 +203,100 @@
                      the same form with one field hidden, because they are the
                      same act - the difference is only whether there is
                      something to prove first. -->
+
+    <!-- Adding a thing, and issuing it. Two acts, one form, because an asset
+         that is never issued to anybody is a row nobody needed. -->
+
+    <!-- The anonymity choice is made here and never again: people
+         answer on the strength of what they were told. -->
+    <div id="survey-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-content" style="max-width:560px;">
+            <div class="modal-header">
+                <h3>New survey</h3>
+                <button class="btn-icon" onclick="closeSurveyModal()" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Title</label>
+                    <input type="text" id="survey-title" class="form-control" placeholder="How are things?" maxlength="200">
+                </div>
+                <div class="form-group">
+                    <label>What it is for</label>
+                    <textarea id="survey-desc" class="form-control" rows="2" maxlength="1000"
+                              placeholder="Shown to everybody you ask."></textarea>
+                </div>
+
+                <div class="form-group" style="padding:12px;border-radius:8px;background:rgba(14,165,233,0.08);">
+                    <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer;">
+                        <input type="checkbox" id="survey-anon" checked style="margin-top:3px;">
+                        <span>
+                            <strong>Anonymous</strong>
+                            <span id="survey-anon-note" style="display:block;font-size:0.78rem;color:var(--text-secondary);margin-top:2px;">
+                                Answers are stored without a name and cannot be traced back.
+                                You will still see who has and has not replied.
+                            </span>
+                        </span>
+                    </label>
+                </div>
+
+                <div class="form-group">
+                    <label>Questions</label>
+                    <div id="survey-questions"></div>
+                    <button class="btn btn-sm btn-outline" onclick="addSurveyQuestion()" style="margin-top:8px;">+ Add question</button>
+                </div>
+                <div id="survey-error" style="display:none;color:var(--danger-text);font-size:0.85rem;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeSurveyModal()">Cancel</button>
+                <button class="btn btn-primary" id="survey-save-btn" onclick="saveSurvey()">Save as draft</button>
+            </div>
+        </div>
+    </div>
+    <div id="asset-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-content" style="max-width:460px;">
+            <div class="modal-header">
+                <h3 id="asset-modal-title">Add asset</h3>
+                <button class="btn-icon" onclick="closeAssetModal()" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Tag</label>
+                    <input type="text" id="asset-tag" class="form-control" placeholder="LAP-014" maxlength="60">
+                    <small style="color:var(--text-secondary);font-size:0.75rem;">How somebody identifies it in their hands.</small>
+                </div>
+                <div class="form-group">
+                    <label>What it is</label>
+                    <input type="text" id="asset-name" class="form-control" placeholder="MacBook Air 13" maxlength="200">
+                </div>
+                <div class="form-group">
+                    <label>Category</label>
+                    <select id="asset-category" class="form-control">
+                        <option value="laptop">Laptop</option>
+                        <option value="phone">Phone</option>
+                        <option value="monitor">Monitor</option>
+                        <option value="peripheral">Peripheral</option>
+                        <option value="furniture">Furniture</option>
+                        <option value="vehicle">Vehicle</option>
+                        <option value="access_card">Access card</option>
+                        <option value="other">Other</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Serial number</label>
+                    <input type="text" id="asset-serial" class="form-control" maxlength="120">
+                </div>
+                <div class="form-group">
+                    <label>What it cost</label>
+                    <input type="number" step="0.01" min="0" id="asset-cost" class="form-control" value="0">
+                </div>
+                <div id="asset-error" style="display:none;color:var(--danger-text);font-size:0.85rem;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeAssetModal()">Cancel</button>
+                <button class="btn btn-primary" id="asset-save-btn" onclick="saveAsset()">Save</button>
+            </div>
+        </div>
+    </div>
                 <div id="password-modal" class="modal-overlay" style="display:none;">
                     <div class="modal-content" style="max-width:420px;">
                         <div class="modal-header">
@@ -1586,6 +1682,61 @@
 
                 <!-- Requests staff have raised. Before this, anything that was
                      not leave happened over email. -->
+                <!-- Equipment. The reason to open this page is that somebody
+                     has left and nobody knows what they still have, so what is
+                     out with a leaver sits above the inventory. -->
+                <div id="assets-view" class="view-section dashboard" style="display: none;">
+                    <div class="invoices-header-area">
+                        <div>
+                            <h1>Assets</h1>
+                            <p class="subtitle">Equipment, and who has it</p>
+                        </div>
+                        <div class="invoices-actions">
+                            <select id="asset-filter" onchange="loadAssets()"
+                                    style="background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border-color);border-radius:8px;padding:8px 12px;">
+                                <option value="">All</option>
+                                <option value="assigned">Out with somebody</option>
+                                <option value="available">Available</option>
+                                <option value="repair">Being repaired</option>
+                                <option value="retired">Retired</option>
+                            </select>
+                            <button class="btn btn-primary" onclick="openAssetModal()">+ Add asset</button>
+                        </div>
+                    </div>
+
+                    <div id="asset-chase" style="display:none;margin-bottom:20px;"></div>
+                    <div id="asset-stats" class="grid-4 mb-24"></div>
+                    <div id="assets-list"></div>
+                </div>
+
+                <!-- Surveys. Whether people answer honestly rests on whether
+                     they believe the anonymous one is anonymous, so the promise
+                     is stated on the list, on the form, and in the results. -->
+                <div id="surveys-view" class="view-section dashboard" style="display: none;">
+                    <div class="invoices-header-area">
+                        <div>
+                            <h1>Surveys</h1>
+                            <p class="subtitle">Ask your team, and find out what they think</p>
+                        </div>
+                        <div class="invoices-actions">
+                            <button class="btn btn-primary" onclick="openSurveyModal()">+ New survey</button>
+                        </div>
+                    </div>
+                    <div id="surveys-list"></div>
+                </div>
+
+                <div id="survey-results-view" class="view-section dashboard" style="display: none;">
+                    <div class="invoices-header-area">
+                        <div>
+                            <span style="color:var(--text-secondary);font-size:0.9rem;cursor:pointer;" onclick="showView('surveys-view')">Surveys</span>
+                            <h1 id="survey-results-title">Results</h1>
+                            <p class="subtitle" id="survey-results-sub"></p>
+                        </div>
+                        <div class="invoices-actions" id="survey-results-actions"></div>
+                    </div>
+                    <div id="survey-results-body"></div>
+                </div>
+
                 <div id="staff-requests-view" class="view-section dashboard" style="display:none;">
                     <div class="invoices-header-area">
                         <div>
@@ -3178,7 +3329,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="app.js?v=108"></script>
+    <script src="app.js?v=110"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">

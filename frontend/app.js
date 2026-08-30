@@ -328,6 +328,9 @@ var NAV_FOR_VIEW = {
     'leave-view': 'nav-leave',
     'goals-view': 'nav-goals',
     'calendar-view': 'nav-calendar',
+    'assets-view': 'nav-assets',
+    'surveys-view': 'nav-surveys',
+    'survey-results-view': 'nav-surveys',
     'onboarding-hub-view': 'nav-onboarding',
     'recruitment-view': 'nav-recruitment',
     'payroll-view': 'nav-payroll',
@@ -367,6 +370,8 @@ var ROUTE_SLUGS = {
     'leave-view': 'leave',
     'goals-view': 'goals',
     'calendar-view': 'calendar',
+    'assets-view': 'assets',
+    'surveys-view': 'surveys',
     'payroll-view': 'payroll',
     'recruitment-view': 'recruitment',
     'onboarding-hub-view': 'onboarding',
@@ -549,6 +554,555 @@ function showView(viewId) {
     if (ROUTE_SLUGS[viewId]) setRoute(ROUTE_SLUGS[viewId]);
 }
 window.showView = showView;
+
+// --- Surveys ---------------------------------------------------------------
+// Whether people answer honestly rests on whether they believe the anonymous
+// one is anonymous. So the promise is repeated everywhere it is relevant: on
+// the list, on the form that creates it, and in the results.
+
+var _surveyDraft = [];
+
+async function loadSurveys() {
+    var host = document.getElementById('surveys-list');
+    if (!host) return;
+    var rows = [];
+    try {
+        var res = await fetch('/api/surveys');
+        if (!res.ok) throw new Error('nope');
+        var body = await res.json();
+        rows = Array.isArray(body) ? body : [];
+    } catch (e) {
+        host.innerHTML = '<div class="widget" style="padding:24px;text-align:center;' +
+            'color:var(--text-secondary);">Could not load the surveys.</div>';
+        return;
+    }
+
+    if (!rows.length) {
+        host.innerHTML = '<div class="widget" style="padding:32px;text-align:center;' +
+            'color:var(--text-secondary);">Nothing asked yet.</div>';
+        return;
+    }
+
+    host.innerHTML = rows.map(function (s) {
+        var pct = s.asked ? Math.round((s.answered / s.asked) * 100) : 0;
+        return '<div class="widget" style="margin-bottom:12px;">' +
+            '<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:4px 0;">' +
+                '<div style="flex:1;min-width:220px;">' +
+                    '<div style="font-weight:600;">' + esc(s.title) + '</div>' +
+                    '<div style="font-size:0.78rem;color:var(--text-secondary);margin-top:2px;">' +
+                        esc(s.question_count + ' question' + (s.question_count === 1 ? '' : 's')) +
+                        ' &middot; ' +
+                        (s.anonymous
+                            ? '<span style="color:var(--success-color);">anonymous</span>'
+                            : 'names recorded') +
+                        (s.status === 'draft' ? '' :
+                            ' &middot; ' + s.answered + ' of ' + s.asked + ' replied (' + pct + '%)') +
+                    '</div>' +
+                '</div>' +
+                '<span style="font-size:0.75rem;padding:3px 10px;border-radius:20px;' +
+                    'background:var(--bg-input);color:var(--text-secondary);">' +
+                    esc(s.status) + '</span>' +
+                surveyActions(s) +
+            '</div></div>';
+    }).join('');
+}
+window.loadSurveys = loadSurveys;
+
+function surveyActions(s) {
+    if (s.status === 'draft') {
+        return '<button class="btn btn-sm btn-primary" onclick="openSurveyToStaff(' + s.id + ')">Send it out</button>' +
+               '<button class="btn btn-sm btn-outline" onclick="deleteSurvey(' + s.id + ', &quot;' + esc(s.title) + '&quot;)">Delete</button>';
+    }
+    var out = '<button class="btn btn-sm btn-outline" onclick="showSurveyResults(' + s.id + ')">Results</button>';
+    if (s.status === 'open') {
+        out += '<button class="btn btn-sm btn-outline" onclick="closeSurveyToStaff(' + s.id + ')">Close</button>';
+    }
+    return out;
+}
+
+async function openSurveyToStaff(id) {
+    if (!await uiConfirm('Send this out? Once people start answering, whether it '
+        + 'is anonymous can no longer change - they answer on the strength of '
+        + 'what they are told.', { title: 'Send the survey', confirmText: 'Send it' })) return;
+    try {
+        var res = await fetch('/api/surveys/' + id + '/open', { method: 'POST' });
+        var d = await res.json();
+        if (!res.ok) { showToast(d.detail || 'That did not go through.', 'error'); return; }
+        showToast('Sent to ' + d.asked + ' ' + (d.asked === 1 ? 'person' : 'people'), 'success');
+        loadSurveys();
+    } catch (e) { showToast('That did not go through.', 'error'); }
+}
+window.openSurveyToStaff = openSurveyToStaff;
+
+async function closeSurveyToStaff(id) {
+    if (!await uiConfirm('Close this survey? Nobody will be able to answer after that.',
+        { title: 'Close the survey', confirmText: 'Close it' })) return;
+    try {
+        var res = await fetch('/api/surveys/' + id + '/close', { method: 'POST' });
+        if (!res.ok) { showToast('That did not go through.', 'error'); return; }
+        showToast('Survey closed', 'success');
+        loadSurveys();
+    } catch (e) { showToast('That did not go through.', 'error'); }
+}
+window.closeSurveyToStaff = closeSurveyToStaff;
+
+async function deleteSurvey(id, title) {
+    if (!await uiConfirm('Delete "' + title + '"? It has not been sent to anybody yet.',
+        { title: 'Delete survey', confirmText: 'Delete', danger: true })) return;
+    try {
+        var res = await fetch('/api/surveys/' + id, { method: 'DELETE' });
+        var d = await res.json();
+        if (!res.ok) { showToast(d.detail || 'That did not go through.', 'error'); return; }
+        showToast('Deleted', 'success');
+        loadSurveys();
+    } catch (e) { showToast('That did not go through.', 'error'); }
+}
+window.deleteSurvey = deleteSurvey;
+
+// --- results ---------------------------------------------------------------
+
+async function showSurveyResults(id) {
+    showView('survey-results-view');
+    var body = document.getElementById('survey-results-body');
+    body.innerHTML = '<div class="widget" style="padding:24px;color:var(--text-secondary);">Reading the replies...</div>';
+
+    var d;
+    try {
+        var res = await fetch('/api/surveys/' + id + '/results');
+        if (!res.ok) throw new Error('nope');
+        d = await res.json();
+    } catch (e) {
+        body.innerHTML = '<div class="widget" style="padding:24px;color:var(--danger-color);">Could not load the results.</div>';
+        return;
+    }
+
+    document.getElementById('survey-results-title').textContent = d.survey.title;
+    document.getElementById('survey-results-sub').textContent =
+        d.responses + ' of ' + d.asked + ' replied' +
+        (d.survey.anonymous ? ' - answers are anonymous' : '');
+    document.getElementById('survey-results-actions').innerHTML =
+        '<button class="btn btn-outline" onclick="showSurveyChase(' + id + ')">Who has not replied</button>';
+
+    var parts = [];
+    if (d.withholding_detail) {
+        parts.push('<div class="widget" style="border-left:3px solid var(--warning-color);margin-bottom:12px;">' +
+            '<div style="padding:12px 4px;font-size:0.85rem;color:var(--text-secondary);">' +
+            esc(d.withholding_reason) + '</div></div>');
+    }
+
+    parts.push(d.results.map(function (r) {
+        var inner = '';
+        if (r.kind === 'scale') {
+            inner = '<div style="font-size:1.6rem;font-weight:700;">' +
+                (r.average === null ? '&mdash;' : r.average) +
+                '<span style="font-size:0.8rem;font-weight:400;color:var(--text-secondary);"> average of 5</span></div>' +
+                '<div style="display:flex;gap:6px;margin-top:8px;">' +
+                [1, 2, 3, 4, 5].map(function (n) {
+                    var c = (r.spread || {})[String(n)] || 0;
+                    return '<div style="flex:1;text-align:center;">' +
+                        '<div style="font-size:0.8rem;font-weight:600;">' + c + '</div>' +
+                        '<div style="font-size:0.7rem;color:var(--text-secondary);">' + n + '</div></div>';
+                }).join('') + '</div>';
+        } else if (r.tally) {
+            var keys = Object.keys(r.tally);
+            inner = keys.length ? keys.map(function (k) {
+                return '<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:0.85rem;">' +
+                    '<span>' + esc(k) + '</span><strong>' + r.tally[k] + '</strong></div>';
+            }).join('') : '<span style="color:var(--text-secondary);font-size:0.85rem;">No answers yet</span>';
+        } else if (r.withheld) {
+            inner = '<div style="font-size:0.85rem;color:var(--text-secondary);">' +
+                'Written answers are hidden until enough people have replied that ' +
+                'one cannot be picked out.</div>';
+        } else {
+            inner = (r.comments || []).length
+                ? r.comments.map(function (c) {
+                    return '<div style="padding:8px 10px;border-radius:8px;background:var(--bg-input);' +
+                        'margin-bottom:6px;font-size:0.85rem;">' + esc(c) + '</div>';
+                }).join('')
+                : '<span style="color:var(--text-secondary);font-size:0.85rem;">Nothing written yet</span>';
+        }
+        return '<div class="widget" style="margin-bottom:12px;">' +
+            '<div class="widget-header"><h3>' + esc(r.text) + '</h3></div>' +
+            '<div style="padding:8px 0;">' + inner + '</div>' +
+            '<div style="font-size:0.72rem;color:var(--text-secondary);">' +
+            r.answered + ' answered</div></div>';
+    }).join(''));
+
+    body.innerHTML = parts.join('');
+}
+window.showSurveyResults = showSurveyResults;
+
+async function showSurveyChase(id) {
+    var d;
+    try {
+        var res = await fetch('/api/surveys/' + id + '/chase');
+        if (!res.ok) throw new Error('nope');
+        d = await res.json();
+    } catch (e) { showToast('Could not load that.', 'error'); return; }
+
+    var names = (d.outstanding || []).map(function (p) { return p.name; });
+    await uiAlert(
+        names.length
+            ? names.join('\n') + '\n\n' + d.answered + ' of ' + d.asked + ' have replied.'
+            : 'Everybody has replied.',
+        { title: 'Still to reply' });
+}
+window.showSurveyChase = showSurveyChase;
+
+// --- writing one -----------------------------------------------------------
+
+function openSurveyModal() {
+    document.getElementById('survey-title').value = '';
+    document.getElementById('survey-desc').value = '';
+    document.getElementById('survey-anon').checked = true;
+    _surveyDraft = [{ text: '', kind: 'scale' }];
+    renderSurveyQuestions();
+    setSurveyError('');
+    document.getElementById('survey-modal').style.display = 'flex';
+    document.getElementById('survey-title').focus();
+}
+window.openSurveyModal = openSurveyModal;
+
+function closeSurveyModal() {
+    document.getElementById('survey-modal').style.display = 'none';
+}
+window.closeSurveyModal = closeSurveyModal;
+
+function addSurveyQuestion() {
+    readSurveyQuestions();
+    _surveyDraft.push({ text: '', kind: 'scale' });
+    renderSurveyQuestions();
+}
+window.addSurveyQuestion = addSurveyQuestion;
+
+function removeSurveyQuestion(i) {
+    readSurveyQuestions();
+    _surveyDraft.splice(i, 1);
+    if (!_surveyDraft.length) _surveyDraft = [{ text: '', kind: 'scale' }];
+    renderSurveyQuestions();
+}
+window.removeSurveyQuestion = removeSurveyQuestion;
+
+// Typing is not lost when a question is added or removed, because the boxes
+// are re-rendered and would otherwise come back empty.
+function readSurveyQuestions() {
+    _surveyDraft = _surveyDraft.map(function (q, i) {
+        var t = document.getElementById('sq-text-' + i);
+        var k = document.getElementById('sq-kind-' + i);
+        return { text: t ? t.value : q.text, kind: k ? k.value : q.kind };
+    });
+}
+
+function renderSurveyQuestions() {
+    document.getElementById('survey-questions').innerHTML =
+        _surveyDraft.map(function (q, i) {
+            return '<div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;">' +
+                '<input type="text" id="sq-text-' + i + '" class="form-control" ' +
+                    'placeholder="What do you want to ask?" maxlength="500" ' +
+                    'value="' + esc(q.text) + '" style="flex:1;">' +
+                '<select id="sq-kind-' + i + '" class="form-control" style="max-width:130px;">' +
+                    ['scale', 'yes_no', 'text'].map(function (k) {
+                        var label = k === 'scale' ? '1 to 5' : (k === 'yes_no' ? 'Yes / No' : 'Free text');
+                        return '<option value="' + k + '"' + (q.kind === k ? ' selected' : '') + '>' + label + '</option>';
+                    }).join('') +
+                '</select>' +
+                '<button class="btn-icon" onclick="removeSurveyQuestion(' + i + ')" aria-label="Remove">&times;</button>' +
+            '</div>';
+        }).join('');
+}
+
+function setSurveyError(message) {
+    var box = document.getElementById('survey-error');
+    if (!box) return;
+    box.textContent = message || '';
+    box.style.display = message ? 'block' : 'none';
+}
+
+async function saveSurvey() {
+    readSurveyQuestions();
+    var title = document.getElementById('survey-title').value.trim();
+    var questions = _surveyDraft.filter(function (q) { return q.text.trim(); });
+
+    if (!title) { setSurveyError('Give the survey a title.'); return; }
+    if (!questions.length) { setSurveyError('Ask at least one question.'); return; }
+
+    var btn = document.getElementById('survey-save-btn');
+    btn.disabled = true;
+    setSurveyError('');
+    try {
+        var res = await fetch('/api/surveys', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                title: title,
+                description: document.getElementById('survey-desc').value.trim(),
+                anonymous: document.getElementById('survey-anon').checked,
+                questions: questions.map(function (q) {
+                    return { text: q.text.trim(), kind: q.kind };
+                }),
+            })
+        });
+        var d = await res.json();
+        if (!res.ok) { setSurveyError(d.detail || 'That did not save.'); return; }
+        closeSurveyModal();
+        showToast('Saved as a draft. Send it out when you are ready.', 'success');
+        loadSurveys();
+    } catch (e) {
+        setSurveyError('That did not save.');
+    } finally {
+        btn.disabled = false;
+    }
+}
+window.saveSurvey = saveSurvey;
+
+// --- Assets ----------------------------------------------------------------
+// What is out matters more than what exists: a list of equipment is a
+// spreadsheet, and the reason anybody opens this page is that somebody has
+// left and nobody knows what they still have.
+
+var _assetEmployees = [];
+
+var ASSET_TONE = {
+    assigned: 'var(--primary)',
+    available: 'var(--success-color)',
+    repair: 'var(--warning-color)',
+    retired: 'var(--text-secondary)',
+};
+var ASSET_WORDS = {
+    assigned: 'Out', available: 'Available',
+    repair: 'Being repaired', retired: 'Retired',
+};
+
+async function loadAssets() {
+    var host = document.getElementById('assets-list');
+    if (!host) return;
+    var filter = (document.getElementById('asset-filter') || {}).value || '';
+
+    var rows = [];
+    try {
+        var res = await fetch('/api/assets' + (filter ? '?status=' + filter : ''));
+        if (!res.ok) throw new Error('nope');
+        var body = await res.json();
+        rows = Array.isArray(body) ? body : [];
+    } catch (e) {
+        host.innerHTML = '<div class="widget" style="padding:24px;text-align:center;' +
+            'color:var(--text-secondary);">Could not load the assets.</div>';
+        return;
+    }
+
+    // The people list is needed to issue anything, so it is fetched once here
+    // rather than every time the menu opens.
+    try {
+        var er = await fetch('/api/employees');
+        if (er.ok) {
+            var emps = await er.json();
+            _assetEmployees = (Array.isArray(emps) ? emps : []).filter(function (e) {
+                return e.status !== 'terminated';
+            });
+        }
+    } catch (e) { /* issuing will say so if the list is empty */ }
+
+    loadAssetSummary();
+
+    if (!rows.length) {
+        host.innerHTML = '<div class="widget" style="padding:32px;text-align:center;' +
+            'color:var(--text-secondary);">' +
+            (filter ? 'Nothing matches that.' : 'No equipment on the books yet.') +
+            '</div>';
+        return;
+    }
+
+    host.innerHTML = '<div class="widget"><table style="width:100%;border-collapse:collapse;">' +
+        '<thead><tr>' +
+        ['Tag', 'What it is', 'Status', 'Who has it', ''].map(function (h) {
+            return '<th style="text-align:left;padding:10px 12px;font-size:0.72rem;' +
+                'text-transform:uppercase;letter-spacing:0.04em;color:var(--text-secondary);">' +
+                h + '</th>';
+        }).join('') + '</tr></thead><tbody>' +
+        rows.map(assetRow).join('') + '</tbody></table></div>';
+}
+window.loadAssets = loadAssets;
+
+function assetRow(a) {
+    var held = a.held_by;
+    return '<tr style="border-top:1px solid var(--border-color);">' +
+        '<td style="padding:10px 12px;font-weight:600;font-size:0.85rem;">' + esc(a.tag) + '</td>' +
+        '<td style="padding:10px 12px;font-size:0.85rem;">' + esc(a.name) +
+            '<div style="font-size:0.72rem;color:var(--text-secondary);">' +
+            esc((a.category || '').replace(/_/g, ' ')) +
+            (a.serial_number ? ' &middot; ' + esc(a.serial_number) : '') + '</div></td>' +
+        '<td style="padding:10px 12px;font-size:0.8rem;color:' +
+            (ASSET_TONE[a.status] || 'var(--text-secondary)') + ';">' +
+            esc(ASSET_WORDS[a.status] || a.status) + '</td>' +
+        '<td style="padding:10px 12px;font-size:0.85rem;">' +
+            (held ? esc(held.name) + '<div style="font-size:0.72rem;color:var(--text-secondary);">since ' +
+                esc(held.since) + '</div>' : '<span style="color:var(--text-secondary);">&mdash;</span>') +
+        '</td>' +
+        '<td style="padding:10px 12px;text-align:right;white-space:nowrap;">' +
+            (held
+                ? '<button class="btn btn-sm btn-outline" onclick="takeAssetBack(' + a.id + ', &quot;' + esc(a.tag) + '&quot;)">Take back</button>'
+                : (a.status === 'retired'
+                    ? ''
+                    : '<button class="btn btn-sm btn-outline" onclick="issueAsset(' + a.id + ', &quot;' + esc(a.tag) + '&quot;)">Issue</button>')) +
+        '</td>' +
+    '</tr>';
+}
+
+async function loadAssetSummary() {
+    var stats = document.getElementById('asset-stats');
+    var chase = document.getElementById('asset-chase');
+    if (!stats) return;
+    var d;
+    try {
+        var res = await fetch('/api/assets/summary');
+        if (!res.ok) return;
+        d = await res.json();
+    } catch (e) { return; }
+
+    var c = d.counts || {};
+    stats.innerHTML = [
+        ['Out with somebody', c.assigned, 'var(--primary)'],
+        ['Available', c.available, 'var(--success-color)'],
+        ['Being repaired', c.repair, 'var(--warning-color)'],
+        ['Total', c.total, ''],
+    ].map(function (t) {
+        return '<div class="stat-card is-centered">' +
+            '<span class="stat-value lg"' + (t[2] ? ' style="color:' + t[2] + ';"' : '') + '>' +
+            (t[1] || 0) + '</span><span class="stat-label">' + t[0] + '</span></div>';
+    }).join('');
+
+    // The only figure on this page that is a problem rather than a fact.
+    var out = d.still_out_with_leavers || [];
+    if (!out.length) { chase.style.display = 'none'; chase.innerHTML = ''; return; }
+    chase.style.display = 'block';
+    chase.innerHTML = '<div class="widget" style="border-left:3px solid var(--danger-color);">' +
+        '<div class="widget-header"><h3>Still out with someone who has left (' + out.length + ')</h3></div>' +
+        '<div style="padding:4px 0;">' + out.map(function (r) {
+            return '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;' +
+                'padding:10px 0;border-bottom:1px solid var(--border-color);">' +
+                '<div style="flex:1;min-width:200px;font-size:0.86rem;">' +
+                    '<strong>' + esc(r.tag) + '</strong> ' + esc(r.name) +
+                    '<div style="font-size:0.75rem;color:var(--text-secondary);">' +
+                    esc(r.employee) + ' &middot; ' + esc(r.employee_status) +
+                    ' &middot; since ' + esc(r.since) + '</div>' +
+                '</div>' +
+                '<button class="btn btn-sm btn-primary" onclick="takeAssetBack(' + r.asset_id +
+                    ', &quot;' + esc(r.tag) + '&quot;)">Mark returned</button>' +
+            '</div>';
+        }).join('') + '</div></div>';
+}
+
+async function issueAsset(id, tag) {
+    if (!_assetEmployees.length) {
+        await uiAlert('There is nobody to issue this to yet.');
+        return;
+    }
+    var names = _assetEmployees.map(function (e, i) {
+        return (i + 1) + '. ' + (e.full_name || (e.first_name + ' ' + e.last_name));
+    }).join('\n');
+    var pick = await uiPrompt('Issue ' + tag + ' to which person?\n\n' + names,
+                              '', { title: 'Issue equipment', confirmText: 'Issue' });
+    if (pick === null) return;
+    var n = parseInt(pick, 10);
+    if (!n || n < 1 || n > _assetEmployees.length) {
+        await uiAlert('Enter the number beside the person.');
+        return;
+    }
+    var emp = _assetEmployees[n - 1];
+    try {
+        var res = await fetch('/api/assets/' + id + '/assign', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ employee_id: emp.id })
+        });
+        var d = await res.json();
+        if (!res.ok) { showToast(d.detail || 'That did not go through.', 'error'); return; }
+        showToast(tag + ' issued', 'success');
+        loadAssets();
+    } catch (e) { showToast('That did not go through.', 'error'); }
+}
+window.issueAsset = issueAsset;
+
+async function takeAssetBack(id, tag) {
+    // The condition it comes back in decides whether it can go straight out
+    // again, so it is asked rather than assumed.
+    var condition = await uiPrompt(
+        'What condition is ' + tag + ' in?\n\ngood, fair, poor or damaged',
+        'good', { title: 'Take it back', confirmText: 'Take back' });
+    if (condition === null) return;
+    condition = (condition || '').trim().toLowerCase();
+    if (['good', 'fair', 'poor', 'damaged'].indexOf(condition) < 0) {
+        await uiAlert('Say good, fair, poor or damaged.');
+        return;
+    }
+    try {
+        var res = await fetch('/api/assets/' + id + '/return', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ condition: condition })
+        });
+        var d = await res.json();
+        if (!res.ok) { showToast(d.detail || 'That did not go through.', 'error'); return; }
+        showToast(condition === 'damaged'
+            ? tag + ' taken back and sent for repair'
+            : tag + ' taken back', 'success');
+        loadAssets();
+    } catch (e) { showToast('That did not go through.', 'error'); }
+}
+window.takeAssetBack = takeAssetBack;
+
+function openAssetModal() {
+    ['asset-tag', 'asset-name', 'asset-serial'].forEach(function (id) {
+        document.getElementById(id).value = '';
+    });
+    document.getElementById('asset-cost').value = '0';
+    document.getElementById('asset-category').value = 'laptop';
+    setAssetError('');
+    document.getElementById('asset-modal').style.display = 'flex';
+    document.getElementById('asset-tag').focus();
+}
+window.openAssetModal = openAssetModal;
+
+function closeAssetModal() {
+    document.getElementById('asset-modal').style.display = 'none';
+}
+window.closeAssetModal = closeAssetModal;
+
+function setAssetError(message) {
+    var box = document.getElementById('asset-error');
+    if (!box) return;
+    box.textContent = message || '';
+    box.style.display = message ? 'block' : 'none';
+}
+
+async function saveAsset() {
+    var body = {
+        tag: document.getElementById('asset-tag').value.trim(),
+        name: document.getElementById('asset-name').value.trim(),
+        category: document.getElementById('asset-category').value,
+        serial_number: document.getElementById('asset-serial').value.trim(),
+        purchase_cost: parseFloat(document.getElementById('asset-cost').value) || 0,
+    };
+    if (!body.tag) { setAssetError('Give it a tag.'); return; }
+    if (!body.name) { setAssetError('Say what it is.'); return; }
+
+    var btn = document.getElementById('asset-save-btn');
+    btn.disabled = true;
+    setAssetError('');
+    try {
+        var res = await fetch('/api/assets', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        var d = await res.json();
+        if (!res.ok) { setAssetError(d.detail || 'That did not save.'); return; }
+        closeAssetModal();
+        showToast(body.tag + ' added', 'success');
+        loadAssets();
+    } catch (e) {
+        setAssetError('That did not save.');
+    } finally {
+        btn.disabled = false;
+    }
+}
+window.saveAsset = saveAsset;
 
 // --- Bank detail changes waiting on a decision -----------------------------
 // An employee can correct their own contact details outright, but not where
@@ -5301,6 +5855,8 @@ showView = function(viewId) {
     if (viewId === 'leave-view') loadLeaveView();
     if (viewId === 'goals-view') loadGoalsView();
     if (viewId === 'calendar-view') loadCalendarView();
+    if (viewId === 'assets-view' && typeof loadAssets === 'function') loadAssets();
+    if (viewId === 'surveys-view' && typeof loadSurveys === 'function') loadSurveys();
     if (viewId === 'departments-view') fetchDepartments();
     if (viewId === 'onboarding-hub-view') { loadOnboardingHub(); loadDocumentQueue(); loadExpiringDocuments(); loadOnboardingPipeline(); }
     if (viewId === 'payroll-view') { fetchPayslips(currentPsFilter); loadPayrollAnomalies(); }

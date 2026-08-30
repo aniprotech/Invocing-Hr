@@ -14905,6 +14905,756 @@ def add_staff_message(db: Session, req, author: str, name: str, body: str):
     return msg
 
 
+# --- Surveys -----------------------------------------------------------------
+#
+# Whether people answer honestly rests on whether they believe the anonymous
+# one is anonymous. So it is not a display rule: an anonymous response is
+# written with no employee id, and there is nothing to join back.
+
+QUESTION_KINDS = ("scale", "choice", "text", "yes_no")
+
+# Below this, a breakdown stops being a summary and starts being a guess at
+# who said what. Five is the usual floor for staff surveys and it is worth
+# having a number rather than a judgement.
+MIN_ANONYMOUS_RESULTS = 3
+
+
+def survey_audience(db, client_id, survey):
+    """The people a survey is put to."""
+    q = db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client_id,
+        models.DBEmployee.status.in_(("active", "onboarding")))
+    if survey.audience == "department" and survey.department_id:
+        q = q.filter(models.DBEmployee.department_id == survey.department_id)
+    return q.all()
+
+
+def question_to_dict(q):
+    return {
+        "id": q.id, "position": q.position, "text": q.text, "kind": q.kind,
+        "options": [o for o in (q.options or "").split("\n") if o.strip()],
+        "required": bool(q.required),
+    }
+
+
+def survey_to_dict(db, s, with_questions=False):
+    asked = len(s.recipients or [])
+    answered = sum(1 for r in (s.recipients or []) if r.responded)
+    out = {
+        "id": s.id, "title": s.title, "description": s.description or "",
+        "anonymous": bool(s.anonymous), "status": s.status,
+        "audience": s.audience, "department_id": s.department_id,
+        "opens_at": s.opens_at or "", "closes_at": s.closes_at or "",
+        "created_at": s.created_at, "created_by": s.created_by or "",
+        "asked": asked, "answered": answered,
+        "question_count": len(s.questions or []),
+    }
+    if with_questions:
+        out["questions"] = [question_to_dict(q) for q in
+                            sorted(s.questions or [], key=lambda q: (q.position, q.id))]
+    return out
+
+
+@app.get("/api/surveys")
+def list_surveys(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    rows = db.query(models.DBSurvey).filter(
+        models.DBSurvey.client_id == client.id
+    ).order_by(models.DBSurvey.id.desc()).all()
+    return [survey_to_dict(db, s) for s in rows]
+
+
+@app.post("/api/surveys")
+def create_survey(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    title = str(body.get("title") or "").strip()[:200]
+    if not title:
+        raise HTTPException(status_code=400, detail="Give the survey a title")
+
+    survey = models.DBSurvey(
+        client_id=client.id, title=title,
+        description=str(body.get("description") or "").strip()[:1000],
+        # Anonymous unless somebody deliberately says otherwise, because the
+        # safer default is the one that gets honest answers.
+        anonymous=bool(body.get("anonymous", True)),
+        audience="department" if body.get("department_id") else "everyone",
+        department_id=body.get("department_id") or None,
+        closes_at=str(body.get("closes_at") or "")[:10],
+        created_by=client.email or "HR")
+    db.add(survey)
+    db.flush()
+
+    for i, q in enumerate(body.get("questions") or []):
+        text_ = str(q.get("text") or "").strip()[:500]
+        if not text_:
+            continue
+        kind = str(q.get("kind") or "scale").strip().lower()
+        if kind not in QUESTION_KINDS:
+            kind = "scale"
+        db.add(models.DBSurveyQuestion(
+            client_id=client.id, survey_id=survey.id, position=i, text=text_,
+            kind=kind, required=bool(q.get("required", True)),
+            options="\n".join(str(o).strip()[:120]
+                              for o in (q.get("options") or []) if str(o).strip())))
+
+    log_audit(db, client.id, "survey_created", "survey", survey.id, title,
+              "anonymous" if survey.anonymous else "named", request)
+    db.commit()
+    db.refresh(survey)
+    return survey_to_dict(db, survey, with_questions=True)
+
+
+@app.get("/api/surveys/{survey_id}")
+def read_survey(survey_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    survey = db.query(models.DBSurvey).filter(
+        models.DBSurvey.id == survey_id,
+        models.DBSurvey.client_id == client.id).first()
+    if not survey:
+        raise HTTPException(status_code=404, detail="Survey not found")
+    return survey_to_dict(db, survey, with_questions=True)
+
+
+@app.post("/api/surveys/{survey_id}/open")
+def open_survey(survey_id: int, request: Request, db: Session = Depends(get_db)):
+    """Put it to people. This is the point of no return for anonymity: they
+    answer on the strength of what they were told."""
+    client = get_client_user(request, db)
+    survey = db.query(models.DBSurvey).filter(
+        models.DBSurvey.id == survey_id,
+        models.DBSurvey.client_id == client.id).first()
+    if not survey:
+        raise HTTPException(status_code=404, detail="Survey not found")
+    if survey.status != "draft":
+        raise HTTPException(status_code=409, detail=f"This is already {survey.status}")
+    if not survey.questions:
+        raise HTTPException(status_code=400,
+                            detail="A survey with no questions asks nothing")
+
+    people = survey_audience(db, client.id, survey)
+    if not people:
+        raise HTTPException(status_code=400, detail="There is nobody to ask")
+
+    for emp in people:
+        db.add(models.DBSurveyRecipient(
+            client_id=client.id, survey_id=survey.id, employee_id=emp.id))
+        notify_employee(
+            db, emp, f"Survey: {survey.title}",
+            (survey.description or "Your answers are anonymous."
+             if survey.anonymous else survey.description
+             or "Please answer when you have a moment."),
+            kind="info", sent_by=client.email or "HR")
+
+    survey.status = "open"
+    survey.opens_at = datetime.now().strftime("%Y-%m-%d")
+    log_audit(db, client.id, "survey_opened", "survey", survey.id, survey.title,
+              f"{len(people)} asked", request)
+    db.commit()
+    return survey_to_dict(db, survey)
+
+
+@app.post("/api/surveys/{survey_id}/close")
+def close_survey(survey_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    survey = db.query(models.DBSurvey).filter(
+        models.DBSurvey.id == survey_id,
+        models.DBSurvey.client_id == client.id).first()
+    if not survey:
+        raise HTTPException(status_code=404, detail="Survey not found")
+    if survey.status != "open":
+        raise HTTPException(status_code=409, detail="This is not open")
+    survey.status = "closed"
+    survey.closes_at = survey.closes_at or datetime.now().strftime("%Y-%m-%d")
+    log_audit(db, client.id, "survey_closed", "survey", survey.id, survey.title,
+              "", request)
+    db.commit()
+    return survey_to_dict(db, survey)
+
+
+@app.delete("/api/surveys/{survey_id}")
+def delete_survey(survey_id: int, request: Request, db: Session = Depends(get_db)):
+    """Only a draft. Once people have answered, deleting it destroys what they
+    said - and on an anonymous one there is no way to ask them again."""
+    client = get_client_user(request, db)
+    survey = db.query(models.DBSurvey).filter(
+        models.DBSurvey.id == survey_id,
+        models.DBSurvey.client_id == client.id).first()
+    if not survey:
+        raise HTTPException(status_code=404, detail="Survey not found")
+    if survey.status != "draft":
+        raise HTTPException(
+            status_code=409,
+            detail="This has been put to people. Close it instead.")
+    log_audit(db, client.id, "survey_deleted", "survey", survey.id, survey.title,
+              "", request)
+    db.delete(survey)
+    db.commit()
+    return {"message": "Survey deleted"}
+
+
+@app.get("/api/surveys/{survey_id}/results")
+def survey_results(survey_id: int, request: Request, db: Session = Depends(get_db)):
+    """What came back, summarised per question.
+
+    Never a per-person breakdown on an anonymous survey, and free text is held
+    back until enough people have written something that one answer cannot be
+    picked out by whoever wrote it.
+    """
+    client = get_client_user(request, db)
+    survey = db.query(models.DBSurvey).filter(
+        models.DBSurvey.id == survey_id,
+        models.DBSurvey.client_id == client.id).first()
+    if not survey:
+        raise HTTPException(status_code=404, detail="Survey not found")
+
+    responses = survey.responses or []
+    answers_by_q = {}
+    for r in responses:
+        for a in (r.answers or []):
+            answers_by_q.setdefault(a.question_id, []).append(a.value or "")
+
+    held_back = (survey.anonymous and len(responses) < MIN_ANONYMOUS_RESULTS)
+
+    out = []
+    for q in sorted(survey.questions or [], key=lambda x: (x.position, x.id)):
+        vals = [v for v in answers_by_q.get(q.id, []) if v != ""]
+        item = {"question_id": q.id, "text": q.text, "kind": q.kind,
+                "answered": len(vals)}
+        if q.kind == "scale":
+            nums = []
+            for v in vals:
+                try:
+                    nums.append(float(v))
+                except ValueError:
+                    continue
+            item["average"] = round(sum(nums) / len(nums), 2) if nums else None
+            item["spread"] = {str(n): sum(1 for x in nums if int(x) == n)
+                              for n in range(1, 6)}
+        elif q.kind in ("choice", "yes_no"):
+            tally = {}
+            for v in vals:
+                tally[v] = tally.get(v, 0) + 1
+            item["tally"] = tally
+        else:
+            # Free text is the one that identifies people, by voice as much as
+            # by content.
+            item["comments"] = [] if held_back else vals
+            item["withheld"] = held_back
+        out.append(item)
+
+    asked = len(survey.recipients or [])
+    return {
+        "survey": survey_to_dict(db, survey),
+        "responses": len(responses),
+        "asked": asked,
+        "results": out,
+        "withholding_detail": held_back,
+        "withholding_reason": (
+            f"Fewer than {MIN_ANONYMOUS_RESULTS} replies so far. Written answers "
+            "stay hidden until there are enough that one cannot be picked out."
+            if held_back else ""),
+    }
+
+
+@app.get("/api/surveys/{survey_id}/chase")
+def survey_chase_list(survey_id: int, request: Request,
+                      db: Session = Depends(get_db)):
+    """Who has not answered yet.
+
+    This exists on an anonymous survey too, and it is the only person-shaped
+    thing that does: it says somebody has replied, never which reply is theirs.
+    """
+    client = get_client_user(request, db)
+    survey = db.query(models.DBSurvey).filter(
+        models.DBSurvey.id == survey_id,
+        models.DBSurvey.client_id == client.id).first()
+    if not survey:
+        raise HTTPException(status_code=404, detail="Survey not found")
+
+    names = {e.id: f"{e.first_name} {e.last_name}".strip()
+             for e in db.query(models.DBEmployee).filter(
+                 models.DBEmployee.client_id == client.id).all()}
+    outstanding = [{"employee_id": r.employee_id, "name": names.get(r.employee_id, "")}
+                   for r in (survey.recipients or []) if not r.responded]
+    return {"asked": len(survey.recipients or []),
+            "outstanding": outstanding,
+            "answered": len(survey.recipients or []) - len(outstanding)}
+
+
+# --- the employee's side ------------------------------------------------------
+
+@app.get("/api/employee/surveys")
+def my_surveys(request: Request, db: Session = Depends(get_db)):
+    """Surveys put to this person and still open."""
+    emp = current_employee(request, db)
+    rows = db.query(models.DBSurveyRecipient, models.DBSurvey).join(
+        models.DBSurvey, models.DBSurveyRecipient.survey_id == models.DBSurvey.id
+    ).filter(
+        models.DBSurveyRecipient.employee_id == emp.id,
+        models.DBSurvey.status == "open",
+    ).all()
+    return [{
+        "id": s.id, "title": s.title, "description": s.description or "",
+        "anonymous": bool(s.anonymous), "closes_at": s.closes_at or "",
+        "question_count": len(s.questions or []),
+        "responded": bool(r.responded),
+    } for r, s in rows]
+
+
+@app.get("/api/employee/surveys/{survey_id}")
+def read_my_survey(survey_id: int, request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    row = db.query(models.DBSurveyRecipient).filter(
+        models.DBSurveyRecipient.survey_id == survey_id,
+        models.DBSurveyRecipient.employee_id == emp.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Survey not found")
+    survey = db.query(models.DBSurvey).filter(
+        models.DBSurvey.id == survey_id).first()
+    if not survey or survey.status != "open":
+        raise HTTPException(status_code=409, detail="This survey is not open")
+
+    out = survey_to_dict(db, survey, with_questions=True)
+    out["responded"] = bool(row.responded)
+    # Said plainly on the form itself, because it is what decides how somebody
+    # answers the next question.
+    out["promise"] = ("Your answers are anonymous. They are stored without your "
+                      "name and cannot be traced back to you."
+                      if survey.anonymous else
+                      "Your name is recorded with your answers.")
+    return out
+
+
+@app.post("/api/employee/surveys/{survey_id}/respond")
+def respond_to_survey(survey_id: int, request: Request, body: dict = None,
+                      db: Session = Depends(get_db)):
+    """Submit answers.
+
+    Two writes that must not be joinable: the response, with no employee id
+    when the survey is anonymous, and the recipient row that records only that
+    this person has now replied.
+    """
+    emp = current_employee(request, db)
+    body = body or {}
+
+    row = db.query(models.DBSurveyRecipient).filter(
+        models.DBSurveyRecipient.survey_id == survey_id,
+        models.DBSurveyRecipient.employee_id == emp.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Survey not found")
+    survey = db.query(models.DBSurvey).filter(
+        models.DBSurvey.id == survey_id).first()
+    if not survey or survey.status != "open":
+        raise HTTPException(status_code=409, detail="This survey is not open")
+    if row.responded:
+        raise HTTPException(status_code=409, detail="You have already answered this")
+
+    given = {int(k): v for k, v in (body.get("answers") or {}).items()
+             if str(k).isdigit()}
+    questions = {q.id: q for q in (survey.questions or [])}
+
+    missing = [q.text for qid, q in questions.items()
+               if q.required and not str(given.get(qid, "")).strip()]
+    if missing:
+        raise HTTPException(status_code=400,
+                            detail=f"Still to answer: {missing[0]}")
+
+    response = models.DBSurveyResponse(
+        client_id=survey.client_id, survey_id=survey.id,
+        # The guarantee, in one line.
+        employee_id=None if survey.anonymous else emp.id)
+    db.add(response)
+    db.flush()
+
+    for qid, value in given.items():
+        if qid not in questions:
+            continue
+        db.add(models.DBSurveyAnswer(
+            client_id=survey.client_id, response_id=response.id,
+            question_id=qid, value=str(value)[:4000]))
+
+    row.responded = True
+    row.responded_on = datetime.now().strftime("%Y-%m-%d")
+    db.commit()
+    return {"message": "Thank you", "anonymous": bool(survey.anonymous)}
+
+
+# --- Assets ------------------------------------------------------------------
+
+ASSET_CATEGORIES = ("laptop", "phone", "monitor", "peripheral", "furniture",
+                    "vehicle", "access_card", "other")
+ASSET_STATES = ("available", "repair", "retired")
+ASSET_CONDITIONS = ("good", "fair", "poor", "damaged")
+
+
+def open_assignment(db, asset_id):
+    """Who has it now, or None. Read, never stored.
+
+    An asset holding its own holder would eventually disagree with the history
+    - it says the cupboard while somebody is typing on it - so the answer comes
+    from the one assignment with nothing in returned_at.
+    """
+    return db.query(models.DBAssetAssignment).filter(
+        models.DBAssetAssignment.asset_id == asset_id,
+        models.DBAssetAssignment.returned_at == "",
+    ).first()
+
+
+def asset_to_dict(db, a, holder_names=None):
+    held = open_assignment(db, a.id)
+    who = None
+    if held:
+        name = (holder_names or {}).get(held.employee_id)
+        if name is None:
+            emp = db.query(models.DBEmployee).filter(
+                models.DBEmployee.id == held.employee_id).first()
+            name = f"{emp.first_name} {emp.last_name}".strip() if emp else ""
+        who = {"employee_id": held.employee_id, "name": name,
+               "since": held.issued_at, "assignment_id": held.id}
+    return {
+        "id": a.id, "tag": a.tag, "name": a.name, "category": a.category,
+        "serial_number": a.serial_number or "", "notes": a.notes or "",
+        "purchase_date": a.purchase_date or "",
+        "purchase_cost": round(a.purchase_cost or 0, 2),
+        "currency": a.currency or "GBP",
+        "state": a.state, "condition": a.condition,
+        # Derived, so a list and a detail view can never disagree.
+        "status": "assigned" if who else a.state,
+        "held_by": who,
+    }
+
+
+@app.get("/api/assets")
+def list_assets(request: Request, status: str = "", category: str = "",
+                db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    rows = db.query(models.DBAsset).filter(
+        models.DBAsset.client_id == client.id
+    ).order_by(models.DBAsset.tag).all()
+
+    # One query for the names rather than one per asset.
+    names = {e.id: f"{e.first_name} {e.last_name}".strip()
+             for e in db.query(models.DBEmployee).filter(
+                 models.DBEmployee.client_id == client.id).all()}
+
+    out = [asset_to_dict(db, a, names) for a in rows]
+    if category:
+        out = [a for a in out if a["category"] == category]
+    if status:
+        out = [a for a in out if a["status"] == status]
+    return out
+
+
+@app.get("/api/assets/summary")
+def assets_summary(request: Request, db: Session = Depends(get_db)):
+    """Counts, and what is still out with somebody who has left - which is the
+    only figure here that is really a problem rather than a fact."""
+    client = get_client_user(request, db)
+    rows = db.query(models.DBAsset).filter(
+        models.DBAsset.client_id == client.id).all()
+
+    gone = {e.id for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client.id,
+        models.DBEmployee.status.in_(("terminated", "offboarding"))).all()}
+
+    counts = {"total": len(rows), "available": 0, "assigned": 0,
+              "repair": 0, "retired": 0}
+    with_leavers = []
+    for a in rows:
+        held = open_assignment(db, a.id)
+        if held:
+            counts["assigned"] += 1
+            if held.employee_id in gone:
+                emp = db.query(models.DBEmployee).filter(
+                    models.DBEmployee.id == held.employee_id).first()
+                with_leavers.append({
+                    "asset_id": a.id, "tag": a.tag, "name": a.name,
+                    "employee_id": held.employee_id,
+                    "employee": f"{emp.first_name} {emp.last_name}".strip() if emp else "",
+                    "employee_status": emp.status if emp else "",
+                    "since": held.issued_at,
+                })
+        else:
+            counts[a.state] = counts.get(a.state, 0) + 1
+
+    return {"counts": counts, "still_out_with_leavers": with_leavers,
+            "value": round(sum(a.purchase_cost or 0 for a in rows), 2),
+            "currency": base_currency(client)}
+
+
+@app.post("/api/assets")
+def create_asset(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    tag = str(body.get("tag") or "").strip()[:60]
+    name = str(body.get("name") or "").strip()[:200]
+    if not tag:
+        raise HTTPException(status_code=400, detail="Give it a tag - it is how somebody identifies the thing in their hands")
+    if not name:
+        raise HTTPException(status_code=400, detail="Give it a name")
+
+    category = str(body.get("category") or "other").strip().lower()
+    if category not in ASSET_CATEGORIES:
+        category = "other"
+    condition = str(body.get("condition") or "good").strip().lower()
+    if condition not in ASSET_CONDITIONS:
+        condition = "good"
+
+    clash = db.query(models.DBAsset).filter(
+        models.DBAsset.client_id == client.id, models.DBAsset.tag == tag).first()
+    if clash:
+        raise HTTPException(status_code=409,
+                            detail=f"{tag} is already used by {clash.name}")
+
+    asset = models.DBAsset(
+        client_id=client.id, tag=tag, name=name, category=category,
+        serial_number=str(body.get("serial_number") or "").strip()[:120],
+        notes=str(body.get("notes") or "").strip()[:500],
+        purchase_date=str(body.get("purchase_date") or "").strip()[:10],
+        purchase_cost=float(body.get("purchase_cost") or 0),
+        currency=base_currency(client), condition=condition)
+    db.add(asset)
+    db.flush()
+    log_audit(db, client.id, "asset_created", "asset", asset.id, f"{tag} {name}",
+              category, request)
+    db.commit()
+    return asset_to_dict(db, asset)
+
+
+@app.put("/api/assets/{asset_id}")
+def update_asset(asset_id: int, request: Request, body: dict = None,
+                 db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    asset = db.query(models.DBAsset).filter(
+        models.DBAsset.id == asset_id,
+        models.DBAsset.client_id == client.id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    for field, cap in (("name", 200), ("serial_number", 120), ("notes", 500),
+                       ("purchase_date", 10)):
+        if field in body:
+            setattr(asset, field, str(body[field] or "").strip()[:cap])
+    if "purchase_cost" in body:
+        asset.purchase_cost = float(body.get("purchase_cost") or 0)
+    if body.get("category") in ASSET_CATEGORIES:
+        asset.category = body["category"]
+    if body.get("condition") in ASSET_CONDITIONS:
+        asset.condition = body["condition"]
+
+    if "tag" in body:
+        tag = str(body["tag"] or "").strip()[:60]
+        if not tag:
+            raise HTTPException(status_code=400, detail="A tag cannot be blank")
+        clash = db.query(models.DBAsset).filter(
+            models.DBAsset.client_id == client.id, models.DBAsset.tag == tag,
+            models.DBAsset.id != asset.id).first()
+        if clash:
+            raise HTTPException(status_code=409,
+                                detail=f"{tag} is already used by {clash.name}")
+        asset.tag = tag
+
+    if "state" in body:
+        state = str(body["state"] or "").strip().lower()
+        if state not in ASSET_STATES:
+            raise HTTPException(status_code=400,
+                                detail="State is available, repair or retired")
+        # Retiring a thing somebody is holding would lose track of it entirely.
+        if open_assignment(db, asset.id) and state != "available":
+            raise HTTPException(
+                status_code=409,
+                detail="This is out with somebody. Take it back first.")
+        asset.state = state
+
+    log_audit(db, client.id, "asset_updated", "asset", asset.id,
+              f"{asset.tag} {asset.name}", "", request)
+    db.commit()
+    return asset_to_dict(db, asset)
+
+
+@app.delete("/api/assets/{asset_id}")
+def delete_asset(asset_id: int, request: Request, db: Session = Depends(get_db)):
+    """Only when it was never really a thing. Anything with a history is
+    retired instead, because the history is the record of who had it."""
+    client = get_client_user(request, db)
+    asset = db.query(models.DBAsset).filter(
+        models.DBAsset.id == asset_id,
+        models.DBAsset.client_id == client.id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    if asset.assignments:
+        raise HTTPException(
+            status_code=409,
+            detail="This has been issued before, so its history would go with "
+                   "it. Retire it instead.")
+    log_audit(db, client.id, "asset_deleted", "asset", asset.id,
+              f"{asset.tag} {asset.name}", "", request)
+    db.delete(asset)
+    db.commit()
+    return {"message": "Asset removed"}
+
+
+@app.post("/api/assets/{asset_id}/assign")
+def assign_asset(asset_id: int, request: Request, body: dict = None,
+                 db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    asset = db.query(models.DBAsset).filter(
+        models.DBAsset.id == asset_id,
+        models.DBAsset.client_id == client.id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == body.get("employee_id"),
+        models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    held = open_assignment(db, asset.id)
+    if held:
+        other = db.query(models.DBEmployee).filter(
+            models.DBEmployee.id == held.employee_id).first()
+        raise HTTPException(
+            status_code=409,
+            detail=f"{asset.tag} is already with "
+                   f"{(other.first_name + ' ' + other.last_name).strip() if other else 'somebody'}. "
+                   "Take it back first.")
+    if asset.state == "retired":
+        raise HTTPException(status_code=409, detail="This asset is retired")
+
+    condition = str(body.get("condition") or asset.condition or "good").lower()
+    if condition not in ASSET_CONDITIONS:
+        condition = "good"
+
+    row = models.DBAssetAssignment(
+        client_id=client.id, asset_id=asset.id, employee_id=emp.id,
+        issued_at=str(body.get("issued_at") or datetime.now().strftime("%Y-%m-%d"))[:10],
+        issued_by=client.email or "HR", condition_out=condition,
+        notes=str(body.get("notes") or "").strip()[:500])
+    db.add(row)
+
+    # They should be told what they are now responsible for.
+    notify_employee(
+        db, emp, f"{asset.name} issued to you",
+        f"{asset.tag} - {asset.name}. Please tell HR if anything is wrong with it.",
+        kind="info", sent_by=client.email or "HR")
+
+    log_audit(db, client.id, "asset_assigned", "asset", asset.id,
+              f"{asset.tag} {asset.name}",
+              f"to {emp.first_name} {emp.last_name}".strip(), request)
+    db.commit()
+    return asset_to_dict(db, asset)
+
+
+@app.post("/api/assets/{asset_id}/return")
+def return_asset(asset_id: int, request: Request, body: dict = None,
+                 db: Session = Depends(get_db)):
+    """Close the open assignment rather than deleting it - who had it when it
+    was damaged is asked after the fact, not before."""
+    client = get_client_user(request, db)
+    body = body or {}
+    asset = db.query(models.DBAsset).filter(
+        models.DBAsset.id == asset_id,
+        models.DBAsset.client_id == client.id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    held = open_assignment(db, asset.id)
+    if not held:
+        raise HTTPException(status_code=409, detail="Nobody has this")
+
+    condition = str(body.get("condition") or "good").strip().lower()
+    if condition not in ASSET_CONDITIONS:
+        condition = "good"
+
+    held.returned_at = str(body.get("returned_at")
+                           or datetime.now().strftime("%Y-%m-%d"))[:10]
+    held.returned_to = client.email or "HR"
+    held.condition_in = condition
+    if body.get("notes"):
+        held.notes = (held.notes + " | " if held.notes else "") + \
+                     str(body["notes"]).strip()[:400]
+
+    # The condition it came back in is the condition it is in.
+    asset.condition = condition
+    asset.state = "repair" if condition == "damaged" else "available"
+
+    log_audit(db, client.id, "asset_returned", "asset", asset.id,
+              f"{asset.tag} {asset.name}", f"condition {condition}", request)
+    db.commit()
+    return asset_to_dict(db, asset)
+
+
+@app.get("/api/assets/{asset_id}/history")
+def asset_history(asset_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    asset = db.query(models.DBAsset).filter(
+        models.DBAsset.id == asset_id,
+        models.DBAsset.client_id == client.id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    names = {e.id: f"{e.first_name} {e.last_name}".strip()
+             for e in db.query(models.DBEmployee).filter(
+                 models.DBEmployee.client_id == client.id).all()}
+    rows = sorted(asset.assignments or [], key=lambda r: r.id, reverse=True)
+    return [{
+        "id": r.id, "employee_id": r.employee_id,
+        "employee": names.get(r.employee_id, ""),
+        "issued_at": r.issued_at, "issued_by": r.issued_by or "",
+        "condition_out": r.condition_out,
+        "returned_at": r.returned_at or "", "returned_to": r.returned_to or "",
+        "condition_in": r.condition_in or "", "notes": r.notes or "",
+        "open": not r.returned_at,
+    } for r in rows]
+
+
+@app.get("/api/employees/{emp_id}/assets")
+def employee_assets(emp_id: int, request: Request, db: Session = Depends(get_db)):
+    """What this person is holding - the list offboarding has to work through."""
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == emp_id,
+        models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    rows = db.query(models.DBAssetAssignment, models.DBAsset).join(
+        models.DBAsset, models.DBAssetAssignment.asset_id == models.DBAsset.id
+    ).filter(
+        models.DBAssetAssignment.employee_id == emp.id,
+        models.DBAssetAssignment.returned_at == "",
+    ).all()
+    return [{
+        "assignment_id": r.id, "asset_id": a.id, "tag": a.tag, "name": a.name,
+        "category": a.category, "issued_at": r.issued_at,
+        "condition_out": r.condition_out,
+    } for r, a in rows]
+
+
+@app.get("/api/employee/assets")
+def my_assets(request: Request, db: Session = Depends(get_db)):
+    """What the person signed in is holding.
+
+    Worth them being able to check: the first anybody hears of a laptop they
+    were never given is usually the day they are asked to hand it back.
+    """
+    emp = current_employee(request, db)
+    rows = db.query(models.DBAssetAssignment, models.DBAsset).join(
+        models.DBAsset, models.DBAssetAssignment.asset_id == models.DBAsset.id
+    ).filter(
+        models.DBAssetAssignment.employee_id == emp.id,
+        models.DBAssetAssignment.returned_at == "",
+    ).all()
+    return [{
+        "tag": a.tag, "name": a.name, "category": a.category,
+        "issued_at": r.issued_at, "condition_out": r.condition_out,
+    } for r, a in rows]
+
+
 # --- what a person can see and change about themselves -----------------------
 
 # Their own record is theirs to correct. These are the fields where a stale

@@ -1345,6 +1345,185 @@ class DBAttendanceCorrection(Base):
     decided_by = Column(String, default="")
 
 
+class DBAsset(Base):
+    """A thing the company owns and lends out.
+
+    Status is deliberately not "assigned": that is answered by whether an open
+    assignment exists, and storing it twice is how a record ends up claiming a
+    laptop is in the cupboard while somebody is typing on it. What is stored
+    here is only what the assignment cannot say - whether the thing is retired,
+    or away being repaired.
+    """
+    __tablename__ = "assets"
+    __table_args__ = (
+        # A tag is how a person identifies the thing in their hands, so two
+        # assets sharing one is a tag that identifies nothing.
+        UniqueConstraint("client_id", "tag", name="uq_client_asset_tag"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+
+    tag = Column(String, nullable=False, index=True)      # LAP-014, PH-003
+    name = Column(String, nullable=False)                 # "MacBook Air 13"
+    category = Column(String, default="other", index=True)
+    serial_number = Column(String, default="")
+    notes = Column(String, default="")
+
+    purchase_date = Column(String, default="")
+    purchase_cost = Column(Float, default=0.0)
+    currency = Column(String, default="GBP")
+
+    # available | repair | retired. Never "assigned" - see the docstring.
+    state = Column(String, default="available", index=True)
+    condition = Column(String, default="good")            # good|fair|poor|damaged
+
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    assignments = relationship("DBAssetAssignment", back_populates="asset",
+                               cascade="all, delete-orphan")
+
+
+class DBAssetAssignment(Base):
+    """One period during which one person held one asset.
+
+    Kept as history rather than overwritten, because "who has the laptop" and
+    "who had it when it was damaged" are different questions and the second one
+    is the one asked after the fact.
+    """
+    __tablename__ = "asset_assignments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+
+    issued_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d"))
+    issued_by = Column(String, default="")
+    condition_out = Column(String, default="good")
+
+    # Empty until it comes back. This is the field that answers "who has it".
+    returned_at = Column(String, default="", index=True)
+    returned_to = Column(String, default="")
+    condition_in = Column(String, default="")
+
+    notes = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    asset = relationship("DBAsset", back_populates="assignments")
+
+
+class DBSurvey(Base):
+    """One set of questions, put to some or all of the staff."""
+    __tablename__ = "surveys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+
+    title = Column(String, nullable=False)
+    description = Column(String, default="")
+
+    # Whether answers are stored without an author. Fixed once the survey opens:
+    # people answered on the strength of what they were told, and changing it
+    # afterwards would either break a promise or invent one.
+    anonymous = Column(Boolean, default=True)
+
+    # draft | open | closed
+    status = Column(String, default="draft", index=True)
+    audience = Column(String, default="everyone")     # everyone | department
+    department_id = Column(Integer, ForeignKey("departments.id"), nullable=True)
+
+    opens_at = Column(String, default="")
+    closes_at = Column(String, default="")
+
+    created_by = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    questions = relationship("DBSurveyQuestion", back_populates="survey",
+                             cascade="all, delete-orphan")
+    recipients = relationship("DBSurveyRecipient", back_populates="survey",
+                              cascade="all, delete-orphan")
+    responses = relationship("DBSurveyResponse", back_populates="survey",
+                             cascade="all, delete-orphan")
+
+
+class DBSurveyQuestion(Base):
+    __tablename__ = "survey_questions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    survey_id = Column(Integer, ForeignKey("surveys.id"), nullable=False, index=True)
+
+    position = Column(Integer, default=0)
+    text = Column(String, nullable=False)
+    # scale (1-5) | choice | text | yes_no
+    kind = Column(String, default="scale")
+    options = Column(Text, default="")            # newline separated, for choice
+    required = Column(Boolean, default=True)
+
+    survey = relationship("DBSurvey", back_populates="questions")
+
+
+class DBSurveyRecipient(Base):
+    """Who was asked, and whether they have answered.
+
+    Deliberately separate from the answers. This is what makes it possible to
+    chase the people who have not replied without knowing what anybody said -
+    on an anonymous survey it is the only link to a person that exists.
+    """
+    __tablename__ = "survey_recipients"
+    __table_args__ = (
+        UniqueConstraint("survey_id", "employee_id", name="uq_survey_recipient"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    survey_id = Column(Integer, ForeignKey("surveys.id"), nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+
+    responded = Column(Boolean, default=False, index=True)
+    # The date only, never the time: on a small team a timestamp to the second
+    # is as good as a signature.
+    responded_on = Column(String, default="")
+
+    survey = relationship("DBSurvey", back_populates="recipients")
+
+
+class DBSurveyResponse(Base):
+    """One person's submission.
+
+    employee_id is null on an anonymous survey, and that is the guarantee.
+    Nothing else in the row narrows it down either: there is no timestamp
+    beyond the date, and the recipient row that knows somebody answered does
+    not know which submission is theirs.
+    """
+    __tablename__ = "survey_responses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    survey_id = Column(Integer, ForeignKey("surveys.id"), nullable=False, index=True)
+
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True, index=True)
+    submitted_on = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d"))
+
+    survey = relationship("DBSurvey", back_populates="responses")
+    answers = relationship("DBSurveyAnswer", back_populates="response",
+                           cascade="all, delete-orphan")
+
+
+class DBSurveyAnswer(Base):
+    __tablename__ = "survey_answers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    response_id = Column(Integer, ForeignKey("survey_responses.id"), nullable=False, index=True)
+    question_id = Column(Integer, ForeignKey("survey_questions.id"), nullable=False, index=True)
+
+    value = Column(Text, default="")
+
+    response = relationship("DBSurveyResponse", back_populates="answers")
+
+
 class DBProfileChange(Base):
     """One field an employee wants changed, waiting on HR.
 
