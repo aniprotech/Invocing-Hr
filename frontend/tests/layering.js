@@ -110,5 +110,50 @@ check('scrolling content clears the floating orb',
     /[.]main-content *[{][^}]*padding-bottom: *[0-9]+px/.test(css),
     'the last row of every view sits under the orb without it');
 
+// --- every dialog is actually styled ----------------------------------------
+// Five dialogs carried class="modal-content", which no rule in the stylesheet
+// mentions. They rendered with no background, no height cap and no scroll: the
+// page showed through them and a tall form ran off the top of the screen with
+// its first fields unreachable.
+//
+// Nothing caught it because a DOM test asks whether an element exists, and it
+// did. What was missing was the styling.
+{
+    const { JSDOM } = require('jsdom');
+    const styledClasses = new Set(
+        (css.match(/\.([a-zA-Z][\w-]*)/g) || []).map(c => c.slice(1)));
+
+    for (const page of ['app.html', 'hr.html', 'superadmin.html',
+                        'employee-dashboard.html']) {
+        let raw;
+        try {
+            raw = fs.readFileSync(path.resolve(__dirname, '..', page), 'utf8');
+        } catch (e) { continue; }
+
+        const doc = new JSDOM(raw).window.document;
+        const overlays = [...doc.querySelectorAll('.modal-overlay')];
+        if (!overlays.length) continue;
+
+        const unstyled = overlays.filter(o => {
+            const box = o.firstElementChild;
+            if (!box) return true;
+            // At least one of its classes has to appear in the stylesheet, or
+            // the box is drawn with nothing at all.
+            return ![...box.classList].some(c => styledClasses.has(c));
+        }).map(o => o.id || '(no id)');
+
+        check(`${page}: every dialog carries a class the stylesheet knows`,
+            unstyled.length === 0, unstyled.join(', '));
+    }
+
+    // The rule those dialogs depend on, so a rename cannot quietly remove it.
+    check('.modal caps its height and scrolls',
+        /\.modal *\{[^}]*max-height:[^}]*overflow-y: *auto/.test(css),
+        'a tall dialog would run off the screen with no way back to the top');
+    check('.modal paints its own background',
+        /\.modal *\{[^}]*background:/.test(css),
+        'the page would show through it');
+}
+
 console.log(failures ? `\n${failures} layering problem(s)` : '\nthe stacking order holds together');
 process.exit(failures ? 1 : 0);
