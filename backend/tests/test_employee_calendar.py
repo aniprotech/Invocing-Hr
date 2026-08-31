@@ -82,8 +82,17 @@ def titles(rows):
 # --- the shape of it ----------------------------------------------------------
 
 def test_an_empty_month_is_not_an_error(tenant, staff):
+    """Asked about a month with nothing in it, deliberately far off.
+
+    This used to ask about the current month and assume it was empty, which
+    was only ever true by accident: creating an employee raises document
+    requests due a week after their start date, so from the 1st of a month
+    those land in the month being asked about. It passed in August and failed
+    on the 1st of September, having tested nothing about emptiness in
+    between."""
     sign_in(tenant, staff)
-    body = tenant.get("/api/employee/calendar").json()
+    body = tenant.get("/api/employee/calendar",
+                      params={"start": "2032-04-01", "end": "2032-04-30"}).json()
     assert body["events"] == []
     assert body["start"] and body["end"]
 
@@ -120,7 +129,11 @@ def test_company_holidays_are_on_it(tenant, staff, account):
     sign_in(tenant, staff)
     rows = events(tenant)
     assert any(r["title"] == "Summer Bank Holiday" for r in rows), titles(rows)
-    assert all(r["kind"] == "holiday" for r in rows if "Bank" in r["title"])
+    # Matched on the whole title. "Bank" as a substring also catches the
+    # "Bank details" document every new employee is asked for, which is not a
+    # holiday and never was - the filter was finding it and blaming this.
+    assert all(r["kind"] == "holiday"
+               for r in rows if r["title"] == "Summer Bank Holiday")
 
 
 def test_an_optional_holiday_says_the_office_is_open(tenant, staff, account):
