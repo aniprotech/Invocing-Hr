@@ -94,8 +94,8 @@ check('never caches an API call with an asset-looking query',
     !intercepts(h, ORIGIN + '/api/invoices?export=report.css'));
 
 // Writes go to the network whatever they are.
-check('never caches a POST', !intercepts(h, ORIGIN + '/styles.css?v=108', 'POST'));
-check('never caches a DELETE', !intercepts(h, ORIGIN + '/styles.css?v=108', 'DELETE'));
+check('never caches a POST', !intercepts(h, ORIGIN + '/styles.css?v=111', 'POST'));
+check('never caches a DELETE', !intercepts(h, ORIGIN + '/styles.css?v=111', 'DELETE'));
 
 // Another origin's responses are not ours to keep.
 check('never caches a third-party request',
@@ -103,14 +103,49 @@ check('never caches a third-party request',
 
 // --- The things that should be cached --------------------------------------
 [
-    ['/styles.css?v=108', 'the stylesheet'],
-    ['/mobile.css?v=108', 'the mobile stylesheet'],
-    ['/app.js?v=108', 'the script bundle'],
+    ['/styles.css?v=111', 'the stylesheet'],
+    ['/mobile.css?v=111', 'the mobile stylesheet'],
+    ['/app.js?v=111', 'the script bundle'],
     ['/icons/icon-192.png', 'an icon'],
     ['/icons/icon.svg', 'the svg icon'],
 ].forEach(([p, what]) => {
     check('caches ' + what, intercepts(h, ORIGIN + p), p);
 });
+
+
+
+// --- The precache has to name the versions the pages actually ask for -------
+// Assets are busted with ?v=NN and the number is bumped by hand on every
+// change. The service worker carries its own copy of that number, and nothing
+// tied the two together - so sw.js sat at v=108 while every page requested
+// v=111. Nothing breaks loudly when that happens: the worker precaches URLs
+// no page ever asks for, every request misses, and the install quietly buys
+// nothing. Checked here because it is invisible in normal use.
+{
+    const swSrc = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');
+    const versionsIn = (text) => new Set(
+        [...text.matchAll(/\?v=(\d+)/g)].map((m) => m[1]));
+
+    const swVersions = versionsIn(swSrc);
+    const pageVersions = new Set();
+    for (const page of fs.readdirSync(ROOT).filter((f) => f.endsWith('.html'))) {
+        for (const v of versionsIn(fs.readFileSync(path.join(ROOT, page), 'utf8'))) {
+            pageVersions.add(v);
+        }
+    }
+
+    // dialogs.js ships at its own version, so the pages legitimately carry
+    // more than one. What matters is that the worker names none the pages do
+    // not, and that the newest number on both sides is the same.
+    const newest = (set) => Math.max(...[...set].map(Number));
+    check('the service worker caches the version the pages request',
+        swVersions.size > 0 && newest(swVersions) === newest(pageVersions),
+        `sw.js has v=${[...swVersions].join(',')}, pages have v=${[...pageVersions].join(',')}`);
+
+    const orphans = [...swVersions].filter((v) => !pageVersions.has(v));
+    check('and caches no version no page asks for', orphans.length === 0,
+        orphans.map((v) => 'v=' + v).join(', '));
+}
 
 console.log(failures ? `\n${failures} failed` : '\nall good');
 process.exit(failures ? 1 : 0);
