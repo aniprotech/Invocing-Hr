@@ -4088,6 +4088,49 @@ function openItemModal(row, typedCode) {
 }
 window.openItemModal = openItemModal;
 
+// The code and name are already filled in by the time anybody wants a
+// description, so the model is given something to work from rather than being
+// asked to invent a product. Costs a credit, so it is a button rather than
+// something that fires on its own.
+async function describeItemWithAi() {
+    var code = document.getElementById('item-code').value.trim();
+    var name = document.getElementById('item-name').value.trim();
+    var note = document.getElementById('item-ai-note');
+    var btn = document.getElementById('item-ai-btn');
+
+    var rough = [name, code].filter(Boolean).join(' - ');
+    if (!rough) {
+        note.textContent = 'Give it a code or a name first, so there is something to describe.';
+        note.style.display = 'block';
+        return;
+    }
+
+    btn.disabled = true;
+    note.style.display = 'block';
+    note.textContent = 'Writing...';
+    try {
+        var res = await fetch('/api/ai/describe-item', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: rough }),
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) throw new Error(data.detail || 'Could not write a description');
+        if (!data.available || !data.description) {
+            // The AI being off or out of credit is not an error in this form -
+            // the description is optional and can be typed.
+            note.textContent = 'The AI is not available right now. Type a description instead.';
+            return;
+        }
+        document.getElementById('item-description').value = data.description;
+        note.textContent = 'Written by AI - check it before saving.';
+    } catch (e) {
+        note.textContent = e.message;
+    } finally {
+        btn.disabled = false;
+    }
+}
+window.describeItemWithAi = describeItemWithAi;
+
 function closeItemModal() {
     document.getElementById('item-modal').style.display = 'none';
     _itemLookupRow = null;

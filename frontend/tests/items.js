@@ -60,6 +60,12 @@ function boot(opts) {
             return Promise.resolve({ ok: true, status: 200,
                 json: () => Promise.resolve({ id: 1, modules: ['invoicing', 'hr'] }) });
         }
+        if (p === '/api/ai/describe-item') {
+            return Promise.resolve({ ok: true, status: 200,
+                json: () => Promise.resolve(opts.describeUnavailable
+                    ? { available: false, description: '' }
+                    : { available: true, description: opts.describe || 'A description.' }) });
+        }
         if (p === '/api/items') {
             if ((init && init.method) === 'POST') {
                 if (opts.saveError) {
@@ -231,6 +237,59 @@ const val = (row, sel) => {
             w.document.getElementById('item-modal-error').textContent);
         check('and the modal stays open so it can be fixed',
             w.document.getElementById('item-modal').style.display === 'flex');
+    }
+
+    // --- the AI description ---------------------------------------------------
+    // Optional and metered, so it is a button. The AI being off or out of
+    // credit must not stop somebody saving an item with a typed description.
+    {
+        const { w, sent } = boot({ describe: 'Daily hire of a BMW, collected from depot.' });
+        await wait(80);
+        w.openItemModal(firstRow(w), 'BMW-DAY');
+        w.document.getElementById('item-name').value = 'BMW daily hire';
+        sent.length = 0;
+        await w.describeItemWithAi();
+
+        const post = sent.find(s => s.url === '/api/ai/describe-item');
+        check('it asks the AI endpoint', !!post);
+        check('and gives it the name and code to work from', !!post && (() => {
+            const b = JSON.parse(post.body);
+            return b.text.includes('BMW daily hire') && b.text.includes('BMW-DAY');
+        })(), post && post.body);
+        check('the answer lands in the description box',
+            w.document.getElementById('item-description').value
+                === 'Daily hire of a BMW, collected from depot.',
+            w.document.getElementById('item-description').value);
+        check('and it says the words came from the AI, so they get checked',
+            /ai/i.test(w.document.getElementById('item-ai-note').textContent),
+            w.document.getElementById('item-ai-note').textContent);
+    }
+
+    {
+        const { w, sent } = boot();
+        await wait(80);
+        w.openItemModal(firstRow(w), '');
+        sent.length = 0;
+        await w.describeItemWithAi();
+        check('with nothing to describe it never asks, and never charges',
+            !sent.some(s => s.url === '/api/ai/describe-item'));
+        check('and says what is missing',
+            /code or a name/i.test(w.document.getElementById('item-ai-note').textContent),
+            w.document.getElementById('item-ai-note').textContent);
+    }
+
+    {
+        // AI off, or out of credit. The description is optional, so this is a
+        // note rather than a failure - the item still saves without one.
+        const { w } = boot({ describeUnavailable: true });
+        await wait(80);
+        w.openItemModal(firstRow(w), 'BMW');
+        await w.describeItemWithAi();
+        check('the AI being unavailable is explained, not thrown',
+            /not available/i.test(w.document.getElementById('item-ai-note').textContent),
+            w.document.getElementById('item-ai-note').textContent);
+        check('and the description box is left alone to be typed',
+            w.document.getElementById('item-description').value === '');
     }
 
     console.log(failures ? `\n${failures} failed` : '\nall good');
