@@ -1315,6 +1315,32 @@ class DBItem(Base):
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
+class DBEmailTemplate(Base):
+    """A saved subject and message for one kind of document.
+
+    Sending an invoice used a subject and body written into the code, so every
+    business sent the same words and nobody could change them without a
+    deploy. A template is those words, per business, with placeholders that
+    fill in from the document at send time.
+    """
+    __tablename__ = "email_templates"
+    __table_args__ = (
+        UniqueConstraint('client_id', 'kind', 'name', name='uq_client_email_template'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    # invoice | quote | reminder - which document this is offered for.
+    kind = Column(String, default="invoice", index=True)
+    name = Column(String, nullable=False)
+    subject = Column(String, default="")
+    body = Column(Text, default="")
+    # The one offered first. Exactly one per kind, kept true by the endpoint
+    # rather than by the column, since "the default" is a property of the set.
+    is_default = Column(Boolean, default=False)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
 class DBStaffRequest(Base):
     """A conversation between one employee and HR.
 

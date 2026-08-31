@@ -717,6 +717,25 @@ textarea.table-input.item-desc {
 .font-sm { font-size: 0.9rem; }
 .grid-2-1 { display: grid; grid-template-columns: 2fr 1fr; gap: 24px; }
 
+/* ===== SEND EMAIL ===== */
+/* The form and the preview side by side, so the placeholders can be watched
+   filling in rather than guessed at. */
+.send-email-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
+.send-email-preview {
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 18px;
+    max-height: 60vh;
+    overflow-y: auto;
+}
+@media (max-width: 900px) {
+    /* Stacked, with the preview under the form rather than squeezed beside
+       it - half a preview is worse than one you scroll to. */
+    .send-email-grid { grid-template-columns: 1fr; }
+    .send-email-preview { max-height: none; }
+}
+
 /* ===== CALENDAR ===== */
 .calendar-grid {
     display: grid;

@@ -440,9 +440,151 @@ class InvoiceCreate(BaseModel):
     currency: Optional[str] = ""
     bank_details: Optional[str] = ""
 
+# --- Email placeholders ------------------------------------------------------
+# The subject and body of an invoice email were written into the code, so every
+# business sent the same words and changing them was a deploy. A template holds
+# the words; these fill in the parts that come from the document.
+#
+# Named in square brackets, matched case-insensitively, so [Invoice Number] and
+# [invoice number] are the same thing - people type these by hand.
+
+EMAIL_PLACEHOLDERS = [
+    # (name, group, what it is)
+    ("Contact First Name", "Contact", "The customer's first name"),
+    ("Contact Name", "Contact", "The customer's full name"),
+    ("Contact Email", "Contact", "The address it is going to"),
+    ("Invoice Number", "Invoice", "e.g. INV-0010"),
+    ("Invoice Reference", "Invoice", "Your own reference, if the invoice has one"),
+    ("Invoice Date", "Invoice", "The date it was issued"),
+    ("Due Date", "Invoice", "The date it falls due"),
+    ("Currency Code", "Invoice", "e.g. GBP"),
+    ("Invoice Total", "Invoice", "The total, with the currency symbol"),
+    ("Invoice Total Without Currency", "Invoice", "The total, as a bare number"),
+    ("Amount Due", "Invoice", "What is still outstanding, with the symbol"),
+    ("Amount Due Without Currency", "Invoice", "What is still outstanding, bare"),
+    ("Online Invoice Link", "Invoice", "A link the customer can pay from"),
+    ("Trading Name", "Business", "Your company name"),
+    ("Business Email", "Business", "Your email address"),
+    ("Business Phone", "Business", "Your phone number"),
+]
+
+PLACEHOLDER_PATTERN = re.compile(r"\[([A-Za-z][A-Za-z ]*?)\]")
+
+
+def _first_name(full):
+    return (str(full or "").strip().split(" ") or [""])[0]
+
+
+def invoice_placeholder_values(db, inv, client=None):
+    """What each placeholder resolves to for this invoice.
+
+    A value that is genuinely absent comes back as an empty string rather than
+    a guess, so the caller can tell somebody which placeholder will render as
+    nothing - which is the difference between a blank "Hi ," reaching a
+    customer and being warned before it does.
+    """
+    client = client or (db.query(models.DBClient).filter(
+        models.DBClient.id == inv.client_id).first() if inv.client_id else None)
+
+    settings_map = {s.key: s.value for s in db.query(models.DBSettings).filter(
+        models.DBSettings.client_id == inv.client_id).all()}
+
+    company = (settings_map.get("company_name", "")
+               or (client.company_name if client else "") or "")
+    cur = (inv.currency or settings_map.get("currency")
+           or (client.currency if client else "") or "GBP").upper()
+    symbol = currency_symbol(cur)
+
+    # There is no total column - an invoice carries what is paid and what is
+    # still owed, and the total is the two together. Same formula the rest of
+    # the app uses, so the email cannot disagree with the document.
+    due = float(inv.due or 0)
+    total = float((inv.paid or 0) + due)
+
+    base = (os.getenv("APP_BASE_URL", "") or "").rstrip("/")
+    link = f"{base}/invoice.html?number={inv.number}" if base and inv.number else ""
+
+    return {
+        "contact first name": _first_name(inv.to_contact),
+        "contact name": inv.to_contact or "",
+        "contact email": inv.email or "",
+        "invoice number": inv.number or "",
+        "invoice reference": inv.ref or "",
+        "invoice date": inv.issue_date or "",
+        "due date": inv.due_date or "",
+        "currency code": cur,
+        "invoice total": f"{symbol}{total:,.2f}",
+        "invoice total without currency": f"{total:,.2f}",
+        "amount due": f"{symbol}{due:,.2f}",
+        "amount due without currency": f"{due:,.2f}",
+        "online invoice link": link,
+        "trading name": company,
+        "business email": (settings_map.get("email", "")
+                           or (client.email if client else "")),
+        "business phone": (settings_map.get("phone_number", "")
+                           or (client.phone_number if client else "")),
+    }
+
+
+def fill_placeholders(text, values):
+    """Substitute what is known, and report what was not.
+
+    Returns the filled text and the placeholders that resolved to nothing -
+    both the ones we have no value for and the ones we recognise but that are
+    empty on this particular invoice. An unknown name is left exactly as typed
+    rather than blanked, because deleting what somebody wrote is worse than
+    showing it back to them.
+    """
+    missing = []
+
+    def one(match):
+        name = match.group(1).strip()
+        key = name.lower()
+        if key not in values:
+            missing.append(name)
+            return match.group(0)          # left as written, not silently dropped
+        value = values[key]
+        if not str(value).strip():
+            missing.append(name)
+            return ""
+        return str(value)
+
+    filled = PLACEHOLDER_PATTERN.sub(one, text or "")
+    # Stable order, no repeats - it is shown to a person as a warning.
+    seen, unique = set(), []
+    for name in missing:
+        if name.lower() not in seen:
+            seen.add(name.lower())
+            unique.append(name)
+    return filled, unique
+
+
+DEFAULT_INVOICE_EMAIL = {
+    "name": "Basic",
+    "subject": "Invoice #[Invoice Number] from [Trading Name] is due",
+    "body": (
+        "Hi [Contact First Name],\n\n"
+        "Here's invoice [Invoice Number] for [Currency Code] "
+        "[Invoice Total Without Currency].\n\n"
+        "The amount outstanding of [Currency Code] "
+        "[Amount Due Without Currency] is due on [Due Date].\n\n"
+        "View your invoice online: [Online Invoice Link]\n\n"
+        "Thanks,\n[Trading Name]\n"
+    ),
+}
+
+
 class SendInvoiceEmail(BaseModel):
     logo_data: Optional[str] = ""
     pdf_data: Optional[str] = ""
+    # Written on the send screen. Left empty, the saved template is used, so
+    # an older caller that sends neither still works.
+    to: Optional[str] = None
+    subject: Optional[str] = None
+    body: Optional[str] = None
+    template_id: Optional[int] = None
+    attach_pdf: Optional[bool] = True
+    send_copy: Optional[bool] = False
 
 class TestEmail(BaseModel):
     to_email: str
@@ -860,6 +1002,238 @@ def delete_item(item_id: int, request: Request, db: Session = Depends(get_db)):
     log_audit(db, client.id, "item_retired", "item", row.id, row.code, "", request)
     db.commit()
     return {"retired": row.id}
+
+
+EMAIL_TEMPLATE_KINDS = ("invoice", "quote")
+
+
+def template_to_dict(t):
+    return {"id": t.id, "kind": t.kind, "name": t.name,
+            "subject": t.subject or "", "body": t.body or "",
+            "is_default": bool(t.is_default)}
+
+
+def _template_kind(raw):
+    kind = str(raw or "invoice").strip().lower()
+    if kind not in EMAIL_TEMPLATE_KINDS:
+        raise HTTPException(status_code=400,
+                            detail="Not a kind of document: " + ", ".join(EMAIL_TEMPLATE_KINDS))
+    return kind
+
+
+def templates_for(db, client_id, kind):
+    """This business's templates, seeding the built-in one the first time.
+
+    Seeded rather than special-cased so the words are editable from the
+    moment somebody looks for them - a default that only exists in code is a
+    default nobody can change.
+    """
+    rows = db.query(models.DBEmailTemplate).filter(
+        models.DBEmailTemplate.client_id == client_id,
+        models.DBEmailTemplate.kind == kind).order_by(
+            models.DBEmailTemplate.id.asc()).all()
+
+    if rows:
+        # Something has to be the default or the send screen opens on nothing.
+        # It can be lost legitimately - a business whose first template was
+        # created before it ever opened the list has none - so it is restored
+        # on read rather than assumed.
+        if not any(t.is_default for t in rows):
+            rows[0].is_default = True
+            db.commit()
+        return rows
+    if kind != "invoice":
+        return rows
+
+    seeded = models.DBEmailTemplate(
+        client_id=client_id, kind="invoice",
+        name=DEFAULT_INVOICE_EMAIL["name"],
+        subject=DEFAULT_INVOICE_EMAIL["subject"],
+        body=DEFAULT_INVOICE_EMAIL["body"],
+        is_default=True)
+    db.add(seeded)
+    db.commit()
+    db.refresh(seeded)
+    return [seeded]
+
+
+@app.get("/api/email-placeholders")
+def list_email_placeholders(request: Request, db: Session = Depends(get_db)):
+    """What may be typed into a subject or body, for the picker to offer."""
+    get_client_user(request, db)
+    return {"placeholders": [
+        {"name": name, "group": group, "help": help_text}
+        for name, group, help_text in EMAIL_PLACEHOLDERS
+    ]}
+
+
+@app.get("/api/email-templates")
+def list_email_templates(request: Request, kind: str = "invoice",
+                         db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    rows = templates_for(db, client.id, _template_kind(kind))
+    return {"templates": [template_to_dict(t) for t in rows]}
+
+
+@app.post("/api/email-templates")
+def create_email_template(request: Request, body: dict = None,
+                          db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    kind = _template_kind(body.get("kind"))
+
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Give the template a name")
+    if len(name) > 120:
+        raise HTTPException(status_code=400, detail="That name is too long")
+
+    clash = db.query(models.DBEmailTemplate).filter(
+        models.DBEmailTemplate.client_id == client.id,
+        models.DBEmailTemplate.kind == kind,
+        sqlfunc.lower(models.DBEmailTemplate.name) == name.lower()).first()
+    if clash:
+        raise HTTPException(status_code=400,
+                            detail=f"You already have a template called '{clash.name}'")
+
+    row = models.DBEmailTemplate(
+        client_id=client.id, kind=kind, name=name,
+        subject=str(body.get("subject") or "")[:500],
+        body=str(body.get("body") or "")[:20000],
+        is_default=bool(body.get("is_default")))
+
+    if row.is_default:
+        db.query(models.DBEmailTemplate).filter(
+            models.DBEmailTemplate.client_id == client.id,
+            models.DBEmailTemplate.kind == kind).update({"is_default": False})
+
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return template_to_dict(row)
+
+
+@app.put("/api/email-templates/{template_id}")
+def update_email_template(template_id: int, request: Request, body: dict = None,
+                          db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = db.query(models.DBEmailTemplate).filter(
+        models.DBEmailTemplate.id == template_id,
+        models.DBEmailTemplate.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    body = body or {}
+    if "name" in body:
+        name = str(body["name"] or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Give the template a name")
+        clash = db.query(models.DBEmailTemplate).filter(
+            models.DBEmailTemplate.client_id == client.id,
+            models.DBEmailTemplate.kind == row.kind,
+            models.DBEmailTemplate.id != row.id,
+            sqlfunc.lower(models.DBEmailTemplate.name) == name.lower()).first()
+        if clash:
+            raise HTTPException(
+                status_code=400,
+                detail=f"You already have a template called '{clash.name}'")
+        row.name = name[:120]
+
+    if "subject" in body:
+        row.subject = str(body["subject"] or "")[:500]
+    if "body" in body:
+        row.body = str(body["body"] or "")[:20000]
+
+    if body.get("is_default"):
+        # Exactly one default per kind: it is a property of the set, so it is
+        # kept here rather than hoped for.
+        db.query(models.DBEmailTemplate).filter(
+            models.DBEmailTemplate.client_id == client.id,
+            models.DBEmailTemplate.kind == row.kind).update({"is_default": False})
+        row.is_default = True
+
+    db.commit()
+    return template_to_dict(row)
+
+
+@app.delete("/api/email-templates/{template_id}")
+def delete_email_template(template_id: int, request: Request,
+                          db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = db.query(models.DBEmailTemplate).filter(
+        models.DBEmailTemplate.id == template_id,
+        models.DBEmailTemplate.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    kind, was_default = row.kind, bool(row.is_default)
+    remaining = db.query(models.DBEmailTemplate).filter(
+        models.DBEmailTemplate.client_id == client.id,
+        models.DBEmailTemplate.kind == kind,
+        models.DBEmailTemplate.id != row.id).order_by(
+            models.DBEmailTemplate.id.asc()).all()
+    if not remaining:
+        raise HTTPException(
+            status_code=400,
+            detail="This is your only template - edit it rather than removing it")
+
+    db.delete(row)
+    # Something has to be the default, or the send screen opens on nothing.
+    if was_default:
+        remaining[0].is_default = True
+    db.commit()
+    return {"deleted": template_id}
+
+
+@app.post("/api/invoices/{number}/email-preview")
+def preview_invoice_email(number: str, request: Request, body: dict = None,
+                          db: Session = Depends(get_db)):
+    """What this subject and body will actually say, and what will be blank.
+
+    The preview is generated from the same values the send uses, so what is
+    shown is what goes out - and the placeholders that resolve to nothing are
+    named, because a blank "Hi ," reaching a customer is the failure this
+    screen exists to prevent.
+    """
+    client = get_client_user(request, db)
+    inv = db.query(models.DBInvoice).filter(
+        models.DBInvoice.number == number,
+        models.DBInvoice.client_id == client.id).first()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    body = body or {}
+    values = invoice_placeholder_values(db, inv, client)
+
+    subject_raw = body.get("subject")
+    body_raw = body.get("body")
+    if subject_raw is None or body_raw is None:
+        chosen = None
+        rows = templates_for(db, client.id, "invoice")
+        if body.get("template_id"):
+            chosen = next((t for t in rows if t.id == body["template_id"]), None)
+        if not chosen:
+            chosen = next((t for t in rows if t.is_default), rows[0] if rows else None)
+        if chosen:
+            subject_raw = subject_raw if subject_raw is not None else chosen.subject
+            body_raw = body_raw if body_raw is not None else chosen.body
+
+    subject, subject_missing = fill_placeholders(subject_raw or "", values)
+    message, body_missing = fill_placeholders(body_raw or "", values)
+
+    seen, missing = set(), []
+    for name in subject_missing + body_missing:
+        if name.lower() not in seen:
+            seen.add(name.lower())
+            missing.append(name)
+
+    return {
+        "to": inv.email or "",
+        "subject": subject,
+        "body": message,
+        "missing": missing,
+        "currency": (inv.currency or "GBP").upper(),
+    }
 
 
 @app.get("/api/client/password-status")
@@ -1977,7 +2351,35 @@ def send_invoice_email(number: str, background_tasks: BackgroundTasks, request: 
 
     sender_name = os.getenv("FROM_NAME", "aniprotech")
     from_header = f"{company_name} <{from_email}>"
-    subject = f"Invoice {inv.number} from {company_name}"
+
+    # What actually gets sent: what was written on the send screen, else the
+    # saved template, else the built-in wording. Resolved through the same
+    # function the preview uses, so what was on screen is what goes out.
+    placeholder_values = invoice_placeholder_values(db, inv, inv_client)
+    subject_template = payload.subject
+    body_template = payload.body
+    if subject_template is None or body_template is None:
+        rows = templates_for(db, client.id, "invoice")
+        chosen = None
+        if payload.template_id:
+            chosen = next((t for t in rows if t.id == payload.template_id), None)
+        if not chosen:
+            chosen = next((t for t in rows if t.is_default), rows[0] if rows else None)
+        if chosen:
+            if subject_template is None:
+                subject_template = chosen.subject
+            if body_template is None:
+                body_template = chosen.body
+
+    subject, _ = fill_placeholders(
+        subject_template if subject_template is not None
+        else f"Invoice {inv.number} from {company_name}", placeholder_values)
+    custom_body, _ = fill_placeholders(body_template or "", placeholder_values)
+
+    # A subject that resolved to nothing would arrive blank, which reads as
+    # spam. Fall back rather than send it.
+    if not subject.strip():
+        subject = f"Invoice {inv.number} from {company_name}"
 
     logo_html = ""
     logo_data = payload.logo_data or ""
@@ -2138,14 +2540,40 @@ Powered by Aniprotech"""
     </html>
     """
 
-    pdf_b64 = payload.pdf_data if payload.pdf_data else None
+    # Unticking "attach PDF" has to actually drop the attachment, not just
+    # hide the tick - the customer notices which of those happened.
+    pdf_b64 = payload.pdf_data if (payload.pdf_data and payload.attach_pdf) else None
     pdf_filename = f"{inv.number}.pdf" if pdf_b64 else "invoice.pdf"
+
+    # Where it is going. An address typed on the screen wins over the one on
+    # the invoice, which is how somebody sends to a different person at the
+    # same customer without editing the invoice itself.
+    recipient = (payload.to or "").strip() or inv.email
+    if not validate_email_address(recipient):
+        raise HTTPException(status_code=400, detail=f"Invalid email address: {recipient}")
 
     # Metered before the send is queued; charging afterwards would mean a
     # refused charge still delivered the email.
     require_credit(db, client.id, "invoice_send", 1, inv.number)
 
-    background_tasks.add_task(send_email_background, inv.email, subject, body, from_header, html_body, pdf_b64, pdf_filename, logo_data, client_id=client.id)
+    # The message the customer reads is what was written, when something was.
+    # The generated HTML stays the presentation of it.
+    if custom_body.strip():
+        body = custom_body
+
+    background_tasks.add_task(send_email_background, recipient, subject, body, from_header, html_body, pdf_b64, pdf_filename, logo_data, client_id=client.id)
+
+    # A copy to the sender, so there is a record in their own mailbox. Sent as
+    # a second message rather than a Bcc, because the Gmail send used here
+    # takes one recipient.
+    if payload.send_copy:
+        own = (settings_map.get("email", "")
+               or (inv_client.email if inv_client else ""))
+        if own and validate_email_address(own) and own != recipient:
+            background_tasks.add_task(
+                send_email_background, own, f"[Copy] {subject}", body,
+                from_header, html_body, pdf_b64, pdf_filename, logo_data,
+                client_id=client.id)
 
     # Re-sending a receipt must not walk a settled invoice back to unpaid.
     if inv.status not in ("Paid", "Partially Paid", "Void"):

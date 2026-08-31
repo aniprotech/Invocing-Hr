@@ -3223,45 +3223,205 @@ function generateQuotePDF() {
 window.generateQuotePDF = generateQuotePDF;
 
 // --- Send Email ---
+// --- Sending an invoice ----------------------------------------------------
+// This used to fire the moment the button was pressed, with a subject and body
+// written into the code. Nobody could see what was about to reach a customer,
+// change a word of it, or send it anywhere but the address on the invoice.
+
+var _sendTemplates = [];
+var _sendPreviewTimer = null;
+
 async function sendEmail() {
     var number = document.getElementById('view-inv-number-val').textContent;
     if (!number) { showToast('No invoice loaded', 'error'); return; }
 
-    var logoData = localStorage.getItem('company_logo') || '';
+    document.getElementById('send-email-error').style.display = 'none';
+    document.getElementById('send-email-modal').style.display = 'flex';
+    document.getElementById('send-email-modal').dataset.number = number;
 
-    var pdfB64 = '';
+    await Promise.all([loadEmailTemplates(), loadPlaceholderPicker()]);
+    applyEmailTemplate();
+}
+window.sendEmail = sendEmail;
+
+function closeSendEmail() {
+    document.getElementById('send-email-modal').style.display = 'none';
+}
+window.closeSendEmail = closeSendEmail;
+
+async function loadEmailTemplates() {
+    var select = document.getElementById('send-template');
     try {
-        var doc = generateInvoicePDF(false);
-        var dataUri = doc.output('datauristring');
-        pdfB64 = dataUri.split('base64,')[1] || '';
-        if (!pdfB64) console.warn('sendEmail: PDF base64 extraction failed, dataUri prefix:', dataUri.substring(0, 60));
-        else console.log('sendEmail: PDF ready, size ~' + Math.round(pdfB64.length / 1024) + 'KB');
+        var res = await fetch('/api/email-templates?kind=invoice');
+        if (!res.ok) throw new Error('Could not load your templates');
+        _sendTemplates = (await res.json()).templates || [];
     } catch (e) {
-        console.error('PDF generation failed:', e);
-        showToast('PDF generation failed: ' + e.message, 'error');
+        _sendTemplates = [];
+    }
+    select.innerHTML = _sendTemplates.map(function (t) {
+        return '<option value="' + t.id + '"' + (t.is_default ? ' selected' : '') +
+            '>' + esc(t.name) + '</option>';
+    }).join('');
+}
+
+async function loadPlaceholderPicker() {
+    var picker = document.getElementById('send-placeholder-picker');
+    // Offered from the server rather than written out here, so the picker
+    // cannot insert something the filler does not know about.
+    try {
+        var res = await fetch('/api/email-placeholders');
+        if (!res.ok) return;
+        var groups = {};
+        ((await res.json()).placeholders || []).forEach(function (ph) {
+            (groups[ph.group] = groups[ph.group] || []).push(ph);
+        });
+        picker.innerHTML = '<option value="">Add placeholder…</option>' +
+            Object.keys(groups).map(function (g) {
+                return '<optgroup label="' + esc(g) + '">' +
+                    groups[g].map(function (ph) {
+                        return '<option value="' + esc(ph.name) + '" title="' +
+                            esc(ph.help) + '">' + esc(ph.name) + '</option>';
+                    }).join('') + '</optgroup>';
+            }).join('');
+    } catch (e) { /* the screen still works without the picker */ }
+}
+
+function applyEmailTemplate() {
+    var id = parseInt(document.getElementById('send-template').value, 10);
+    var chosen = _sendTemplates.filter(function (t) { return t.id === id; })[0];
+    if (chosen) {
+        document.getElementById('send-subject').value = chosen.subject || '';
+        document.getElementById('send-body').value = chosen.body || '';
+    }
+    refreshEmailPreview();
+}
+window.applyEmailTemplate = applyEmailTemplate;
+
+// Dropped where the cursor is, not appended - somebody adding a name to a
+// greeting means it to go in the greeting.
+function insertPlaceholder(name) {
+    if (!name) return;
+    var box = document.getElementById('send-body');
+    var token = '[' + name + ']';
+    var at = box.selectionStart;
+    if (at === undefined || at === null) at = box.value.length;
+    var to = box.selectionEnd === undefined ? at : box.selectionEnd;
+    box.value = box.value.slice(0, at) + token + box.value.slice(to);
+    box.focus();
+    box.selectionStart = box.selectionEnd = at + token.length;
+    refreshEmailPreview();
+}
+window.insertPlaceholder = insertPlaceholder;
+
+// Typing should not ask the server on every keystroke.
+function scheduleEmailPreview() {
+    clearTimeout(_sendPreviewTimer);
+    _sendPreviewTimer = setTimeout(refreshEmailPreview, 300);
+}
+window.scheduleEmailPreview = scheduleEmailPreview;
+
+async function refreshEmailPreview() {
+    var modal = document.getElementById('send-email-modal');
+    var number = modal.dataset.number;
+    if (!number) return;
+
+    try {
+        var res = await fetch('/api/invoices/' + encodeURIComponent(number) + '/email-preview', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                subject: document.getElementById('send-subject').value,
+                body: document.getElementById('send-body').value,
+            }),
+        });
+        if (!res.ok) return;
+        var data = await res.json();
+
+        // The To box is filled from the invoice the first time, then left
+        // alone - somebody who typed a different address meant it.
+        var toBox = document.getElementById('send-to');
+        if (!toBox.value.trim() && data.to) toBox.value = data.to;
+
+        document.getElementById('preview-subject').textContent = data.subject || '(no subject)';
+        document.getElementById('preview-to').textContent = 'To: ' + (toBox.value || data.to || '—');
+        document.getElementById('preview-body').textContent = data.body || '';
+
+        var warn = document.getElementById('send-missing');
+        if ((data.missing || []).length) {
+            // Named, because "something is missing" sends somebody hunting
+            // through their own template to find which.
+            warn.textContent = data.missing.length === 1
+                ? data.missing[0] + ' does not have a corresponding value, so it will be blank.'
+                : data.missing.join(', ') + ' do not have corresponding values, so they will be blank.';
+            warn.style.display = 'block';
+        } else {
+            warn.style.display = 'none';
+        }
+    } catch (e) { /* the preview is a convenience; the form still sends */ }
+}
+window.refreshEmailPreview = refreshEmailPreview;
+
+async function confirmSendEmail() {
+    var modal = document.getElementById('send-email-modal');
+    var number = modal.dataset.number;
+    var err = document.getElementById('send-email-error');
+    var btn = document.getElementById('send-email-btn');
+    var to = document.getElementById('send-to').value.trim();
+
+    if (!to) {
+        err.textContent = 'Enter an email address to send to.';
+        err.style.display = 'block';
         return;
     }
 
-    try {
-        showToast('Sending email...', 'info');
-        var res = await fetch('/api/invoices/' + encodeURIComponent(number) + '/send', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ logo_data: logoData, pdf_data: pdfB64 })
-        });
-        var data = await res.json();
-        if (res.ok) {
-            showToast('Email sent via Gmail API with PDF attached!', 'success');
-            fetchInvoices();
-            viewInvoice(number);
-        } else {
-            reportApiError(res, data, 'Could not send the email');
+    var attach = document.getElementById('send-attach-pdf').checked;
+    var logoData = localStorage.getItem('company_logo') || '';
+
+    // Only built when it is actually going to be attached - generating a PDF
+    // nobody asked for is the slowest thing on this screen.
+    var pdfB64 = '';
+    if (attach) {
+        try {
+            var doc = generateInvoicePDF(false);
+            pdfB64 = (doc.output('datauristring').split('base64,')[1]) || '';
+        } catch (e) {
+            err.textContent = 'Could not build the PDF: ' + e.message;
+            err.style.display = 'block';
+            return;
         }
+    }
+
+    btn.disabled = true;
+    err.style.display = 'none';
+    try {
+        var res = await fetch('/api/invoices/' + encodeURIComponent(number) + '/send', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                logo_data: logoData,
+                pdf_data: pdfB64,
+                to: to,
+                subject: document.getElementById('send-subject').value,
+                body: document.getElementById('send-body').value,
+                attach_pdf: attach,
+                send_copy: document.getElementById('send-copy-me').checked,
+            }),
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) {
+            reportApiError(res, data, 'Could not send the email');
+            return;
+        }
+        closeSendEmail();
+        showToast('Invoice sent to ' + to, 'success');
+        fetchInvoices();
+        viewInvoice(number);
     } catch (e) {
-        showToast('Failed to send email: ' + e, 'error');
+        err.textContent = 'Failed to send: ' + e.message;
+        err.style.display = 'block';
+    } finally {
+        btn.disabled = false;
     }
 }
-window.sendEmail = sendEmail;
+window.confirmSendEmail = confirmSendEmail;
 
 // --- Send WhatsApp ---
 async function sendWhatsApp() {
