@@ -554,6 +554,20 @@ textarea.table-input.item-desc {
     backdrop-filter: blur(12px);
 }
 .contact-autocomplete-dropdown.show { display: block; }
+
+/* The item box sits in a narrow table cell, so left:0/right:0 gave a 150px
+   dropdown that wrapped every code onto three lines. It is allowed to be
+   wider than its cell - that is what a popover is for - and is pinned to the
+   left edge so it does not drift off the side of a narrow screen. */
+.contact-autocomplete-dropdown.item-lookup {
+    right: auto;
+    min-width: 280px;
+    max-width: 360px;
+}
+.item-lookup .ca-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 640px) {
+    .contact-autocomplete-dropdown.item-lookup { min-width: 210px; max-width: 78vw; }
+}
 .contact-autocomplete-item {
     padding: 10px 14px;
     cursor: pointer;

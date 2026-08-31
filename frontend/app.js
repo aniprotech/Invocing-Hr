@@ -3433,7 +3433,12 @@ function addLineItemRow(scope) {
         '<circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/>' +
         '<circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/>' +
         '</svg></td>' +
-        '<td style="padding:0;"><input type="text" class="table-input item-name" style="width:100%;" placeholder="Item name"></td>' +
+        // The item box looks the item up rather than only recording what was
+        // typed. Wrapped so the dropdown can hang off the cell.
+        '<td style="padding:0;position:relative;">' +
+        '<input type="text" class="table-input item-name" style="width:100%;" placeholder="Item or description" autocomplete="off" oninput="onItemBoxInput(this)" onfocus="onItemBoxInput(this)">' +
+        '<div class="contact-autocomplete-dropdown item-lookup"></div>' +
+        '</td>' +
         '<td style="padding:0;"><textarea class="table-input item-desc" rows="1" style="width:100%;resize:vertical;min-height:32px;overflow:hidden;line-height:1.4;" ' +
         'oninput="this.style.height=\'auto\';this.style.height=this.scrollHeight+\'px\';"></textarea></td>' +
         '<td style="padding:0;"><input type="number" class="table-input item-qty" style="width:100%;text-align:right;" value="0" step="1" min="0"></td>' +
@@ -3960,6 +3965,188 @@ var contactDropdownTimeout = null;
 // Keyed by input id, because the quote form wants the same behaviour and a
 // single boolean would let whichever form ran first block the other.
 var contactAutocompleteSetup = {};
+
+// --- Saved items -----------------------------------------------------------
+// Every line used to be typed from scratch, so the same product got a slightly
+// different name, price and account each time it was billed - and nothing
+// could report on what was actually being sold. The box looks up the
+// catalogue now, and offers to save what is not in it yet.
+
+var _itemLookupTimer = null;
+var _itemLookupRow = null;      // the line the "create item" modal will fill
+
+function closeItemLookups(except) {
+    document.querySelectorAll('.item-lookup.show').forEach(function (d) {
+        if (d !== except) d.classList.remove('show');
+    });
+}
+
+function onItemBoxInput(input) {
+    var cell = input.parentElement;
+    var dropdown = cell ? cell.querySelector('.item-lookup') : null;
+    if (!dropdown) return;
+    closeItemLookups(dropdown);
+
+    var typed = input.value.trim();
+    clearTimeout(_itemLookupTimer);
+    _itemLookupTimer = setTimeout(function () {
+        fetch('/api/items?limit=8&q=' + encodeURIComponent(typed))
+            .then(function (r) { return r.ok ? r.json() : { items: [] }; })
+            .then(function (data) {
+                renderItemLookup(dropdown, input, data.items || [], typed);
+            })
+            .catch(function () { dropdown.classList.remove('show'); });
+    }, 150);
+}
+window.onItemBoxInput = onItemBoxInput;
+
+function renderItemLookup(dropdown, input, items, typed) {
+    var html = items.map(function (it) {
+        var price = Number(it.sale_price || 0).toFixed(2);
+        return '<div class="contact-autocomplete-item" data-item-id="' + it.id + '">' +
+            '<div class="ca-icon">' + esc((it.code || '?')[0].toUpperCase()) + '</div>' +
+            '<div><div class="ca-name">' + esc(it.code) +
+                (it.name ? ' - ' + esc(it.name) : '') + '</div>' +
+            '<div class="ca-email">' + esc(getCurrencySymbol()) + price + '</div></div>' +
+        '</div>';
+    }).join('');
+
+    // Always offered, the way Xero does it: the reason somebody is typing a
+    // name that does not exist yet is usually that they want it to.
+    html += '<div class="contact-autocomplete-item" data-create-item="1">' +
+        '<div class="ca-icon">+</div><div><div class="ca-name">Create new item</div>' +
+        '<div class="ca-email">Save these details to reuse them</div></div></div>';
+
+    dropdown.innerHTML = html;
+    dropdown.classList.add('show');
+
+    dropdown.querySelectorAll('[data-item-id]').forEach(function (el) {
+        el.addEventListener('click', function () {
+            var picked = items.filter(function (i) {
+                return String(i.id) === el.getAttribute('data-item-id');
+            })[0];
+            if (picked) applyItemToRow(input.closest('tr'), picked);
+            dropdown.classList.remove('show');
+        });
+    });
+    var create = dropdown.querySelector('[data-create-item]');
+    if (create) {
+        create.addEventListener('click', function () {
+            dropdown.classList.remove('show');
+            openItemModal(input.closest('tr'), typed);
+        });
+    }
+}
+
+// Filling the line from the saved item is the whole point: the price and the
+// account stop being retyped, and stop drifting.
+function applyItemToRow(row, item) {
+    if (!row) return;
+    var set = function (selector, value) {
+        var el = row.querySelector(selector);
+        if (el && value !== undefined && value !== null && value !== '') el.value = value;
+    };
+    set('.item-name', item.code);
+    // Only when the line is still empty - somebody who has written their own
+    // description should not lose it by picking the item afterwards.
+    var desc = row.querySelector('.item-desc');
+    if (desc && !desc.value.trim()) desc.value = item.name || item.description || '';
+    if (Number(item.sale_price || 0) > 0) set('.item-price', item.sale_price);
+    var qty = row.querySelector('.item-qty');
+    if (qty && (!qty.value || Number(qty.value) === 0)) qty.value = 1;
+    set('.item-account', item.sale_account);
+    set('.item-tax-rate', item.sale_tax_rate);
+
+    var scope = row.closest('tbody') && row.closest('tbody').id === 'quote-items-body'
+        ? 'quote' : 'invoice';
+    if (typeof calculateTotals === 'function') calculateTotals(scope);
+}
+
+function openItemModal(row, typedCode) {
+    _itemLookupRow = row || null;
+    document.getElementById('item-modal-error').style.display = 'none';
+    document.getElementById('item-code').value = (typedCode || '').trim();
+    document.getElementById('item-name').value = '';
+    document.getElementById('item-description').value = '';
+    document.getElementById('item-sale-price').value = '';
+    document.getElementById('item-sell').checked = true;
+    document.getElementById('item-purchase').checked = false;
+
+    var accountSel = document.getElementById('item-sale-account');
+    var taxSel = document.getElementById('item-sale-tax');
+    // Offer exactly what a line offers, so an item cannot be saved with an
+    // account or rate the invoice form would then refuse.
+    if (row) {
+        var rowAccount = row.querySelector('.item-account');
+        var rowTax = row.querySelector('.item-tax-rate');
+        if (rowAccount) accountSel.innerHTML = rowAccount.innerHTML;
+        if (rowTax) taxSel.innerHTML = rowTax.innerHTML;
+    }
+
+    document.getElementById('item-modal').style.display = 'flex';
+    document.getElementById(typedCode ? 'item-name' : 'item-code').focus();
+}
+window.openItemModal = openItemModal;
+
+function closeItemModal() {
+    document.getElementById('item-modal').style.display = 'none';
+    _itemLookupRow = null;
+}
+window.closeItemModal = closeItemModal;
+
+async function saveItem() {
+    var err = document.getElementById('item-modal-error');
+    var btn = document.getElementById('item-save-btn');
+    var body = {
+        code: document.getElementById('item-code').value.trim(),
+        name: document.getElementById('item-name').value.trim(),
+        description: document.getElementById('item-description').value.trim(),
+        sale_price: parseFloat(document.getElementById('item-sale-price').value) || 0,
+        sale_account: document.getElementById('item-sale-account').value,
+        sale_tax_rate: document.getElementById('item-sale-tax').value,
+        is_sold: document.getElementById('item-sell').checked,
+        is_purchased: document.getElementById('item-purchase').checked,
+    };
+    if (!body.code) {
+        err.textContent = 'Give the item a code.';
+        err.style.display = 'block';
+        return;
+    }
+
+    btn.disabled = true;
+    err.style.display = 'none';
+    try {
+        var res = await fetch('/api/items', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+            var why = await res.json().catch(function () { return {}; });
+            throw new Error(why.detail || 'Could not save that item');
+        }
+        var saved = await res.json();
+        // Straight onto the line it was created from, which is where somebody
+        // was going anyway.
+        if (_itemLookupRow) applyItemToRow(_itemLookupRow, saved);
+        closeItemModal();
+        showToast('Item saved', 'success');
+    } catch (e) {
+        err.textContent = e.message;
+        err.style.display = 'block';
+    } finally {
+        btn.disabled = false;
+    }
+}
+window.saveItem = saveItem;
+
+// A click anywhere else puts the lookup away.
+document.addEventListener('click', function (e) {
+    if (!e.target.closest || !e.target.closest('.item-lookup')) {
+        if (!e.target.classList || !e.target.classList.contains('item-name')) {
+            closeItemLookups();
+        }
+    }
+});
 
 function setupContactAutocomplete(inputId, dropdownId, emailId, phoneId) {
     inputId = inputId || 'inv-contact';

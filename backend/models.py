@@ -1267,6 +1267,54 @@ class DBBrandingTheme(Base):
     updated_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
+class DBItem(Base):
+    """Something the business sells or buys, saved once and reused.
+
+    Every invoice line was typed from scratch, so the same product got a
+    slightly different name, price and account each time somebody billed it -
+    and nothing could report on what was actually being sold. A saved item is
+    the thing an invoice line refers to.
+
+    Code is the handle people type, so it is unique per business and matched
+    case-insensitively: "BMW" and "bmw" are the same product, and letting both
+    exist creates two of everything in every report that follows.
+    """
+    __tablename__ = "items"
+    __table_args__ = (
+        UniqueConstraint('client_id', 'code', name='uq_client_item_code'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    code = Column(String, nullable=False, index=True)
+    name = Column(String, default="")
+    description = Column(String, default="")
+
+    # Which side of the business it belongs to. Both are allowed - plenty of
+    # things are bought in and sold on - and neither is, for a placeholder
+    # somebody is still setting up.
+    is_sold = Column(Boolean, default=True)
+    is_purchased = Column(Boolean, default=False)
+
+    sale_price = Column(Float, default=0.0)
+    sale_account = Column(String, default="200 - Sales")
+    sale_tax_rate = Column(String, default="")
+
+    purchase_price = Column(Float, default=0.0)
+    purchase_account = Column(String, default="")
+    purchase_tax_rate = Column(String, default="")
+
+    # Stock, for the businesses that carry it. Off by default: most do not,
+    # and a quantity nobody maintains is worse than no quantity at all.
+    track_inventory = Column(Boolean, default=False)
+    quantity_on_hand = Column(Float, default=0.0)
+
+    # Retired rather than deleted once it has been billed, so old invoices
+    # keep meaning what they said.
+    is_active = Column(Boolean, default=True, index=True)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
 class DBStaffRequest(Base):
     """A conversation between one employee and HR.
 

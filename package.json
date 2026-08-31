@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Checks for the parts of the frontend that only fail at runtime. The Python suite covers the API; this covers the PDF generator, which is where a removed variable turns into a thrown exception that takes the invoice preview and the email attachment down together.",
   "scripts": {
-    "test": "npm run test:pdf && npm run test:pagination && npm run test:logo && npm run test:form && npm run test:logosync && npm run test:mobilenav && npm run test:nav && npm run test:layering && npm run test:walletcurrency && npm run test:dashtab && npm run test:shapes && npm run test:portal && npm run test:routing && npm run test:superadmin && npm run test:sw && npm run test:tailwind && npm run test:attendance && npm run test:invoiceedit && npm run test:loginredirect && npm run test:palette && npm run test:neverblank && npm run test:sanav && npm run test:calendar && npm run test:accountmenu && npm run test:assets",
+    "test": "npm run test:pdf && npm run test:pagination && npm run test:logo && npm run test:form && npm run test:logosync && npm run test:mobilenav && npm run test:nav && npm run test:layering && npm run test:walletcurrency && npm run test:dashtab && npm run test:shapes && npm run test:portal && npm run test:routing && npm run test:superadmin && npm run test:sw && npm run test:tailwind && npm run test:attendance && npm run test:invoiceedit && npm run test:loginredirect && npm run test:palette && npm run test:neverblank && npm run test:sanav && npm run test:calendar && npm run test:accountmenu && npm run test:assets && npm run test:items",
     "test:sw": "node frontend/tests/service-worker.js",
     "test:routing": "node frontend/tests/routing.js",
     "test:superadmin": "node frontend/tests/superadmin-panel.js",
@@ -30,7 +30,8 @@
     "test:sanav": "node frontend/tests/superadmin-navigation.js",
     "test:calendar": "node frontend/tests/calendar.js",
     "test:accountmenu": "node frontend/tests/account-menu.js",
-    "test:assets": "node frontend/tests/assets.js"
+    "test:assets": "node frontend/tests/assets.js",
+    "test:items": "node frontend/tests/items.js"
   },
   "devDependencies": {
     "jsdom": "^24.0.0",

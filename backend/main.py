@@ -593,6 +593,7 @@ MODULE_PATHS = (
     ("/api/quotes", "invoicing"),
     ("/api/bills", "invoicing"),
     ("/api/recurring", "invoicing"),
+    ("/api/items", "invoicing"),
 )
 
 
@@ -696,6 +697,170 @@ def client_login(body: ClientLogin, request: Request, db: Session = Depends(get_
 def client_logout(request: Request):
     request.session.pop("client_id", None)
     return {"message": "Logged out"}
+
+def item_to_dict(it):
+    return {
+        "id": it.id, "code": it.code, "name": it.name or "",
+        "description": it.description or "",
+        "is_sold": bool(it.is_sold), "is_purchased": bool(it.is_purchased),
+        "sale_price": it.sale_price or 0.0,
+        "sale_account": it.sale_account or "",
+        "sale_tax_rate": it.sale_tax_rate or "",
+        "purchase_price": it.purchase_price or 0.0,
+        "purchase_account": it.purchase_account or "",
+        "purchase_tax_rate": it.purchase_tax_rate or "",
+        "track_inventory": bool(it.track_inventory),
+        "quantity_on_hand": it.quantity_on_hand or 0.0,
+        "is_active": bool(it.is_active),
+    }
+
+
+def _item_code(raw):
+    """The handle people type. Trimmed, because a trailing space is invisible
+    and would let the same code exist twice."""
+    code = str(raw or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="Give the item a code")
+    if len(code) > 60:
+        raise HTTPException(status_code=400, detail="That code is too long")
+    return code
+
+
+def _item_money(raw, field):
+    if raw in (None, ""):
+        return 0.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{field} must be a number")
+    if value < 0:
+        raise HTTPException(status_code=400, detail=f"{field} cannot be negative")
+    return round(value, 2)
+
+
+@app.get("/api/items")
+def list_items(request: Request, q: str = "", include_inactive: bool = False,
+               limit: int = 50, db: Session = Depends(get_db)):
+    """The catalogue, or the part of it matching what has been typed.
+
+    Doubles as the lookup behind the item box on an invoice line, so it is
+    capped: a business with thousands of products must not send all of them to
+    fill a dropdown showing eight.
+    """
+    client = get_client_user(request, db)
+    rows = db.query(models.DBItem).filter(models.DBItem.client_id == client.id)
+    if not include_inactive:
+        rows = rows.filter(models.DBItem.is_active == True)      # noqa: E712
+
+    needle = (q or "").strip().lower()
+    if needle:
+        like = f"%{needle}%"
+        rows = rows.filter(sqlfunc.lower(models.DBItem.code).like(like)
+                           | sqlfunc.lower(models.DBItem.name).like(like))
+
+    rows = rows.order_by(models.DBItem.code.asc()).limit(max(1, min(limit, 200))).all()
+    return {"items": [item_to_dict(r) for r in rows]}
+
+
+@app.post("/api/items")
+def create_item(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    code = _item_code(body.get("code"))
+
+    # Case-insensitively, so "BMW" and "bmw" cannot both exist - two of them
+    # means two of everything in every report that follows.
+    clash = db.query(models.DBItem).filter(
+        models.DBItem.client_id == client.id,
+        sqlfunc.lower(models.DBItem.code) == code.lower()).first()
+    if clash:
+        raise HTTPException(status_code=400,
+                            detail=f"'{clash.code}' is already in your items")
+
+    row = models.DBItem(
+        client_id=client.id, code=code,
+        name=str(body.get("name") or "")[:200],
+        description=str(body.get("description") or "")[:2000],
+        is_sold=bool(body.get("is_sold", True)),
+        is_purchased=bool(body.get("is_purchased", False)),
+        sale_price=_item_money(body.get("sale_price"), "Sale price"),
+        sale_account=str(body.get("sale_account") or "")[:120],
+        sale_tax_rate=str(body.get("sale_tax_rate") or "")[:60],
+        purchase_price=_item_money(body.get("purchase_price"), "Purchase price"),
+        purchase_account=str(body.get("purchase_account") or "")[:120],
+        purchase_tax_rate=str(body.get("purchase_tax_rate") or "")[:60],
+        track_inventory=bool(body.get("track_inventory", False)),
+        quantity_on_hand=_item_money(body.get("quantity_on_hand"), "Quantity"),
+    )
+    db.add(row)
+    log_audit(db, client.id, "item_created", "item", None, code, "", request)
+    db.commit()
+    db.refresh(row)
+    return item_to_dict(row)
+
+
+@app.put("/api/items/{item_id}")
+def update_item(item_id: int, request: Request, body: dict = None,
+                db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = db.query(models.DBItem).filter(
+        models.DBItem.id == item_id,
+        models.DBItem.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    body = body or {}
+    if "code" in body:
+        code = _item_code(body["code"])
+        clash = db.query(models.DBItem).filter(
+            models.DBItem.client_id == client.id,
+            models.DBItem.id != row.id,
+            sqlfunc.lower(models.DBItem.code) == code.lower()).first()
+        if clash:
+            raise HTTPException(status_code=400,
+                                detail=f"'{clash.code}' is already in your items")
+        row.code = code
+
+    for field, cap in (("name", 200), ("description", 2000),
+                       ("sale_account", 120), ("sale_tax_rate", 60),
+                       ("purchase_account", 120), ("purchase_tax_rate", 60)):
+        if field in body:
+            setattr(row, field, str(body[field] or "")[:cap])
+
+    for field, label in (("sale_price", "Sale price"),
+                         ("purchase_price", "Purchase price"),
+                         ("quantity_on_hand", "Quantity")):
+        if field in body:
+            setattr(row, field, _item_money(body[field], label))
+
+    for flag in ("is_sold", "is_purchased", "track_inventory", "is_active"):
+        if flag in body:
+            setattr(row, flag, bool(body[flag]))
+
+    db.commit()
+    return item_to_dict(row)
+
+
+@app.delete("/api/items/{item_id}")
+def delete_item(item_id: int, request: Request, db: Session = Depends(get_db)):
+    """Retire it rather than remove it.
+
+    An invoice line copies the item's details when it is raised, so deleting
+    the row would not change any document - but a business that deletes a
+    product and then cannot find it in a report has lost something. Retired
+    items stay out of the lookup and stay in the record.
+    """
+    client = get_client_user(request, db)
+    row = db.query(models.DBItem).filter(
+        models.DBItem.id == item_id,
+        models.DBItem.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Item not found")
+    row.is_active = False
+    log_audit(db, client.id, "item_retired", "item", row.id, row.code, "", request)
+    db.commit()
+    return {"retired": row.id}
+
 
 @app.get("/api/client/password-status")
 def client_password_status(request: Request, db: Session = Depends(get_db)):
