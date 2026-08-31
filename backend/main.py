@@ -6517,6 +6517,9 @@ def create_employee(request: Request, body: EmployeeCreate, db: Session = Depend
 
     db.commit()
     db.refresh(emp)
+    # Whatever should happen every time somebody joins, happens now rather
+    # than when a nightly job next runs.
+    run_workflows_for(db, client.id, emp, "employee_joins")
     log_audit(db, client.id, "employee_created", "employee", emp.id, f"{emp.first_name} {emp.last_name}", f"Dept: {body.department_id or 'None'}", request)
     db.commit()
     return {
@@ -6753,6 +6756,7 @@ def start_offboarding(emp_id: int, request: Request, db: Session = Depends(get_d
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
     emp.status = "offboarding"
+    run_workflows_for(db, client.id, emp, "employee_leaves")
     db.commit()
     return {"message": "Offboarding started"}
 
@@ -14903,6 +14907,316 @@ def add_staff_message(db: Session, req, author: str, name: str, body: str):
     db.add(msg)
     req.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return msg
+
+
+# --- Workflows ---------------------------------------------------------------
+#
+# A new starter needs a laptop, a contract, an induction and a check-in. None
+# of it is hard; it is just easy to forget one, and the one forgotten is
+# discovered on the person's first morning.
+
+WORKFLOW_TRIGGERS = {
+    "employee_joins": "When somebody joins",
+    "employee_leaves": "When somebody leaves",
+}
+TASK_OWNERS = ("hr", "manager", "employee")
+
+
+def run_workflows_for(db, client_id, emp, trigger):
+    """Fire every active workflow on this trigger, for this person.
+
+    Called from the places the thing actually happens rather than from a
+    nightly sweep, so the tasks exist before anybody goes looking for them.
+
+    Never raises. A workflow that cannot run must not stop somebody being
+    hired - the hire is the real work and the checklist is the convenience.
+    """
+    made = 0
+    try:
+        flows = db.query(models.DBWorkflow).filter(
+            models.DBWorkflow.client_id == client_id,
+            models.DBWorkflow.trigger == trigger,
+            models.DBWorkflow.active == True,      # noqa: E712
+        ).all()
+
+        for flow in flows:
+            # Once per person per workflow. A status corrected twice would
+            # otherwise produce two identical sets of tasks.
+            already = db.query(models.DBWorkflowRun).filter(
+                models.DBWorkflowRun.workflow_id == flow.id,
+                models.DBWorkflowRun.employee_id == emp.id).first()
+            if already:
+                continue
+
+            run = models.DBWorkflowRun(
+                client_id=client_id, workflow_id=flow.id, employee_id=emp.id,
+                # Copied, so the history still reads correctly after a rename.
+                workflow_name=flow.name)
+            db.add(run)
+            db.flush()
+
+            base = datetime.now().date()
+            for step in sorted(flow.steps or [], key=lambda x: (x.position, x.id)):
+                due = base + timedelta(days=step.due_offset_days or 0)
+                db.add(models.DBWorkflowTask(
+                    client_id=client_id, run_id=run.id, employee_id=emp.id,
+                    # Copied from the step for the same reason: editing the
+                    # template must not rewrite what was already asked for.
+                    title=step.title, owner=step.owner,
+                    due_date=due.strftime("%Y-%m-%d"), notes=step.notes or ""))
+                made += 1
+
+            # The person themselves only hears about their own tasks.
+            if any(st.owner == "employee" for st in (flow.steps or [])):
+                notify_employee(
+                    db, emp, "There are a few things to do",
+                    f"{flow.name}: check your list when you get a moment.",
+                    kind="info")
+    except Exception as exc:      # noqa: BLE001
+        logger.error("Workflow run failed for employee %s: %s", emp.id, exc)
+    return made
+
+
+def workflow_to_dict(w, with_steps=False):
+    out = {
+        "id": w.id, "name": w.name, "description": w.description or "",
+        "trigger": w.trigger,
+        "trigger_label": WORKFLOW_TRIGGERS.get(w.trigger, w.trigger),
+        "active": bool(w.active), "created_at": w.created_at,
+        "step_count": len(w.steps or []), "run_count": len(w.runs or []),
+    }
+    if with_steps:
+        out["steps"] = [{
+            "id": st.id, "position": st.position, "title": st.title,
+            "owner": st.owner, "due_offset_days": st.due_offset_days,
+            "notes": st.notes or "",
+        } for st in sorted(w.steps or [], key=lambda x: (x.position, x.id))]
+    return out
+
+
+@app.get("/api/workflows")
+def list_workflows(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    rows = db.query(models.DBWorkflow).filter(
+        models.DBWorkflow.client_id == client.id
+    ).order_by(models.DBWorkflow.id.desc()).all()
+    return [workflow_to_dict(w) for w in rows]
+
+
+@app.post("/api/workflows")
+def create_workflow(request: Request, body: dict = None,
+                    db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    name = str(body.get("name") or "").strip()[:200]
+    if not name:
+        raise HTTPException(status_code=400, detail="Give the workflow a name")
+
+    trigger = str(body.get("trigger") or "employee_joins").strip()
+    if trigger not in WORKFLOW_TRIGGERS:
+        raise HTTPException(status_code=400, detail="That is not a trigger")
+
+    flow = models.DBWorkflow(
+        client_id=client.id, name=name,
+        description=str(body.get("description") or "").strip()[:1000],
+        trigger=trigger,
+        # Off until somebody turns it on and has seen the steps.
+        active=False, created_by=client.email or "HR")
+    db.add(flow)
+    db.flush()
+
+    for i, st in enumerate(body.get("steps") or []):
+        title = str(st.get("title") or "").strip()[:300]
+        if not title:
+            continue
+        owner = str(st.get("owner") or "hr").strip().lower()
+        if owner not in TASK_OWNERS:
+            owner = "hr"
+        db.add(models.DBWorkflowStep(
+            client_id=client.id, workflow_id=flow.id, position=i, title=title,
+            owner=owner, due_offset_days=int(st.get("due_offset_days") or 0),
+            notes=str(st.get("notes") or "").strip()[:500]))
+
+    log_audit(db, client.id, "workflow_created", "workflow", flow.id, name,
+              trigger, request)
+    db.commit()
+    db.refresh(flow)
+    return workflow_to_dict(flow, with_steps=True)
+
+
+@app.get("/api/workflows/{workflow_id}")
+def read_workflow(workflow_id: int, request: Request,
+                  db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    flow = db.query(models.DBWorkflow).filter(
+        models.DBWorkflow.id == workflow_id,
+        models.DBWorkflow.client_id == client.id).first()
+    if not flow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return workflow_to_dict(flow, with_steps=True)
+
+
+@app.put("/api/workflows/{workflow_id}/active")
+def set_workflow_active(workflow_id: int, request: Request, body: dict = None,
+                        db: Session = Depends(get_db)):
+    """Turn it on or off.
+
+    Turning it on deliberately does not reach back over people already here.
+    Enabling "when somebody joins" should not manufacture two hundred tasks
+    for staff who joined years ago, and an automation whose first act is to
+    flood the queue is one nobody trusts again.
+    """
+    client = get_client_user(request, db)
+    body = body or {}
+    flow = db.query(models.DBWorkflow).filter(
+        models.DBWorkflow.id == workflow_id,
+        models.DBWorkflow.client_id == client.id).first()
+    if not flow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    active = bool(body.get("active"))
+    if active and not flow.steps:
+        raise HTTPException(status_code=400,
+                            detail="A workflow with no steps does nothing")
+
+    flow.active = active
+    log_audit(db, client.id,
+              "workflow_enabled" if active else "workflow_disabled",
+              "workflow", flow.id, flow.name, "", request)
+    db.commit()
+    return {"id": flow.id, "active": flow.active,
+            "note": ("It will run for people who join from now on - nobody "
+                     "already here." if active else "")}
+
+
+@app.delete("/api/workflows/{workflow_id}")
+def delete_workflow(workflow_id: int, request: Request,
+                    db: Session = Depends(get_db)):
+    """Only one that has never run. Deleting one that has would take the
+    outstanding tasks with it, and somebody is relying on those."""
+    client = get_client_user(request, db)
+    flow = db.query(models.DBWorkflow).filter(
+        models.DBWorkflow.id == workflow_id,
+        models.DBWorkflow.client_id == client.id).first()
+    if not flow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    if flow.runs:
+        raise HTTPException(
+            status_code=409,
+            detail="This has already run for somebody, and the tasks it made "
+                   "are still theirs. Turn it off instead.")
+    log_audit(db, client.id, "workflow_deleted", "workflow", flow.id,
+              flow.name, "", request)
+    db.delete(flow)
+    db.commit()
+    return {"message": "Workflow deleted"}
+
+
+@app.get("/api/workflow-tasks")
+def list_workflow_tasks(request: Request, done: str = "", owner: str = "",
+                        db: Session = Depends(get_db)):
+    """Everything a workflow has asked for, outstanding first."""
+    client = get_client_user(request, db)
+    q = db.query(models.DBWorkflowTask).filter(
+        models.DBWorkflowTask.client_id == client.id)
+    if done in ("0", "false", "open"):
+        q = q.filter(models.DBWorkflowTask.done == False)   # noqa: E712
+    elif done in ("1", "true", "done"):
+        q = q.filter(models.DBWorkflowTask.done == True)    # noqa: E712
+    if owner in TASK_OWNERS:
+        q = q.filter(models.DBWorkflowTask.owner == owner)
+
+    rows = q.order_by(models.DBWorkflowTask.done,
+                      models.DBWorkflowTask.due_date).limit(300).all()
+
+    names = {e.id: f"{e.first_name} {e.last_name}".strip()
+             for e in db.query(models.DBEmployee).filter(
+                 models.DBEmployee.client_id == client.id).all()}
+    today = datetime.now().strftime("%Y-%m-%d")
+    return [{
+        "id": t.id, "title": t.title, "owner": t.owner,
+        "due_date": t.due_date or "", "notes": t.notes or "",
+        "done": bool(t.done), "done_on": t.done_on or "",
+        "employee_id": t.employee_id, "employee": names.get(t.employee_id, ""),
+        "workflow": (t.run.workflow_name if t.run else ""),
+        # Worked out here rather than on the page, so a list and a count
+        # cannot disagree about what is late.
+        "overdue": bool(not t.done and t.due_date and t.due_date < today),
+    } for t in rows]
+
+
+@app.post("/api/workflow-tasks/{task_id}/done")
+def complete_workflow_task(task_id: int, request: Request, body: dict = None,
+                           db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    task = db.query(models.DBWorkflowTask).filter(
+        models.DBWorkflowTask.id == task_id,
+        models.DBWorkflowTask.client_id == client.id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    task.done = bool(body.get("done", True))
+    task.done_on = datetime.now().strftime("%Y-%m-%d") if task.done else ""
+    task.done_by = (client.email or "HR") if task.done else ""
+    db.commit()
+    return {"id": task.id, "done": task.done}
+
+
+@app.get("/api/employees/{emp_id}/workflow-tasks")
+def employee_workflow_tasks(emp_id: int, request: Request,
+                            db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == emp_id,
+        models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    rows = db.query(models.DBWorkflowTask).filter(
+        models.DBWorkflowTask.employee_id == emp.id
+    ).order_by(models.DBWorkflowTask.done,
+               models.DBWorkflowTask.due_date).all()
+    return [{
+        "id": t.id, "title": t.title, "owner": t.owner,
+        "due_date": t.due_date or "", "done": bool(t.done),
+        "workflow": (t.run.workflow_name if t.run else ""),
+    } for t in rows]
+
+
+@app.get("/api/employee/tasks")
+def my_workflow_tasks(request: Request, db: Session = Depends(get_db)):
+    """What the person signed in has been asked to do themselves."""
+    emp = current_employee(request, db)
+    rows = db.query(models.DBWorkflowTask).filter(
+        models.DBWorkflowTask.employee_id == emp.id,
+        models.DBWorkflowTask.owner == "employee",
+    ).order_by(models.DBWorkflowTask.done,
+               models.DBWorkflowTask.due_date).all()
+    today = datetime.now().strftime("%Y-%m-%d")
+    return [{
+        "id": t.id, "title": t.title, "notes": t.notes or "",
+        "due_date": t.due_date or "", "done": bool(t.done),
+        "overdue": bool(not t.done and t.due_date and t.due_date < today),
+    } for t in rows]
+
+
+@app.post("/api/employee/tasks/{task_id}/done")
+def finish_my_task(task_id: int, request: Request, body: dict = None,
+                   db: Session = Depends(get_db)):
+    """Only their own, and only the ones addressed to them."""
+    emp = current_employee(request, db)
+    task = db.query(models.DBWorkflowTask).filter(
+        models.DBWorkflowTask.id == task_id,
+        models.DBWorkflowTask.employee_id == emp.id,
+        models.DBWorkflowTask.owner == "employee",
+    ).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task.done = bool((body or {}).get("done", True))
+    task.done_on = datetime.now().strftime("%Y-%m-%d") if task.done else ""
+    task.done_by = emp.email or ""
+    db.commit()
+    return {"id": task.id, "done": task.done}
 
 
 # --- Surveys -----------------------------------------------------------------

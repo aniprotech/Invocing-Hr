@@ -1524,6 +1524,102 @@ class DBSurveyAnswer(Base):
     response = relationship("DBSurveyResponse", back_populates="answers")
 
 
+class DBWorkflow(Base):
+    """A named list of things to do, and what starts it."""
+    __tablename__ = "workflows"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+
+    name = Column(String, nullable=False)
+    description = Column(String, default="")
+
+    # employee_joins | employee_leaves | probation_ends
+    trigger = Column(String, default="employee_joins", index=True)
+
+    # Off until somebody turns it on, and turning it on never reaches back over
+    # people who are already here.
+    active = Column(Boolean, default=False, index=True)
+
+    created_by = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    steps = relationship("DBWorkflowStep", back_populates="workflow",
+                         cascade="all, delete-orphan")
+    runs = relationship("DBWorkflowRun", back_populates="workflow",
+                        cascade="all, delete-orphan")
+
+
+class DBWorkflowStep(Base):
+    """One thing to do, on the template."""
+    __tablename__ = "workflow_steps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False, index=True)
+
+    position = Column(Integer, default=0)
+    title = Column(String, nullable=False)
+    # hr | manager | employee - who the task lands on
+    owner = Column(String, default="hr")
+    # Days from the trigger. Negative is allowed and is the point: a laptop
+    # ordered on somebody's first morning arrives in their second week.
+    due_offset_days = Column(Integer, default=0)
+    notes = Column(String, default="")
+
+    workflow = relationship("DBWorkflow", back_populates="steps")
+
+
+class DBWorkflowRun(Base):
+    """One firing, for one person."""
+    __tablename__ = "workflow_runs"
+    __table_args__ = (
+        # A workflow fires once per person per trigger. Without this a status
+        # corrected twice produces two sets of the same tasks.
+        UniqueConstraint("workflow_id", "employee_id", name="uq_workflow_run"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+
+    # Copied at the moment it ran, so the history reads correctly even after
+    # the workflow is renamed.
+    workflow_name = Column(String, default="")
+    started_on = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d"))
+
+    workflow = relationship("DBWorkflow", back_populates="runs")
+    tasks = relationship("DBWorkflowTask", back_populates="run",
+                         cascade="all, delete-orphan")
+
+
+class DBWorkflowTask(Base):
+    """One thing to do, for one person, actually outstanding.
+
+    Its title and owner are copied from the step rather than read through it:
+    editing the template next month must not rewrite what was asked of
+    somebody last month.
+    """
+    __tablename__ = "workflow_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    run_id = Column(Integer, ForeignKey("workflow_runs.id"), nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+
+    title = Column(String, nullable=False)
+    owner = Column(String, default="hr")
+    due_date = Column(String, default="", index=True)
+    notes = Column(String, default="")
+
+    done = Column(Boolean, default=False, index=True)
+    done_on = Column(String, default="")
+    done_by = Column(String, default="")
+
+    run = relationship("DBWorkflowRun", back_populates="tasks")
+
+
 class DBProfileChange(Base):
     """One field an employee wants changed, waiting on HR.
 

@@ -330,6 +330,7 @@ var NAV_FOR_VIEW = {
     'calendar-view': 'nav-calendar',
     'assets-view': 'nav-assets',
     'surveys-view': 'nav-surveys',
+    'workflows-view': 'nav-workflows',
     'survey-results-view': 'nav-surveys',
     'onboarding-hub-view': 'nav-onboarding',
     'recruitment-view': 'nav-recruitment',
@@ -372,6 +373,7 @@ var ROUTE_SLUGS = {
     'calendar-view': 'calendar',
     'assets-view': 'assets',
     'surveys-view': 'surveys',
+    'workflows-view': 'workflows',
     'payroll-view': 'payroll',
     'recruitment-view': 'recruitment',
     'onboarding-hub-view': 'onboarding',
@@ -554,6 +556,254 @@ function showView(viewId) {
     if (ROUTE_SLUGS[viewId]) setRoute(ROUTE_SLUGS[viewId]);
 }
 window.showView = showView;
+
+// --- Workflows -------------------------------------------------------------
+// The outstanding tasks come first and the templates second: a template is a
+// setting somebody changes twice a year, and what is late is the work.
+
+var _wfSteps = [];
+
+async function loadWorkflows() {
+    loadWorkflowTasks();
+
+    var host = document.getElementById('workflow-list');
+    if (!host) return;
+    var rows = [];
+    try {
+        var res = await fetch('/api/workflows');
+        if (!res.ok) throw new Error('nope');
+        var body = await res.json();
+        rows = Array.isArray(body) ? body : [];
+    } catch (e) {
+        host.innerHTML = '<div class="widget" style="padding:20px;text-align:center;' +
+            'color:var(--text-secondary);">Could not load the workflows.</div>';
+        return;
+    }
+
+    host.innerHTML = '<div class="widget">' +
+        '<div class="widget-header"><h3>What runs automatically</h3></div>' +
+        (rows.length
+            ? rows.map(workflowRow).join('')
+            : '<div style="padding:20px;text-align:center;color:var(--text-secondary);">' +
+              'Nothing set up yet.</div>') +
+        '</div>';
+}
+window.loadWorkflows = loadWorkflows;
+
+function workflowRow(w) {
+    return '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;' +
+        'padding:12px 0;border-bottom:1px solid var(--border-color);">' +
+        '<div style="flex:1;min-width:200px;">' +
+            '<div style="font-weight:600;font-size:0.9rem;">' + esc(w.name) + '</div>' +
+            '<div style="font-size:0.75rem;color:var(--text-secondary);margin-top:2px;">' +
+                esc(w.trigger_label) + ' &middot; ' +
+                w.step_count + ' step' + (w.step_count === 1 ? '' : 's') +
+                (w.run_count ? ' &middot; has run ' + w.run_count + ' time' +
+                    (w.run_count === 1 ? '' : 's') : '') +
+            '</div>' +
+        '</div>' +
+        '<span style="font-size:0.75rem;padding:3px 10px;border-radius:20px;' +
+            'background:' + (w.active ? 'rgba(16,185,129,0.15)' : 'var(--bg-input)') + ';' +
+            'color:' + (w.active ? 'var(--success-color)' : 'var(--text-secondary)') + ';">' +
+            (w.active ? 'on' : 'off') + '</span>' +
+        '<button class="btn btn-sm btn-outline" onclick="toggleWorkflow(' + w.id + ', ' +
+            (w.active ? 'false' : 'true') + ')">' + (w.active ? 'Turn off' : 'Turn on') + '</button>' +
+        (w.run_count ? '' :
+            '<button class="btn btn-sm btn-outline" onclick="removeWorkflow(' + w.id +
+            ', &quot;' + esc(w.name) + '&quot;)">Delete</button>') +
+    '</div>';
+}
+
+async function loadWorkflowTasks() {
+    var host = document.getElementById('workflow-tasks');
+    if (!host) return;
+    var rows = [];
+    try {
+        var res = await fetch('/api/workflow-tasks?done=open');
+        if (res.ok) {
+            var body = await res.json();
+            rows = Array.isArray(body) ? body : [];
+        }
+    } catch (e) { /* the empty state covers it */ }
+
+    if (!rows.length) {
+        host.innerHTML = '<div class="widget" style="padding:20px;text-align:center;' +
+            'color:var(--text-secondary);">Nothing outstanding.</div>';
+        return;
+    }
+
+    var late = rows.filter(function (r) { return r.overdue; }).length;
+    host.innerHTML = '<div class="widget"' +
+        (late ? ' style="border-left:3px solid var(--danger-color);"' : '') + '>' +
+        '<div class="widget-header"><h3>Outstanding (' + rows.length + ')' +
+            (late ? ' <span style="color:var(--danger-color);font-weight:400;">&middot; ' +
+                late + ' late</span>' : '') + '</h3></div>' +
+        rows.map(function (t) {
+            return '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;' +
+                'padding:10px 0;border-bottom:1px solid var(--border-color);">' +
+                '<div style="flex:1;min-width:200px;">' +
+                    '<div style="font-size:0.88rem;">' + esc(t.title) + '</div>' +
+                    '<div style="font-size:0.74rem;color:var(--text-secondary);margin-top:2px;">' +
+                        esc(t.employee) + ' &middot; ' + esc(t.owner) +
+                        (t.due_date ? ' &middot; due ' + esc(t.due_date) : '') +
+                        (t.workflow ? ' &middot; ' + esc(t.workflow) : '') +
+                    '</div>' +
+                '</div>' +
+                (t.overdue ? '<span style="font-size:0.72rem;color:var(--danger-color);">late</span>' : '') +
+                '<button class="btn btn-sm btn-outline" onclick="finishWorkflowTask(' + t.id + ')">Done</button>' +
+            '</div>';
+        }).join('') + '</div>';
+}
+
+async function finishWorkflowTask(id) {
+    try {
+        var res = await fetch('/api/workflow-tasks/' + id + '/done', { method: 'POST' });
+        if (!res.ok) { showToast('That did not go through.', 'error'); return; }
+        loadWorkflowTasks();
+    } catch (e) { showToast('That did not go through.', 'error'); }
+}
+window.finishWorkflowTask = finishWorkflowTask;
+
+async function toggleWorkflow(id, turnOn) {
+    if (turnOn && !await uiConfirm(
+        'Turn this on? It will run for people who join or leave from now on - '
+        + 'nobody already here.',
+        { title: 'Turn the workflow on', confirmText: 'Turn it on' })) return;
+    try {
+        var res = await fetch('/api/workflows/' + id + '/active', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ active: turnOn })
+        });
+        var d = await res.json();
+        if (!res.ok) { showToast(d.detail || 'That did not go through.', 'error'); return; }
+        showToast(turnOn ? 'On - it will run from now on' : 'Turned off', 'success');
+        loadWorkflows();
+    } catch (e) { showToast('That did not go through.', 'error'); }
+}
+window.toggleWorkflow = toggleWorkflow;
+
+async function removeWorkflow(id, name) {
+    if (!await uiConfirm('Delete "' + name + '"? It has never run.',
+        { title: 'Delete workflow', confirmText: 'Delete', danger: true })) return;
+    try {
+        var res = await fetch('/api/workflows/' + id, { method: 'DELETE' });
+        var d = await res.json();
+        if (!res.ok) { showToast(d.detail || 'That did not go through.', 'error'); return; }
+        showToast('Deleted', 'success');
+        loadWorkflows();
+    } catch (e) { showToast('That did not go through.', 'error'); }
+}
+window.removeWorkflow = removeWorkflow;
+
+// --- writing one -----------------------------------------------------------
+
+function openWorkflowModal() {
+    document.getElementById('wf-name').value = '';
+    document.getElementById('wf-trigger').value = 'employee_joins';
+    _wfSteps = [{ title: '', owner: 'hr', due_offset_days: 0 }];
+    renderWorkflowSteps();
+    setWorkflowError('');
+    document.getElementById('workflow-modal').style.display = 'flex';
+    document.getElementById('wf-name').focus();
+}
+window.openWorkflowModal = openWorkflowModal;
+
+function closeWorkflowModal() {
+    document.getElementById('workflow-modal').style.display = 'none';
+}
+window.closeWorkflowModal = closeWorkflowModal;
+
+function addWorkflowStep() {
+    readWorkflowSteps();
+    _wfSteps.push({ title: '', owner: 'hr', due_offset_days: 0 });
+    renderWorkflowSteps();
+}
+window.addWorkflowStep = addWorkflowStep;
+
+function removeWorkflowStep(i) {
+    readWorkflowSteps();
+    _wfSteps.splice(i, 1);
+    if (!_wfSteps.length) _wfSteps = [{ title: '', owner: 'hr', due_offset_days: 0 }];
+    renderWorkflowSteps();
+}
+window.removeWorkflowStep = removeWorkflowStep;
+
+// Typing survives adding or removing a row, which re-renders the boxes.
+function readWorkflowSteps() {
+    _wfSteps = _wfSteps.map(function (st, i) {
+        var t = document.getElementById('wf-title-' + i);
+        var o = document.getElementById('wf-owner-' + i);
+        var d = document.getElementById('wf-days-' + i);
+        return {
+            title: t ? t.value : st.title,
+            owner: o ? o.value : st.owner,
+            due_offset_days: d ? (parseInt(d.value, 10) || 0) : st.due_offset_days,
+        };
+    });
+}
+
+function renderWorkflowSteps() {
+    document.getElementById('wf-steps').innerHTML = _wfSteps.map(function (st, i) {
+        return '<div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;">' +
+            '<input type="text" id="wf-title-' + i + '" class="form-control" ' +
+                'placeholder="What has to happen" maxlength="300" ' +
+                'value="' + esc(st.title) + '" style="flex:1;">' +
+            '<select id="wf-owner-' + i + '" class="form-control" style="max-width:120px;">' +
+                ['hr', 'manager', 'employee'].map(function (o) {
+                    return '<option value="' + o + '"' + (st.owner === o ? ' selected' : '') +
+                        '>' + (o === 'hr' ? 'HR' : o.charAt(0).toUpperCase() + o.slice(1)) + '</option>';
+                }).join('') +
+            '</select>' +
+            '<input type="number" id="wf-days-' + i + '" class="form-control" ' +
+                'style="max-width:88px;" title="Days from the trigger" ' +
+                'value="' + (st.due_offset_days || 0) + '">' +
+            '<button class="btn-icon" onclick="removeWorkflowStep(' + i + ')" aria-label="Remove">&times;</button>' +
+        '</div>';
+    }).join('');
+}
+
+function setWorkflowError(message) {
+    var box = document.getElementById('wf-error');
+    if (!box) return;
+    box.textContent = message || '';
+    box.style.display = message ? 'block' : 'none';
+}
+
+async function saveWorkflow() {
+    readWorkflowSteps();
+    var name = document.getElementById('wf-name').value.trim();
+    var steps = _wfSteps.filter(function (st) { return st.title.trim(); });
+
+    if (!name) { setWorkflowError('Give the workflow a name.'); return; }
+    if (!steps.length) { setWorkflowError('Add at least one step.'); return; }
+
+    var btn = document.getElementById('wf-save-btn');
+    btn.disabled = true;
+    setWorkflowError('');
+    try {
+        var res = await fetch('/api/workflows', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: name,
+                trigger: document.getElementById('wf-trigger').value,
+                steps: steps.map(function (st) {
+                    return { title: st.title.trim(), owner: st.owner,
+                             due_offset_days: st.due_offset_days };
+                }),
+            })
+        });
+        var d = await res.json();
+        if (!res.ok) { setWorkflowError(d.detail || 'That did not save.'); return; }
+        closeWorkflowModal();
+        showToast('Saved, switched off. Turn it on when you are ready.', 'success');
+        loadWorkflows();
+    } catch (e) {
+        setWorkflowError('That did not save.');
+    } finally {
+        btn.disabled = false;
+    }
+}
+window.saveWorkflow = saveWorkflow;
 
 // --- Surveys ---------------------------------------------------------------
 // Whether people answer honestly rests on whether they believe the anonymous
@@ -5857,6 +6107,7 @@ showView = function(viewId) {
     if (viewId === 'calendar-view') loadCalendarView();
     if (viewId === 'assets-view' && typeof loadAssets === 'function') loadAssets();
     if (viewId === 'surveys-view' && typeof loadSurveys === 'function') loadSurveys();
+    if (viewId === 'workflows-view' && typeof loadWorkflows === 'function') loadWorkflows();
     if (viewId === 'departments-view') fetchDepartments();
     if (viewId === 'onboarding-hub-view') { loadOnboardingHub(); loadDocumentQueue(); loadExpiringDocuments(); loadOnboardingPipeline(); }
     if (viewId === 'payroll-view') { fetchPayslips(currentPsFilter); loadPayrollAnomalies(); }

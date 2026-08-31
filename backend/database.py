@@ -1498,5 +1498,68 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 50: {sys.exc_info()[1]}")
 
+            # Workflows. A task copies its title and owner from the step rather
+            # than pointing at it, so editing a template next month cannot
+            # rewrite what was asked of somebody last month.
+            try:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS workflows (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        name VARCHAR NOT NULL,
+                        description VARCHAR DEFAULT '',
+                        trigger VARCHAR DEFAULT 'employee_joins',
+                        active BOOLEAN DEFAULT FALSE,
+                        created_by VARCHAR DEFAULT '',
+                        created_at VARCHAR DEFAULT (NOW()::TEXT)
+                    )
+                """))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS workflow_steps (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        workflow_id INTEGER REFERENCES workflows(id) NOT NULL,
+                        position INTEGER DEFAULT 0,
+                        title VARCHAR NOT NULL,
+                        owner VARCHAR DEFAULT 'hr',
+                        due_offset_days INTEGER DEFAULT 0,
+                        notes VARCHAR DEFAULT ''
+                    )
+                """))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS workflow_runs (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        workflow_id INTEGER REFERENCES workflows(id) NOT NULL,
+                        employee_id INTEGER REFERENCES employees(id) NOT NULL,
+                        workflow_name VARCHAR DEFAULT '',
+                        started_on VARCHAR DEFAULT (NOW()::TEXT),
+                        CONSTRAINT uq_workflow_run UNIQUE (workflow_id, employee_id)
+                    )
+                """))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS workflow_tasks (
+                        id SERIAL PRIMARY KEY,
+                        client_id INTEGER REFERENCES clients(id) NOT NULL,
+                        run_id INTEGER REFERENCES workflow_runs(id) NOT NULL,
+                        employee_id INTEGER REFERENCES employees(id) NOT NULL,
+                        title VARCHAR NOT NULL,
+                        owner VARCHAR DEFAULT 'hr',
+                        due_date VARCHAR DEFAULT '',
+                        notes VARCHAR DEFAULT '',
+                        done BOOLEAN DEFAULT FALSE,
+                        done_on VARCHAR DEFAULT '',
+                        done_by VARCHAR DEFAULT ''
+                    )
+                """))
+                # What is outstanding, and when it was due, is the question the
+                # dashboard asks on every load.
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_workflow_tasks_open "
+                    "ON workflow_tasks (client_id, done, due_date)"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 51: {sys.exc_info()[1]}")
+
     except Exception as e:
         print(f"Column check skipped: {e}")
