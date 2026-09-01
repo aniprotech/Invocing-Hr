@@ -263,6 +263,47 @@ const el = (w, id) => w.document.getElementById(id);
             body.attach_pdf === false && !body.pdf_data, JSON.stringify(body.attach_pdf));
     }
 
+    // --- copying other people -------------------------------------------------
+    {
+        const { w, sent } = boot();
+        await wait(60);
+        await w.sendEmail();
+        await wait(200);
+
+        check('Cc and Bcc are out of the way until asked for',
+            el(w, 'send-cc-row').style.display === 'none');
+        w.toggleCcBcc();
+        check('the toggle reveals them', el(w, 'send-cc-row').style.display === 'grid');
+
+        el(w, 'send-cc').value = 'boss@acme.test';
+        el(w, 'send-bcc').value = 'audit@acme.test';
+        sent.length = 0;
+        await w.confirmSendEmail();
+        await wait(80);
+        const body = JSON.parse(sent.find(s => s.url.endsWith('/send')).body);
+        check('a Cc is carried to the server', body.cc === 'boss@acme.test', body.cc);
+        check('and a Bcc as its own field, never folded into Cc',
+            body.bcc === 'audit@acme.test' && !/audit/.test(body.cc || ''),
+            body.cc + ' / ' + body.bcc);
+    }
+
+    {
+        // Collapsing a row that still holds an address would send to somebody
+        // the screen no longer admits to.
+        const { w, sent } = boot();
+        await wait(60);
+        await w.sendEmail();
+        await wait(200);
+        w.toggleCcBcc();
+        el(w, 'send-bcc').value = 'audit@acme.test';
+        w.toggleCcBcc();
+        sent.length = 0;
+        await w.confirmSendEmail();
+        await wait(80);
+        const body = JSON.parse(sent.find(s => s.url.endsWith('/send')).body);
+        check('hiding the row clears what was in it', !body.bcc, body.bcc);
+    }
+
     // --- refusals -------------------------------------------------------------
     {
         const { w, sent } = boot();

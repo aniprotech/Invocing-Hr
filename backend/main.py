@@ -475,7 +475,13 @@ def _first_name(full):
     return (str(full or "").strip().split(" ") or [""])[0]
 
 
-def invoice_placeholder_values(db, inv, client=None):
+def clean_address_list(raw):
+    """Comma separated addresses, minus the blanks people leave behind."""
+    parts = [a.strip() for a in str(raw or "").replace(";", ",").split(",")]
+    return ", ".join([a for a in parts if a])
+
+
+def invoice_placeholder_values(db, inv, client=None, base_url=""):
     """What each placeholder resolves to for this invoice.
 
     A value that is genuinely absent comes back as an empty string rather than
@@ -501,8 +507,12 @@ def invoice_placeholder_values(db, inv, client=None):
     due = float(inv.due or 0)
     total = float((inv.paid or 0) + due)
 
-    base = (os.getenv("APP_BASE_URL", "") or "").rstrip("/")
-    link = f"{base}/invoice.html?number={inv.number}" if base and inv.number else ""
+    # Falls back to the host actually serving the request, because the
+    # setting is not present in production and an empty link is worse than a
+    # guessed one: the customer gets a sentence ending in nothing.
+    base = (os.getenv("APP_BASE_URL", "") or base_url or "").rstrip("/")
+    tracking = getattr(inv, "tracking_id", "") or ""
+    link = f"{base}/invoice.html?id={tracking}" if base and tracking else ""
 
     return {
         "contact first name": _first_name(inv.to_contact),
@@ -585,6 +595,10 @@ class SendInvoiceEmail(BaseModel):
     template_id: Optional[int] = None
     attach_pdf: Optional[bool] = True
     send_copy: Optional[bool] = False
+    # Comma separated, as they are typed. Bcc is deliberately not echoed back
+    # anywhere the recipient can see.
+    cc: Optional[str] = None
+    bcc: Optional[str] = None
 
 class TestEmail(BaseModel):
     to_email: str
@@ -1203,7 +1217,7 @@ def preview_invoice_email(number: str, request: Request, body: dict = None,
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     body = body or {}
-    values = invoice_placeholder_values(db, inv, client)
+    values = invoice_placeholder_values(db, inv, client, str(request.base_url))
 
     subject_raw = body.get("subject")
     body_raw = body.get("body")
@@ -1886,7 +1900,7 @@ def validate_email_address(email: str) -> bool:
         return False
     pattern = r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
     return bool(_re.match(pattern, email.strip()))
-def prepare_email_message(to_email, subject, body_text, html_body, from_email, logo_data="", pdf_bytes=None, pdf_filename="invoice.pdf"):
+def prepare_email_message(to_email, subject, body_text, html_body, from_email, logo_data="", pdf_bytes=None, pdf_filename="invoice.pdf", cc="", bcc=""):
     """Build a properly structured MIME email with CID-embedded logo and PDF attachment."""
     import re as _re
     from email.mime.multipart import MIMEMultipart
@@ -1898,6 +1912,13 @@ def prepare_email_message(to_email, subject, body_text, html_body, from_email, l
     msg['Subject'] = subject
     msg['From'] = from_email
     msg['To'] = to_email
+    # Cc is visible to everyone, which is the point of it. Bcc is a header the
+    # sending API delivers on and then strips, so no recipient learns who else
+    # received a copy - putting it in To or Cc instead would leak that.
+    if cc:
+        msg['Cc'] = cc
+    if bcc:
+        msg['Bcc'] = bcc
     msg['Reply-To'] = from_email
     msg['Date'] = datetime.now().strftime('%a, %d %b %Y %H:%M:%S %z')
     msg['List-Unsubscribe'] = '<mailto:hello@keyroutes.co?subject=unsubscribe>'
@@ -1941,7 +1962,7 @@ def prepare_email_message(to_email, subject, body_text, html_body, from_email, l
     return msg.as_string()
 
 
-def send_email_background(to_email: str, subject: str, body: str, from_email: str, html_body: str = None, pdf_b64: str = None, pdf_filename: str = "invoice.pdf", logo_data: str = "", client_id: int = None):
+def send_email_background(to_email: str, subject: str, body: str, from_email: str, html_body: str = None, pdf_b64: str = None, pdf_filename: str = "invoice.pdf", logo_data: str = "", client_id: int = None, cc: str = "", bcc: str = ""):
     pdf_bytes = None
     if pdf_b64:
         try:
@@ -1949,7 +1970,7 @@ def send_email_background(to_email: str, subject: str, body: str, from_email: st
         except Exception as e:
             logger.error(f"Failed to decode PDF: {e}")
 
-    raw_msg = prepare_email_message(to_email, subject, body, html_body or "", from_email, logo_data or "", pdf_bytes, pdf_filename)
+    raw_msg = prepare_email_message(to_email, subject, body, html_body or "", from_email, logo_data or "", pdf_bytes, pdf_filename, cc or "", bcc or "")
 
     with SessionLocal() as db:
         refresh_token = get_stored_refresh_token(db, client_id=client_id)
@@ -2355,7 +2376,8 @@ def send_invoice_email(number: str, background_tasks: BackgroundTasks, request: 
     # What actually gets sent: what was written on the send screen, else the
     # saved template, else the built-in wording. Resolved through the same
     # function the preview uses, so what was on screen is what goes out.
-    placeholder_values = invoice_placeholder_values(db, inv, inv_client)
+    placeholder_values = invoice_placeholder_values(
+        db, inv, inv_client, str(request.base_url))
     subject_template = payload.subject
     body_template = payload.body
     if subject_template is None or body_template is None:
@@ -2561,7 +2583,8 @@ Powered by Aniprotech"""
     if custom_body.strip():
         body = custom_body
 
-    background_tasks.add_task(send_email_background, recipient, subject, body, from_header, html_body, pdf_b64, pdf_filename, logo_data, client_id=client.id)
+    background_tasks.add_task(send_email_background, recipient, subject, body, from_header, html_body, pdf_b64, pdf_filename, logo_data, client_id=client.id,
+                              cc=clean_address_list(payload.cc), bcc=clean_address_list(payload.bcc))
 
     # A copy to the sender, so there is a record in their own mailbox. Sent as
     # a second message rather than a Bcc, because the Gmail send used here

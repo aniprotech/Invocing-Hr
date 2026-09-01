@@ -3239,6 +3239,10 @@ async function sendEmail() {
     document.getElementById('send-email-modal').style.display = 'flex';
     document.getElementById('send-email-modal').dataset.number = number;
 
+    var cc = document.getElementById('send-cc').value.trim();
+    var bcc = document.getElementById('send-bcc').value.trim();
+    document.getElementById('send-cc-row').style.display = (cc || bcc) ? 'grid' : 'none';
+
     await Promise.all([loadEmailTemplates(), loadPlaceholderPicker()]);
     applyEmailTemplate();
 }
@@ -3403,6 +3407,8 @@ async function confirmSendEmail() {
                 body: document.getElementById('send-body').value,
                 attach_pdf: attach,
                 send_copy: document.getElementById('send-copy-me').checked,
+                cc: document.getElementById('send-cc').value.trim(),
+                bcc: document.getElementById('send-bcc').value.trim(),
             }),
         });
         var data = await res.json().catch(function () { return {}; });
@@ -3421,6 +3427,21 @@ async function confirmSendEmail() {
         btn.disabled = false;
     }
 }
+function toggleCcBcc() {
+    var row = document.getElementById('send-cc-row');
+    var open = row.style.display !== 'none';
+    row.style.display = open ? 'none' : 'grid';
+    // Hiding a box that still has an address in it would send to somebody the
+    // screen no longer admits to, so it is emptied on the way out.
+    if (open) {
+        document.getElementById('send-cc').value = '';
+        document.getElementById('send-bcc').value = '';
+    } else {
+        document.getElementById('send-cc').focus();
+    }
+}
+window.toggleCcBcc = toggleCcBcc;
+
 window.confirmSendEmail = confirmSendEmail;
 
 // --- Send WhatsApp ---
