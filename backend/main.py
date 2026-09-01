@@ -11679,6 +11679,40 @@ def gocardless_headers(idempotency_key=""):
     return headers
 
 
+def _settle_gocardless_invoice(db: Session, ev, action, payment_id):
+    """Mark an invoice paid, but only when GoCardless says the money arrived.
+
+    A bank debit is authorised days before it clears, so the redirect proves
+    only that the payer agreed. Anything short of confirmed leaves the invoice
+    outstanding, which is the honest state until the money is actually there.
+    """
+    invoice_id = (ev.get("metadata") or {}).get("invoice_id", "")
+    inv = db.query(models.DBInvoice).filter(
+        models.DBInvoice.id == int(invoice_id)).first() if invoice_id else None
+    if not inv:
+        logger.warning("GoCardless %s for an invoice we do not have (%s)",
+                       action, invoice_id)
+        return {"action": action, "result": "unknown invoice"}
+
+    if action not in ("confirmed", "paid_out"):
+        # Failures are noted, never used to un-pay something. Reversing a
+        # settled invoice is a decision for the business, not a webhook.
+        return {"action": action, "invoice": inv.number, "paid": False}
+
+    amount = money(inv.due or 0)
+    if amount <= 0:
+        return {"action": action, "invoice": inv.number, "paid": False,
+                "result": "nothing outstanding"}
+
+    recorded = record_invoice_payment(
+        db, inv, amount, "gocardless", payment_id or invoice_id,
+        note="Paid by bank debit")
+    if recorded:
+        record_settlement(db, inv, int(round(amount * 100)),
+                          (inv.currency or "GBP"), payment_id or invoice_id)
+    return {"action": action, "invoice": inv.number, "paid": bool(recorded)}
+
+
 def _create_gocardless_billing_request(order, client, request, return_page):
     """Start a bank-debit collection and hand back where to authorise it.
 
@@ -12118,6 +12152,12 @@ async def gocardless_webhook(request: Request, db: Session = Depends(get_db)):
         action = ev.get("action", "")
         links = ev.get("links", {}) or {}
         payment_id = links.get("payment", "")
+
+        # An invoice payment carries our invoice id in its own metadata, and
+        # shares this webhook with wallet top-ups, so it is separated first.
+        if (ev.get("metadata") or {}).get("invoice_id"):
+            handled.append(_settle_gocardless_invoice(db, ev, action, payment_id))
+            continue
 
         # The order id travels in our own metadata, so nothing the payer
         # controls decides which wallet gets credited.
@@ -17880,6 +17920,117 @@ def list_invoice_payment_methods(tracking_id: str, db: Session = Depends(get_db)
     }
 
 
+@app.post("/api/public/invoices/{tracking_id}/pay/gocardless/start")
+def start_gocardless_invoice_payment(tracking_id: str, request: Request,
+                                     db: Session = Depends(get_db)):
+    """Open a bank-debit authorisation for this invoice.
+
+    Nothing here settles anything. The payer authorises with their bank and
+    is sent back, but a Direct Debit takes days to clear - the webhook is what
+    marks the invoice paid, and only once GoCardless confirms the money.
+    """
+    inv = payable_invoice(db, tracking_id)
+    if inv.status == "Paid" or (inv.due or 0) <= 0:
+        raise HTTPException(status_code=409, detail="This invoice is already paid")
+
+    if collection_mode(db) != "platform":
+        raise HTTPException(status_code=503,
+                            detail="Bank payment is not set up for this invoice")
+
+    cfg = gateway_config()["gocardless"]
+    if not cfg["access_token"]:
+        raise HTTPException(status_code=503,
+                            detail="Bank payment is not set up for this invoice")
+
+    currency = (inv.currency or "GBP").upper()
+    if currency not in GOCARDLESS_CURRENCIES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Bank payment is not available for {currency} invoices")
+
+    amount_minor = to_minor_units(money(inv.due or 0), currency)
+    if amount_minor <= 0:
+        raise HTTPException(status_code=409, detail="Nothing left to pay")
+
+    api = gocardless_base_url()
+    base = (os.getenv("APP_BASE_URL", "") or str(request.base_url)).rstrip("/")
+    back = f"{base}/invoice.html?id={inv.tracking_id}"
+
+    # Our own ids travel with the payment, so the webhook decides which
+    # invoice was paid without trusting anything the payer can edit.
+    payload = {
+        "billing_requests": {
+            "payment_request": {
+                "description": f"Invoice {inv.number}",
+                "amount": amount_minor,
+                "currency": currency,
+                "metadata": {"invoice_id": str(inv.id),
+                             "client_id": str(inv.client_id)},
+            },
+            "metadata": {"invoice_id": str(inv.id),
+                         "client_id": str(inv.client_id)},
+        }
+    }
+
+    try:
+        res = httpx.post(f"{api}/billing_requests", json=payload,
+                         headers=gocardless_headers(f"inv-{inv.id}"), timeout=30)
+    except Exception:
+        logger.exception("GoCardless unreachable for invoice %s", inv.number)
+        raise HTTPException(
+            status_code=502,
+            detail="Could not reach the payment provider. Please try again shortly.")
+    if res.status_code >= 300:
+        logger.error("GoCardless billing request failed for %s: %s",
+                     inv.number, res.text[:400])
+        raise HTTPException(status_code=502,
+                            detail="This bank payment could not be started. "
+                                   "The business has been notified.")
+
+    br_id = (res.json().get("billing_requests", {}) or {}).get("id", "")
+    if not br_id:
+        raise HTTPException(status_code=502,
+                            detail="This bank payment could not be started.")
+
+    flow = {
+        "billing_request_flows": {
+            "redirect_uri": f"{back}&bank=authorised",
+            "exit_uri": f"{back}&bank=cancelled",
+            "links": {"billing_request": br_id},
+        }
+    }
+    if inv.email:
+        flow["billing_request_flows"]["prefilled_customer"] = {"email": inv.email}
+
+    try:
+        fres = httpx.post(f"{api}/billing_request_flows", json=flow,
+                          headers=gocardless_headers(f"invflow-{inv.id}"), timeout=30)
+    except Exception:
+        logger.exception("GoCardless flow unreachable for invoice %s", inv.number)
+        raise HTTPException(status_code=502,
+                            detail="Could not reach the payment provider.")
+    if fres.status_code >= 300:
+        logger.error("GoCardless flow failed for %s: %s", inv.number, fres.text[:400])
+        raise HTTPException(status_code=502,
+                            detail="This bank payment could not be started.")
+
+    url = (fres.json().get("billing_request_flows", {}) or {}).get("authorisation_url", "")
+    if not url:
+        raise HTTPException(status_code=502,
+                            detail="This bank payment could not be started.")
+
+    return {
+        "authorisation_url": url,
+        "billing_request_id": br_id,
+        "amount": amount_minor,
+        "currency": currency,
+        "invoice_number": inv.number,
+        # Said plainly, because the customer is about to be told they have
+        # paid when the money has not moved yet.
+        "settles_immediately": False,
+    }
+
+
 @app.post("/api/public/invoices/{tracking_id}/pay/stripe/session")
 def start_stripe_invoice_payment(tracking_id: str, request: Request,
                                  db: Session = Depends(get_db)):
@@ -18426,6 +18577,17 @@ def invoice_payment_methods(db: Session, inv):
             out.append({"provider": provider,
                         "label": PROVIDER_LABELS[provider],
                         "mode": mode})
+
+    # GoCardless runs on the operator's own account, so it can only be offered
+    # where invoice money is meant to arrive there. In direct mode a business
+    # collects into its own account, and taking a bank debit through ours
+    # would quietly send the money somewhere else.
+    if (collection_mode(db) == "platform"
+            and gateway_config()["gocardless"]["access_token"]
+            and (inv.currency or "").upper() in GOCARDLESS_CURRENCIES):
+        out.append({"provider": "gocardless",
+                    "label": "Bank payment (GoCardless)",
+                    "mode": "platform"})
     return out
 
 

@@ -92,10 +92,10 @@
     }
   </style>
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=119">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=119">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=119">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=119">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=120">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=120">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=120">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=120">
     <script src="/dialogs.js?v=1"></script>
 </head>
 <body>
@@ -241,6 +241,10 @@
             return '<button class="btn primary" id="payCardBtn" onclick="payByCard()">Pay ' +
                    amount + ' by card</button>';
           }
+          if (m.provider === 'gocardless') {
+            return '<button class="btn" id="payBankBtn" onclick="payByBank()">Pay ' +
+                   amount + ' by bank transfer</button>';
+          }
           return '';
         }).join('');
         host.insertAdjacentHTML('afterbegin', buttons);
@@ -271,6 +275,41 @@
               'record it. Please contact ' + (inv.from.email || 'the sender') + '.';
           }
           return false;
+        }
+      }
+
+      window.payByBank = async function () {
+        var note = document.getElementById('payNote');
+        var btn = document.getElementById('payBankBtn');
+        note.textContent = '';
+        btn.disabled = true;
+        try {
+          var r = await fetch('/api/public/invoices/' + encodeURIComponent(id) + '/pay/gocardless/start',
+            { method: 'POST' });
+          var out = await r.json();
+          if (!r.ok) throw new Error(out.detail || 'could not start');
+          if (!out.authorisation_url) throw new Error('The bank payment could not be started.');
+          location.href = out.authorisation_url;
+        } catch (e) {
+          note.textContent = e.message || 'Could not start the payment.';
+          btn.disabled = false;
+        }
+      };
+
+      // Coming back from the bank. This says authorised, never paid: a direct
+      // debit clears days later, and the invoice stays outstanding until the
+      // webhook says the money actually arrived. Telling somebody it is
+      // settled here would stop anyone chasing a payment that may still fail.
+      function noteBankReturn() {
+        var state = new URLSearchParams(location.search).get('bank');
+        var note = document.getElementById('payNote');
+        if (!state || !note) return;
+        if (state === 'authorised') {
+          note.textContent = 'Thank you - your bank payment is set up. It usually ' +
+            'takes a few working days to clear, and this invoice will show as ' +
+            'paid once it does.';
+        } else if (state === 'cancelled') {
+          note.textContent = 'Bank payment cancelled - nothing was taken.';
         }
       }
 
@@ -350,6 +389,7 @@
 
       drawPayButtons();
       settleStripeReturn();
+      noteBankReturn();
     })();
   </script>
 </body>
