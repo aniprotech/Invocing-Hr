@@ -319,6 +319,7 @@ var NAV_FOR_VIEW = {
     'create-quote-view': 'nav-quotes',
     'view-quote-view': 'nav-quotes',
     'bills-view': 'nav-bills',
+    'insights-view': 'nav-insights',
     'reports-view': 'nav-reports',
     'contacts-view': 'nav-contacts',
     'employees-view': 'nav-people',
@@ -362,6 +363,7 @@ var ROUTE_SLUGS = {
     'recurring-view': 'recurring',
     'bills-view': 'bills',
     'wallet-view': 'wallet',
+    'insights-view': 'insights',
     'reports-view': 'reports',
     'contacts-view': 'contacts',
     'employees-view': 'people',
@@ -544,6 +546,7 @@ function showView(viewId) {
     if (viewId === 'settings-view' && typeof loadPaymentGateways === 'function') loadPaymentGateways();
     if (viewId === 'settings-view' && typeof loadBrandingThemes === 'function') loadBrandingThemes();
     if (viewId === 'settings-view' && typeof loadAuditLogs === 'function') loadAuditLogs();
+    if (viewId === 'insights-view' && typeof loadInsights === 'function') loadInsights();
     if (viewId === 'reports-view' && typeof loadReports === 'function') loadReports();
     // Every route into a view comes through here, so this is where the drawer
     // gets out of the way. It was the same three lines written out again;
@@ -1890,7 +1893,7 @@ function renderDashboard(data) {
     setText('dash-overdue-count', s.overdue_count || 0);
     setText('dash-total-count', s.total_count || 0);
     if (typeof renderInvoiceChart === 'function') {
-        renderInvoiceChart(s.total_revenue || 0, s.invoices_owed || 0, s.total_count || 0);
+        renderInvoiceChart();
     }
     
     
@@ -9064,60 +9067,304 @@ async function loadCashSummary() {
 window.loadCashSummary = loadCashSummary;
 
 
+// --- Insights ---------------------------------------------------------------
+// "How are we doing" is several questions, so this is several charts over one
+// set of figures, all of them counted from invoices and payments that exist.
+
+var _insights = null;
+var _insightChart = null;
+
+var INSIGHT_VIEWS = [
+    {
+        id: 'trade', label: 'Invoiced and collected', type: 'line',
+        why: 'What you billed each month against what actually came in.',
+    },
+    {
+        id: 'status', label: 'Where your invoices stand', type: 'doughnut',
+        why: 'How many sit in each state right now.',
+    },
+    {
+        id: 'ageing', label: 'How old the unpaid money is', type: 'bar',
+        why: 'Outstanding money by how far past its due date it is.',
+    },
+    {
+        id: 'customers', label: 'Who pays you most', type: 'bar', horizontal: true,
+        why: 'Ranked on money received, not money billed.',
+    },
+    {
+        id: 'debtors', label: 'Who owes you most', type: 'bar', horizontal: true,
+        why: 'Outstanding balances, largest first.',
+    },
+    {
+        id: 'speed', label: 'How long people take to pay', type: 'line',
+        why: 'Average days from raising an invoice to being paid, by month.',
+    },
+    {
+        id: 'volume', label: 'How many invoices you raise', type: 'bar',
+        why: 'Invoices raised each month, whatever they were worth.',
+    },
+];
+
+function insightColours() {
+    var css = getComputedStyle(document.documentElement);
+    var pick = function (name, fallback) {
+        return (css.getPropertyValue(name) || '').trim() || fallback;
+    };
+    return {
+        primary: pick('--primary-color', '#38bdf8'),
+        success: pick('--success-color', '#34d399'),
+        warning: pick('--warning-color', '#fbbf24'),
+        danger: pick('--danger-color', '#f43f5e'),
+        muted: pick('--text-secondary', '#94a3b8'),
+        line: pick('--border-color', 'rgba(255,255,255,0.1)'),
+    };
+}
+
+async function loadInsights() {
+    var months = document.getElementById('insight-months');
+    var note = document.getElementById('insight-note');
+    try {
+        var res = await fetch('/api/insights?months=' + encodeURIComponent(months ? months.value : 6));
+        if (!res.ok) throw new Error('Could not load your insights');
+        _insights = await res.json();
+    } catch (e) {
+        if (note) note.textContent = 'Could not load your insights.';
+        return;
+    }
+
+    var pick = document.getElementById('insight-pick');
+    if (pick && !pick.options.length) {
+        pick.innerHTML = INSIGHT_VIEWS.map(function (v) {
+            return '<option value="' + v.id + '">' + esc(v.label) + '</option>';
+        }).join('');
+    }
+    renderInsightTotals();
+    drawInsight();
+}
+window.loadInsights = loadInsights;
+
+function renderInsightTotals() {
+    var host = document.getElementById('insight-totals');
+    if (!host || !_insights) return;
+    var t = _insights.totals || {};
+    var cur = t.currency || '';
+    var card = function (label, value, colour) {
+        return '<div class="stat-card" style="cursor:default;">' +
+               '<span class="stat-label">' + esc(label) + '</span>' +
+               '<span class="stat-value"' + (colour ? ' style="color:' + colour + ';"' : '') +
+               '>' + esc(value) + '</span></div>';
+    };
+    var c = insightColours();
+    // Said as "not enough data yet" rather than 0, because nobody paying in
+    // zero days is a different claim from nobody having paid.
+    var speed = t.average_days_to_pay === null || t.average_days_to_pay === undefined
+        ? 'Not enough data yet'
+        : t.average_days_to_pay + ' days';
+    host.innerHTML =
+        card('Invoiced', cur + ' ' + Number(t.invoiced || 0).toFixed(2)) +
+        card('Collected', cur + ' ' + Number(t.collected || 0).toFixed(2), c.success) +
+        card('Still owed', cur + ' ' + Number(t.outstanding || 0).toFixed(2), c.warning) +
+        card('Average time to pay', speed);
+}
+
+function insightData(view) {
+    var d = _insights || {};
+    var c = insightColours();
+    var pairs = function (rows) {
+        return {
+            labels: (rows || []).map(function (r) { return r.label; }),
+            values: (rows || []).map(function (r) { return r.value; }),
+        };
+    };
+
+    if (view.id === 'trade') {
+        return {
+            labels: d.months || [],
+            datasets: [
+                { label: 'Invoiced', data: (d.series || {}).invoiced || [],
+                  borderColor: c.primary, backgroundColor: c.primary + '22',
+                  fill: true, tension: 0.3, borderWidth: 2 },
+                { label: 'Collected', data: (d.series || {}).collected || [],
+                  borderColor: c.success, backgroundColor: c.success + '22',
+                  fill: true, tension: 0.3, borderWidth: 2 },
+            ],
+        };
+    }
+    if (view.id === 'status') {
+        var st = pairs(d.status_breakdown);
+        return {
+            labels: st.labels,
+            datasets: [{ data: st.values,
+                backgroundColor: [c.success, c.warning, c.danger, c.primary, c.muted],
+                borderWidth: 0 }],
+        };
+    }
+    if (view.id === 'ageing') {
+        var ag = pairs(d.ageing);
+        return {
+            labels: ag.labels,
+            datasets: [{ label: 'Outstanding', data: ag.values,
+                // Green for money that is not late, warmer the later it gets -
+                // the point of this chart is which bars should worry you.
+                backgroundColor: [c.success, c.primary, c.warning, c.warning, c.danger],
+                borderWidth: 0 }],
+        };
+    }
+    if (view.id === 'customers' || view.id === 'debtors') {
+        var rows = pairs(view.id === 'customers' ? d.top_customers : d.top_debtors);
+        return {
+            labels: rows.labels,
+            datasets: [{ label: view.id === 'customers' ? 'Received' : 'Owed',
+                data: rows.values,
+                backgroundColor: view.id === 'customers' ? c.success : c.danger,
+                borderWidth: 0 }],
+        };
+    }
+    if (view.id === 'speed') {
+        return {
+            labels: d.months || [],
+            datasets: [{ label: 'Days to pay',
+                data: (d.series || {}).days_to_pay || [],
+                borderColor: c.warning, backgroundColor: c.warning + '22',
+                // Months nobody paid in come back as null and are left as gaps.
+                // Joining across them would draw a slope that never happened.
+                spanGaps: false, tension: 0.3, borderWidth: 2, fill: true }],
+        };
+    }
+    return {
+        labels: d.months || [],
+        datasets: [{ label: 'Invoices raised',
+            data: (d.series || {}).invoice_count || [],
+            backgroundColor: c.primary, borderWidth: 0 }],
+    };
+}
+
+function drawInsight() {
+    if (!_insights) return;
+    var pick = document.getElementById('insight-pick');
+    var chosen = pick ? pick.value : 'trade';
+    var view = INSIGHT_VIEWS.filter(function (v) { return v.id === chosen; })[0]
+               || INSIGHT_VIEWS[0];
+
+    document.getElementById('insight-title').textContent = view.label;
+    document.getElementById('insight-why').textContent = view.why;
+
+    var data = insightData(view);
+    var canvas = document.getElementById('insightChart');
+    var empty = document.getElementById('insight-empty');
+
+    // Nothing to draw is said in words. An axis with no bars looks like a
+    // business that did nothing, rather than one that has not started yet.
+    var hasAny = data.datasets.some(function (set) {
+        return (set.data || []).some(function (v) { return v !== null && v !== 0; });
+    });
+    if (!data.labels.length || !hasAny) {
+        if (_insightChart) { _insightChart.destroy(); _insightChart = null; }
+        canvas.style.display = 'none';
+        empty.style.display = 'block';
+        empty.textContent = 'Nothing to show here yet.';
+        return;
+    }
+    canvas.style.display = '';
+    empty.style.display = 'none';
+
+    if (typeof Chart === 'undefined') return;
+    if (_insightChart) _insightChart.destroy();
+
+    var c = insightColours();
+    Chart.defaults.color = c.muted;
+
+    var round = view.type === 'doughnut';
+    _insightChart = new Chart(canvas, {
+        type: view.type,
+        data: data,
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            indexAxis: view.horizontal ? 'y' : 'x',
+            plugins: {
+                legend: {
+                    display: round || data.datasets.length > 1,
+                    position: round ? 'right' : 'top',
+                },
+            },
+            scales: round ? {} : {
+                x: { grid: { color: c.line }, ticks: { color: c.muted } },
+                y: { grid: { color: c.line }, ticks: { color: c.muted },
+                     beginAtZero: true },
+            },
+        },
+    });
+}
+window.drawInsight = drawInsight;
+
 // --- FUTURISTIC CHARTS ---
 let _invoiceChart = null;
-function renderInvoiceChart(revenue, outstanding, invoices) {
-    var ctx = document.getElementById('invoiceChart');
-    if (!ctx) return;
-    if (typeof Chart === 'undefined') return;
-    
-    if (_invoiceChart) _invoiceChart.destroy();
-    
-    Chart.defaults.color = '#94a3b8';
-    Chart.defaults.font.family = "'Space Grotesk', sans-serif";
-    
-    _invoiceChart = new Chart(ctx, {
+// The five points here used to be today's revenue times 0.2, 0.4, 0.5, 0.8
+// and 1, labelled Week 1 to Current. It looked like a history and was
+// arithmetic on one number, so any trend read off it was invented. It now
+// draws the same months the insights page counts, and says so when there is
+// nothing to draw rather than showing a shape.
+async function renderInvoiceChart() {
+    var canvas = document.getElementById('invoiceChart');
+    if (!canvas || typeof Chart === 'undefined') return;
+
+    var data;
+    try {
+        var res = await fetch('/api/insights?months=6');
+        if (!res.ok) return;
+        data = await res.json();
+    } catch (e) {
+        return;
+    }
+
+    var invoiced = (data.series || {}).invoiced || [];
+    var collected = (data.series || {}).collected || [];
+    var anything = invoiced.concat(collected).some(function (v) { return v; });
+
+    if (_invoiceChart) { _invoiceChart.destroy(); _invoiceChart = null; }
+    if (!anything) {
+        // Drawing two flat lines would read as six months of no trade.
+        var host = canvas.parentNode;
+        if (host && !host.querySelector('.chart-empty')) {
+            var note = document.createElement('div');
+            note.className = 'chart-empty';
+            note.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;' +
+                'justify-content:center;color:var(--text-secondary);font-size:0.85rem;';
+            note.textContent = 'No invoices in the last six months yet.';
+            host.appendChild(note);
+        }
+        canvas.style.display = 'none';
+        return;
+    }
+    canvas.style.display = '';
+    var stale = canvas.parentNode && canvas.parentNode.querySelector('.chart-empty');
+    if (stale) stale.remove();
+
+    var c = insightColours();
+    Chart.defaults.color = c.muted;
+
+    _invoiceChart = new Chart(canvas, {
         type: 'line',
         data: {
-            labels: ['Week 1', 'Week 2', 'Week 3', 'Week 4', 'Current'],
-            datasets: [{
-                label: 'Revenue Trajectory',
-                data: [revenue*0.2, revenue*0.4, revenue*0.5, revenue*0.8, revenue],
-                borderColor: '#38bdf8',
-                backgroundColor: 'rgba(56, 189, 248, 0.1)',
-                borderWidth: 2,
-                pointBackgroundColor: '#0b0f19',
-                pointBorderColor: '#38bdf8',
-                pointBorderWidth: 2,
-                pointRadius: 4,
-                pointHoverRadius: 6,
-                fill: true,
-                tension: 0.4
-            },
-            {
-                label: 'Outstanding',
-                data: [outstanding*0.9, outstanding*0.7, outstanding*0.8, outstanding*1.1, outstanding],
-                borderColor: '#f43f5e',
-                backgroundColor: 'rgba(244, 63, 94, 0.1)',
-                borderWidth: 2,
-                pointBackgroundColor: '#0b0f19',
-                pointBorderColor: '#f43f5e',
-                borderDash: [5, 5],
-                fill: true,
-                tension: 0.4
-            }]
+            labels: data.months || [],
+            datasets: [
+                { label: 'Invoiced', data: invoiced, borderColor: c.primary,
+                  backgroundColor: c.primary + '22', borderWidth: 2,
+                  pointRadius: 3, fill: true, tension: 0.35 },
+                { label: 'Collected', data: collected, borderColor: c.success,
+                  backgroundColor: c.success + '22', borderWidth: 2,
+                  pointRadius: 3, fill: true, tension: 0.35 },
+            ],
         },
         options: {
             responsive: true, maintainAspectRatio: false,
-            plugins: {
-                legend: { labels: { color: '#f8fafc', font: { family: "'Rajdhani', sans-serif", size: 14 } } },
-                tooltip: { backgroundColor: 'rgba(15, 23, 42, 0.9)', titleFont: { family: "'Rajdhani'" }, bodyFont: { family: "'Space Grotesk'" }, borderColor: '#38bdf8', borderWidth: 1 }
-            },
+            plugins: { legend: { position: 'top' } },
             scales: {
-                y: { grid: { color: 'rgba(255, 255, 255, 0.05)' }, border: { dash: [4, 4] } },
-                x: { grid: { color: 'rgba(255, 255, 255, 0.05)' } }
-            }
-        }
+                y: { beginAtZero: true, grid: { color: c.line }, ticks: { color: c.muted } },
+                x: { grid: { color: c.line }, ticks: { color: c.muted } },
+            },
+        },
     });
 }
 

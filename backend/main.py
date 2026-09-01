@@ -3562,6 +3562,168 @@ def update_invoice(number: str, invoice: InvoiceCreate, request: Request, db: Se
     return get_invoice(inv.number, request, db)
 
 
+# ============================================================================
+# INSIGHTS
+#
+# The dashboard drew one chart, and it was invented: five points made by
+# multiplying today's revenue by 0.2, 0.4, 0.5, 0.8 and 1. It looked like a
+# history and was arithmetic on a single number, which is worse than no chart -
+# somebody reads a trend off it and decides something.
+#
+# Every series below is counted from invoices and payments that exist.
+# ============================================================================
+
+def _month_key(date_str):
+    return (date_str or "")[:7]          # YYYY-MM
+
+
+def _months_back(count):
+    """The last `count` months, oldest first, as (key, label)."""
+    today = datetime.now()
+    out = []
+    year, month = today.year, today.month
+    for _ in range(count):
+        out.append((f"{year:04d}-{month:02d}",
+                    datetime(year, month, 1).strftime("%b %Y")))
+        month -= 1
+        if month == 0:
+            year, month = year - 1, 12
+    return list(reversed(out))
+
+
+def _days_between(earlier, later):
+    try:
+        a = datetime.strptime((earlier or "")[:10], "%Y-%m-%d")
+        b = datetime.strptime((later or "")[:10], "%Y-%m-%d")
+        return (b - a).days
+    except Exception:
+        return None
+
+
+@app.get("/api/insights")
+def business_insights(request: Request, months: int = 6,
+                      db: Session = Depends(get_db)):
+    """Several ways of looking at the same books.
+
+    Anything with no data comes back as an empty series rather than zeros, so
+    the page can say "nothing here yet" instead of drawing a flat line that
+    looks like a real month of no trade.
+    """
+    client = get_client_user(request, db)
+    months = max(3, min(int(months or 6), 24))
+
+    invoices = db.query(models.DBInvoice).filter(
+        models.DBInvoice.client_id == client.id,
+        models.DBInvoice.status != "Void").all()
+    live = [i for i in invoices if i.status != "Draft"]
+
+    window = _months_back(months)
+    keys = [k for k, _ in window]
+    labels = [lab for _, lab in window]
+
+    # --- invoiced and collected, month by month ------------------------------
+    invoiced = {k: 0.0 for k in keys}
+    collected = {k: 0.0 for k in keys}
+    counts = {k: 0 for k in keys}
+    for inv in live:
+        k = _month_key(inv.issue_date)
+        if k in invoiced:
+            invoiced[k] += money((inv.paid or 0) + (inv.due or 0))
+            counts[k] += 1
+
+    payments = db.query(models.DBPayment).filter(
+        models.DBPayment.client_id == client.id).all()
+    for pay in payments:
+        k = _month_key(pay.paid_on or pay.created_at)
+        if k in collected:
+            collected[k] += money(pay.amount or 0)
+
+    # --- where the money is sitting -------------------------------------------
+    by_status = {}
+    for inv in invoices:
+        by_status[inv.status] = by_status.get(inv.status, 0) + 1
+
+    # --- who owes, and who has paid the most ----------------------------------
+    revenue_by_customer = {}
+    owed_by_customer = {}
+    for inv in live:
+        name = (inv.to_contact or "Unnamed").strip() or "Unnamed"
+        revenue_by_customer[name] = revenue_by_customer.get(name, 0) + money(inv.paid or 0)
+        owed_by_customer[name] = owed_by_customer.get(name, 0) + money(inv.due or 0)
+
+    top_customers = sorted(revenue_by_customer.items(),
+                           key=lambda kv: kv[1], reverse=True)[:8]
+    top_debtors = sorted([kv for kv in owed_by_customer.items() if kv[1] > 0],
+                         key=lambda kv: kv[1], reverse=True)[:8]
+
+    # --- how overdue the outstanding money is ---------------------------------
+    today = datetime.now().strftime("%Y-%m-%d")
+    buckets = [("Not yet due", 0), ("1-30 days", 0), ("31-60 days", 0),
+               ("61-90 days", 0), ("Over 90 days", 0)]
+    ageing = {name: 0.0 for name, _ in buckets}
+    for inv in live:
+        outstanding = money(inv.due or 0)
+        if outstanding <= 0:
+            continue
+        overdue_by = _days_between(inv.due_date, today)
+        if overdue_by is None or overdue_by <= 0:
+            ageing["Not yet due"] += outstanding
+        elif overdue_by <= 30:
+            ageing["1-30 days"] += outstanding
+        elif overdue_by <= 60:
+            ageing["31-60 days"] += outstanding
+        elif overdue_by <= 90:
+            ageing["61-90 days"] += outstanding
+        else:
+            ageing["Over 90 days"] += outstanding
+
+    # --- how long people take to pay -------------------------------------------
+    # Measured from the invoice date to the payment, per month of payment, so a
+    # business can see whether it is getting better or worse rather than being
+    # given one lifetime average that never moves.
+    by_invoice = {inv.id: inv for inv in invoices}
+    wait_totals = {k: [0.0, 0] for k in keys}
+    all_waits = []
+    for pay in payments:
+        inv = by_invoice.get(pay.invoice_id)
+        if not inv:
+            continue
+        waited = _days_between(inv.issue_date, pay.paid_on or pay.created_at)
+        if waited is None or waited < 0:
+            continue
+        all_waits.append(waited)
+        k = _month_key(pay.paid_on or pay.created_at)
+        if k in wait_totals:
+            wait_totals[k][0] += waited
+            wait_totals[k][1] += 1
+
+    days_to_pay = [round(wait_totals[k][0] / wait_totals[k][1], 1)
+                   if wait_totals[k][1] else None for k in keys]
+
+    return {
+        "months": labels,
+        "series": {
+            "invoiced": [round(invoiced[k], 2) for k in keys],
+            "collected": [round(collected[k], 2) for k in keys],
+            "invoice_count": [counts[k] for k in keys],
+            "days_to_pay": days_to_pay,
+        },
+        "status_breakdown": [{"label": k, "value": v} for k, v in
+                             sorted(by_status.items(), key=lambda kv: -kv[1])],
+        "top_customers": [{"label": k, "value": round(v, 2)} for k, v in top_customers if v > 0],
+        "top_debtors": [{"label": k, "value": round(v, 2)} for k, v in top_debtors],
+        "ageing": [{"label": name, "value": round(ageing[name], 2)} for name, _ in buckets],
+        "totals": {
+            "invoiced": round(sum(money((i.paid or 0) + (i.due or 0)) for i in live), 2),
+            "collected": round(sum(money(i.paid or 0) for i in live), 2),
+            "outstanding": round(sum(money(i.due or 0) for i in live), 2),
+            "average_days_to_pay": round(sum(all_waits) / len(all_waits), 1) if all_waits else None,
+            "invoices": len(live),
+            "currency": (client.currency or "GBP").upper(),
+        },
+    }
+
+
 @app.get("/api/reports/aged-receivables")
 def aged_receivables(request: Request, db: Session = Depends(get_db)):
     """Outstanding balances bucketed by how late they are - the report every
