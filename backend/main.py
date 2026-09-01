@@ -1962,6 +1962,74 @@ def prepare_email_message(to_email, subject, body_text, html_body, from_email, l
     return msg.as_string()
 
 
+def smtp_config():
+    """Where SMTP sends from. The password is a secret, so it lives in the
+    environment with the other secrets and never in the settings screen."""
+    return {
+        "host": (os.getenv("SMTP_HOST", "") or "").strip(),
+        "port": int(os.getenv("SMTP_PORT", "587") or 587),
+        "user": (os.getenv("SMTP_USER", "") or "").strip(),
+        "password": os.getenv("SMTP_PASSWORD", "") or "",
+        "starttls": (os.getenv("SMTP_STARTTLS", "true") or "true").lower()
+                    not in ("0", "false", "no", "off"),
+    }
+
+
+def smtp_ready():
+    cfg = smtp_config()
+    return bool(cfg["host"] and cfg["port"])
+
+
+def email_transport(db=None):
+    """Which way out is in force. An operator picks it; it is not a secret,
+    so unlike the credentials it belongs in the settings screen."""
+    try:
+        if db is not None:
+            return platform_setting(db, "email.transport") or "gmail"
+        with SessionLocal() as own:
+            return platform_setting(own, "email.transport") or "gmail"
+    except Exception:
+        return "gmail"
+
+
+def _send_via_smtp(raw_msg, to_email, cc="", bcc=""):
+    """Hand the message to a mail server.
+
+    Bcc is a header the Gmail API strips on the way out. A mail server does
+    not: it delivers exactly the envelope it is given and leaves the headers
+    alone, so the header is removed here and the address is put in the
+    envelope instead. Left in, every recipient would see who was blind-copied.
+    """
+    import smtplib
+    from email import message_from_string
+
+    cfg = smtp_config()
+    msg = message_from_string(raw_msg)
+    def addresses(header):
+        return [a.strip() for line in (msg.get_all(header) or [])
+                for a in line.split(",") if a.strip()]
+
+    recipients = addresses("To") + addresses("Cc")
+    hidden = addresses("Bcc")
+    del msg["Bcc"]
+    envelope = [a for a in recipients + hidden if a]
+
+    server = smtplib.SMTP(cfg["host"], cfg["port"], timeout=30)
+    try:
+        server.ehlo()
+        if cfg["starttls"]:
+            server.starttls()
+            server.ehlo()
+        if cfg["user"]:
+            server.login(cfg["user"], cfg["password"])
+        server.sendmail(msg["From"], envelope or [to_email], msg.as_string())
+    finally:
+        try:
+            server.quit()
+        except Exception:
+            pass
+
+
 def send_email_background(to_email: str, subject: str, body: str, from_email: str, html_body: str = None, pdf_b64: str = None, pdf_filename: str = "invoice.pdf", logo_data: str = "", client_id: int = None, cc: str = "", bcc: str = ""):
     pdf_bytes = None
     if pdf_b64:
@@ -1971,6 +2039,21 @@ def send_email_background(to_email: str, subject: str, body: str, from_email: st
             logger.error(f"Failed to decode PDF: {e}")
 
     raw_msg = prepare_email_message(to_email, subject, body, html_body or "", from_email, logo_data or "", pdf_bytes, pdf_filename, cc or "", bcc or "")
+
+    # Whichever was chosen is the one used. Quietly falling back to the other
+    # would send from an address nobody picked, and the first anyone would
+    # know is a customer replying to the wrong inbox.
+    transport = email_transport()
+    if transport == "smtp":
+        if not smtp_ready():
+            return False, "SMTP is selected but SMTP_HOST is not configured"
+        try:
+            _send_via_smtp(raw_msg, to_email, cc, bcc)
+            logger.info("Email sent via SMTP to %s", to_email)
+            return True, "Email sent via SMTP"
+        except Exception as e:
+            logger.error("SMTP failed: %s", e)
+            return False, f"SMTP error: {str(e)}"
 
     with SessionLocal() as db:
         refresh_token = get_stored_refresh_token(db, client_id=client_id)
@@ -18481,6 +18564,14 @@ PLATFORM_SETTINGS = [
             "Contact Us"),
     Setting("landing.contact_intro", "Contact: paragraph", "Landing", "longtext",
             "Book a free live demonstration today."),
+
+    # --- Email --------------------------------------------------------------
+    Setting("email.transport", "Send email through", "Email", "choice", "gmail",
+            choices=["gmail", "smtp"],
+            help="gmail uses the connected Google account. smtp uses your own "
+                 "mail server - set SMTP_HOST, SMTP_PORT, SMTP_USER and "
+                 "SMTP_PASSWORD in the environment, because a mail password is "
+                 "a secret and secrets are not kept in this screen."),
 
     Setting("landing.invoice_cta_title", "Invoicing pitch: heading", "Landing", "text",
             "Ready to streamline your invoicing?"),
