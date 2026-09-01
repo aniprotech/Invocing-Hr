@@ -17863,6 +17863,152 @@ def payable_invoice(db: Session, tracking_id: str):
     return inv
 
 
+@app.get("/api/public/invoices/{tracking_id}/pay/methods")
+def list_invoice_payment_methods(tracking_id: str, db: Session = Depends(get_db)):
+    """Offered to the payment page so it shows only what will actually work.
+
+    Nothing here is a secret: it is the names of the providers, never a key.
+    """
+    inv = payable_invoice(db, tracking_id)
+    settled = inv.status == "Paid" or (inv.due or 0) <= 0
+    return {
+        "invoice_number": inv.number,
+        "currency": (inv.currency or "INR").upper(),
+        "amount_due": money(inv.due or 0),
+        "is_paid": settled,
+        "methods": [] if settled else invoice_payment_methods(db, inv),
+    }
+
+
+@app.post("/api/public/invoices/{tracking_id}/pay/stripe/session")
+def start_stripe_invoice_payment(tracking_id: str, request: Request,
+                                 db: Session = Depends(get_db)):
+    """Open a Stripe Checkout session against the business's own account."""
+    inv = payable_invoice(db, tracking_id)
+    if inv.status == "Paid" or (inv.due or 0) <= 0:
+        raise HTTPException(status_code=409, detail="This invoice is already paid")
+
+    _pub, secret, mode = collecting_keys(db, inv.client_id, "stripe")
+    if not secret:
+        raise HTTPException(status_code=503,
+                            detail="Card payment is not set up for this invoice")
+
+    currency = (inv.currency or "GBP").upper()
+    amount_minor = to_minor_units(money(inv.due or 0), currency)
+    if amount_minor <= 0:
+        raise HTTPException(status_code=409, detail="Nothing left to pay")
+
+    base = (os.getenv("APP_BASE_URL", "") or str(request.base_url)).rstrip("/")
+    back = f"{base}/invoice.html?id={inv.tracking_id}"
+
+    try:
+        resp = httpx.post(
+            "https://api.stripe.com/v1/checkout/sessions",
+            auth=(secret, ""),
+            data={
+                "mode": "payment",
+                "success_url": f"{back}&paid={{CHECKOUT_SESSION_ID}}",
+                "cancel_url": back,
+                # Binds the session to this invoice, so a session paid against
+                # some other invoice cannot later be presented as this one.
+                "client_reference_id": inv.tracking_id,
+                "line_items[0][quantity]": 1,
+                "line_items[0][price_data][currency]": currency.lower(),
+                "line_items[0][price_data][unit_amount]": amount_minor,
+                "line_items[0][price_data][product_data][name]":
+                    f"Invoice {inv.number}",
+            },
+            timeout=20.0)
+    except Exception:
+        logger.exception("Stripe unreachable for invoice %s", inv.number)
+        raise HTTPException(
+            status_code=502,
+            detail="Could not reach the payment provider. Please try again shortly.")
+
+    if resp.status_code >= 400:
+        # The customer cannot fix a misconfigured account, but the reason has
+        # to reach the log or the business has nothing to act on.
+        logger.error("Stripe session failed for invoice %s: %s",
+                     inv.number, resp.text[:400])
+        raise HTTPException(status_code=502,
+                            detail="This card payment could not be started. "
+                                   "The business has been notified.")
+
+    session = resp.json()
+    return {
+        "session_id": session.get("id"),
+        "checkout_url": session.get("url"),
+        "amount": amount_minor,
+        "currency": currency,
+        "invoice_number": inv.number,
+    }
+
+
+@app.post("/api/public/invoices/{tracking_id}/pay/stripe/confirm")
+def confirm_stripe_invoice_payment(tracking_id: str, body: dict = None,
+                                   db: Session = Depends(get_db)):
+    """Mark it paid only against what Stripe itself says.
+
+    The browser comes back saying it paid. That claim is worth nothing - anyone
+    can post to this endpoint with any session id. So the session is fetched
+    from Stripe with the secret key, and three things have to hold: it is
+    actually paid, it was opened against this invoice, and it is for the
+    amount this invoice is asking. Without the middle check, a real session
+    for a one-pound invoice would settle a thousand-pound one.
+    """
+    body = body or {}
+    inv = payable_invoice(db, tracking_id)
+
+    _pub, secret, mode = collecting_keys(db, inv.client_id, "stripe")
+    if not secret:
+        raise HTTPException(status_code=503, detail="Card payment is not set up")
+
+    session_id = (body.get("session_id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Incomplete payment details")
+
+    try:
+        resp = httpx.get(
+            f"https://api.stripe.com/v1/checkout/sessions/{session_id}",
+            auth=(secret, ""), timeout=20.0)
+    except Exception:
+        logger.exception("Stripe unreachable confirming invoice %s", inv.number)
+        raise HTTPException(status_code=502,
+                            detail="Could not confirm the payment. Please try again.")
+    if resp.status_code >= 400:
+        logger.warning("Stripe rejected a session lookup for %s: %s",
+                       inv.number, resp.text[:200])
+        raise HTTPException(status_code=400, detail="That payment could not be verified")
+
+    session = resp.json()
+    currency = (inv.currency or "GBP").upper()
+    expected = to_minor_units(money(inv.due or 0), currency)
+
+    if session.get("payment_status") != "paid":
+        raise HTTPException(status_code=400, detail="That payment has not completed")
+    if (session.get("client_reference_id") or "") != inv.tracking_id:
+        logger.warning("Rejected a Stripe session raised against another invoice (%s)",
+                       inv.number)
+        raise HTTPException(status_code=400, detail="That payment could not be verified")
+    if int(session.get("amount_total") or 0) < expected:
+        logger.warning("Rejected a Stripe session short of the amount due on %s", inv.number)
+        raise HTTPException(status_code=400, detail="That payment could not be verified")
+
+    amount = money(inv.due or 0)
+    reference = session.get("payment_intent") or session_id
+    recorded = record_invoice_payment(
+        db, inv, amount, "stripe", reference,
+        note="Paid online by the customer")
+    db.commit()
+
+    return {
+        "paid": True,
+        "already_recorded": not recorded,
+        "invoice_number": inv.number,
+        "status": inv.status,
+    }
+
+
 @app.post("/api/public/invoices/{tracking_id}/pay/razorpay/order")
 def start_invoice_payment(tracking_id: str, request: Request,
                           db: Session = Depends(get_db)):
@@ -18225,26 +18371,62 @@ def collection_mode(db: Session) -> str:
     return value if value in COLLECTION_MODES else "direct"
 
 
-def collecting_keys(db: Session, client_id: int):
+def collecting_keys(db: Session, client_id: int, provider: str = "razorpay"):
     """(key_id, key_secret, mode) for taking a payment on this invoice.
 
     In platform mode the tenant's own keys are ignored entirely - otherwise a
     business that had set up its own would quietly keep collecting directly
-    while the operator believed everything came through one account.
+    while the operator believed everything came through one account. The
+    platform's own account is Razorpay, so that mode offers nothing else.
     """
     mode = collection_mode(db)
     if mode == "platform":
+        if provider != "razorpay":
+            return "", "", "platform"
         cfg = gateway_config()["razorpay"]
         return cfg["key_id"], cfg["key_secret"], "platform"
 
     gw = db.query(models.DBClientGateway).filter(
         models.DBClientGateway.client_id == client_id,
-        models.DBClientGateway.provider == "razorpay",
+        models.DBClientGateway.provider == provider,
         models.DBClientGateway.is_active == True,      # noqa: E712
     ).first()
     if gw:
         return gw.public_key, gw.secret_key, "direct"
     return "", "", "direct"
+
+
+# Stripe takes the smallest unit of the currency, and for these there is no
+# smaller unit - multiplying by 100 would charge a hundred times the amount.
+STRIPE_ZERO_DECIMAL = {
+    "BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG",
+    "RWF", "UGX", "VND", "VUV", "XAF", "XOF", "XPF",
+}
+
+
+def to_minor_units(amount: float, currency: str) -> int:
+    if (currency or "").upper() in STRIPE_ZERO_DECIMAL:
+        return int(round(amount))
+    return int(round(amount * 100))
+
+
+def invoice_payment_methods(db: Session, inv):
+    """What this invoice can actually be paid with right now.
+
+    Saving keys on the settings screen used to be the whole story, and a
+    business that set up Stripe saw it active while no customer could ever
+    use it - there was no Stripe path to pay an invoice at all.
+    """
+    out = []
+    for provider in CLIENT_PROVIDERS:
+        if provider == "paypal":
+            continue          # configurable, but no invoice flow yet
+        key_id, key_secret, mode = collecting_keys(db, inv.client_id, provider)
+        if key_id and key_secret:
+            out.append({"provider": provider,
+                        "label": PROVIDER_LABELS[provider],
+                        "mode": mode})
+    return out
 
 
 def record_settlement(db: Session, inv, amount_minor: int, currency: str,

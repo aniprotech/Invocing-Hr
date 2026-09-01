@@ -92,10 +92,10 @@
     }
   </style>
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=118">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=118">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=118">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=118">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=119">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=119">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=119">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=119">
     <script src="/dialogs.js?v=1"></script>
 </head>
 <body>
@@ -202,11 +202,7 @@
             '</div>'
           : '') +
 
-        '<div class="actions">' +
-          (inv.payment
-            ? '<button class="btn primary" id="payBtn" onclick="payNow()">Pay ' +
-              money(sym, inv.amount_due) + ' now</button>'
-            : '') +
+        '<div class="actions" id="payButtons">' +
           '<button class="btn" onclick="window.print()">Print or save as PDF</button>' +
         '</div>' +
         '<p class="small muted" id="payNote" style="margin-top:10px;"></p>';
@@ -219,6 +215,82 @@
         foot.textContent = inv.footer_note;
         foot.hidden = false;
       }
+
+      // Which buttons to draw is the server's answer, not a guess from what
+      // this page can see. A business that had saved Stripe keys used to be
+      // offered nothing, because the only button here was Razorpay's.
+      async function drawPayButtons() {
+        var host = document.getElementById('payButtons');
+        if (!host || !inv.payment) return;
+        var methods = [];
+        try {
+          var r = await fetch('/api/public/invoices/' + encodeURIComponent(id) + '/pay/methods');
+          if (!r.ok) return;
+          var data = await r.json();
+          if (data.is_paid) return;
+          methods = data.methods || [];
+        } catch (e) { return; }
+
+        var amount = money(sym, inv.amount_due);
+        var buttons = methods.map(function (m) {
+          if (m.provider === 'razorpay') {
+            return '<button class="btn primary" id="payBtn" onclick="payNow()">Pay ' +
+                   amount + ' now</button>';
+          }
+          if (m.provider === 'stripe') {
+            return '<button class="btn primary" id="payCardBtn" onclick="payByCard()">Pay ' +
+                   amount + ' by card</button>';
+          }
+          return '';
+        }).join('');
+        host.insertAdjacentHTML('afterbegin', buttons);
+      }
+
+      // Coming back from Stripe's own page. The id in the URL is only a claim
+      // that something happened - the server asks Stripe itself before any of
+      // it counts.
+      async function settleStripeReturn() {
+        var session = new URLSearchParams(location.search).get('paid');
+        if (!session) return false;
+        var note = document.getElementById('payNote');
+        if (note) note.textContent = 'Confirming your payment...';
+        try {
+          var r = await fetch('/api/public/invoices/' + encodeURIComponent(id) + '/pay/stripe/confirm', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: session })
+          });
+          var out = await r.json();
+          if (!r.ok) throw new Error(out.detail || 'could not confirm');
+          // Dropped from the URL so a refresh does not replay it.
+          history.replaceState({}, '', location.pathname + '?id=' + encodeURIComponent(id));
+          location.reload();
+          return true;
+        } catch (e) {
+          if (note) {
+            note.textContent = 'Your payment may have gone through but we could not ' +
+              'record it. Please contact ' + (inv.from.email || 'the sender') + '.';
+          }
+          return false;
+        }
+      }
+
+      window.payByCard = async function () {
+        var note = document.getElementById('payNote');
+        var btn = document.getElementById('payCardBtn');
+        note.textContent = '';
+        btn.disabled = true;
+        try {
+          var r = await fetch('/api/public/invoices/' + encodeURIComponent(id) + '/pay/stripe/session',
+            { method: 'POST' });
+          var out = await r.json();
+          if (!r.ok) throw new Error(out.detail || 'could not start');
+          if (!out.checkout_url) throw new Error('The card payment could not be started.');
+          location.href = out.checkout_url;
+        } catch (e) {
+          note.textContent = e.message || 'Could not start the payment.';
+          btn.disabled = false;
+        }
+      };
 
       // Paying. The browser opens the checkout, but nothing here decides that
       // the invoice is paid - the server refuses anything it cannot verify
@@ -275,6 +347,9 @@
         });
         rzp.open();
       };
+
+      drawPayButtons();
+      settleStripeReturn();
     })();
   </script>
 </body>
