@@ -394,11 +394,11 @@
         .footer-col a:hover { color: var(--ap-blue-dark); }
         .footer-about { font-size: 13.5px; color: var(--ap-body); line-height: 1.7; max-width: 320px; margin-top: 12px; }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=120">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=120">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=120">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=120">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=120">
+    <link rel="stylesheet" href="mobile.css?v=123">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=123">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=123">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=123">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=123">
     <script src="/dialogs.js?v=1"></script>
 </head>
 <body>
@@ -477,9 +477,9 @@
     <section class="section">
         <div class="container">
             <div class="section-title">
-                <span class="eyebrow">Business Challenges</span>
-                <h2>Still Managing Your Business Manually?</h2>
-                <p>Many businesses still rely on spreadsheets, paperwork and disconnected systems&mdash;leading to delays, errors and reduced productivity.</p>
+                <span class="eyebrow" data-cms="challenges_eyebrow">Business Challenges</span>
+                <h2 data-cms="challenges_title">Still Managing Your Business Manually?</h2>
+                <p data-cms="challenges_intro">Many businesses still rely on spreadsheets, paperwork and disconnected systems&mdash;leading to delays, errors and reduced productivity.</p>
             </div>
             <div class="grid-3">
                 <div class="tile tile-warn"><div class="tile-icon" aria-hidden="true">&#128337;</div><h3>Manual Attendance</h3><p>Employees mark attendance manually, resulting in mistakes and lost productivity.</p></div>
@@ -496,11 +496,11 @@
     <section class="section" id="modules">
         <div class="container">
             <div class="section-title">
-                <span class="eyebrow">Complete Business Platform</span>
+                <span class="eyebrow" data-cms="modules_eyebrow">Complete Business Platform</span>
                 <h2 data-cms="modules_title">Everything You Need. One Platform.</h2>
-                <p>Ani Protech combines powerful business tools into one secure cloud platform, eliminating the need for multiple software subscriptions.</p>
+                <p data-cms="modules_intro">Ani Protech combines powerful business tools into one secure cloud platform, eliminating the need for multiple software subscriptions.</p>
             </div>
-            <div class="grid-4">
+            <div class="grid-4" id="modules-grid">
                 <div class="tile"><div class="tile-icon" aria-hidden="true">&#128101;</div><h3>HR Management</h3><p>Manage employees, departments, onboarding and company records.</p></div>
                 <div class="tile"><div class="tile-icon" aria-hidden="true">&#9200;</div><h3>Attendance</h3><p>Real-time attendance tracking with complete employee visibility.</p></div>
                 <div class="tile"><div class="tile-icon" aria-hidden="true">&#128176;</div><h3>Payroll</h3><p>Generate salaries, deductions and payroll reports effortlessly.</p></div>
@@ -521,9 +521,9 @@
     <section class="section">
         <div class="container">
             <div class="section-title">
-                <span class="eyebrow">Live Software Preview</span>
-                <h2>Powerful Dashboard. Simple Experience.</h2>
-                <p>Manage your workforce, payroll, attendance, invoicing and business operations from one intelligent dashboard.</p>
+                <span class="eyebrow" data-cms="preview_eyebrow">Live Software Preview</span>
+                <h2 data-cms="preview_title">Powerful Dashboard. Simple Experience.</h2>
+                <p data-cms="preview_intro">Manage your workforce, payroll, attendance, invoicing and business operations from one intelligent dashboard.</p>
             </div>
             <!-- A picture of the product, not a claim about live data: nobody
                  is signed in on this page. -->
@@ -561,11 +561,11 @@
     <section class="section" id="industries">
         <div class="container">
             <div class="section-title">
-                <span class="eyebrow">Industries We Serve</span>
+                <span class="eyebrow" data-cms="industries_eyebrow">Industries We Serve</span>
                 <h2 data-cms="industries_title">Built for Every Growing Business</h2>
-                <p>Whether you are managing a small team or a multi-location enterprise, Ani Protech adapts to your business and helps streamline everyday operations.</p>
+                <p data-cms="industries_intro">Whether you are managing a small team or a multi-location enterprise, Ani Protech adapts to your business and helps streamline everyday operations.</p>
             </div>
-            <div class="grid-4">
+            <div class="grid-4" id="industries-grid">
                 <div class="tile"><div class="tile-icon" aria-hidden="true">&#127959;</div><h3>Construction</h3><p>Manage workforce, attendance and payroll across multiple project sites.</p></div>
                 <div class="tile"><div class="tile-icon" aria-hidden="true">&#127973;</div><h3>Healthcare</h3><p>Track staff shifts, attendance and payroll for healthcare teams.</p></div>
                 <div class="tile"><div class="tile-icon" aria-hidden="true">&#128717;</div><h3>Retail</h3><p>Monitor employees, shifts, branches and daily business operations.</p></div>
@@ -582,8 +582,8 @@
     <section id="features" class="section">
         <div class="container">
             <div class="section-title">
-                <h2>Everything You Need</h2>
-                <p>Powerful features designed to streamline your invoicing workflow.</p>
+                <h2 data-cms="features_title">Everything You Need</h2>
+                <p data-cms="features_intro">Powerful features designed to streamline your invoicing workflow.</p>
             </div>
             <div class="grid-3">
                 <div class="card">
@@ -615,8 +615,8 @@
     <section class="section">
         <div class="container-sm">
             <div class="section-title">
-                <h2>How It Works</h2>
-                <p>Get started in three simple steps.</p>
+                <h2 data-cms="how_title">How It Works</h2>
+                <p data-cms="how_intro">Get started in three simple steps.</p>
             </div>
             <div class="grid-3">
                 <div class="card step-card">
@@ -655,8 +655,8 @@
     <section id="testimonials" class="section">
         <div class="container">
             <div class="section-title">
-                <h2>Loved by Businesses</h2>
-                <p>See what our users have to say.</p>
+                <h2 data-cms="testimonials_title">Loved by Businesses</h2>
+                <p data-cms="testimonials_intro">See what our users have to say.</p>
             </div>
             <div class="grid-3">
                 <div class="card testimonial">
@@ -718,8 +718,8 @@
     <section id="pricing" class="section">
         <div class="container-sm">
             <div class="cta-card">
-                <h2>Ready to streamline your invoicing?</h2>
-                <p>Join hundreds of businesses already using aniprotech to create, send, and track invoices effortlessly.</p>
+                <h2 data-cms="invoice_cta_title">Ready to streamline your invoicing?</h2>
+                <p data-cms="invoice_cta_intro">Join hundreds of businesses already using aniprotech to create, send, and track invoices effortlessly.</p>
                 <div style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap;">
                     <a href="/login.html" class="btn-white">
                         Invoicing Portal
@@ -736,9 +736,9 @@
     <section class="section" id="faq">
         <div class="container">
             <div class="section-title">
-                <span class="eyebrow">FAQs</span>
+                <span class="eyebrow" data-cms="faq_eyebrow">FAQs</span>
                 <h2 data-cms="faq_title">Frequently Asked Questions</h2>
-                <p>Find answers to the most common questions about Ani Protech.</p>
+                <p data-cms="faq_intro">Find answers to the most common questions about Ani Protech.</p>
             </div>
             <div class="faq-list" id="faq-list">
                 <div class="faq-item">
@@ -801,9 +801,9 @@
     <section class="section" id="contact">
         <div class="container">
             <div class="section-title">
-                <span class="eyebrow">Contact Us</span>
-                <h2>Let's Grow Your Business Together</h2>
-                <p>Book a free live demonstration today.</p>
+                <span class="eyebrow" data-cms="contact_eyebrow">Contact Us</span>
+                <h2 data-cms="contact_title">Let's Grow Your Business Together</h2>
+                <p data-cms="contact_intro">Book a free live demonstration today.</p>
             </div>
             <!-- Every one of these does something when tapped: dials, opens
                  WhatsApp, or starts an email. -->
@@ -887,7 +887,10 @@
         // The FAQ. A real disclosure: the button owns aria-expanded, the
         // answer is hidden from a screen reader as well as the eye, and only
         // one is open at a time so the list does not walk down the page.
+        window.bindFaq = function () {
         document.querySelectorAll('.faq-q').forEach(function (btn) {
+            if (btn.dataset.bound) return;
+            btn.dataset.bound = '1';
             btn.addEventListener('click', function () {
                 var open = btn.getAttribute('aria-expanded') === 'true';
                 document.querySelectorAll('.faq-q').forEach(function (other) {
@@ -902,6 +905,8 @@
                 }
             });
         });
+        };
+        window.bindFaq();
 
         // Choosing something from the drop-down has to close it. It used to
         // stay open over whatever you had just jumped to.
@@ -1013,6 +1018,90 @@
         if (nav) nav.style.top = bar.offsetHeight + 'px';
     }
 
+    // Sections an operator has filled in replace what the page ships with.
+    // Nothing filled in leaves the built-in entries alone, so a section only
+    // becomes operator-managed deliberately rather than by deleting the last
+    // row and finding the page suddenly empty.
+    function renderLandingItems(items) {
+        drawTiles('modules-grid', items.module);
+        drawTiles('industries-grid', items.industry);
+        drawFaq(items.faq);
+    }
+
+    function drawTiles(hostId, rows) {
+        var host = document.getElementById(hostId);
+        if (!host || !rows || !rows.length) return;
+        host.textContent = '';
+        rows.forEach(function (row) {
+            var tile = document.createElement('div');
+            tile.className = 'tile';
+            if (row.icon) {
+                var icon = document.createElement('div');
+                icon.className = 'tile-icon';
+                icon.setAttribute('aria-hidden', 'true');
+                icon.textContent = row.icon;
+                tile.appendChild(icon);
+            }
+            var h = document.createElement('h3');
+            h.textContent = row.title || '';
+            tile.appendChild(h);
+            if (row.body) {
+                var para = document.createElement('p');
+                para.textContent = row.body;
+                tile.appendChild(para);
+            }
+            host.appendChild(tile);
+        });
+    }
+
+    function drawFaq(rows) {
+        var host = document.getElementById('faq-list');
+        if (!host || !rows || !rows.length) return;
+        host.textContent = '';
+        rows.forEach(function (row, i) {
+            var qid = 'faq-cms-q' + i, aid = 'faq-cms-a' + i;
+            var item = document.createElement('div');
+            item.className = 'faq-item';
+
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'faq-q';
+            btn.id = qid;
+            btn.setAttribute('aria-expanded', 'false');
+            btn.setAttribute('aria-controls', aid);
+            btn.textContent = row.title || '';
+
+            // The chevron is ours, not the operator's, so it is built rather
+            // than pasted in as markup.
+            var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.setAttribute('class', 'faq-chevron');
+            svg.setAttribute('viewBox', '0 0 24 24');
+            svg.setAttribute('fill', 'none');
+            svg.setAttribute('stroke', 'currentColor');
+            svg.setAttribute('stroke-width', '2.5');
+            svg.setAttribute('aria-hidden', 'true');
+            var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.setAttribute('stroke-linecap', 'round');
+            path.setAttribute('stroke-linejoin', 'round');
+            path.setAttribute('d', 'M6 9l6 6 6-6');
+            svg.appendChild(path);
+            btn.appendChild(svg);
+
+            var answer = document.createElement('div');
+            answer.className = 'faq-a';
+            answer.id = aid;
+            answer.hidden = true;
+            answer.setAttribute('role', 'region');
+            answer.setAttribute('aria-labelledby', qid);
+            answer.textContent = row.body || '';
+
+            item.appendChild(btn);
+            item.appendChild(answer);
+            host.appendChild(item);
+        });
+        if (window.bindFaq) window.bindFaq();
+    }
+
     fetch('/api/platform/landing')
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) {
@@ -1021,6 +1110,7 @@
             Object.keys(c).forEach(function (k) {
                 if (k !== 'notice') put(k, c[k]);
             });
+            renderLandingItems(d.items || {});
 
             // The address is a link as well as a label.
             if (c.contact_email) {

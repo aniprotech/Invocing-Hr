@@ -362,11 +362,11 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=120">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=120">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=120">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=120">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=120">
+    <link rel="stylesheet" href="mobile.css?v=123">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=123">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=123">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=123">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=123">
     <script src="/dialogs.js?v=1"></script>
 </head>
 <body>
@@ -607,7 +607,35 @@
             </div>
         </section>
 
+        <section class="card" style="margin-top:22px;">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;">
+                <h2 style="font-size:1.05rem;margin:0;">Front page entries</h2>
+                <button class="action-btn" onclick="loadLandingItems()" style="margin-left:auto;">Reload</button>
+            </div>
+            <p style="font-size:0.8rem;color:#94a3b8;margin:0 0 18px;max-width:70ch;">
+              The modules, industries and questions on the public site. Leave a
+              section empty and the page keeps the entries it ships with, so
+              deleting the last one does not blank the front page.
+            </p>
+            <div id="landing-items-body">
+              <div style="padding:28px;color:#94a3b8;font-size:0.85rem;">Loading&hellip;</div>
+            </div>
+        </section>
+
         <style>
+            /* The front page entry boxes, on the same dark panel as everything
+               else - an unstyled input here is white-on-white. */
+            .sa-input {
+                background: rgba(15, 23, 42, 0.9);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 8px;
+                color: #e2e8f0;
+                padding: 6px 10px;
+                font-size: 0.82rem;
+                font-family: inherit;
+            }
+            .sa-input:focus { outline: 2px solid #38bdf8; outline-offset: -1px; }
+
             /* Both tables used to print every row they had. Fine at five
                tenants, unreadable at five hundred. */
             .pager { display: flex; align-items: center; gap: 12px; padding: 14px 4px;
@@ -1370,6 +1398,113 @@
         window.setClientPlan = setClientPlan;
 
         // What the list is currently narrowed to, and what each one means.
+        // --- the front page entries ------------------------------------------
+        var LANDING_KINDS = [
+            { kind: 'module', label: 'Modules' },
+            { kind: 'industry', label: 'Industries' },
+            { kind: 'faq', label: 'Questions' },
+        ];
+        var _landing = { module: [], industry: [], faq: [] };
+
+        async function loadLandingItems() {
+            var host = document.getElementById('landing-items-body');
+            if (!host) return;
+            try {
+                var res = await fetch('/api/superadmin/landing-items');
+                if (!res.ok) throw new Error('could not load');
+                _landing = (await res.json()).items || _landing;
+            } catch (e) {
+                host.textContent = 'Could not load the front page entries.';
+                return;
+            }
+            renderLandingItems();
+        }
+        window.loadLandingItems = loadLandingItems;
+
+        function renderLandingItems() {
+            var host = document.getElementById('landing-items-body');
+            host.innerHTML = LANDING_KINDS.map(function (k) {
+                var rows = _landing[k.kind] || [];
+                return '<div style="background:rgba(15, 23, 42, 0.6);border:1px solid rgba(255, 255, 255, 0.06);' +
+                       'border-radius:16px;padding:20px 24px;margin-bottom:18px;">' +
+                    '<h3 style="font-size:0.95rem;margin-bottom:4px;">' + esc(k.label) + '</h3>' +
+                    '<p style="font-size:0.76rem;color:#94a3b8;margin:0 0 14px;">' +
+                        (rows.length ? rows.length + ' shown instead of the built-in entries'
+                                     : 'empty - the page uses what it ships with') + '</p>' +
+                    rows.map(function (r) { return landingRow(r); }).join('') +
+                    '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">' +
+                        '<input type="text" id="new-icon-' + k.kind + '" placeholder="Icon" ' +
+                            'style="width:70px;" class="sa-input">' +
+                        '<input type="text" id="new-title-' + k.kind + '" placeholder="Title" ' +
+                            'style="flex:1;min-width:160px;" class="sa-input">' +
+                        '<input type="text" id="new-body-' + k.kind + '" placeholder="Description" ' +
+                            'style="flex:2;min-width:200px;" class="sa-input">' +
+                        '<button class="action-btn" onclick="addLandingItem(\'' + k.kind + '\')">Add</button>' +
+                    '</div>' +
+                    '</div>';
+            }).join('');
+        }
+
+        function landingRow(r) {
+            return '<div style="display:flex;gap:8px;align-items:center;padding:8px 0;flex-wrap:wrap;' +
+                   'border-bottom:1px solid rgba(255, 255, 255, 0.05);">' +
+                '<input type="text" class="sa-input" style="width:70px;" value="' + esc(r.icon) +
+                    '" onchange="saveLandingItem(' + r.id + ', \'icon\', this.value)">' +
+                '<input type="text" class="sa-input" style="flex:1;min-width:160px;" value="' + esc(r.title) +
+                    '" onchange="saveLandingItem(' + r.id + ', \'title\', this.value)">' +
+                '<input type="text" class="sa-input" style="flex:2;min-width:200px;" value="' + esc(r.body) +
+                    '" onchange="saveLandingItem(' + r.id + ', \'body\', this.value)">' +
+                '<label style="font-size:0.76rem;color:#94a3b8;display:flex;align-items:center;gap:5px;">' +
+                    '<input type="checkbox"' + (r.is_active ? ' checked' : '') +
+                    ' onchange="saveLandingItem(' + r.id + ', \'is_active\', this.checked)"> shown</label>' +
+                '<button class="action-btn" onclick="deleteLandingItem(' + r.id + ')">Delete</button>' +
+                '</div>';
+        }
+
+        async function addLandingItem(kind) {
+            var title = document.getElementById('new-title-' + kind).value.trim();
+            if (!title) { alert('Give it a title first.'); return; }
+            var res = await fetch('/api/superadmin/landing-items', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    kind: kind, title: title,
+                    body: document.getElementById('new-body-' + kind).value.trim(),
+                    icon: document.getElementById('new-icon-' + kind).value.trim(),
+                }),
+            });
+            if (!res.ok) {
+                var out = await res.json().catch(function () { return {}; });
+                alert(out.detail || 'Could not add that.');
+                return;
+            }
+            loadLandingItems();
+        }
+        window.addLandingItem = addLandingItem;
+
+        async function saveLandingItem(id, field, value) {
+            var patch = {};
+            patch[field] = value;
+            var res = await fetch('/api/superadmin/landing-items/' + id, {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(patch),
+            });
+            if (!res.ok) {
+                var out = await res.json().catch(function () { return {}; });
+                alert(out.detail || 'Could not save that.');
+                loadLandingItems();
+            }
+        }
+        window.saveLandingItem = saveLandingItem;
+
+        async function deleteLandingItem(id) {
+            // This is live on the public site, and it is gone for good.
+            if (!confirm('Remove this from the front page? It cannot be undone.')) return;
+            var res = await fetch('/api/superadmin/landing-items/' + id, { method: 'DELETE' });
+            if (!res.ok) { alert('Could not remove that.'); return; }
+            loadLandingItems();
+        }
+        window.deleteLandingItem = deleteLandingItem;
+
         // Landing on "every client" after clicking a figure that said 14 were
         // active is not an answer to what was asked.
         var CLIENT_FILTERS = {
@@ -1805,7 +1940,7 @@
             trends:   [loadTrends],
             activity: [loadLoginLogs],
             clients:  [loadClients],
-            control:  [loadPlatformSettings]
+            control:  [loadPlatformSettings, loadLandingItems]
         };
         var _tabLoaded = {};
 

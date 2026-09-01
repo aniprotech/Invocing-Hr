@@ -512,7 +512,43 @@ input[type="number"] {
 .org-node .org-name { font-weight: 600; font-size: 0.9rem; margin-bottom: 4px; }
 .org-node .org-title { font-size: 0.8rem; color: var(--text-secondary); }
 .org-node .org-dept { font-size: 0.75rem; color: var(--primary-color); margin-top: 4px; }
-.org-tree { display: flex; flex-direction: column; align-items: center; }
+
+/* The tree used to be a column, so two people at the top of the chart sat one
+   under the other as though one reported to the other. Roots belong side by
+   side, and the row is allowed to be wider than the screen - a chart that
+   shrinks to fit is a chart nobody can read. */
+.org-tree {
+    --org-gap: 28px;
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: center;
+    gap: var(--org-gap);
+    min-width: max-content;
+    padding: 0 8px;
+}
+.org-branch { display: flex; flex-direction: column; align-items: center; }
+
+/* Children sat in a flex row with a border-top across the whole row, so the
+   line ran past the outermost people and pointed at nothing. Each child now
+   draws its own half, and an only child draws none at all. */
+.org-children { display: flex; justify-content: center; gap: var(--org-gap); }
+.org-children > .org-branch { position: relative; padding-top: 22px; }
+.org-children > .org-branch::before {
+    content: ''; position: absolute; top: 0; left: 50%;
+    width: 2px; height: 22px; background: var(--border-color);
+}
+.org-children > .org-branch::after {
+    content: ''; position: absolute; top: 0;
+    left: calc(var(--org-gap) / -2); right: calc(var(--org-gap) / -2);
+    height: 2px; background: var(--border-color);
+}
+.org-children > .org-branch:first-child::after { left: 50%; }
+.org-children > .org-branch:last-child::after { right: 50%; }
+.org-children > .org-branch:only-child::after { display: none; }
+
+/* The stub leaving a manager, drawn only when somebody reports to them. */
+.org-stem { width: 2px; height: 22px; background: var(--border-color); }
 
 /* ===== LINE ITEMS TABLE ===== */
 .line-items-table th {
@@ -894,6 +930,7 @@ textarea.table-input.item-desc {
 
     .org-node { min-width: 140px; padding: 12px; }
     .org-node .org-name { font-size: 0.8rem; }
+    .org-tree { --org-gap: 16px; }
 
     /* Every table scrolls inside its own box instead of widening the page.
        The inline-start shadow hints there is more to the right. */

@@ -6419,12 +6419,12 @@ function renderOrgTreeNode(emp, depth) {
     }
     var hasChildren = emp.children && emp.children.length > 0;
     var wrapper = document.createElement('div');
-    wrapper.style.cssText = 'display:inline-flex;flex-direction:column;align-items:center;position:relative;';
+    wrapper.className = 'org-branch';
     var node = document.createElement('div');
     node.className = 'org-node';
-    node.style.cssText = 'cursor:pointer;padding:14px 20px;border-radius:12px;background:rgba(255, 255, 255, 0.05);border:1px solid rgba(255, 255, 255, 0.1);text-align:center;min-width:160px;transition:all 0.2s;';
-    node.onmouseover = function() { this.style.borderColor = 'var(--primary-color)'; this.style.transform = 'translateY(-2px)'; };
-    node.onmouseout = function() { this.style.borderColor = 'rgba(255, 255, 255, 0.1)'; this.style.transform = 'none'; };
+    // Styled by the stylesheet rather than inline. The inline rules used to
+    // win over every .org-node declaration, including the phone-sized ones,
+    // so on a narrow screen the boxes stayed wide and ran into each other.
     node.setAttribute('onclick', 'viewEmployee(' + emp.id + ')');
     node.innerHTML = '<div class="org-name" style="font-weight:700;font-size:0.9rem;">' + esc(emp.name) + levelBadge(emp.level) + '</div>' +
         '<div class="org-title" style="font-size:0.78rem;color:var(--text-secondary);margin-top:2px;">' + esc(emp.job_title || '-') + '</div>' +
@@ -6432,13 +6432,11 @@ function renderOrgTreeNode(emp, depth) {
         (emp.department ? '<div class="org-dept" style="font-size:0.72rem;color:var(--primary-color);margin-top:4px;">' + esc(emp.department) + '</div>' : '');
     wrapper.appendChild(node);
     if (hasChildren) {
-        var line = document.createElement('div');
-        line.style.cssText = 'width:2px;height:20px;background:rgba(255, 255, 255, 0.15);margin:0 auto;';
-        wrapper.appendChild(line);
+        var stem = document.createElement('div');
+        stem.className = 'org-stem';
+        wrapper.appendChild(stem);
         var childrenRow = document.createElement('div');
-        childrenRow.style.cssText = 'display:flex;gap:20px;justify-content:center;position:relative;';
-        childrenRow.style.paddingTop = '10px';
-        childrenRow.style.borderTop = '2px solid rgba(255, 255, 255, 0.1)';
+        childrenRow.className = 'org-children';
         emp.children.forEach(function(child) {
             childrenRow.appendChild(renderOrgTreeNode(child, depth + 1));
         });

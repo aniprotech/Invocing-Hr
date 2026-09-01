@@ -18439,6 +18439,54 @@ PLATFORM_SETTINGS = [
     Setting("landing.footer_copy", "Copyright line", "Landing", "text",
             "\u00a9 2026 Ani Protech. All rights reserved."),
 
+    Setting("landing.challenges_title", "Challenges: heading", "Landing", "text",
+            "Still Managing Your Business Manually?"),
+    Setting("landing.challenges_eyebrow", "Challenges: strapline", "Landing", "text",
+            "Business Challenges"),
+    Setting("landing.challenges_intro", "Challenges: paragraph", "Landing", "longtext",
+            "Many businesses still rely on spreadsheets, paperwork and disconnected systems&mdash;leading to delays, errors and reduced productivity."),
+    Setting("landing.modules_eyebrow", "Modules: strapline", "Landing", "text",
+            "Complete Business Platform"),
+    Setting("landing.modules_intro", "Modules: paragraph", "Landing", "longtext",
+            "Ani Protech combines powerful business tools into one secure cloud platform, eliminating the need for multiple software subscriptions."),
+    Setting("landing.preview_title", "Preview: heading", "Landing", "text",
+            "Powerful Dashboard. Simple Experience."),
+    Setting("landing.preview_eyebrow", "Preview: strapline", "Landing", "text",
+            "Live Software Preview"),
+    Setting("landing.preview_intro", "Preview: paragraph", "Landing", "longtext",
+            "Manage your workforce, payroll, attendance, invoicing and business operations from one intelligent dashboard."),
+    Setting("landing.industries_eyebrow", "Industries: strapline", "Landing", "text",
+            "Industries We Serve"),
+    Setting("landing.industries_intro", "Industries: paragraph", "Landing", "longtext",
+            "Whether you are managing a small team or a multi-location enterprise, Ani Protech adapts to your business and helps streamline everyday operations."),
+    Setting("landing.features_title", "Features: heading", "Landing", "text",
+            "Everything You Need"),
+    Setting("landing.features_intro", "Features: paragraph", "Landing", "longtext",
+            "Powerful features designed to streamline your invoicing workflow."),
+    Setting("landing.how_title", "How: heading", "Landing", "text",
+            "How It Works"),
+    Setting("landing.how_intro", "How: paragraph", "Landing", "longtext",
+            "Get started in three simple steps."),
+    Setting("landing.testimonials_title", "Testimonials: heading", "Landing", "text",
+            "Loved by Businesses"),
+    Setting("landing.testimonials_intro", "Testimonials: paragraph", "Landing", "longtext",
+            "See what our users have to say."),
+    Setting("landing.faq_eyebrow", "Faq: strapline", "Landing", "text",
+            "FAQs"),
+    Setting("landing.faq_intro", "Faq: paragraph", "Landing", "longtext",
+            "Find answers to the most common questions about Ani Protech."),
+    Setting("landing.contact_title", "Contact: heading", "Landing", "text",
+            "Let's Grow Your Business Together"),
+    Setting("landing.contact_eyebrow", "Contact: strapline", "Landing", "text",
+            "Contact Us"),
+    Setting("landing.contact_intro", "Contact: paragraph", "Landing", "longtext",
+            "Book a free live demonstration today."),
+
+    Setting("landing.invoice_cta_title", "Invoicing pitch: heading", "Landing", "text",
+            "Ready to streamline your invoicing?"),
+    Setting("landing.invoice_cta_intro", "Invoicing pitch: paragraph", "Landing", "longtext",
+            "Join hundreds of businesses already using aniprotech to create, send, and track invoices effortlessly."),
+
     Setting("landing.notice", "Notice bar", "Landing", "text", "",
             help="Shown across the top of the front page. Leave empty for none - "
                  "it is the fastest way to say something to every visitor."),
@@ -18701,6 +18749,30 @@ def public_platform_theme(db: Session = Depends(get_db)):
     return {"theme": theme}
 
 
+LANDING_KINDS = ("module", "industry", "faq")
+
+
+def landing_item_to_dict(row):
+    return {
+        "id": row.id, "kind": row.kind, "title": row.title or "",
+        "body": row.body or "", "icon": row.icon or "",
+        "sort_order": row.sort_order or 0, "is_active": bool(row.is_active),
+    }
+
+
+def landing_items_by_kind(db: Session, active_only: bool = True):
+    q = db.query(models.DBLandingItem)
+    if active_only:
+        q = q.filter(models.DBLandingItem.is_active == True)      # noqa: E712
+    rows = q.order_by(models.DBLandingItem.sort_order,
+                      models.DBLandingItem.id).all()
+    out = {k: [] for k in LANDING_KINDS}
+    for row in rows:
+        if row.kind in out:
+            out[row.kind].append(landing_item_to_dict(row))
+    return out
+
+
 @app.get("/api/platform/landing")
 def public_platform_landing(db: Session = Depends(get_db)):
     """The words on the front page.
@@ -18709,8 +18781,92 @@ def public_platform_landing(db: Session = Depends(get_db)):
     reads before they have any session at all. Only the keys under landing are
     exposed - it is copy, and copy is public by definition.
     """
-    return {"landing": {s.key.split(".", 1)[1]: platform_setting(db, s.key)
-                        for s in PLATFORM_SETTINGS if s.group == "Landing"}}
+    return {
+        "landing": {s.key.split(".", 1)[1]: platform_setting(db, s.key)
+                    for s in PLATFORM_SETTINGS if s.group == "Landing"},
+        # Empty means the page keeps the entries it ships with, so switching
+        # a section to operator-managed is a decision rather than something
+        # that happens by deleting the last row.
+        "items": landing_items_by_kind(db),
+    }
+
+
+@app.get("/api/superadmin/landing-items")
+def list_landing_items(request: Request, db: Session = Depends(get_db)):
+    require_superadmin(request)
+    return {"items": landing_items_by_kind(db, active_only=False),
+            "kinds": list(LANDING_KINDS)}
+
+
+@app.post("/api/superadmin/landing-items")
+def add_landing_item(request: Request, body: dict = None,
+                     db: Session = Depends(get_db)):
+    require_superadmin(request)
+    body = body or {}
+    kind = (body.get("kind") or "").strip().lower()
+    if kind not in LANDING_KINDS:
+        raise HTTPException(status_code=400, detail="Unknown section")
+    title = (body.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Give it a title")
+
+    # Added to the end, so adding one never reorders what is already there.
+    last = db.query(sqlfunc.max(models.DBLandingItem.sort_order)).filter(
+        models.DBLandingItem.kind == kind).scalar() or 0
+
+    row = models.DBLandingItem(
+        kind=kind, title=title[:200],
+        body=(body.get("body") or "").strip()[:2000],
+        icon=(body.get("icon") or "").strip()[:80],
+        sort_order=int(body.get("sort_order") or (last + 1)),
+        is_active=bool(body.get("is_active", True)))
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return landing_item_to_dict(row)
+
+
+@app.put("/api/superadmin/landing-items/{item_id}")
+def edit_landing_item(item_id: int, request: Request, body: dict = None,
+                      db: Session = Depends(get_db)):
+    require_superadmin(request)
+    body = body or {}
+    row = db.query(models.DBLandingItem).filter(
+        models.DBLandingItem.id == item_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="No such item")
+
+    if "title" in body:
+        title = (body.get("title") or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Give it a title")
+        row.title = title[:200]
+    if "body" in body:
+        row.body = (body.get("body") or "").strip()[:2000]
+    if "icon" in body:
+        row.icon = (body.get("icon") or "").strip()[:80]
+    if "sort_order" in body:
+        row.sort_order = int(body.get("sort_order") or 0)
+    if "is_active" in body:
+        row.is_active = bool(body.get("is_active"))
+    db.commit()
+    db.refresh(row)
+    return landing_item_to_dict(row)
+
+
+@app.delete("/api/superadmin/landing-items/{item_id}")
+def remove_landing_item(item_id: int, request: Request,
+                        db: Session = Depends(get_db)):
+    require_superadmin(request)
+    row = db.query(models.DBLandingItem).filter(
+        models.DBLandingItem.id == item_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="No such item")
+    # Actually removed. This is copy on a public page, not a record of
+    # anything - keeping a deleted paragraph around helps nobody.
+    db.delete(row)
+    db.commit()
+    return {"deleted": True, "id": item_id}
 
 
 @app.get("/api/superadmin/collection-mode")

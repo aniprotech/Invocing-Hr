@@ -374,6 +374,26 @@ class DBContact(Base):
     client = relationship("DBClient", back_populates="contacts")
 
 
+class DBLandingItem(Base):
+    """One card, industry or question on the front page.
+
+    The section headings were already editable while the entries under them
+    were written into the HTML, so an operator could rename the FAQ and not
+    add a question to it. Every field here is copy and is rendered with
+    textContent, never as markup.
+    """
+    __tablename__ = "landing_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    kind = Column(String, index=True)          # module | industry | faq
+    title = Column(String, default="")
+    body = Column(String, default="")
+    icon = Column(String, default="")
+    sort_order = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
 class DBSuperAdmin(Base):
     __tablename__ = "super_admins"
 

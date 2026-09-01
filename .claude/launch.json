@@ -4,8 +4,22 @@
     {
       "name": "invoicing-backend",
       "runtimeExecutable": "venv/Scripts/python.exe",
-      "runtimeArgs": ["backend/main.py"],
+      "runtimeArgs": [
+        "backend/main.py"
+      ],
       "port": 8000
+    },
+    {
+      "name": "frontend-static",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8777",
+        "--directory",
+        "frontend"
+      ],
+      "port": 8777
     }
   ]
 }
