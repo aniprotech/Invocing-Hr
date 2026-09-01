@@ -6,7 +6,7 @@
   <title>aniprotech - Employee Portal</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <meta name="theme-color" content="#0b0f19">
-  <link rel="stylesheet" href="tailwind.css?v=114">
+  <link rel="stylesheet" href="tailwind.css?v=115">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -34,11 +34,11 @@
     .notification-badge { animation: notifPulse 2s infinite; }
     @keyframes notifPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.1); } }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=114">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=114">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=114">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=114">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=114">
+    <link rel="stylesheet" href="mobile.css?v=115">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=115">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=115">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=115">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=115">
     <script src="/dialogs.js?v=1"></script>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -657,7 +657,7 @@
         <div class="space-y-4">
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Leave Type</label>
-            <select id="leaveType" class="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500">
+            <select id="leaveType" onchange="updateLeaveDays()" class="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500">
               <option value="annual">Annual Leave</option>
               <option value="sick">Sick Leave</option>
               <option value="personal">Personal Leave</option>
@@ -665,9 +665,11 @@
             </select>
           </div>
           <div class="grid grid-cols-2 gap-4">
-            <div><label class="block text-sm font-medium text-gray-700 mb-1">Start Date</label><input type="date" id="leaveStart" class="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500" required></div>
-            <div><label class="block text-sm font-medium text-gray-700 mb-1">End Date</label><input type="date" id="leaveEnd" class="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500" required></div>
+            <div><label class="block text-sm font-medium text-gray-700 mb-1">Start Date</label><input type="date" id="leaveStart" onchange="updateLeaveDays()" class="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500" required></div>
+            <div><label class="block text-sm font-medium text-gray-700 mb-1">End Date</label><input type="date" id="leaveEnd" onchange="updateLeaveDays()" class="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500" required></div>
           </div>
+          <div id="leaveDaysHint" class="text-sm text-gray-500"></div>
+          <div id="leaveBalanceHint" class="text-sm mt-1"></div>
           <div><label class="block text-sm font-medium text-gray-700 mb-1">Reason</label><textarea id="leaveReason" rows="3" class="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 resize-none" placeholder="Optional reason..."></textarea></div>
         </div>
         <div class="flex gap-3 mt-6">
@@ -1398,6 +1400,8 @@
     // and a request already sent but not yet decided is spent as far as
     // planning goes even though it is not approved.
 
+    var _leaveBalance = null;
+
     async function loadLeaveBalance() {
       var host = document.getElementById('leaveRemaining');
       if (!host) return;
@@ -1405,6 +1409,7 @@
         var res = await apiGet('/api/employee/leave-balance');
         if (!res.ok) return;
         var b = await res.json();
+        _leaveBalance = b;
         host.innerHTML =
           '<div class="flex flex-wrap gap-3">' +
           '<div class="flex-1 min-w-[140px] p-4 rounded-xl bg-brand-50">' +
@@ -2145,12 +2150,73 @@
       } catch (e) { console.error(e); }
     }
 
+    function countLeaveDays(start, end) {
+      if (!start || !end) return null;
+      var from = new Date(start), to = new Date(end);
+      var days = Math.ceil((to - from) / 86400000) + 1;
+      if (days < 1) return { days: days, weekend: 0 };
+      var weekend = 0;
+      for (var d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
+        if (d.getDay() === 0 || d.getDay() === 6) weekend++;
+      }
+      return { days: days, weekend: weekend };
+    }
+
+    // The count used to appear only after pressing Send, so a request off by a
+    // day was found by whoever approved it, if at all.
+    function updateLeaveDays() {
+      var hint = document.getElementById('leaveDaysHint');
+      var got = countLeaveDays(document.getElementById('leaveStart').value,
+                               document.getElementById('leaveEnd').value);
+      if (!got) { hint.textContent = ''; return; }
+      if (got.days < 1) {
+        hint.textContent = 'The end date is before the start date.';
+        hint.className = 'text-sm text-red-600';
+        document.getElementById('leaveBalanceHint').textContent = '';
+        return;
+      }
+      hint.className = 'text-sm text-gray-500';
+      hint.textContent = got.days + ' day' + (got.days > 1 ? 's' : '') +
+        (got.weekend ? ', including ' + got.weekend + ' weekend day' +
+                       (got.weekend > 1 ? 's' : '') : '');
+      updateLeaveAgainstBalance(got.days);
+    }
+
+    // Only annual and sick are counted against an allowance; personal and
+    // unpaid have none, so claiming a shortfall there would be invented.
+    function updateLeaveAgainstBalance(days) {
+      var note = document.getElementById('leaveBalanceHint');
+      note.textContent = '';
+      if (!_leaveBalance) return;
+      var kind = document.getElementById('leaveType').value;
+      var left = kind === 'annual' ? _leaveBalance.annual_remaining
+               : kind === 'sick' ? _leaveBalance.sick_remaining : null;
+      if (left === null || left === undefined) return;
+
+      left = Number(left);
+      if (days > left) {
+        var over = days - left;
+        // A warning, not a refusal - going over may be allowed, and that
+        // call belongs to whoever approves it.
+        note.className = 'text-sm mt-1 text-amber-600';
+        note.textContent = 'That is ' + over + ' day' + (over > 1 ? 's' : '') +
+          ' more than the ' + left + ' ' + kind + ' day' + (left === 1 ? '' : 's') +
+          ' you have left.';
+      } else {
+        note.className = 'text-sm mt-1 text-gray-500';
+        note.textContent = 'Leaves you ' + (left - days) + ' of ' + left + ' ' +
+          kind + ' day' + (left === 1 ? '' : 's') + '.';
+      }
+    }
+    window.updateLeaveDays = updateLeaveDays;
+
     async function submitLeave(e) {
       e.preventDefault();
       var start = document.getElementById('leaveStart').value;
       var end = document.getElementById('leaveEnd').value;
-      var days = Math.ceil((new Date(end) - new Date(start)) / 86400000) + 1;
-      if (days < 1) return await uiAlert('Invalid dates');
+      var counted = countLeaveDays(start, end);
+      var days = counted ? counted.days : 0;
+      if (days < 1) return await uiAlert('The end date is before the start date.');
       try {
         var res = await apiPost('/api/employee/leave', { leave_type: document.getElementById('leaveType').value, start_date: start, end_date: end, days: days, reason: document.getElementById('leaveReason').value });
         var data = await res.json();

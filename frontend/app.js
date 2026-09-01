@@ -9769,6 +9769,8 @@ function renderEmployeeLeavePanel(emp) {
                    'border-bottom:1px solid var(--border-color);font-size:0.82rem;">' +
                    '<span style="text-transform:capitalize;">' + esc(l.leave_type) + '</span>' +
                    '<span style="color:var(--text-secondary);">' + esc(l.start_date) + ' to ' + esc(l.end_date) + '</span>' +
+                   (l.days ? '<span style="color:var(--text-secondary);">' + esc(String(l.days)) +
+                             ' day' + (Number(l.days) > 1 ? 's' : '') + '</span>' : '') +
                    '<span style="margin-left:auto;color:' + color + ';text-transform:capitalize;">' + esc(l.status) + '</span>' +
                    '</div>';
         }).join('');
