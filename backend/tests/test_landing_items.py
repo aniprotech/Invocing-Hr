@@ -173,7 +173,7 @@ def test_nothing_added_means_empty_lists_not_missing_keys(client):
     """The page checks for entries; a missing key would read as an error
     rather than as "use what you ship with"."""
     items = client.get("/api/platform/landing").json()["items"]
-    assert items == {"module": [], "industry": [], "faq": []}, items
+    assert items == {"module": [], "industry": [], "faq": [], "policy": []}, items
 
 
 # --- the copy hooks and the settings behind them --------------------------------
@@ -201,3 +201,60 @@ def test_no_heading_on_the_front_page_is_still_hardcoded():
     assert headings, "no headings found"
     assert [h for h in headings if "data-cms" in h] == headings, \
         [h for h in headings if "data-cms" not in h]
+
+
+# --- policies -------------------------------------------------------------------
+def test_a_policy_is_published_and_readable_without_an_account(superadmin, stranger):
+    """A privacy notice nobody can read without signing up is not a privacy
+    notice."""
+    row = add(superadmin, kind="policy", title="Privacy Policy",
+              body="We keep your data.\n\nWe do not sell it.")
+    got = stranger.get(f"/api/platform/policies/{row['id']}")
+    assert got.status_code == 200, got.text
+    assert got.json()["title"] == "Privacy Policy"
+    assert "do not sell" in got.json()["body"]
+
+
+def test_a_hidden_policy_is_not_readable(superadmin, stranger):
+    """Unpublishing has to actually unpublish - the link goes, and so must
+    the page behind it."""
+    row = add(superadmin, kind="policy", title="Draft Terms", body="Not ready.")
+    superadmin.put(f"/api/superadmin/landing-items/{row['id']}",
+                   json={"is_active": False})
+    assert stranger.get(f"/api/platform/policies/{row['id']}").status_code == 404
+
+
+def test_a_card_cannot_be_read_as_a_policy(superadmin, stranger):
+    """The endpoint is for policies; serving an FAQ card through it would put
+    marketing copy on a page headed like a legal notice."""
+    row = add(superadmin, kind="faq", title="How much?", body="It depends.")
+    assert stranger.get(f"/api/platform/policies/{row['id']}").status_code == 404
+
+
+def test_the_front_page_gets_the_titles_but_not_the_text(superadmin, client):
+    """Pages of legal text on every visit to the home page is pages nobody
+    asked for. The footer only needs enough to draw a link."""
+    add(superadmin, kind="policy", title="Privacy Policy", body="Long " * 500)
+    listed = client.get("/api/platform/landing").json()["items"]["policy"]
+    assert len(listed) == 1
+    assert listed[0]["title"] == "Privacy Policy"
+    assert "body" not in listed[0], listed[0]
+
+
+def test_a_policy_may_be_long(superadmin, stranger):
+    """Capped like an FAQ answer, a privacy notice would be cut off mid
+    sentence and nothing would say so."""
+    long_text = "Clause. " * 2000            # ~16k characters
+    row = add(superadmin, kind="policy", title="Terms", body=long_text)
+    got = stranger.get(f"/api/platform/policies/{row['id']}").json()
+    assert len(got["body"]) > 10000, len(got["body"])
+
+
+def test_a_card_is_still_kept_short(superadmin):
+    """The long limit is for policies only - an FAQ answer running to pages
+    would break the layout it sits in."""
+    row = add(superadmin, kind="faq", title="Q", body="x" * 5000)
+    stored = [i for i in
+              superadmin.get("/api/superadmin/landing-items").json()["items"]["faq"]
+              if i["id"] == row["id"]][0]
+    assert len(stored["body"]) == 2000, len(stored["body"])

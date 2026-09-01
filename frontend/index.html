@@ -394,11 +394,11 @@
         .footer-col a:hover { color: var(--ap-blue-dark); }
         .footer-about { font-size: 13.5px; color: var(--ap-body); line-height: 1.7; max-width: 320px; margin-top: 12px; }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=123">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=123">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=123">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=123">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=123">
+    <link rel="stylesheet" href="mobile.css?v=124">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=124">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=124">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=124">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=124">
     <script src="/dialogs.js?v=1"></script>
 </head>
 <body>
@@ -874,7 +874,7 @@
         </div>
         <div class="footer-inner" style="border-top:1px solid var(--ap-line);">
             <span class="footer-copy" data-cms="footer_copy">&copy; 2026 Ani Protech. All rights reserved.</span>
-            <div class="footer-links">
+            <div class="footer-links" id="footer-links">
                 <a href="#faq">FAQ</a>
                 <a href="#pricing">Pricing</a>
             </div>
@@ -1022,6 +1022,19 @@
     // Nothing filled in leaves the built-in entries alone, so a section only
     // becomes operator-managed deliberately rather than by deleting the last
     // row and finding the page suddenly empty.
+    // Policies are written in the operator screen and linked from here, so
+    // adding one publishes it rather than needing a page built for it.
+    function renderPolicyLinks(policies) {
+        var host = document.getElementById('footer-links');
+        if (!host || !policies.length) return;
+        policies.forEach(function (p) {
+            var a = document.createElement('a');
+            a.href = '/policy.html?id=' + encodeURIComponent(p.id);
+            a.textContent = p.title || 'Policy';
+            host.appendChild(a);
+        });
+    }
+
     function renderLandingItems(items) {
         drawTiles('modules-grid', items.module);
         drawTiles('industries-grid', items.industry);
@@ -1111,6 +1124,7 @@
                 if (k !== 'notice') put(k, c[k]);
             });
             renderLandingItems(d.items || {});
+            renderPolicyLinks((d.items || {}).policy || []);
 
             // The address is a link as well as a label.
             if (c.contact_email) {

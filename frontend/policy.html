@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>aniprotech</title>
+    <meta name="description" content="Policies and terms for Ani Protech.">
+    <meta name="robots" content="index, follow">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="theme-color" content="#ffffff">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        /* The same palette as the front page. A policy opening in a page that
+           looks like a different company reads as a phishing attempt. */
+        :root {
+            --ap-white: #ffffff;
+            --ap-ink: #0f172a;
+            --ap-body: #475569;
+            --ap-muted: #64748b;
+            --ap-line: #e2e8f0;
+            --ap-blue: #0284c7;
+            --ap-blue-dark: #0369a1;
+            --ap-tint: #f0f9ff;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Poppins', system-ui, -apple-system, 'Segoe UI', sans-serif;
+            background: var(--ap-white); color: var(--ap-body);
+            line-height: 1.7; -webkit-font-smoothing: antialiased;
+        }
+        a { color: var(--ap-blue); text-decoration: none; }
+        a:hover { color: var(--ap-blue-dark); text-decoration: underline; }
+        header {
+            border-bottom: 1px solid var(--ap-line); background: var(--ap-white);
+            position: sticky; top: 0; z-index: 10;
+        }
+        .bar {
+            max-width: 860px; margin: 0 auto; padding: 18px 24px;
+            display: flex; align-items: center; gap: 16px;
+        }
+        .bar strong { color: var(--ap-ink); font-size: 15px; font-weight: 700; }
+        main { max-width: 860px; margin: 0 auto; padding: 48px 24px 80px; }
+        h1 { color: var(--ap-ink); font-size: 2rem; font-weight: 800; line-height: 1.25; }
+        .updated { color: var(--ap-muted); font-size: 0.85rem; margin-top: 8px; }
+        /* Operator copy is plain text, so paragraphs come from blank lines
+           rather than from any markup they might have typed. */
+        .body { margin-top: 32px; }
+        .body p { margin-bottom: 18px; white-space: pre-wrap; }
+        .state { color: var(--ap-muted); padding: 60px 0; text-align: center; }
+        .others {
+            margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--ap-line);
+            display: flex; gap: 20px; flex-wrap: wrap; font-size: 0.9rem;
+        }
+        footer {
+            border-top: 1px solid var(--ap-line); background: var(--ap-tint);
+            padding: 24px; text-align: center; color: var(--ap-muted); font-size: 0.85rem;
+        }
+        @media (max-width: 600px) {
+            main { padding: 32px 20px 60px; }
+            h1 { font-size: 1.5rem; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="bar">
+            <a href="/"><strong>aniprotech</strong></a>
+            <a href="/" style="margin-left:auto;font-size:0.88rem;">&larr; Back to site</a>
+        </div>
+    </header>
+
+    <main>
+        <div id="state" class="state">Loading&hellip;</div>
+        <article id="sheet" hidden>
+            <h1 id="policy-title"></h1>
+            <div class="updated" id="policy-updated"></div>
+            <div class="body" id="policy-body"></div>
+        </article>
+        <nav class="others" id="others" hidden></nav>
+    </main>
+
+    <footer><span id="footer-copy">&copy; Ani Protech</span></footer>
+
+<script>
+(function () {
+    var id = new URLSearchParams(location.search).get('id');
+    var state = document.getElementById('state');
+
+    function fail(message) {
+        state.textContent = message;
+        state.hidden = false;
+    }
+
+    if (!id) { fail('No policy asked for.'); return; }
+
+    fetch('/api/platform/policies/' + encodeURIComponent(id))
+        .then(function (r) {
+            if (r.status === 404) throw new Error('That policy is not available.');
+            if (!r.ok) throw new Error('Could not load that policy.');
+            return r.json();
+        })
+        .then(function (d) {
+            document.title = (d.title || 'Policy') + ' - aniprotech';
+            document.getElementById('policy-title').textContent = d.title || '';
+            document.getElementById('policy-updated').textContent =
+                d.updated ? 'Last updated ' + String(d.updated).slice(0, 10) : '';
+
+            // Written as text, one paragraph per blank line. This is copy from
+            // a form, and a policy page is the last place markup should run.
+            var host = document.getElementById('policy-body');
+            host.textContent = '';
+            String(d.body || '').split(/\n\s*\n/).forEach(function (chunk) {
+                if (!chunk.trim()) return;
+                var para = document.createElement('p');
+                para.textContent = chunk.trim();
+                host.appendChild(para);
+            });
+
+            state.hidden = true;
+            document.getElementById('sheet').hidden = false;
+        })
+        .catch(function (e) { fail(e.message || 'Could not load that policy.'); });
+
+    // The other policies, so somebody reading one can find the rest.
+    fetch('/api/platform/landing')
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+            if (!d) return;
+            if (d.landing && d.landing.footer_copy) {
+                document.getElementById('footer-copy').textContent = d.landing.footer_copy;
+            }
+            var others = ((d.items || {}).policy || []).filter(function (p) {
+                return String(p.id) !== String(id);
+            });
+            if (!others.length) return;
+            var nav = document.getElementById('others');
+            others.forEach(function (p) {
+                var a = document.createElement('a');
+                a.href = '/policy.html?id=' + encodeURIComponent(p.id);
+                a.textContent = p.title || 'Policy';
+                nav.appendChild(a);
+            });
+            nav.hidden = false;
+        })
+        .catch(function () { /* the policy itself still reads */ });
+})();
+</script>
+</body>
+</html>

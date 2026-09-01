@@ -362,11 +362,11 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=123">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=123">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=123">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=123">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=123">
+    <link rel="stylesheet" href="mobile.css?v=124">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=124">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=124">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=124">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=124">
     <script src="/dialogs.js?v=1"></script>
 </head>
 <body>
@@ -1403,8 +1403,9 @@
             { kind: 'module', label: 'Modules' },
             { kind: 'industry', label: 'Industries' },
             { kind: 'faq', label: 'Questions' },
+            { kind: 'policy', label: 'Policies', long: true },
         ];
-        var _landing = { module: [], industry: [], faq: [] };
+        var _landing = { module: [], industry: [], faq: [], policy: [] };
 
         async function loadLandingItems() {
             var host = document.getElementById('landing-items-body');
@@ -1429,31 +1430,40 @@
                        'border-radius:16px;padding:20px 24px;margin-bottom:18px;">' +
                     '<h3 style="font-size:0.95rem;margin-bottom:4px;">' + esc(k.label) + '</h3>' +
                     '<p style="font-size:0.76rem;color:#94a3b8;margin:0 0 14px;">' +
-                        (rows.length ? rows.length + ' shown instead of the built-in entries'
-                                     : 'empty - the page uses what it ships with') + '</p>' +
-                    rows.map(function (r) { return landingRow(r); }).join('') +
+                        (k.kind === 'policy'
+                            ? (rows.length ? rows.length + ' linked from the footer'
+                                           : 'none published - no policy links appear')
+                            : rows.length ? rows.length + ' shown instead of the built-in entries'
+                                          : 'empty - the page uses what it ships with') + '</p>' +
+                    rows.map(function (r) { return landingRow(r, k.long); }).join('') +
                     '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">' +
                         '<input type="text" id="new-icon-' + k.kind + '" placeholder="Icon" ' +
                             'style="width:70px;" class="sa-input">' +
                         '<input type="text" id="new-title-' + k.kind + '" placeholder="Title" ' +
                             'style="flex:1;min-width:160px;" class="sa-input">' +
-                        '<input type="text" id="new-body-' + k.kind + '" placeholder="Description" ' +
-                            'style="flex:2;min-width:200px;" class="sa-input">' +
+                        (k.long
+                            ? '<textarea id="new-body-' + k.kind + '" rows="4" placeholder="The policy text" ' +
+                              'style="flex:2;min-width:260px;" class="sa-input"></textarea>'
+                            : '<input type="text" id="new-body-' + k.kind + '" placeholder="Description" ' +
+                              'style="flex:2;min-width:200px;" class="sa-input">') +
                         '<button class="action-btn" onclick="addLandingItem(\'' + k.kind + '\')">Add</button>' +
                     '</div>' +
                     '</div>';
             }).join('');
         }
 
-        function landingRow(r) {
+        function landingRow(r, long) {
             return '<div style="display:flex;gap:8px;align-items:center;padding:8px 0;flex-wrap:wrap;' +
                    'border-bottom:1px solid rgba(255, 255, 255, 0.05);">' +
                 '<input type="text" class="sa-input" style="width:70px;" value="' + esc(r.icon) +
                     '" onchange="saveLandingItem(' + r.id + ', \'icon\', this.value)">' +
                 '<input type="text" class="sa-input" style="flex:1;min-width:160px;" value="' + esc(r.title) +
                     '" onchange="saveLandingItem(' + r.id + ', \'title\', this.value)">' +
-                '<input type="text" class="sa-input" style="flex:2;min-width:200px;" value="' + esc(r.body) +
-                    '" onchange="saveLandingItem(' + r.id + ', \'body\', this.value)">' +
+                (long
+                    ? '<textarea class="sa-input" rows="6" style="flex:2;min-width:260px;" ' +
+                      'onchange="saveLandingItem(' + r.id + ', \'body\', this.value)">' + esc(r.body) + '</textarea>'
+                    : '<input type="text" class="sa-input" style="flex:2;min-width:200px;" value="' + esc(r.body) +
+                    '" onchange="saveLandingItem(' + r.id + ', \'body\', this.value)">') +
                 '<label style="font-size:0.76rem;color:#94a3b8;display:flex;align-items:center;gap:5px;">' +
                     '<input type="checkbox"' + (r.is_active ? ' checked' : '') +
                     ' onchange="saveLandingItem(' + r.id + ', \'is_active\', this.checked)"> shown</label>' +

@@ -18840,7 +18840,12 @@ def public_platform_theme(db: Session = Depends(get_db)):
     return {"theme": theme}
 
 
-LANDING_KINDS = ("module", "industry", "faq")
+LANDING_KINDS = ("module", "industry", "faq", "policy")
+
+# A privacy notice runs to pages; a card on the front page does not. Capping
+# them the same would quietly truncate the one that has legal weight.
+LANDING_BODY_LIMIT = {"policy": 60000}
+DEFAULT_BODY_LIMIT = 2000
 
 
 def landing_item_to_dict(row):
@@ -18859,9 +18864,30 @@ def landing_items_by_kind(db: Session, active_only: bool = True):
                       models.DBLandingItem.id).all()
     out = {k: [] for k in LANDING_KINDS}
     for row in rows:
-        if row.kind in out:
-            out[row.kind].append(landing_item_to_dict(row))
+        if row.kind not in out:
+            continue
+        item = landing_item_to_dict(row)
+        if row.kind == "policy" and active_only:
+            # The front page only needs enough to draw a link. The text is
+            # fetched by the policy page itself when somebody opens one.
+            item.pop("body", None)
+        out[row.kind].append(item)
     return out
+
+
+@app.get("/api/platform/policies/{item_id}")
+def public_policy(item_id: int, db: Session = Depends(get_db)):
+    """One policy, in full. Public on purpose - a privacy notice nobody can
+    read without an account is not a privacy notice."""
+    row = db.query(models.DBLandingItem).filter(
+        models.DBLandingItem.id == item_id,
+        models.DBLandingItem.kind == "policy",
+        models.DBLandingItem.is_active == True,      # noqa: E712
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="No such policy")
+    return {"id": row.id, "title": row.title or "", "body": row.body or "",
+            "updated": row.created_at or ""}
 
 
 @app.get("/api/platform/landing")
@@ -18907,7 +18933,8 @@ def add_landing_item(request: Request, body: dict = None,
 
     row = models.DBLandingItem(
         kind=kind, title=title[:200],
-        body=(body.get("body") or "").strip()[:2000],
+        body=(body.get("body") or "").strip()[
+            :LANDING_BODY_LIMIT.get(kind, DEFAULT_BODY_LIMIT)],
         icon=(body.get("icon") or "").strip()[:80],
         sort_order=int(body.get("sort_order") or (last + 1)),
         is_active=bool(body.get("is_active", True)))
@@ -18933,7 +18960,8 @@ def edit_landing_item(item_id: int, request: Request, body: dict = None,
             raise HTTPException(status_code=400, detail="Give it a title")
         row.title = title[:200]
     if "body" in body:
-        row.body = (body.get("body") or "").strip()[:2000]
+        row.body = (body.get("body") or "").strip()[
+            :LANDING_BODY_LIMIT.get(row.kind, DEFAULT_BODY_LIMIT)]
     if "icon" in body:
         row.icon = (body.get("icon") or "").strip()[:80]
     if "sort_order" in body:
