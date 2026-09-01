@@ -4359,11 +4359,18 @@ function applyItemToRow(row, item) {
         var el = row.querySelector(selector);
         if (el && value !== undefined && value !== null && value !== '') el.value = value;
     };
-    set('.item-name', item.code);
+    // Each field lands in its own column. The name cell used to be filled
+    // with the code, which pushed the name into the description and left the
+    // item's real description unused, so a line read "123456 / Bmw" and the
+    // wording somebody had written on the item never reached the invoice.
+    set('.item-name', item.name);
+    // The code is what you search by rather than what you sell, so it is kept
+    // on the row instead of taking a column somebody reads.
+    if (item.code) row.dataset.itemCode = item.code;
     // Only when the line is still empty - somebody who has written their own
     // description should not lose it by picking the item afterwards.
     var desc = row.querySelector('.item-desc');
-    if (desc && !desc.value.trim()) desc.value = item.name || item.description || '';
+    if (desc && !desc.value.trim()) desc.value = item.description || '';
     if (Number(item.sale_price || 0) > 0) set('.item-price', item.sale_price);
     var qty = row.querySelector('.item-qty');
     if (qty && (!qty.value || Number(qty.value) === 0)) qty.value = 1;

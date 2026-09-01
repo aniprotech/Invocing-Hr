@@ -144,10 +144,14 @@ const val = (row, sel) => {
         const row = firstRow(w);
         w.applyItemToRow(row, CATALOGUE[0]);
 
-        check('the code goes in the item box', val(row, '.item-name') === 'BMW',
-            val(row, '.item-name'));
-        check('the description is filled from the item',
-            val(row, '.item-desc') === 'BMW hire', val(row, '.item-desc'));
+        check('the name goes in the name box, not the code',
+            val(row, '.item-name') === 'BMW hire', val(row, '.item-name'));
+        check('and the description box gets the item own description',
+            val(row, '.item-desc') === 'Daily hire', val(row, '.item-desc'));
+        // The code identifies the item but is not what the customer is
+        // reading, so it stays on the row rather than taking a column.
+        check('the code is kept on the row rather than shown as the name',
+            row.dataset.itemCode === 'BMW', row.dataset.itemCode);
         check('the price comes from the item', Number(val(row, '.item-price')) === 250,
             val(row, '.item-price'));
         check('a quantity of one is assumed rather than zero',
@@ -203,7 +207,7 @@ const val = (row, sel) => {
         check('the modal closes',
             w.document.getElementById('item-modal').style.display === 'none');
         check('and the new item lands on the line it was created from',
-            val(row, '.item-name') === 'AUDI' && Number(val(row, '.item-price')) === 180,
+            val(row, '.item-name') === 'Audi hire' && Number(val(row, '.item-price')) === 180,
             val(row, '.item-name') + ' / ' + val(row, '.item-price'));
     }
 
