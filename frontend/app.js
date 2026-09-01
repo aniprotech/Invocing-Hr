@@ -3681,11 +3681,164 @@ function previewInvoice() {
 }
 window.previewInvoice = previewInvoice;
 
+// --- Which cell is wrong, and why ------------------------------------------
+// Saving used to refuse with one toast at the top of the screen - "Add at
+// least one line item" - which does not say which row, let alone which cell.
+// Worse, it mostly did not refuse at all: parseFloat('12a') || 0 is 0, so a
+// typo became a zero and the invoice saved wrong and quiet. A discount had
+// max="100" on the input, which the browser draws and nothing enforces, so a
+// hand-typed 150 sent a line worth less than nothing.
+
+var _lineChecksOn = {};
+
+function lineErrorBanner(scope) {
+    var body = document.getElementById(docFormScope(scope).body);
+    if (!body) return null;
+    var host = (body.closest && body.closest('table')) || body;
+    var id = scope + '-line-errors';
+    var el = document.getElementById(id);
+    if (!el && host.parentNode) {
+        el = document.createElement('div');
+        el.id = id;
+        el.className = 'line-errors';
+        el.setAttribute('role', 'alert');
+        el.style.display = 'none';
+        host.parentNode.insertBefore(el, host);
+    }
+    return el;
+}
+
+function markCell(input, message) {
+    if (!input) return;
+    input.classList.add('cell-invalid');
+    input.setAttribute('aria-invalid', 'true');
+    // The reason travels with the cell, so it is readable where the fixing
+    // happens rather than only in a summary somewhere above it.
+    input.setAttribute('title', message);
+}
+
+function clearCell(input) {
+    if (!input) return;
+    input.classList.remove('cell-invalid');
+    input.removeAttribute('aria-invalid');
+    input.removeAttribute('title');
+}
+
+// A number box holding something unparseable reports an empty value, so the
+// only way to tell "nothing typed" from "12a typed" is badInput.
+function badNumber(input) {
+    return !!(input && input.validity && input.validity.badInput);
+}
+
+function checkLineRow(row) {
+    var q = function (sel) { return row.querySelector(sel); };
+    var name = q('.item-name'), desc = q('.item-desc');
+    var qty = q('.item-qty'), price = q('.item-price'), disc = q('.item-disc');
+    [name, desc, qty, price, disc].forEach(clearCell);
+
+    var nameVal = name ? name.value.trim() : '';
+    var descVal = desc ? desc.value.trim() : '';
+    var qtyNum = qty ? Number(qty.value) : 0;
+    var priceNum = price ? Number(price.value) : 0;
+    var discRaw = disc ? disc.value.trim() : '';
+
+    // Only the rows that would actually be saved, matching the collector -
+    // the form keeps blank spare rows and those are not mistakes.
+    var inUse = nameVal || descVal || qtyNum > 0 || priceNum > 0 ||
+                discRaw || badNumber(qty) || badNumber(price) || badNumber(disc);
+    if (!inUse) return [];
+
+    var problems = [];
+    var fail = function (input, message) {
+        markCell(input, message);
+        problems.push(message);
+    };
+
+    if (!nameVal && !descVal) fail(name || desc, 'Enter an item or a description');
+
+    if (badNumber(qty) || !qty || qty.value === '' || !(qtyNum > 0)) {
+        fail(qty, 'Enter a quantity greater than zero');
+    }
+    if (badNumber(price) || !price || price.value === '' || priceNum < 0) {
+        fail(price, 'Enter a price of zero or more');
+    }
+    // The discount is a percentage of the line, so more than all of it is the
+    // case the brief names: the line would owe the customer money.
+    if (discRaw || badNumber(disc)) {
+        var discNum = Number(discRaw);
+        if (badNumber(disc) || isNaN(discNum) || discNum < 0 || discNum > 100) {
+            fail(disc, 'Enter a discount equal to or less than the amount');
+        }
+    }
+    return problems;
+}
+
+function validateInvoiceLines(scope) {
+    scope = scope || 'invoice';
+    _lineChecksOn[scope] = true;
+    watchLineEdits(scope);
+
+    var rows = scopedLineRows(scope);
+    var problems = [];
+    rows.forEach(function (row) {
+        problems = problems.concat(checkLineRow(row));
+    });
+
+    var banner = lineErrorBanner(scope);
+    if (!problems.length) {
+        // Nothing filled in at all is a different complaint from a cell being
+        // wrong, and it was the only one this form used to make.
+        var anyLine = rows.some(function (row) {
+            var n = row.querySelector('.item-name'), d = row.querySelector('.item-desc');
+            var qv = row.querySelector('.item-qty'), pv = row.querySelector('.item-price');
+            return (n && n.value.trim()) || (d && d.value.trim()) ||
+                   (qv && Number(qv.value) > 0) || (pv && Number(pv.value) > 0);
+        });
+        if (!anyLine) {
+            if (banner) {
+                banner.textContent = 'Add at least one line before saving.';
+                banner.style.display = 'block';
+            }
+            return false;
+        }
+        if (banner) banner.style.display = 'none';
+        return true;
+    }
+
+    if (banner) {
+        // Counting cells rather than rows, because that is the number
+        // somebody scanning a marked-up table is actually looking for.
+        banner.textContent = problems.length === 1
+            ? '1 of the table cells has invalid data entered'
+            : problems.length + ' of the table cells have invalid data entered';
+        banner.style.display = 'block';
+    }
+    return false;
+}
+window.validateInvoiceLines = validateInvoiceLines;
+
+// Nagging before the first save attempt would flag every half-typed row, so
+// the checks only go live once somebody has actually tried to save.
+function watchLineEdits(scope) {
+    var body = document.getElementById(docFormScope(scope).body);
+    if (!body || body.dataset.lineWatch) return;
+    body.dataset.lineWatch = '1';
+    body.addEventListener('input', function () {
+        if (_lineChecksOn[scope]) validateInvoiceLines(scope);
+    });
+}
+
 // --- Submit Invoice ---
 async function submitComplexInvoice(status) {
     status = status || 'Awaiting Payment';
     var contact = document.getElementById('inv-contact').value;
     if (!contact) { showToast('Customer name is required', 'error'); return; }
+
+    // Every cell that is wrong, marked where it is wrong, before sending.
+    if (!validateInvoiceLines('invoice')) {
+        showToast('Some line items need fixing', 'error');
+        return;
+    }
 
     var line_items = [];
     scopedLineRows('invoice').forEach(function(row) {

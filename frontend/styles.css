@@ -1589,3 +1589,23 @@ body::after {
     top: auto;
     bottom: calc(100% + 4px);
 }
+
+
+/* A cell that is wrong says so where it is, not only in a summary above. */
+.table-input.cell-invalid {
+    border: 1px solid var(--danger-color) !important;
+    background: color-mix(in srgb, var(--danger-color) 8%, transparent);
+}
+.table-input.cell-invalid:focus {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger-color) 30%, transparent);
+}
+.line-errors {
+    margin: 0 0 10px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--danger-color);
+    background: color-mix(in srgb, var(--danger-color) 10%, transparent);
+    color: var(--danger-text);
+    font-size: 0.85rem;
+    font-weight: 600;
+}
