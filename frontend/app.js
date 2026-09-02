@@ -2391,6 +2391,7 @@ window.renderInvoicePayments = renderInvoicePayments;
 
 // --- View Invoice ---
 async function viewInvoice(number) {
+    hideInvoiceMadeBar();
     try {
         var response = await fetch('/api/invoices/' + encodeURIComponent(number));
         if (!response.ok) throw new Error('Failed');
@@ -4045,17 +4046,43 @@ async function submitComplexInvoice(status) {
         if (status === 'Awaiting Payment' && payload.email) {
             showToast('Invoice created! Sending email...', 'info');
             await viewInvoice(invData.number);
+            showInvoiceMadeBar(invData.number);
             await sendEmail();
         } else if (status === 'Awaiting Payment' && !payload.email) {
             showToast('Invoice created! No email address — add one to send.', 'warning');
-            showView('invoices-view');
+            await viewInvoice(invData.number);
+            showInvoiceMadeBar(invData.number);
         } else {
             showToast('Invoice saved as draft', 'success');
-            showView('invoices-view');
+            await viewInvoice(invData.number);
+            showInvoiceMadeBar(invData.number);
         }
     } catch (e) { showToast('Failed: ' + e.message, 'error'); }
 }
 window.submitComplexInvoice = submitComplexInvoice;
+
+// The bar only appears on an invoice that was just made, never on one being
+// looked at later - "created" on a six month old invoice is a lie.
+function showInvoiceMadeBar(number) {
+    var bar = document.getElementById('invoice-made-bar');
+    if (!bar) return;
+    document.getElementById('invoice-made-text').textContent =
+        'Invoice ' + number + ' created.';
+    bar.style.display = 'flex';
+}
+window.showInvoiceMadeBar = showInvoiceMadeBar;
+
+function hideInvoiceMadeBar() {
+    var bar = document.getElementById('invoice-made-bar');
+    if (bar) bar.style.display = 'none';
+}
+window.hideInvoiceMadeBar = hideInvoiceMadeBar;
+
+function createAnotherInvoice() {
+    hideInvoiceMadeBar();
+    showView('create-invoice-view');
+}
+window.createAnotherInvoice = createAnotherInvoice;
 
 // --- PDF Download ---
 function downloadPDF() {

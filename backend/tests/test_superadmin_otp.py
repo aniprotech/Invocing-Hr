@@ -29,7 +29,17 @@ def _reset_limiter():
 
 @pytest.fixture(autouse=True)
 def _no_real_email(monkeypatch):
-    """Nothing leaves the machine; the code is captured instead."""
+    """A working transport, with nothing actually leaving the machine.
+
+    The readiness check is deliberately not stubbed - it looks at what is
+    configured, and a code that cannot be sent must be refused rather than
+    silently lost. So a transport is configured for real and only the sending
+    is captured.
+    """
+    monkeypatch.setenv("SMTP_HOST", "mail.example.test")
+    monkeypatch.setenv("SMTP_PORT", "587")
+    was = _set_transport("smtp")
+
     sent = []
 
     def fake_send(to_email, subject, body, from_email, *a, **kw):
@@ -39,6 +49,23 @@ def _no_real_email(monkeypatch):
     monkeypatch.setattr(main, "send_email_background", fake_send)
     main._test_sent = sent
     yield sent
+    _set_transport(was or "gmail")
+
+
+def _set_transport(value):
+    with main.SessionLocal() as db:
+        row = db.query(models.DBSettings).filter(
+            models.DBSettings.key == "email.transport",
+            models.DBSettings.client_id == None,        # noqa: E711
+        ).first()
+        was = row.value if row else None
+        if row:
+            row.value = value
+        else:
+            db.add(models.DBSettings(key="email.transport", client_id=None,
+                                     value=value))
+        db.commit()
+        return was
 
 
 def request_code(client, identifier=OPERATOR):
@@ -320,3 +347,39 @@ def test_that_warning_does_not_carry_a_code(client):
                 json={"identifier": OPERATOR, "code": code})
     told = main._test_sent[-1]
     assert code not in told["subject"] + told["body"]
+
+
+def test_a_server_that_cannot_send_email_says_so(client, monkeypatch):
+    """Reported from production: the code never arrived and nothing said why.
+
+    Refusing here gives nothing away, because it is checked before the account
+    is looked at - the answer is the same whoever asks. Staying quiet only
+    means somebody sits waiting for an email that was never going to come.
+    """
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    was = _set_transport("smtp")
+    try:
+        res = client.post("/api/superadmin/request-otp",
+                          json={"identifier": OPERATOR})
+        assert res.status_code == 503, res.text
+        assert "SMTP_HOST" in res.json()["detail"], res.json()
+        assert main._test_sent == [], "it tried to send anyway"
+    finally:
+        _set_transport(was or "gmail")
+
+
+def test_that_refusal_says_nothing_about_the_account(client, monkeypatch):
+    """It must be the same answer for a stranger, or it becomes a way of
+    finding out who the operator is."""
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    was = _set_transport("smtp")
+    try:
+        known = client.post("/api/superadmin/request-otp",
+                            json={"identifier": OPERATOR})
+        main.rate_limiter._hits.clear()
+        stranger = client.post("/api/superadmin/request-otp",
+                               json={"identifier": "nobody@nowhere.test"})
+        assert known.status_code == stranger.status_code == 503
+        assert known.json() == stranger.json()
+    finally:
+        _set_transport(was or "gmail")

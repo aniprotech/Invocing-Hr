@@ -1494,6 +1494,25 @@ OTP_MINUTES = 10
 OTP_MAX_ATTEMPTS = 5
 
 
+def email_delivery_ready(db):
+    """(ok, what is missing) for whichever transport is in force.
+
+    Nothing here depends on which account is asking, so saying it out loud
+    leaks nothing about who the operator is - it is a fact about the server.
+    Hiding whether an account exists is worth doing; hiding that email is
+    broken only means nobody finds out until somebody is locked out.
+    """
+    transport = email_transport(db)
+    if transport == "smtp":
+        if not smtp_ready():
+            return False, "SMTP is selected but SMTP_HOST is not set"
+        return True, ""
+    if not get_stored_refresh_token(db, client_id=None):
+        return False, ("email is sent through a connected Google account and "
+                       "none is connected")
+    return True, ""
+
+
 def _hash_otp(code: str) -> str:
     return hashlib.sha256(f"otp:{code}".encode()).hexdigest()
 
@@ -1521,6 +1540,17 @@ def superadmin_request_otp(request: Request, background_tasks: BackgroundTasks,
     if rate_limiter.is_rate_limited(f"sa_otp_req:{ip}", max_requests=3, window=300):
         raise HTTPException(status_code=429,
                             detail="Too many codes requested. Try again shortly.")
+
+    # Checked before the account is looked at, so this answer cannot depend on
+    # whether the account exists and gives nothing away. A code that silently
+    # never arrives is worse than being told the server cannot send one.
+    ready, missing = email_delivery_ready(db)
+    if not ready:
+        logger.error("Operator sign-in code requested but email cannot send: %s",
+                     missing)
+        raise HTTPException(
+            status_code=503,
+            detail=f"This server cannot send email at the moment - {missing}.")
 
     body = body or {}
     identifier = (body.get("identifier") or body.get("email") or "").strip().lower()
@@ -1566,18 +1596,25 @@ def superadmin_request_otp(request: Request, background_tasks: BackgroundTasks,
     db.commit()
 
     from_email = os.getenv("FROM_EMAIL", "") or sa.email
-    # Handed off rather than sent inline, so signing in does not wait on the
-    # mail provider - and so a slow send cannot be timed to tell a stranger
-    # whether the address existed.
-    background_tasks.add_task(
-        send_email_background,
-        sa.email,
-        f"Your sign-in code: {code}",
+    subject = f"Your sign-in code: {code}"
+    message = (
         f"Your sign-in code is {code}.\n\n"
         f"It works once and expires in {OTP_MINUTES} minutes.\n\n"
         "If you did not ask for this, somebody knows your operator address. "
-        "The code alone does not let them in, but it is worth knowing.",
-        from_email)
+        "The code alone does not let them in, but it is worth knowing.")
+
+    def deliver():
+        # By the time this runs nobody is waiting on it, so the log is the only
+        # place a failure can be said. It gets said loudly rather than dropped.
+        ok, why = send_email_background(sa.email, subject, message, from_email)
+        if not ok:
+            logger.error("Operator sign-in code to %s was not delivered: %s",
+                         sa.email, why)
+
+    # Handed off rather than sent inline, so signing in does not wait on the
+    # mail provider - and so a slow send cannot be timed to tell a stranger
+    # whether the address existed.
+    background_tasks.add_task(deliver)
 
     # Deliberately no code in the answer, in any environment.
     return same_answer

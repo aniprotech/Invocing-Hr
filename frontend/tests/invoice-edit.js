@@ -217,6 +217,58 @@ const val = (w, id) => (w.document.getElementById(id) || {}).value;
             w.document.getElementById('inv-contact').value);
     }
 
+    // --- after creating one, the next one -------------------------------------
+    // Somebody who has just raised an invoice usually has another to raise.
+    // Getting back to a blank one meant going up to the menu and starting
+    // again, so the invoice offers it.
+    {
+        const { w } = boot();
+        w.document.dispatchEvent(new w.Event('DOMContentLoaded', { bubbles: true }));
+        await wait(60);
+
+        const bar = w.document.getElementById('invoice-made-bar');
+        check('the just-created bar exists', !!bar);
+        check('and is out of sight until an invoice is made',
+            bar.style.display === 'none');
+        check('offering the next invoice',
+            /Create another invoice/.test(bar.textContent), bar.textContent);
+
+        w.showInvoiceMadeBar('INV-0011');
+        check('it appears once one is made', bar.style.display === 'flex');
+        check('naming the one just created',
+            /INV-0011/.test(w.document.getElementById('invoice-made-text').textContent),
+            w.document.getElementById('invoice-made-text').textContent);
+
+        w.hideInvoiceMadeBar();
+        check('and can be dismissed', bar.style.display === 'none');
+    }
+
+    {
+        // "Created" on an invoice from six months ago is a lie, so opening any
+        // invoice clears it.
+        const { w } = boot();
+        w.document.dispatchEvent(new w.Event('DOMContentLoaded', { bubbles: true }));
+        await wait(60);
+        w.showInvoiceMadeBar('INV-0011');
+        await w.viewInvoice('INV-0002');
+        await wait(40);
+        check('opening an older invoice does not claim it was just made',
+            w.document.getElementById('invoice-made-bar').style.display === 'none');
+    }
+
+    {
+        const { w } = boot();
+        w.document.dispatchEvent(new w.Event('DOMContentLoaded', { bubbles: true }));
+        await wait(60);
+        w.showInvoiceMadeBar('INV-0011');
+        w.createAnotherInvoice();
+        await wait(40);
+        check('choosing it opens a blank invoice',
+            w.document.getElementById('create-invoice-view').style.display !== 'none');
+        check('and takes the bar away with it',
+            w.document.getElementById('invoice-made-bar').style.display === 'none');
+    }
+
     console.log(failures ? '\n' + failures + ' failed' : '\nall good');
     process.exit(failures ? 1 : 0);
 })();
