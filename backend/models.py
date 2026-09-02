@@ -404,6 +404,25 @@ class DBSuperAdmin(Base):
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
+class DBSuperAdminOtp(Base):
+    """A single-use sign-in code.
+
+    The code itself is never stored - only a hash of it, for the same reason
+    passwords are hashed: anybody who can read this table must not be able to
+    sign in with what they find.
+    """
+    __tablename__ = "super_admin_otps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    super_admin_id = Column(Integer, ForeignKey("super_admins.id"), index=True)
+    code_hash = Column(String)
+    expires_at = Column(String, index=True)
+    used_at = Column(String, default="")
+    attempts = Column(Integer, default=0)
+    requested_ip = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
 class DBAdminUser(Base):
     __tablename__ = "admin_users"
 

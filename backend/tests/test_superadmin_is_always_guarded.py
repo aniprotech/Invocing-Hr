@@ -17,6 +17,14 @@ SAFE_WITHOUT_A_SESSION = {
     # These are how a session is obtained or discarded in the first place.
     "/api/superadmin/login",
     "/api/superadmin/logout",
+    # Asking for a sign-in code has to answer the same way to everybody,
+    # including a stranger. Refusing here would say whether the address
+    # belongs to the operator, which is the thing that endpoint exists to
+    # avoid revealing. What it does with the request is tested on its own in
+    # test_superadmin_otp.py - notably that no email leaves for a stranger.
+    "/api/superadmin/request-otp",
+    # verify-otp is deliberately NOT here. It must refuse a stranger, and
+    # this sweep is what keeps it that way.
 }
 
 

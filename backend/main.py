@@ -1458,11 +1458,203 @@ def superadmin_login(request: Request, body: dict = None, db: Session = Depends(
         elif env_pwd:
             ok = verify_password(password, hash_password(env_pwd))
         if ok:
+            # A fresh session, so a cookie somebody else already knows does
+            # not become an operator session when this one signs in.
+            request.session.clear()
             request.session['superadmin_id'] = sa.id
             log_login(db, None, identifier or sa.email, "superadmin", "password", request, "success")
             return {"ok": True, "username": sa.username, "email": sa.email}
     log_login(db, None, identifier or "superadmin", "superadmin", "password", request, "failed")
     raise HTTPException(status_code=401, detail="Invalid credentials")
+
+# ============================================================================
+# SIGNING IN WITH A CODE
+#
+# A password is the only way in, so losing it locks the operator out of their
+# own platform. A code sent to the address already on the account is a second
+# way that does not need anything new to be remembered.
+#
+# The rules this is built on, and why each one is there:
+#
+#   - The code is hashed. Anyone who can read the table must not be able to
+#     sign in with what they find.
+#   - Six digits is guessable in a million tries, so a code dies after five
+#     wrong attempts and after ten minutes, and both requesting and trying are
+#     rate limited.
+#   - Asking for a code says the same thing whether or not the address belongs
+#     to anybody, or this endpoint becomes a way to find out who the operator
+#     is.
+#   - The code goes to the address on the account, never to an address in the
+#     request. Otherwise anyone could have one posted to themselves.
+#   - The code is never in a response body. Not once, not in development.
+# ============================================================================
+
+OTP_LENGTH = 6
+OTP_MINUTES = 10
+OTP_MAX_ATTEMPTS = 5
+
+
+def _hash_otp(code: str) -> str:
+    return hashlib.sha256(f"otp:{code}".encode()).hexdigest()
+
+
+def _otp_is_live(row) -> bool:
+    if not row or row.used_at:
+        return False
+    if (row.attempts or 0) >= OTP_MAX_ATTEMPTS:
+        return False
+    try:
+        return datetime.strptime(row.expires_at, "%Y-%m-%d %H:%M:%S") > datetime.now()
+    except Exception:
+        return False
+
+
+@app.post("/api/superadmin/request-otp")
+def superadmin_request_otp(request: Request, background_tasks: BackgroundTasks,
+                           body: dict = None, db: Session = Depends(get_db)):
+    """Send a sign-in code to the operator's own address.
+
+    The answer is the same either way. Saying "no such operator" would turn
+    this into a way of finding out which address runs the platform.
+    """
+    ip = request.client.host if request.client else "unknown"
+    if rate_limiter.is_rate_limited(f"sa_otp_req:{ip}", max_requests=3, window=300):
+        raise HTTPException(status_code=429,
+                            detail="Too many codes requested. Try again shortly.")
+
+    body = body or {}
+    identifier = (body.get("identifier") or body.get("email") or "").strip().lower()
+    # Also counted against the account, so a pool of addresses cannot be used
+    # to flood one operator's inbox with codes.
+    if identifier and rate_limiter.is_rate_limited(
+            f"sa_otp_send:{identifier}", max_requests=5, window=900):
+        raise HTTPException(status_code=429,
+                            detail="Too many codes requested. Try again shortly.")
+    same_answer = {"sent": True,
+                   "message": "If that account exists, a code has been sent to it."}
+    if not identifier:
+        return same_answer
+
+    sa = db.query(models.DBSuperAdmin).filter(
+        (models.DBSuperAdmin.email == identifier)
+        | (models.DBSuperAdmin.username == identifier)).first()
+    if not sa or not sa.email:
+        return same_answer
+
+    # Any code already outstanding is retired, so asking again does not leave
+    # several live codes for one account.
+    db.query(models.DBSuperAdminOtp).filter(
+        models.DBSuperAdminOtp.super_admin_id == sa.id,
+        models.DBSuperAdminOtp.used_at == "").update(
+            {"used_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+
+    # Spent and expired codes are of no use to anybody and are one more thing
+    # sitting in a table waiting to be read.
+    cutoff = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    db.query(models.DBSuperAdminOtp).filter(
+        models.DBSuperAdminOtp.super_admin_id == sa.id,
+        models.DBSuperAdminOtp.expires_at < cutoff).delete(synchronize_session=False)
+
+    code = "".join(secrets.choice("0123456789") for _ in range(OTP_LENGTH))
+    row = models.DBSuperAdminOtp(
+        super_admin_id=sa.id,
+        code_hash=_hash_otp(code),
+        expires_at=(datetime.now() + timedelta(minutes=OTP_MINUTES)
+                    ).strftime("%Y-%m-%d %H:%M:%S"),
+        requested_ip=ip[:60])
+    db.add(row)
+    db.commit()
+
+    from_email = os.getenv("FROM_EMAIL", "") or sa.email
+    # Handed off rather than sent inline, so signing in does not wait on the
+    # mail provider - and so a slow send cannot be timed to tell a stranger
+    # whether the address existed.
+    background_tasks.add_task(
+        send_email_background,
+        sa.email,
+        f"Your sign-in code: {code}",
+        f"Your sign-in code is {code}.\n\n"
+        f"It works once and expires in {OTP_MINUTES} minutes.\n\n"
+        "If you did not ask for this, somebody knows your operator address. "
+        "The code alone does not let them in, but it is worth knowing.",
+        from_email)
+
+    # Deliberately no code in the answer, in any environment.
+    return same_answer
+
+
+@app.post("/api/superadmin/verify-otp")
+def superadmin_verify_otp(request: Request, background_tasks: BackgroundTasks,
+                          body: dict = None, db: Session = Depends(get_db)):
+    ip = request.client.host if request.client else "unknown"
+    if rate_limiter.is_rate_limited(f"sa_otp_try:{ip}", max_requests=10, window=300):
+        raise HTTPException(status_code=429,
+                            detail="Too many attempts. Try again shortly.")
+
+    body = body or {}
+    identifier = (body.get("identifier") or body.get("email") or "").strip().lower()
+    code = (body.get("code") or "").strip()
+
+    # Counted against the account as well, because an attacker with a pool of
+    # addresses would otherwise get a fresh allowance from every one of them.
+    if identifier and rate_limiter.is_rate_limited(
+            f"sa_otp_acct:{identifier}", max_requests=15, window=900):
+        raise HTTPException(status_code=429,
+                            detail="Too many attempts. Try again shortly.")
+    refused = HTTPException(status_code=401, detail="That code is not valid")
+
+    if not identifier or not code:
+        raise refused
+
+    sa = db.query(models.DBSuperAdmin).filter(
+        (models.DBSuperAdmin.email == identifier)
+        | (models.DBSuperAdmin.username == identifier)).first()
+    if not sa:
+        log_login(db, None, identifier, "superadmin", "otp", request, "failed")
+        db.commit()
+        raise refused
+
+    row = db.query(models.DBSuperAdminOtp).filter(
+        models.DBSuperAdminOtp.super_admin_id == sa.id,
+        models.DBSuperAdminOtp.used_at == "").order_by(
+            models.DBSuperAdminOtp.id.desc()).first()
+
+    if not _otp_is_live(row):
+        log_login(db, None, identifier, "superadmin", "otp", request, "failed")
+        db.commit()
+        raise refused
+
+    # Counted before it is compared, so a wrong guess costs an attempt even if
+    # the request is abandoned half way.
+    row.attempts = (row.attempts or 0) + 1
+    db.commit()
+
+    if not hmac.compare_digest(row.code_hash, _hash_otp(code)):
+        log_login(db, None, identifier, "superadmin", "otp", request, "failed")
+        db.commit()
+        raise refused
+
+    row.used_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    request.session.clear()
+    request.session["superadmin_id"] = sa.id
+    log_login(db, None, identifier or sa.email, "superadmin", "otp", request, "success")
+    db.commit()
+
+    # Somebody signing in with a code is the thing an operator most needs to
+    # hear about if it was not them, and by then the sign-in has happened -
+    # so it is sent after, not instead of, letting them in.
+    background_tasks.add_task(
+        send_email_background,
+        sa.email,
+        "Somebody signed in to your operator account",
+        f"A sign-in code was used on your account at "
+        f"{datetime.now().strftime('%Y-%m-%d %H:%M')} from {ip}.\n\n"
+        "If that was you there is nothing to do. If it was not, change your "
+        "password now - whoever did it can read your email.",
+        os.getenv("FROM_EMAIL", "") or sa.email)
+
+    return {"ok": True, "username": sa.username, "email": sa.email}
+
 
 @app.post("/api/superadmin/change-password")
 def superadmin_change_password(request: Request, body: dict = None, db: Session = Depends(get_db)):
@@ -3212,6 +3404,7 @@ async def auth_callback(request: Request, db: Session = Depends(get_db)):
             if oauth_role == 'superadmin' and google_email:
                 sa_user = db.query(models.DBSuperAdmin).filter(models.DBSuperAdmin.email == google_email).first()
                 if sa_user:
+                    request.session.clear()
                     request.session['superadmin_id'] = sa_user.id
                     log_login(db, None, google_email, "superadmin", "google", request, "success")
                     return RedirectResponse(url="/superadmin.html")
