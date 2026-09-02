@@ -536,6 +536,7 @@ function showView(viewId) {
     if (viewId === 'create-invoice-view' && typeof fetchNextInvoiceNumber === 'function') fetchNextInvoiceNumber();
     if (viewId === 'create-invoice-view' && typeof setupContactAutocomplete === 'function') setupContactAutocomplete();
     if (viewId === 'settings-view' && typeof loadGmailStatus === 'function') loadGmailStatus();
+    if (viewId === 'settings-view' && typeof loadEmailSettings === 'function') loadEmailSettings();
     if (viewId === 'settings-view' && typeof loadSettings === 'function') loadSettings();
     if (viewId === 'settings-view' && typeof loadTaxRates === 'function') loadTaxRates();
     if (viewId === 'settings-view' && typeof loadTeam === 'function') loadTeam();
@@ -9295,6 +9296,103 @@ async function loadInsights() {
     drawInsight();
 }
 window.loadInsights = loadInsights;
+
+// --- How this business sends its own email ---------------------------------
+// Everything used to go through the operator's account, so a customer got an
+// invoice from them rather than from the business that raised it.
+
+var _emailSettings = null;
+
+async function loadEmailSettings() {
+    var status = document.getElementById('email-settings-status');
+    if (!status) return;
+    try {
+        var res = await fetch('/api/email-settings');
+        if (!res.ok) throw new Error('could not load');
+        _emailSettings = await res.json();
+    } catch (e) {
+        status.textContent = 'Could not load your email settings.';
+        return;
+    }
+    var s = _emailSettings;
+    document.getElementById('email-transport').value = s.transport || '';
+    document.getElementById('email-smtp-host').value = s.smtp_host || '';
+    document.getElementById('email-smtp-port').value = String(s.smtp_port || 587);
+    document.getElementById('email-smtp-user').value = s.smtp_user || '';
+    document.getElementById('email-from-address').value = s.from_email || '';
+    document.getElementById('email-from-name').value = s.from_name || '';
+    document.getElementById('email-smtp-starttls').checked = s.smtp_starttls !== false;
+    document.getElementById('email-smtp-password').value = '';
+
+    // Said rather than shown - the field is blank because the password is
+    // never sent back, not because there isn't one.
+    document.getElementById('email-password-note').textContent =
+        s.has_password ? 'A password is saved. Leave this blank to keep it.' : '';
+    document.getElementById('email-clear-password').style.display =
+        s.has_password ? 'inline-flex' : 'none';
+
+    status.textContent = s.transport === 'smtp' ? 'Sending through your own server'
+        : s.transport === 'gmail' ? 'Sending through your Google account'
+        : 'Following the platform';
+    onEmailTransportChange();
+}
+window.loadEmailSettings = loadEmailSettings;
+
+function onEmailTransportChange() {
+    var chosen = document.getElementById('email-transport').value;
+    document.getElementById('email-smtp-fields').style.display =
+        chosen === 'smtp' ? 'block' : 'none';
+}
+window.onEmailTransportChange = onEmailTransportChange;
+
+async function saveEmailSettings(extra) {
+    var err = document.getElementById('email-settings-error');
+    var btn = document.getElementById('email-settings-save');
+    err.style.display = 'none';
+
+    var body = {
+        transport: document.getElementById('email-transport').value,
+        smtp_host: document.getElementById('email-smtp-host').value.trim(),
+        smtp_port: parseInt(document.getElementById('email-smtp-port').value, 10),
+        smtp_user: document.getElementById('email-smtp-user').value.trim(),
+        smtp_starttls: document.getElementById('email-smtp-starttls').checked,
+        from_email: document.getElementById('email-from-address').value.trim(),
+        from_name: document.getElementById('email-from-name').value.trim(),
+    };
+    // Only sent when something was typed, so saving any other change does not
+    // wipe a password that is already saved.
+    var typed = document.getElementById('email-smtp-password').value;
+    if (typed) body.smtp_password = typed;
+    if (extra) Object.keys(extra).forEach(function (k) { body[k] = extra[k]; });
+
+    btn.disabled = true;
+    try {
+        var res = await fetch('/api/email-settings', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) {
+            err.textContent = data.detail || 'Could not save that.';
+            err.style.display = 'block';
+            return;
+        }
+        showToast('Email settings saved', 'success');
+        await loadEmailSettings();
+    } catch (e) {
+        err.textContent = 'Could not save that: ' + e.message;
+        err.style.display = 'block';
+    } finally {
+        btn.disabled = false;
+    }
+}
+window.saveEmailSettings = saveEmailSettings;
+
+async function clearEmailPassword() {
+    if (!confirm('Forget the saved mail password? Sending will stop until a new one is entered.')) return;
+    await saveEmailSettings({ clear_password: true });
+}
+window.clearEmailPassword = clearEmailPassword;
 
 // A figure in the tens of trillions written out in full does not fit a card -
 // it wrapped down three lines and split between digits. Past ten million it is

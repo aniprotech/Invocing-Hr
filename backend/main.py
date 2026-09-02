@@ -2150,7 +2150,12 @@ def prepare_email_message(to_email, subject, body_text, html_body, from_email, l
         msg['Bcc'] = bcc
     msg['Reply-To'] = from_email
     msg['Date'] = datetime.now().strftime('%a, %d %b %Y %H:%M:%S %z')
-    msg['List-Unsubscribe'] = '<mailto:hello@keyroutes.co?subject=unsubscribe>'
+    # Unsubscribing has to reach whoever sent the mail. This was the
+    # operator's own address, hardcoded, on every tenant's customer
+    # email - so somebody wanting off Acme Ltd's invoices wrote to us.
+    _reply_to = _re.search(r'<([^>]+)>', from_email)
+    _sender_address = _reply_to.group(1) if _reply_to else from_email
+    msg['List-Unsubscribe'] = f'<mailto:{_sender_address}?subject=unsubscribe>'
     msg['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click'
 
     alt_part = MIMEMultipart('alternative')
@@ -2191,6 +2196,59 @@ def prepare_email_message(to_email, subject, body_text, html_body, from_email, l
     return msg.as_string()
 
 
+# A tenant types the host, so the server ends up connecting wherever they
+# say. Left open that is a way to make this machine talk to things only it can
+# reach - a database on the private network, a metadata service, itself. Mail
+# lives on four well known ports and never on a private address, so both are
+# checked, at save and again at connect: DNS can change in between.
+SMTP_ALLOWED_PORTS = {25, 465, 587, 2525}
+
+
+def smtp_host_allowed(host: str, port: int):
+    """(ok, why not) for a mail server a tenant asked us to use."""
+    import ipaddress
+    import socket
+
+    host = (host or "").strip()
+    if not host:
+        return False, "Enter your mail server's address"
+    if int(port or 0) not in SMTP_ALLOWED_PORTS:
+        return False, ("Use one of the usual mail ports: " +
+                       ", ".join(str(p) for p in sorted(SMTP_ALLOWED_PORTS)))
+    try:
+        resolved = socket.getaddrinfo(host, None)
+    except Exception:
+        return False, f"Could not find {host}"
+
+    for entry in resolved:
+        address = entry[4][0]
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast):
+            return False, f"{host} is not a public mail server"
+    return True, ""
+
+
+def client_email_settings(db, client_id):
+    if not client_id:
+        return None
+    return db.query(models.DBClientEmailSettings).filter(
+        models.DBClientEmailSettings.client_id == client_id).first()
+
+
+def client_smtp_config(row):
+    return {
+        "host": (row.smtp_host or "").strip(),
+        "port": int(row.smtp_port or 587),
+        "user": (row.smtp_user or "").strip(),
+        "password": row.smtp_password or "",
+        "starttls": bool(row.smtp_starttls),
+    }
+
+
 def smtp_config():
     """Where SMTP sends from. The password is a secret, so it lives in the
     environment with the other secrets and never in the settings screen."""
@@ -2221,7 +2279,7 @@ def email_transport(db=None):
         return "gmail"
 
 
-def _send_via_smtp(raw_msg, to_email, cc="", bcc=""):
+def _send_via_smtp(raw_msg, to_email, cc="", bcc="", cfg=None):
     """Hand the message to a mail server.
 
     Bcc is a header the Gmail API strips on the way out. A mail server does
@@ -2232,7 +2290,7 @@ def _send_via_smtp(raw_msg, to_email, cc="", bcc=""):
     import smtplib
     from email import message_from_string
 
-    cfg = smtp_config()
+    cfg = cfg or smtp_config()
     msg = message_from_string(raw_msg)
     def addresses(header):
         return [a.strip() for line in (msg.get_all(header) or [])
@@ -2267,12 +2325,42 @@ def send_email_background(to_email: str, subject: str, body: str, from_email: st
         except Exception as e:
             logger.error(f"Failed to decode PDF: {e}")
 
+    # A business that has set up its own account sends through it. Falling
+    # back to the operator's would put our address on their invoice, which is
+    # the whole thing they were trying to stop.
+    with SessionLocal() as own:
+        mine = client_email_settings(own, client_id)
+        cfg = client_smtp_config(mine) if mine else None
+        chosen = (mine.transport or "") if mine else ""
+        # Read before the message is built, because the From line is part of
+        # it. Sending through their server under our address is the one
+        # combination that gets mail rejected outright.
+        if mine and (mine.from_email or "").strip():
+            display = (mine.from_name or "").strip()
+            address = mine.from_email.strip()
+            from_email = f"{display} <{address}>" if display else address
+
     raw_msg = prepare_email_message(to_email, subject, body, html_body or "", from_email, logo_data or "", pdf_bytes, pdf_filename, cc or "", bcc or "")
+
+    if chosen == "smtp":
+        if not cfg["host"]:
+            return False, "SMTP is selected for this business but no mail server is set"
+        ok, why = smtp_host_allowed(cfg["host"], cfg["port"])
+        if not ok:
+            # Checked again here because DNS can change after it was saved.
+            return False, why
+        try:
+            _send_via_smtp(raw_msg, to_email, cc, bcc, cfg)
+            logger.info("Email sent via the business's own SMTP to %s", to_email)
+            return True, "Email sent via SMTP"
+        except Exception as e:
+            logger.error("A business's SMTP failed: %s", e)
+            return False, f"SMTP error: {str(e)}"
 
     # Whichever was chosen is the one used. Quietly falling back to the other
     # would send from an address nobody picked, and the first anyone would
     # know is a customer replying to the wrong inbox.
-    transport = email_transport()
+    transport = chosen or email_transport()
     if transport == "smtp":
         if not smtp_ready():
             return False, "SMTP is selected but SMTP_HOST is not configured"
@@ -18251,6 +18339,95 @@ def active_client_gateway(db: Session, client_id: int):
         if provider in by_provider:
             return by_provider[provider]
     return None
+
+
+def client_email_to_dict(row, client):
+    return {
+        # "" means follow whatever the operator has set, which is what every
+        # business gets until it says otherwise.
+        "transport": (row.transport if row else "") or "",
+        "smtp_host": (row.smtp_host if row else "") or "",
+        "smtp_port": int(row.smtp_port) if row and row.smtp_port else 587,
+        "smtp_user": (row.smtp_user if row else "") or "",
+        # Never the real thing. A browser reads this.
+        "smtp_password": mask_secret(row.smtp_password if row else ""),
+        "has_password": bool(row and row.smtp_password),
+        "smtp_starttls": bool(row.smtp_starttls) if row else True,
+        "from_email": (row.from_email if row else "") or "",
+        "from_name": (row.from_name if row else "") or (client.company_name or ""),
+        "updated_at": (row.updated_at if row else "") or "",
+        "allowed_ports": sorted(SMTP_ALLOWED_PORTS),
+    }
+
+
+@app.get("/api/email-settings")
+def read_client_email_settings(request: Request, db: Session = Depends(get_db)):
+    """How this business sends its own mail."""
+    client = get_client_user(request, db)
+    row = client_email_settings(db, client.id)
+    return client_email_to_dict(row, client)
+
+
+@app.put("/api/email-settings")
+def save_client_email_settings(request: Request, body: dict = None,
+                               db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+
+    transport = (body.get("transport") or "").strip().lower()
+    if transport not in ("", "gmail", "smtp"):
+        raise HTTPException(status_code=400, detail="Choose Gmail or SMTP")
+
+    row = client_email_settings(db, client.id)
+    if not row:
+        row = models.DBClientEmailSettings(client_id=client.id)
+        db.add(row)
+
+    host = (body.get("smtp_host") or "").strip()
+    try:
+        port = int(body.get("smtp_port") or row.smtp_port or 587)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="The port must be a number")
+
+    if transport == "smtp":
+        ok, why = smtp_host_allowed(host or row.smtp_host or "", port)
+        if not ok:
+            raise HTTPException(status_code=400, detail=why)
+        sender = (body.get("from_email") or row.from_email or "").strip()
+        if not sender or not validate_email_address(sender):
+            raise HTTPException(
+                status_code=400,
+                detail="Enter the address your mail should come from")
+
+    row.transport = transport
+    if "smtp_host" in body:
+        row.smtp_host = host[:200]
+    if "smtp_port" in body:
+        row.smtp_port = port
+    if "smtp_user" in body:
+        row.smtp_user = (body.get("smtp_user") or "").strip()[:200]
+    if "smtp_starttls" in body:
+        row.smtp_starttls = bool(body.get("smtp_starttls"))
+    if "from_email" in body:
+        row.from_email = (body.get("from_email") or "").strip()[:200]
+    if "from_name" in body:
+        row.from_name = (body.get("from_name") or "").strip()[:120]
+
+    # An empty password field means "leave it alone", or saving any other
+    # change on this screen would wipe the password every time.
+    typed = body.get("smtp_password")
+    if typed:
+        row.smtp_password = typed[:400]
+    if body.get("clear_password"):
+        row.smtp_password = ""
+
+    row.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_audit(db, client.id, "email_settings_saved", "client", client.id,
+              client.company_name or "", f"Transport: {transport or 'platform'}",
+              request)
+    db.commit()
+    db.refresh(row)
+    return client_email_to_dict(row, client)
 
 
 @app.get("/api/payment-gateways")

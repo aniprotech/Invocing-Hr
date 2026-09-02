@@ -1779,6 +1779,33 @@ class DBStaffMessage(Base):
     request = relationship("DBStaffRequest", back_populates="messages")
 
 
+class DBClientEmailSettings(Base):
+    """How one business sends its own mail.
+
+    Everything used to leave through the operator's account, so a customer
+    received an invoice from us rather than from the business that raised it,
+    replies came back to the wrong place, and deliverability rode on one
+    domain's reputation for everybody.
+
+    The password is stored the way the payment gateway secrets already are:
+    written here, never read back out to a browser.
+    """
+    __tablename__ = "client_email_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False,
+                       unique=True, index=True)
+    transport = Column(String, default="")           # "" = follow the platform
+    smtp_host = Column(String, default="")
+    smtp_port = Column(Integer, default=587)
+    smtp_user = Column(String, default="")
+    smtp_password = Column(String, default="")
+    smtp_starttls = Column(Boolean, default=True)
+    from_email = Column(String, default="")
+    from_name = Column(String, default="")
+    updated_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
 class DBClientGateway(Base):
     """A business's own payment credentials, for collecting from its customers.
 

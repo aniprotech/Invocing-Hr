@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=130">
-    <link rel="stylesheet" href="mobile.css?v=130">
+    <link rel="stylesheet" href="styles.css?v=131">
+    <link rel="stylesheet" href="mobile.css?v=131">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,10 +57,10 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=130">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=130">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=130">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=130">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=131">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=131">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=131">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=131">
     <script src="/dialogs.js?v=1"></script>
 </head>
 <body>
@@ -1496,6 +1496,86 @@
                     </div>
                     </section>
                     <section data-settings-section="email" data-settings-label="Email">
+                        <!-- Everything used to leave through the operator's
+                             account, so a customer got an invoice from them
+                             rather than from the business that raised it, and
+                             replies went to the wrong company. -->
+                        <div class="glass-widget" style="margin-bottom:24px;">
+                        <div class="widget-header">
+                            <h3>How your email is sent</h3>
+                            <span id="email-settings-status" style="font-size:0.85rem;color:var(--text-secondary);"></span>
+                        </div>
+                        <div class="widget-content">
+                            <div class="form-group">
+                                <label for="email-transport">Send my email through</label>
+                                <select id="email-transport" class="form-control" onchange="onEmailTransportChange()">
+                                    <option value="">However the platform sends it</option>
+                                    <option value="gmail">The Google account I connect below</option>
+                                    <option value="smtp">My own mail server</option>
+                                </select>
+                            </div>
+
+                            <div id="email-smtp-fields" style="display:none;">
+                                <div class="grid-2 gap-16">
+                                    <div class="form-group">
+                                        <label for="email-smtp-host">Mail server</label>
+                                        <input type="text" id="email-smtp-host" class="form-control"
+                                               placeholder="smtp.yourprovider.com">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="email-smtp-port">Port</label>
+                                        <select id="email-smtp-port" class="form-control">
+                                            <option value="587">587 - STARTTLS</option>
+                                            <option value="465">465 - SSL</option>
+                                            <option value="2525">2525</option>
+                                            <option value="25">25</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="grid-2 gap-16">
+                                    <div class="form-group">
+                                        <label for="email-smtp-user">Username</label>
+                                        <input type="text" id="email-smtp-user" class="form-control"
+                                               autocomplete="off" placeholder="Often your email address">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="email-smtp-password">Password</label>
+                                        <input type="password" id="email-smtp-password" class="form-control"
+                                               autocomplete="new-password" placeholder="Leave blank to keep the saved one">
+                                        <small id="email-password-note" style="font-size:0.76rem;color:var(--text-secondary);"></small>
+                                    </div>
+                                </div>
+                                <div class="grid-2 gap-16">
+                                    <div class="form-group">
+                                        <label for="email-from-address">Send from this address</label>
+                                        <input type="email" id="email-from-address" class="form-control"
+                                               placeholder="billing@yourcompany.com">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="email-from-name">Shown as</label>
+                                        <input type="text" id="email-from-name" class="form-control"
+                                               placeholder="Your company name">
+                                    </div>
+                                </div>
+                                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.85rem;">
+                                    <input type="checkbox" id="email-smtp-starttls" checked>
+                                    Use STARTTLS (leave on unless your provider says otherwise)
+                                </label>
+                                <p style="font-size:0.78rem;color:var(--text-secondary);margin-top:10px;max-width:70ch;">
+                                    Your password is stored for sending and is never shown back to
+                                    you or anybody else. Your provider will reject mail sent from an
+                                    address it does not recognise, so use one it is happy to send for.
+                                </p>
+                            </div>
+
+                            <div id="email-settings-error" style="display:none;color:var(--danger-text);font-size:0.85rem;margin-top:10px;"></div>
+                            <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">
+                                <button class="btn btn-primary" id="email-settings-save" onclick="saveEmailSettings()">Save</button>
+                                <button class="btn btn-outline" id="email-clear-password" onclick="clearEmailPassword()" style="display:none;">Forget the saved password</button>
+                            </div>
+                        </div>
+                        </div>
+
                         <div class="glass-widget" style="margin-bottom:24px;">
                         <div class="widget-header">
                             <h3>Gmail API Connection</h3>
@@ -3651,7 +3731,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="app.js?v=130"></script>
+    <script src="app.js?v=131"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
