@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Invoice</title>
+  <title>Invoice - aniprotech</title>
   <style>
     /* The customer has no account and no stake in this product, so the page is
        plain paper: their invoice, legible, printable, and nothing else. */
@@ -20,7 +20,7 @@
     * { box-sizing: border-box; }
     body {
       margin: 0; background: var(--ground); color: var(--ink);
-      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      font-family: 'Poppins', system-ui, -apple-system, "Segoe UI", sans-serif;
       line-height: 1.55; -webkit-font-smoothing: antialiased;
     }
     .sheet {
@@ -92,11 +92,20 @@
     }
   </style>
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=129">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=129">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=129">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=129">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=130">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=130">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=130">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=130">
     <script src="/dialogs.js?v=1"></script>
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="aniprotech">
+    <meta property="og:title" content="Your invoice">
+    <meta property="og:description" content="View and pay this invoice online.">
+    <meta property="og:image" content="/icons/icon-512.png">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Your invoice">
+    <meta name="twitter:description" content="View and pay this invoice online.">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
   <div id="state">Loading your invoice...</div>
