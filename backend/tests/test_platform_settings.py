@@ -11,6 +11,8 @@ just because a settings page exists.
 """
 import pytest
 
+from fastapi.testclient import TestClient
+
 import main
 import models
 
@@ -40,11 +42,21 @@ def _leave_no_settings_behind():
 
 
 @pytest.fixture
-def operator(client):
-    res = client.post("/api/superadmin/login", json={
-        "identifier": "hello@keyroutes.co", "password": "TestSuper123"})
-    assert res.status_code == 200, res.text
-    return client
+def operator():
+    """The operator in a session of its own.
+
+    It used to sign in on the same TestClient a tenant was using, so one
+    session held both identities at once. Signing in now starts a fresh
+    session - which is the point of it - so sharing a client would simply
+    log the tenant out. In production these are two different sign-ins
+    anyway, and a browser that is both a customer and the platform operator
+    is the privilege mixing that clearing exists to prevent.
+    """
+    with TestClient(main.app) as own:
+        res = own.post("/api/superadmin/login", json={
+            "identifier": "hello@keyroutes.co", "password": "TestSuper123"})
+        assert res.status_code == 200, res.text
+        yield own
 
 
 def get_all(operator):

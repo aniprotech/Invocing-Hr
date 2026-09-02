@@ -13,8 +13,10 @@ reason reported after everything has failed is the one an operator can act on.
 import json
 
 import pytest
+from fastapi.testclient import TestClient
 
 import llm
+import main
 
 
 @pytest.fixture(autouse=True)
@@ -341,11 +343,21 @@ def test_the_free_tier_is_the_default_arrangement():
 # are which links are live, which one did the work, and what the cache saved.
 
 @pytest.fixture
-def operator(client):
-    res = client.post("/api/superadmin/login", json={
-        "identifier": "hello@keyroutes.co", "password": "TestSuper123"})
-    assert res.status_code == 200, res.text
-    return client
+def operator():
+    """The operator in a session of its own.
+
+    It used to sign in on the same TestClient a tenant was using, so one
+    session held both identities at once. Signing in now starts a fresh
+    session - which is the point of it - so sharing a client would simply
+    log the tenant out. In production these are two different sign-ins
+    anyway, and a browser that is both a customer and the platform operator
+    is the privilege mixing that clearing exists to prevent.
+    """
+    with TestClient(main.app) as own:
+        res = own.post("/api/superadmin/login", json={
+            "identifier": "hello@keyroutes.co", "password": "TestSuper123"})
+        assert res.status_code == 200, res.text
+        yield own
 
 
 def test_the_status_page_lists_the_whole_chain(operator, monkeypatch):
