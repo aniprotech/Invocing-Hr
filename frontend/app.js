@@ -9105,6 +9105,15 @@ var INSIGHT_VIEWS = [
     },
 ];
 
+function shortNumber(value) {
+    try {
+        return new Intl.NumberFormat('en-GB',
+            { notation: 'compact', maximumFractionDigits: 1 }).format(value || 0);
+    } catch (e) {
+        return String(value);
+    }
+}
+
 function insightColours() {
     var css = getComputedStyle(document.documentElement);
     var pick = function (name, fallback) {
@@ -9143,16 +9152,43 @@ async function loadInsights() {
 }
 window.loadInsights = loadInsights;
 
+// A figure in the tens of trillions written out in full does not fit a card -
+// it wrapped down three lines and split between digits. Past ten million it is
+// shortened, with the exact amount kept on the element for hovering.
+function insightMoney(amount, currency) {
+    var value = Number(amount || 0);
+    var cur = currency || 'GBP';
+    var exact;
+    try {
+        exact = new Intl.NumberFormat('en-GB',
+            { style: 'currency', currency: cur }).format(value);
+    } catch (e) {
+        exact = cur + ' ' + value.toFixed(2);
+    }
+    if (Math.abs(value) < 1e7) return { text: exact, title: exact };
+    var short;
+    try {
+        short = new Intl.NumberFormat('en-GB', {
+            style: 'currency', currency: cur,
+            notation: 'compact', maximumFractionDigits: 2,
+        }).format(value);
+    } catch (e) {
+        short = exact;
+    }
+    return { text: short, title: exact };
+}
+
 function renderInsightTotals() {
     var host = document.getElementById('insight-totals');
     if (!host || !_insights) return;
     var t = _insights.totals || {};
-    var cur = t.currency || '';
-    var card = function (label, value, colour) {
+    var cur = t.currency || 'GBP';
+    var card = function (label, shown, colour) {
         return '<div class="stat-card" style="cursor:default;">' +
                '<span class="stat-label">' + esc(label) + '</span>' +
-               '<span class="stat-value"' + (colour ? ' style="color:' + colour + ';"' : '') +
-               '>' + esc(value) + '</span></div>';
+               '<span class="stat-value figure" title="' + esc(shown.title) + '"' +
+               (colour ? ' style="color:' + colour + ';"' : '') +
+               '>' + esc(shown.text) + '</span></div>';
     };
     var c = insightColours();
     // Said as "not enough data yet" rather than 0, because nobody paying in
@@ -9161,10 +9197,10 @@ function renderInsightTotals() {
         ? 'Not enough data yet'
         : t.average_days_to_pay + ' days';
     host.innerHTML =
-        card('Invoiced', cur + ' ' + Number(t.invoiced || 0).toFixed(2)) +
-        card('Collected', cur + ' ' + Number(t.collected || 0).toFixed(2), c.success) +
-        card('Still owed', cur + ' ' + Number(t.outstanding || 0).toFixed(2), c.warning) +
-        card('Average time to pay', speed);
+        card('Invoiced', insightMoney(t.invoiced, cur)) +
+        card('Collected', insightMoney(t.collected, cur), c.success) +
+        card('Still owed', insightMoney(t.outstanding, cur), c.warning) +
+        card('Average time to pay', { text: speed, title: speed });
 }
 
 function insightData(view) {
@@ -9290,8 +9326,15 @@ function drawInsight() {
             },
             scales: round ? {} : {
                 x: { grid: { color: c.line }, ticks: { color: c.muted } },
-                y: { grid: { color: c.line }, ticks: { color: c.muted },
-                     beginAtZero: true },
+                y: {
+                    grid: { color: c.line }, beginAtZero: true,
+                    ticks: {
+                        color: c.muted,
+                        // Otherwise a tick reads 44000000000000 and the axis
+                        // takes half the panel.
+                        callback: function (v) { return shortNumber(v); },
+                    },
+                },
             },
         },
     });

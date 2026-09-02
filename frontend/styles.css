@@ -1646,3 +1646,67 @@ body::after {
     font-size: 0.85rem;
     font-weight: 600;
 }
+
+
+/* ===== INSIGHTS ===== */
+/* .widget is a flex column, so the toolbar needs to say it is a row or the
+   labels stack above their controls and drift to the middle of the page. */
+.insight-toolbar {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    padding: 16px 20px;
+    margin-bottom: 20px;
+}
+.insight-toolbar label {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+.insight-toolbar .form-control {
+    width: auto;
+    min-width: 200px;
+    max-width: 100%;
+}
+.insight-toolbar #insight-months { min-width: 130px; }
+.insight-toolbar #insight-note {
+    margin-left: auto;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+
+.insight-panel { padding: 20px; }
+.insight-panel h3 { font-size: 0.95rem; margin: 0 0 4px; }
+.insight-panel p {
+    font-size: 0.8rem; color: var(--text-secondary); margin: 0 0 16px;
+}
+.insight-canvas { position: relative; height: 380px; width: 100%; }
+
+/* A figure in the tens of trillions was being broken between digits by the
+   page-wide overflow-wrap, so it ran down the card in three lines. These are
+   shown short with the exact amount on hover, and never split mid-number. */
+.stat-card .stat-value.figure {
+    overflow-wrap: normal;
+    word-break: keep-all;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: block;
+}
+
+@media (max-width: 640px) {
+    /* Wrapping left each label at the end of a row and its control at the
+       start of the next, so "Over" sat beside the wrong dropdown. A grid
+       keeps every label with the thing it names. */
+    .insight-toolbar {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: center;
+        gap: 10px 12px;
+    }
+    .insight-toolbar .form-control { min-width: 0; width: 100%; }
+    .insight-toolbar #insight-note { grid-column: 1 / -1; margin-left: 0; }
+    .insight-canvas { height: 300px; }
+}

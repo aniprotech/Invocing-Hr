@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=125">
-    <link rel="stylesheet" href="mobile.css?v=125">
+    <link rel="stylesheet" href="styles.css?v=126">
+    <link rel="stylesheet" href="mobile.css?v=126">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,10 +57,10 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=125">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=125">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=125">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=125">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=126">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=126">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=126">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=126">
     <script src="/dialogs.js?v=1"></script>
 </head>
 <body>
@@ -1216,25 +1216,25 @@
                         <p class="subtitle">Counted from your invoices and payments.</p>
                     </header>
 
-                    <div class="widget" style="padding:18px 20px;margin-bottom:20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
-                        <label for="insight-pick" style="font-size:0.82rem;color:var(--text-secondary);">Show</label>
-                        <select id="insight-pick" class="form-control" style="width:auto;min-width:220px;" onchange="drawInsight()"></select>
-                        <label for="insight-months" style="font-size:0.82rem;color:var(--text-secondary);margin-left:8px;">Over</label>
-                        <select id="insight-months" class="form-control" style="width:auto;" onchange="loadInsights()">
+                    <div class="widget insight-toolbar">
+                        <label for="insight-pick">Show</label>
+                        <select id="insight-pick" class="form-control" onchange="drawInsight()"></select>
+                        <label for="insight-months">Over</label>
+                        <select id="insight-months" class="form-control" onchange="loadInsights()">
                             <option value="3">3 months</option>
                             <option value="6" selected>6 months</option>
                             <option value="12">12 months</option>
                             <option value="24">24 months</option>
                         </select>
-                        <span id="insight-note" style="margin-left:auto;font-size:0.78rem;color:var(--text-secondary);"></span>
+                        <span id="insight-note"></span>
                     </div>
 
                     <div class="grid-4 mb-24" id="insight-totals"></div>
 
-                    <div class="widget" style="padding:20px;">
-                        <h3 id="insight-title" style="font-size:0.95rem;margin:0 0 4px;"></h3>
-                        <p id="insight-why" style="font-size:0.8rem;color:var(--text-secondary);margin:0 0 16px;"></p>
-                        <div style="position:relative;height:360px;width:100%;">
+                    <div class="widget insight-panel">
+                        <h3 id="insight-title"></h3>
+                        <p id="insight-why"></p>
+                        <div class="insight-canvas">
                             <canvas id="insightChart"></canvas>
                         </div>
                         <div id="insight-empty" style="display:none;text-align:center;color:var(--text-secondary);padding:40px;"></div>
@@ -3584,7 +3584,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="app.js?v=125"></script>
+    <script src="app.js?v=126"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">

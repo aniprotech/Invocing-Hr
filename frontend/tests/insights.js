@@ -191,8 +191,9 @@ const last = drawn => drawn[drawn.length - 1];
         await wait(80);
         await w.loadInsights();
         const totals = w.document.getElementById('insight-totals').textContent;
-        check('the headline figures are shown', /1800\.00/.test(totals), totals.slice(0, 80));
-        check('with the currency', /GBP/.test(totals));
+        check('the headline figures are grouped, not a run of digits',
+            /1,800\.00/.test(totals), totals.slice(0, 90));
+        check('and carry the currency symbol', /£/.test(totals), totals.slice(0, 60));
         check('and the average time to pay', /9\.2 days/.test(totals), totals.slice(0, 120));
     }
 
@@ -203,6 +204,26 @@ const last = drawn => drawn[drawn.length - 1];
         const totals = w.document.getElementById('insight-totals').textContent;
         check('nobody having paid yet is said, not shown as nought days',
             /Not enough data yet/.test(totals), totals.slice(0, 140));
+    }
+
+    // --- figures that do not fit a card -----------------------------------------
+    {
+        // A real business here had 44 trillion in test data. Written out it
+        // broke between digits and ran down the card in three lines.
+        const huge = JSON.parse(JSON.stringify(FULL));
+        huge.totals.invoiced = 44044265245011.12;
+        const { w } = boot(huge);
+        await wait(80);
+        await w.loadInsights();
+        const cell = w.document.querySelector('#insight-totals .stat-value');
+        check('a huge figure is shortened so it fits',
+            cell.textContent.length < 14, cell.textContent);
+        check('and reads as trillions rather than a wall of digits',
+            /tn|T/.test(cell.textContent), cell.textContent);
+        check('with the exact amount kept for hovering',
+            /44,044,265,245,011/.test(cell.title), cell.title);
+        check('and it is never broken between digits',
+            cell.classList.contains('figure'));
     }
 
     // --- nothing to draw ----------------------------------------------------------
