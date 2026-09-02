@@ -2358,6 +2358,14 @@ function renderInvoicePayments(inv) {
                 'font-weight:600;margin-bottom:10px;">Overdue by ' + inv.days_overdue +
                 ' day' + (inv.days_overdue === 1 ? '' : 's') + ' — ' + sym + (inv.due || 0).toFixed(2) + ' outstanding</div>';
     }
+    // A settled invoice says so, rather than leaving somebody to notice that
+    // a status pill somewhere changed word.
+    if (payments.length && (inv.due || 0) <= 0) {
+        var latest = payments[payments.length - 1] || {};
+        html += '<div class="payment-settled">Paid in full' +
+                (latest.paid_on ? ' on ' + esc(latest.paid_on) : '') +
+                ' &mdash; ' + sym + (inv.paid || 0).toFixed(2) + ' received</div>';
+    }
     if (payments.length) {
         html += '<div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;' +
                 'color:var(--text-secondary);margin-bottom:6px;">Payments received</div>';
@@ -3485,29 +3493,125 @@ window.markAsPaid = markAsPaid;
 // --- Part payments ---
 // Invoices are rarely settled in one hit; this records a receipt against the
 // outstanding balance and lets the server move the status.
-async function recordPayment(number) {
+// Recording a payment was two prompt boxes in a row - the amount, then a
+// reference - with nowhere to say when the money actually arrived. Everything
+// was therefore dated the day it was typed, which is wrong for anything banked
+// earlier and wrong in every report that measures how long people take to pay.
+
+var _paymentNumber = null;
+
+function todayISO() {
+    var d = new Date();
+    return d.getFullYear() + '-' +
+        String(d.getMonth() + 1).padStart(2, '0') + '-' +
+        String(d.getDate()).padStart(2, '0');
+}
+
+function recordPayment(number) {
     number = number || (document.getElementById('view-inv-number-val') || {}).textContent;
     if (!number) return;
-    var outstanding = _viewOutstanding || 0;
-    var raw = await uiPrompt('Payment amount' + (outstanding ? ' (outstanding: ' + outstanding.toFixed(2) + ')' : '') + ':',
-                     outstanding ? outstanding.toFixed(2) : '');
-    if (raw === null) return;
-    var amount = parseFloat(raw);
-    if (isNaN(amount) || amount <= 0) { showToast('Enter a valid amount', 'error'); return; }
-    var reference = await uiPrompt('Reference (optional):', '') || '';
-    try {
-        var res = await fetch('/api/invoices/' + encodeURIComponent(number) + '/payments', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ amount: amount, reference: reference })
-        });
-        var data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Failed');
-        showToast('Payment recorded — ' + data.status, 'success');
-        fetchInvoices();
-        viewInvoice(number);
-    } catch (e) { showToast('Failed: ' + e.message, 'error'); }
+    _paymentNumber = number;
+
+    var outstanding = Number(_viewOutstanding || 0);
+    var sym = getCurrencySymbol();
+
+    document.getElementById('payment-owed').innerHTML =
+        'Outstanding on ' + esc(number) + ': <strong>' + esc(sym + outstanding.toFixed(2)) + '</strong>';
+    document.getElementById('payment-amount').value = outstanding > 0 ? outstanding.toFixed(2) : '';
+    document.getElementById('payment-amount').max = outstanding > 0 ? outstanding.toFixed(2) : '';
+
+    var date = document.getElementById('payment-date');
+    date.value = todayISO();
+    // Money cannot have arrived tomorrow, and a typo in the year is the usual
+    // way that happens.
+    date.max = todayISO();
+
+    document.getElementById('payment-reference').value = '';
+    document.getElementById('payment-method').value = 'bank_transfer';
+    document.getElementById('payment-error').style.display = 'none';
+    document.getElementById('payment-modal').style.display = 'flex';
+    updatePaymentRemainder();
 }
 window.recordPayment = recordPayment;
+
+function closePaymentModal() {
+    document.getElementById('payment-modal').style.display = 'none';
+}
+window.closePaymentModal = closePaymentModal;
+
+// What will still be owed once this is recorded, said before it is recorded.
+function updatePaymentRemainder() {
+    var host = document.getElementById('payment-remainder');
+    if (!host) return;
+    var outstanding = Number(_viewOutstanding || 0);
+    var amount = parseFloat(document.getElementById('payment-amount').value);
+    var sym = getCurrencySymbol();
+    if (isNaN(amount) || amount <= 0) { host.textContent = ''; host.className = 'payment-remainder'; return; }
+
+    var left = Math.round((outstanding - amount) * 100) / 100;
+    if (left <= 0) {
+        host.textContent = 'This settles the invoice in full.';
+        host.className = 'payment-remainder settled';
+    } else {
+        host.textContent = sym + left.toFixed(2) + ' will still be outstanding.';
+        host.className = 'payment-remainder';
+    }
+}
+window.updatePaymentRemainder = updatePaymentRemainder;
+
+async function confirmPayment() {
+    var err = document.getElementById('payment-error');
+    var btn = document.getElementById('payment-save-btn');
+    var show = function (message) {
+        err.textContent = message;
+        err.style.display = 'block';
+    };
+
+    var amount = parseFloat(document.getElementById('payment-amount').value);
+    if (isNaN(amount) || amount <= 0) { show('Enter an amount greater than zero.'); return; }
+
+    var outstanding = Number(_viewOutstanding || 0);
+    if (amount - outstanding > 0.005) {
+        // The server refuses this too. Saying so here means somebody is not
+        // told their payment failed after they thought they had recorded it.
+        show('That is more than the ' + getCurrencySymbol() + outstanding.toFixed(2) +
+             ' outstanding on this invoice.');
+        return;
+    }
+
+    var paidOn = document.getElementById('payment-date').value;
+    if (!paidOn) { show('Enter the date the money arrived.'); return; }
+    if (paidOn > todayISO()) { show('That date is in the future.'); return; }
+
+    btn.disabled = true;
+    err.style.display = 'none';
+    try {
+        var res = await fetch('/api/invoices/' + encodeURIComponent(_paymentNumber) + '/payments', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                amount: amount,
+                paid_on: paidOn,
+                method: document.getElementById('payment-method').value,
+                reference: document.getElementById('payment-reference').value.trim(),
+            }),
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) { show(data.detail || 'Could not record that payment.'); return; }
+
+        closePaymentModal();
+        showToast(Number(data.due || 0) <= 0
+            ? 'Payment recorded - this invoice is paid in full'
+            : 'Payment recorded - ' + getCurrencySymbol() +
+              Number(data.due || 0).toFixed(2) + ' still outstanding', 'success');
+        fetchInvoices();
+        viewInvoice(_paymentNumber);
+    } catch (e) {
+        show('Could not record that payment: ' + e.message);
+    } finally {
+        btn.disabled = false;
+    }
+}
+window.confirmPayment = confirmPayment;
 
 async function reversePayment(number, paymentId) {
     if (!await uiConfirm('Reverse this payment?')) return;
@@ -3773,18 +3877,31 @@ function checkLineRow(row) {
     if (!inUse) return [];
 
     var problems = [];
+    // One reason per cell. The summary counts cells, so flagging the same box
+    // twice would say two things are wrong when one is, and the second message
+    // would overwrite the more specific first one.
     var fail = function (input, message) {
+        if (input && input.classList.contains('cell-invalid')) return;
         markCell(input, message);
         problems.push(message);
     };
 
     if (!nameVal && !descVal) fail(name || desc, 'Enter an item or a description');
 
-    if (badNumber(qty) || !qty || qty.value === '' || !(qtyNum > 0)) {
+    // Typed something a number box cannot read - "12a" reports as empty, so
+    // this is the only way to tell it from nothing entered.
+    if (badNumber(qty)) fail(qty, 'Enter the quantity as a number');
+    if (badNumber(price)) fail(price, 'Enter the price as a number');
+
+    if (!badNumber(qty) && qtyNum < 0) fail(qty, 'A quantity cannot be less than zero');
+    if (!badNumber(price) && priceNum < 0) fail(price, 'A price cannot be less than zero');
+
+    // A line that only says something - bank details, a note, a heading - is
+    // a normal thing to put on an invoice and is left alone. Only a line that
+    // is charging for something needs a quantity to charge for, or it bills
+    // nothing while looking like it bills something.
+    if (priceNum > 0 && !(qtyNum > 0)) {
         fail(qty, 'Enter a quantity greater than zero');
-    }
-    if (badNumber(price) || !price || price.value === '' || priceNum < 0) {
-        fail(price, 'Enter a price of zero or more');
     }
     // The discount is a percentage of the line, so more than all of it is the
     // case the brief names: the line would owe the customer money.

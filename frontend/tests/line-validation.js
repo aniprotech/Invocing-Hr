@@ -158,7 +158,8 @@ const GOOD = { '.item-name': 'Widget', '.item-qty': '2', '.item-price': '10' };
     {
         const { w } = boot();
         await wait(60);
-        addRow(w, { '.item-name': 'A', '.item-qty': '0', '.item-price': '-5' });
+        addRow(w, { '.item-name': 'A', '.item-qty': '0', '.item-price': '10',
+                    '.item-disc': '150' });
         w.validateInvoiceLines('invoice');
         check('two bad cells are counted as two',
             bannerText(w) === '2 of the table cells have invalid data entered',
@@ -172,6 +173,57 @@ const GOOD = { '.item-name': 'Widget', '.item-qty': '2', '.item-price': '10' };
             w.validateInvoiceLines('invoice') === false);
         check('and says that, rather than counting cells',
             /Add at least one line/.test(bannerText(w)), bannerText(w));
+    }
+
+    // --- a line that only says something ------------------------------------
+    {
+        // Reported from a real invoice: bank details typed into the
+        // description of their own line, with no quantity and no price, were
+        // marked as errors. A note line is a normal thing to put on an
+        // invoice and Xero allows it.
+        const { w } = boot();
+        await wait(60);
+        const row = addRow(w, {
+            '.item-desc': 'Account Details: Sort Code 30-54-66, Account No 11591362',
+        });
+        addRow(w, GOOD);
+        check('a description with no money on it is not an error',
+            w.validateInvoiceLines('invoice') === true, bannerText(w));
+        check('and nothing on that row is marked',
+            !row.querySelector('.item-qty').classList.contains('cell-invalid') &&
+            !row.querySelector('.item-price').classList.contains('cell-invalid'));
+    }
+
+    {
+        // The other half of the same rule: charging for something still needs
+        // a quantity, or the line bills nothing while looking like it bills.
+        const { w } = boot();
+        await wait(60);
+        const row = addRow(w, { '.item-name': 'Widget', '.item-qty': '0', '.item-price': '80' });
+        check('a price with no quantity is still refused',
+            w.validateInvoiceLines('invoice') === false);
+        check('on the quantity cell',
+            row.querySelector('.item-qty').classList.contains('cell-invalid'));
+    }
+
+    {
+        // Giving something away is a real thing to do.
+        const { w } = boot();
+        await wait(60);
+        addRow(w, { '.item-name': 'Sample', '.item-qty': '2', '.item-price': '0' });
+        check('a free line is allowed', w.validateInvoiceLines('invoice') === true,
+            bannerText(w));
+    }
+
+    {
+        const { w } = boot();
+        await wait(60);
+        const row = addRow(w, { '.item-name': 'Widget', '.item-qty': '-1', '.item-price': '10' });
+        check('a negative quantity is refused',
+            w.validateInvoiceLines('invoice') === false);
+        check('and named as negative rather than as missing',
+            /less than zero/.test(row.querySelector('.item-qty').title),
+            row.querySelector('.item-qty').title);
     }
 
     // --- it actually stops the save ------------------------------------------
