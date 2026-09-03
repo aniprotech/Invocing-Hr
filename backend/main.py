@@ -2606,6 +2606,42 @@ def _mark_delivered(db, row):
             ps.sent = today
 
 
+def delivery_to_dict(row):
+    return {
+        "id": row.id,
+        "kind": row.kind,
+        "reference": row.reference or "",
+        "to_email": row.to_email or "",
+        "status": row.status or "pending",
+        # The provider's own words. "Could not send" tells nobody whether to
+        # fix an address or wait.
+        "error": row.error or "",
+        "refunded": bool(row.refunded),
+        "created_at": row.created_at or "",
+        "completed_at": row.completed_at or "",
+    }
+
+
+@app.get("/api/deliveries")
+def list_deliveries(request: Request, status: str = "failed", limit: int = 50,
+                    db: Session = Depends(get_db)):
+    """What has been emailed lately, and what did not arrive."""
+    client = get_client_user(request, db)
+    q = db.query(models.DBEmailDelivery).filter(
+        models.DBEmailDelivery.client_id == client.id)
+    if status and status != "all":
+        q = q.filter(models.DBEmailDelivery.status == status)
+    rows = q.order_by(models.DBEmailDelivery.id.desc()).limit(
+        max(1, min(int(limit or 50), 200))).all()
+
+    failed = db.query(sqlfunc.count(models.DBEmailDelivery.id)).filter(
+        models.DBEmailDelivery.client_id == client.id,
+        models.DBEmailDelivery.status == "failed").scalar() or 0
+
+    return {"deliveries": [delivery_to_dict(r) for r in rows],
+            "failed_count": int(failed)}
+
+
 def start_delivery(db, client_id, kind, reference, to_email, charge_tx):
     """Write the attempt down before it is made."""
     row = models.DBEmailDelivery(
@@ -2837,7 +2873,17 @@ def get_invoice(number: str, request: Request, db: Session = Depends(get_db)):
     payments = db.query(models.DBPayment).filter(
         models.DBPayment.invoice_id == inv.id
     ).order_by(models.DBPayment.id.asc()).all()
+
+    # Whether the last attempt to email this actually arrived. Recording a
+    # failure and showing nothing leaves it as silent as pretending it went.
+    last_send = db.query(models.DBEmailDelivery).filter(
+        models.DBEmailDelivery.client_id == client.id,
+        models.DBEmailDelivery.kind == "invoice",
+        models.DBEmailDelivery.reference == inv.number).order_by(
+            models.DBEmailDelivery.id.desc()).first()
+
     return {
+        "last_delivery": delivery_to_dict(last_send) if last_send else None,
         "id": inv.id,
         "number": inv.number,
         "ref": inv.ref,

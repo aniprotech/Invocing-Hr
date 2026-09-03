@@ -535,6 +535,7 @@ function showView(viewId) {
     if (viewId === 'create-invoice-view' && typeof prepareNewInvoiceForm === 'function') prepareNewInvoiceForm();
     if (viewId === 'create-invoice-view' && typeof fetchNextInvoiceNumber === 'function') fetchNextInvoiceNumber();
     if (viewId === 'create-invoice-view' && typeof setupContactAutocomplete === 'function') setupContactAutocomplete();
+    if (viewId === 'invoices-view' && typeof loadDeliveryFailures === 'function') loadDeliveryFailures();
     if (viewId === 'settings-view' && typeof loadGmailStatus === 'function') loadGmailStatus();
     if (viewId === 'settings-view' && typeof loadEmailSettings === 'function') loadEmailSettings();
     if (typeof checkEmailVerified === 'function') checkEmailVerified();
@@ -2402,6 +2403,7 @@ async function viewInvoice(number) {
         _viewTrackingId = inv.tracking_id || '';
         _viewOutstanding = inv.due || 0;
         renderInvoicePayments(inv);
+        if (typeof showInvoiceDelivery === 'function') showInvoiceDelivery(inv);
         document.getElementById('view-inv-title').textContent = 'Invoice ' + inv.number;
         document.getElementById('view-inv-number-val').textContent = inv.number;
     document.getElementById('view-inv-ref').textContent = inv.reference || '-';
@@ -4079,6 +4081,63 @@ function hideInvoiceMadeBar() {
     if (bar) bar.style.display = 'none';
 }
 window.hideInvoiceMadeBar = hideInvoiceMadeBar;
+
+// --- Deliveries that did not arrive ----------------------------------------
+// A failure was being recorded and shown nowhere, which is only marginally
+// better than the old behaviour of claiming it had been sent.
+
+function showInvoiceDelivery(inv) {
+    var bar = document.getElementById('invoice-undelivered');
+    if (!bar) return;
+    var last = inv && inv.last_delivery;
+    if (!last || last.status !== 'failed') { bar.style.display = 'none'; return; }
+
+    document.getElementById('invoice-undelivered-why').textContent =
+        (last.error || 'The mail server did not accept it.') +
+        (last.refunded ? ' You have not been charged for it.' : '');
+    bar.style.display = 'flex';
+}
+window.showInvoiceDelivery = showInvoiceDelivery;
+
+async function loadDeliveryFailures() {
+    var bar = document.getElementById('delivery-failures');
+    if (!bar) return;
+    try {
+        var res = await fetch('/api/deliveries?status=failed&limit=50');
+        if (!res.ok) return;
+        var data = await res.json();
+        var n = data.failed_count || 0;
+        if (!n) { bar.style.display = 'none'; return; }
+        document.getElementById('delivery-failures-text').textContent =
+            n === 1 ? '1 invoice or payslip did not reach anybody.'
+                    : n + ' invoices or payslips did not reach anybody.';
+        bar.style.display = 'flex';
+        bar.dataset.rows = JSON.stringify(data.deliveries || []);
+    } catch (e) { /* the list still works */ }
+}
+window.loadDeliveryFailures = loadDeliveryFailures;
+
+function showFailedDeliveries() {
+    var bar = document.getElementById('delivery-failures');
+    var host = document.getElementById('delivery-failure-list');
+    var rows = [];
+    try { rows = JSON.parse(bar.dataset.rows || '[]'); } catch (e) { rows = []; }
+
+    host.innerHTML = rows.map(function (r) {
+        return '<div class="delivery-failure-row">' +
+            '<strong>' + esc(r.reference || r.kind) + '</strong>' +
+            '<span>' + esc(r.to_email) + '</span>' +
+            '<span style="margin-left:auto;color:var(--text-secondary);">' +
+                esc((r.completed_at || '').slice(0, 16)) + '</span>' +
+            // The provider's own words, so somebody can tell a wrong address
+            // from a server that was down.
+            '<span class="why">' + esc(r.error || 'No reason recorded.') +
+            (r.refunded ? ' (refunded)' : '') + '</span>' +
+            '</div>';
+    }).join('') || '<p style="color:var(--text-secondary);">Nothing to show.</p>';
+    host.style.display = host.style.display === 'block' ? 'none' : 'block';
+}
+window.showFailedDeliveries = showFailedDeliveries;
 
 function createAnotherInvoice() {
     hideInvoiceMadeBar();

@@ -1775,3 +1775,26 @@ body::after {
     font-weight: 600;
 }
 .verify-bar-link:hover { text-decoration: underline; }
+
+
+/* ===== DELIVERY FAILURES ===== */
+.invoice-undelivered, .delivery-failures {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 12px 16px; margin-bottom: 16px;
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--danger-color) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--danger-color) 35%, transparent);
+    font-size: 0.88rem;
+}
+.invoice-undelivered button { margin-left: auto; }
+#invoice-undelivered-why {
+    font-size: 0.82rem; color: var(--text-secondary); margin-top: 3px;
+}
+.delivery-failure-row {
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    padding: 10px 14px; border: 1px solid var(--border-color);
+    border-radius: var(--radius-md); margin-bottom: 8px; font-size: 0.85rem;
+}
+.delivery-failure-row .why {
+    color: var(--text-secondary); font-size: 0.8rem; flex-basis: 100%;
+}
