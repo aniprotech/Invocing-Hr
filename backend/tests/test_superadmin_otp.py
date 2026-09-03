@@ -383,3 +383,205 @@ def test_that_refusal_says_nothing_about_the_account(client, monkeypatch):
         assert known.json() == stranger.json()
     finally:
         _set_transport(was or "gmail")
+
+
+# --- setting a new password ---------------------------------------------------------
+# These change a real credential in a database that outlives the run. Restoring
+# it inline does not survive a failure half way through - the first version of
+# this left the operator locked out of the dev database - so it is a fixture,
+# which runs whatever happens.
+@pytest.fixture
+def password_restored():
+    def snapshot():
+        with main.SessionLocal() as db:
+            row = db.query(models.DBSuperAdmin).filter(
+                models.DBSuperAdmin.email == OPERATOR).first()
+            return row.password_hash if row else ""
+
+    was = snapshot()
+    yield
+    with main.SessionLocal() as db:
+        row = db.query(models.DBSuperAdmin).filter(
+            models.DBSuperAdmin.email == OPERATOR).first()
+        if row:
+            row.password_hash = was
+            db.commit()
+
+
+def sign_in_with_code(client):
+    request_code(client)
+    res = client.post("/api/superadmin/verify-otp",
+                      json={"identifier": OPERATOR, "code": latest_code()})
+    assert res.status_code == 200, res.text
+
+
+def sign_in_with_password(client, password="TestSuper123"):
+    res = client.post("/api/superadmin/login",
+                      json={"identifier": OPERATOR, "password": password})
+    assert res.status_code == 200, res.text
+
+
+def test_a_code_lets_you_set_a_new_password_without_the_old_one(client, password_restored):
+    """The whole point of having codes: somebody who has forgotten the
+    password can still get back in, and only from the inbox on the account."""
+    sign_in_with_code(client)
+    res = client.post("/api/superadmin/change-password",
+                      json={"new_password": "BrandNewPass1"})
+    assert res.status_code == 200, res.text
+    assert res.json()["by_code"] is True
+
+    main.rate_limiter._hits.clear()
+    with TestClient(main.app) as fresh:
+        assert fresh.post("/api/superadmin/login", json={
+            "identifier": OPERATOR, "password": "BrandNewPass1"}).status_code == 200
+
+
+def test_a_password_session_still_needs_the_current_password(client, password_restored):
+    """This asked for nothing at all, so anybody who got hold of an operator
+    session could lock the real operator out for good."""
+    sign_in_with_password(client)
+    res = client.post("/api/superadmin/change-password",
+                      json={"new_password": "SomethingElse1"})
+    assert res.status_code == 400, res.text
+    assert "current password" in res.json()["detail"]
+
+
+def test_the_wrong_current_password_is_refused(client, password_restored):
+    sign_in_with_password(client)
+    # There has to be a hash for the current-password rule to apply at all.
+    client_code_reset(client)
+    res = client.post("/api/superadmin/change-password",
+                      json={"current_password": "not-it",
+                            "new_password": "SomethingElse1"})
+    assert res.status_code == 401, res.text
+
+
+def client_code_reset(client):
+    """Give the account a real password hash, the supported way."""
+    sign_in_with_code(client)
+    assert client.post("/api/superadmin/change-password",
+                       json={"new_password": "KnownPass123"}).status_code == 200
+    main.rate_limiter._hits.clear()
+    client.post("/api/superadmin/login",
+                json={"identifier": OPERATOR, "password": "KnownPass123"})
+
+
+def test_the_right_current_password_is_accepted(client, password_restored):
+    client_code_reset(client)
+    res = client.post("/api/superadmin/change-password",
+                      json={"current_password": "KnownPass123",
+                            "new_password": "AnotherPass1"})
+    assert res.status_code == 200, res.text
+    assert res.json()["by_code"] is False
+
+
+def test_one_code_sets_one_password(client, password_restored):
+    """Otherwise the code stays a reset token for the rest of the session, and
+    a machine left open is a way in for as long as the tab is."""
+    sign_in_with_code(client)
+    first = client.post("/api/superadmin/change-password",
+                        json={"new_password": "FirstChange1"})
+    assert first.status_code == 200, first.text
+
+    again = client.post("/api/superadmin/change-password",
+                        json={"new_password": "SecondChange1"})
+    assert again.status_code == 400, "the code was still good for another go"
+
+
+def test_a_code_that_has_gone_stale_is_not_a_reset(client, password_restored):
+    """A session left open on a borrowed machine must not still be a reset
+    token tomorrow. The window is checked against the stamp, so a stamp older
+    than the window is the thing to test."""
+    stale = (datetime.now() - timedelta(minutes=main.OTP_RESET_MINUTES + 5)
+             ).strftime("%Y-%m-%d %H:%M:%S")
+
+    class Stamped:
+        def __init__(self, value):
+            self.session = {"superadmin_otp_at": value}
+
+    assert main.signed_in_with_a_recent_code(Stamped(stale)) is False
+    fresh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    assert main.signed_in_with_a_recent_code(Stamped(fresh)) is True
+    assert main.signed_in_with_a_recent_code(Stamped("")) is False
+    assert main.signed_in_with_a_recent_code(Stamped("not a date")) is False
+
+
+def test_a_short_password_is_refused(client, password_restored):
+    sign_in_with_code(client)
+    res = client.post("/api/superadmin/change-password",
+                      json={"new_password": "short1"})
+    assert res.status_code == 400
+    assert "8 characters" in res.json()["detail"]
+
+
+def test_the_form_is_told_whether_it_must_ask(client, password_restored):
+    sign_in_with_code(client)
+    got = client.get("/api/superadmin/password-status").json()
+    assert got["can_reset_with_code"] is True
+
+    main.rate_limiter._hits.clear()
+    with TestClient(main.app) as other:
+        other.post("/api/superadmin/login",
+                   json={"identifier": OPERATOR, "password": "TestSuper123"})
+        assert other.get("/api/superadmin/password-status"
+                         ).json()["can_reset_with_code"] is False
+
+
+def test_changing_it_is_written_down(client, password_restored):
+    sign_in_with_code(client)
+    client.post("/api/superadmin/change-password", json={"new_password": "LoggedChange1"})
+    logs = client.get("/api/superadmin/login-logs").json()
+    rows = logs if isinstance(logs, list) else logs.get("logs", [])
+    assert any(r.get("login_type") == "password_change" and r.get("status") == "success"
+               for r in rows), rows[:3]
+
+
+def test_a_password_you_chose_survives_a_restart(client, password_restored):
+    """SUPERADMIN_PASSWORD used to be reapplied on every startup, so a
+    password set in the app was silently back to the environment value after
+    the next deploy and nobody was told why."""
+    sign_in_with_code(client)
+    assert client.post("/api/superadmin/change-password",
+                       json={"new_password": "ChosenPass123"}).status_code == 200
+
+    main.ensure_super_admin()          # what a restart does
+
+    with main.SessionLocal() as db:
+        row = db.query(models.DBSuperAdmin).filter(
+            models.DBSuperAdmin.email == OPERATOR).first()
+        assert main.verify_password("ChosenPass123", row.password_hash), \
+            "the restart wiped the password that was chosen"
+
+
+def test_the_environment_password_still_sets_up_a_fresh_install(password_restored):
+    """It is for the first run, when there is nothing to keep."""
+    with main.SessionLocal() as db:
+        row = db.query(models.DBSuperAdmin).filter(
+            models.DBSuperAdmin.email == OPERATOR).first()
+        row.password_hash = ""
+        db.commit()
+
+    main.ensure_super_admin()
+
+    with main.SessionLocal() as db:
+        row = db.query(models.DBSuperAdmin).filter(
+            models.DBSuperAdmin.email == OPERATOR).first()
+        assert row.password_hash, "a fresh install got no password at all"
+
+
+def test_it_can_still_be_forced_back_for_a_locked_out_operator(password_restored,
+                                                               monkeypatch):
+    """Losing the password and the inbox has to be recoverable somehow."""
+    with main.SessionLocal() as db:
+        row = db.query(models.DBSuperAdmin).filter(
+            models.DBSuperAdmin.email == OPERATOR).first()
+        row.password_hash = main.hash_password("SomethingElse123")
+        db.commit()
+
+    monkeypatch.setenv("SUPERADMIN_PASSWORD_FORCE", "true")
+    main.ensure_super_admin()
+
+    with main.SessionLocal() as db:
+        row = db.query(models.DBSuperAdmin).filter(
+            models.DBSuperAdmin.email == OPERATOR).first()
+        assert main.verify_password("TestSuper123", row.password_hash)

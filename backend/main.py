@@ -1430,10 +1430,17 @@ def ensure_super_admin():
             if em not in existing_emails:
                 db.add(models.DBSuperAdmin(username="superadmin", password_hash="", email=em))
                 existing_emails.add(em)
+        # This used to overwrite the password on every startup, so an operator
+        # who changed theirs in the app found it silently back to the
+        # environment value after the next deploy - and never learned why.
+        # The variable is for the first run, when there is nothing to keep.
         pwd = os.getenv("SUPERADMIN_PASSWORD", "")
+        force = (os.getenv("SUPERADMIN_PASSWORD_FORCE", "") or "").lower() in (
+            "1", "true", "yes", "on")
         if pwd:
             for sa in db.query(models.DBSuperAdmin).all():
-                sa.password_hash = hash_password(pwd)
+                if not sa.password_hash or force:
+                    sa.password_hash = hash_password(pwd)
         db.commit()
         logger.info("Super admin setup complete (%d admins)", len(env_emails))
 
@@ -1674,6 +1681,9 @@ def superadmin_verify_otp(request: Request, background_tasks: BackgroundTasks,
     row.used_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     request.session.clear()
     request.session["superadmin_id"] = sa.id
+    # Stamped, not flagged. A password set months after signing in with a code
+    # is not a reset, it is a hijacked session making itself permanent.
+    request.session["superadmin_otp_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_login(db, None, identifier or sa.email, "superadmin", "otp", request, "success")
     db.commit()
 
@@ -1693,19 +1703,80 @@ def superadmin_verify_otp(request: Request, background_tasks: BackgroundTasks,
     return {"ok": True, "username": sa.username, "email": sa.email}
 
 
+# How long a code counts as proof for setting a new password. Long enough to
+# read the email and type one, short enough that a session left open on a
+# borrowed machine is not still a reset token tomorrow.
+OTP_RESET_MINUTES = 15
+
+
+def signed_in_with_a_recent_code(request) -> bool:
+    stamped = request.session.get("superadmin_otp_at")
+    if not stamped:
+        return False
+    try:
+        when = datetime.strptime(stamped, "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return False
+    return datetime.now() - when <= timedelta(minutes=OTP_RESET_MINUTES)
+
+
 @app.post("/api/superadmin/change-password")
 def superadmin_change_password(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Set a new password, having proved it is you.
+
+    This used to ask for nothing at all beyond an operator session, so anybody
+    who got hold of one could lock the real operator out permanently. It now
+    wants the current password - or a sign-in code used in the last few
+    minutes, which is the point of having codes: somebody who has forgotten
+    the password can still get back in, and only from the inbox on the
+    account.
+    """
     sa_id = require_superadmin(request)
     body = body or {}
     new_pwd = body.get("new_password", "")
-    if len(new_pwd) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    if len(new_pwd) < 8:
+        raise HTTPException(status_code=400,
+                            detail="Password must be at least 8 characters")
+
     admin = db.query(models.DBSuperAdmin).filter(models.DBSuperAdmin.id == sa_id).first()
     if not admin:
         raise HTTPException(status_code=401, detail="Not found")
+
+    by_code = signed_in_with_a_recent_code(request)
+    if admin.password_hash and not by_code:
+        current = body.get("current_password", "")
+        if not current:
+            raise HTTPException(status_code=400,
+                                detail="Enter your current password")
+        if not verify_password(current, admin.password_hash):
+            log_login(db, None, admin.email or "superadmin", "superadmin",
+                      "password_change", request, "failed")
+            db.commit()
+            raise HTTPException(status_code=401,
+                                detail="That is not your current password")
+
     admin.password_hash = hash_password(new_pwd)
+    # Spent on use, so one code sets one password rather than staying a reset
+    # token for the rest of the session.
+    request.session.pop("superadmin_otp_at", None)
+    log_login(db, None, admin.email or "superadmin", "superadmin",
+              "password_change", request, "success")
     db.commit()
-    return {"message": "Password updated"}
+    return {"message": "Password updated", "by_code": by_code}
+
+
+@app.get("/api/superadmin/password-status")
+def superadmin_password_status(request: Request, db: Session = Depends(get_db)):
+    """Whether the form needs to ask for the current password."""
+    sa_id = require_superadmin(request)
+    admin = db.query(models.DBSuperAdmin).filter(models.DBSuperAdmin.id == sa_id).first()
+    if not admin:
+        raise HTTPException(status_code=401, detail="Not found")
+    return {
+        "has_password": bool(admin.password_hash),
+        "can_reset_with_code": signed_in_with_a_recent_code(request),
+        "email": admin.email or "",
+    }
 
 @app.post("/api/superadmin/logout")
 def superadmin_logout(request: Request):

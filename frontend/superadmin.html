@@ -362,11 +362,11 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=131">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=131">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=131">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=131">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=131">
+    <link rel="stylesheet" href="mobile.css?v=132">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=132">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=132">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=132">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=132">
     <script src="/dialogs.js?v=1"></script>
 </head>
 <body>
@@ -670,9 +670,18 @@
             <button class="close-btn" onclick="closePasswordModal()">&times;</button>
             <h2>Change Password</h2>
             <div class="error-msg" id="pwd-error" style="display:none;background:rgba(244, 63, 94, 0.1);border:1px solid rgba(244, 63, 94, 0.3);color:#fda4af;padding:10px 14px;border-radius:8px;font-size:0.85rem;margin-bottom:16px;"></div>
+            <!-- Without the current password, anybody who got hold of an
+                 operator session could lock the real operator out for good.
+                 It is skipped only when a sign-in code has just proved who
+                 this is, which is what makes forgetting it recoverable. -->
+            <div class="form-group" id="pwd-current-group" style="margin-bottom:14px;">
+                <label style="display:block;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#94a3b8;margin-bottom:6px;">Current Password</label>
+                <input type="password" id="pwd-current" class="search-box" style="width:100%;" autocomplete="current-password">
+            </div>
             <div class="form-group" style="margin-bottom:14px;">
                 <label style="display:block;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#94a3b8;margin-bottom:6px;">New Password</label>
-                <input type="password" id="pwd-new" class="search-box" style="width:100%;" placeholder="At least 6 characters">
+                <input type="password" id="pwd-new" class="search-box" style="width:100%;" placeholder="At least 8 characters" autocomplete="new-password">
+                <small id="pwd-by-code" style="display:none;font-size:0.76rem;color:#34d399;margin-top:6px;"></small>
             </div>
             <div class="btn-row" style="display:flex;justify-content:flex-end;gap:8px;">
                 <button class="action-btn" onclick="closePasswordModal()">Cancel</button>
@@ -1653,10 +1662,31 @@
             } catch (e) { console.error(e); }
         }
 
-        function openPasswordModal() {
+        async function openPasswordModal() {
             document.getElementById('pwd-new').value = '';
+            document.getElementById('pwd-current').value = '';
             document.getElementById('pwd-error').style.display = 'none';
             document.getElementById('password-modal').classList.add('show');
+
+            // The server decides whether the old one is needed; asking for it
+            // when a code has just been used would defeat the recovery it is
+            // there for.
+            var group = document.getElementById('pwd-current-group');
+            var note = document.getElementById('pwd-by-code');
+            group.style.display = '';
+            note.style.display = 'none';
+            try {
+                var res = await fetch('/api/superadmin/password-status');
+                if (!res.ok) return;
+                var status = await res.json();
+                var skip = status.can_reset_with_code || !status.has_password;
+                group.style.display = skip ? 'none' : '';
+                if (status.can_reset_with_code) {
+                    note.textContent = 'Your sign-in code counts as proof, so the ' +
+                        'current password is not needed this time.';
+                    note.style.display = 'block';
+                }
+            } catch (e) { /* the field stays, which is the safe way round */ }
         }
         function closePasswordModal() {
             document.getElementById('password-modal').classList.remove('show');
@@ -1664,22 +1694,30 @@
         async function changePassword() {
             var pwd = document.getElementById('pwd-new').value;
             var err = document.getElementById('pwd-error');
-            if (pwd.length < 6) {
-                err.textContent = 'Password must be at least 6 characters.';
+            if (pwd.length < 8) {
+                err.textContent = 'Password must be at least 8 characters.';
                 err.style.display = 'block';
                 return;
+            }
+            var body = { new_password: pwd };
+            var current = document.getElementById('pwd-current');
+            if (current.parentNode.style.display !== 'none' && current.value) {
+                body.current_password = current.value;
             }
             try {
                 var res = await fetch('/api/superadmin/change-password', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ new_password: pwd })
+                    body: JSON.stringify(body)
                 });
+                var data = await res.json().catch(function () { return {}; });
                 if (res.ok) {
                     closePasswordModal();
                     await uiAlert('Password updated.');
                 } else {
-                    err.textContent = 'Could not update password.';
+                    // The reason matters here - "wrong current password" and
+                    // "too short" need different things done about them.
+                    err.textContent = data.detail || 'Could not update password.';
                     err.style.display = 'block';
                 }
             } catch (e) { await uiAlert('Error'); }
