@@ -60,6 +60,18 @@ def ensure_columns():
             # clients.modules - which parts of the product this business
             # has. Existing accounts get both, because they already
             # reached both and this must not be a silent downgrade.
+            # clients.email_verified_at - whether the address on the account
+            # has been proved. Accounts that existed before this are treated
+            # as verified: they have been trading, and locking them out to
+            # prove something they were never asked for would be worse than
+            # the risk it closes.
+            result = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='clients' AND column_name='email_verified_at'"))
+            if not result.fetchone():
+                conn.execute(text("ALTER TABLE clients ADD COLUMN email_verified_at VARCHAR DEFAULT ''"))
+                conn.execute(text("UPDATE clients SET email_verified_at = 'grandfathered' WHERE email_verified_at IS NULL OR email_verified_at = ''"))
+                conn.commit()
+                print("Added 'email_verified_at' column to clients table")
+
             result = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='clients' AND column_name='modules'"))
             if not result.fetchone():
                 conn.execute(text("ALTER TABLE clients ADD COLUMN modules VARCHAR DEFAULT 'invoicing,hr'"))

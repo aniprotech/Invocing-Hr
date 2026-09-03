@@ -537,6 +537,7 @@ function showView(viewId) {
     if (viewId === 'create-invoice-view' && typeof setupContactAutocomplete === 'function') setupContactAutocomplete();
     if (viewId === 'settings-view' && typeof loadGmailStatus === 'function') loadGmailStatus();
     if (viewId === 'settings-view' && typeof loadEmailSettings === 'function') loadEmailSettings();
+    if (typeof checkEmailVerified === 'function') checkEmailVerified();
     if (viewId === 'settings-view' && typeof loadSettings === 'function') loadSettings();
     if (viewId === 'settings-view' && typeof loadTaxRates === 'function') loadTaxRates();
     if (viewId === 'settings-view' && typeof loadTeam === 'function') loadTeam();
@@ -9337,6 +9338,107 @@ async function loadEmailSettings() {
     onEmailTransportChange();
 }
 window.loadEmailSettings = loadEmailSettings;
+
+// --- Confirming the address on the account ---------------------------------
+// Signing up asked for an address and believed it, so anybody could register
+// with somebody else's and then send invoices in their name. Nothing is
+// blocked until there is somewhere to type the code, which is here.
+
+async function checkEmailVerified() {
+    var bar = document.getElementById('verify-email-bar');
+    if (!bar) return;
+    try {
+        var res = await fetch('/api/client/verification-status');
+        if (!res.ok) return;
+        var status = await res.json();
+        if (status.verified) { bar.style.display = 'none'; return; }
+
+        document.getElementById('verify-bar-text').textContent =
+            'Confirm ' + status.email + ' before you can send invoices from it.';
+        document.getElementById('verify-email-address').textContent = status.email;
+        bar.style.display = 'flex';
+    } catch (e) { /* the app works; this is a nudge, not a gate */ }
+}
+window.checkEmailVerified = checkEmailVerified;
+
+function openVerifyEmail() {
+    document.getElementById('verify-code').value = '';
+    document.getElementById('verify-email-error').style.display = 'none';
+    document.getElementById('verify-email-note').style.display = 'none';
+    document.getElementById('verify-email-modal').style.display = 'flex';
+    document.getElementById('verify-code').focus();
+}
+window.openVerifyEmail = openVerifyEmail;
+
+function closeVerifyEmail() {
+    document.getElementById('verify-email-modal').style.display = 'none';
+}
+window.closeVerifyEmail = closeVerifyEmail;
+
+async function confirmVerifyEmail() {
+    var err = document.getElementById('verify-email-error');
+    var btn = document.getElementById('verify-confirm-btn');
+    var code = document.getElementById('verify-code').value.trim();
+    err.style.display = 'none';
+    if (!code) {
+        err.textContent = 'Enter the code from your email.';
+        err.style.display = 'block';
+        return;
+    }
+    btn.disabled = true;
+    try {
+        var res = await fetch('/api/client/verify-email', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: code }),
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) {
+            err.textContent = data.detail || 'That code is not valid.';
+            err.style.display = 'block';
+            // Cleared, because the next try is a fresh one and a stale code
+            // left in the box costs one of the five attempts.
+            document.getElementById('verify-code').value = '';
+            return;
+        }
+        closeVerifyEmail();
+        document.getElementById('verify-email-bar').style.display = 'none';
+        showToast('Email confirmed', 'success');
+    } catch (e) {
+        err.textContent = 'Could not check that code: ' + e.message;
+        err.style.display = 'block';
+    } finally {
+        btn.disabled = false;
+    }
+}
+window.confirmVerifyEmail = confirmVerifyEmail;
+
+async function resendVerification() {
+    var err = document.getElementById('verify-email-error');
+    var note = document.getElementById('verify-email-note');
+    var btn = document.getElementById('verify-resend-btn');
+    err.style.display = 'none';
+    note.style.display = 'none';
+    btn.disabled = true;
+    try {
+        var res = await fetch('/api/client/resend-verification', { method: 'POST' });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) {
+            // A server that cannot send says so now, rather than promising a
+            // code that never arrives.
+            err.textContent = data.detail || 'Could not send a new code.';
+            err.style.display = 'block';
+            return;
+        }
+        note.textContent = data.message || 'A new code is on its way.';
+        note.style.display = 'block';
+    } catch (e) {
+        err.textContent = 'Could not send a new code: ' + e.message;
+        err.style.display = 'block';
+    } finally {
+        btn.disabled = false;
+    }
+}
+window.resendVerification = resendVerification;
 
 function onEmailTransportChange() {
     var chosen = document.getElementById('email-transport').value;

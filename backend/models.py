@@ -36,6 +36,7 @@ class DBClient(Base):
     website = Column(String, default="")
     abn = Column(String, default="")
     industry = Column(String, default="")
+    email_verified_at = Column(String, default="")
     is_active = Column(Boolean, default=True)
     is_onboarded = Column(Boolean, default=False)
     currency = Column(String, default="GBP")
@@ -1777,6 +1778,25 @@ class DBStaffMessage(Base):
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     request = relationship("DBStaffRequest", back_populates="messages")
+
+
+class DBEmailVerification(Base):
+    """A code proving the address on an account is reachable by whoever signed
+    up with it.
+
+    Anybody could register with anybody's address, and then set the platform
+    to send invoices from it. The code is hashed for the same reason a
+    password is: reading this table must not be enough to use it.
+    """
+    __tablename__ = "email_verifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    code_hash = Column(String)
+    expires_at = Column(String, index=True)
+    used_at = Column(String, default="")
+    attempts = Column(Integer, default=0)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
 class DBClientEmailSettings(Base):

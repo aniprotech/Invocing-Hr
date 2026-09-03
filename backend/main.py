@@ -795,8 +795,134 @@ def require_superadmin(request: Request):
 SuperAdmin = Depends(require_superadmin)
 
 
+# ============================================================================
+# PROVING THE ADDRESS
+#
+# Signing up asked for an address and believed it. Anybody could register with
+# somebody else's, and then set the platform to send invoices from it.
+#
+# The account is created either way - refusing to create it would mean losing
+# the signup when mail is slow - but it cannot send email until the address is
+# proved, which is the thing an unproved address could be used to abuse.
+# ============================================================================
+
+VERIFY_MINUTES = 30
+VERIFY_MAX_ATTEMPTS = 5
+
+
+def email_is_verified(client) -> bool:
+    return bool(getattr(client, "email_verified_at", "") or "")
+
+
+def issue_verification(db, background_tasks, client, request):
+    """Make a code, retire any earlier one, and send it."""
+    db.query(models.DBEmailVerification).filter(
+        models.DBEmailVerification.client_id == client.id,
+        models.DBEmailVerification.used_at == "").update(
+            {"used_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+
+    code = "".join(secrets.choice("0123456789") for _ in range(6))
+    db.add(models.DBEmailVerification(
+        client_id=client.id,
+        code_hash=_hash_otp(code),
+        expires_at=(datetime.now() + timedelta(minutes=VERIFY_MINUTES)
+                    ).strftime("%Y-%m-%d %H:%M:%S")))
+    db.commit()
+
+    from_email = os.getenv("FROM_EMAIL", "") or client.email
+    background_tasks.add_task(
+        send_email_background,
+        client.email,
+        f"Your verification code: {code}",
+        f"Welcome to aniprotech.\n\n"
+        f"Your code is {code}. It expires in {VERIFY_MINUTES} minutes.\n\n"
+        "If you did not sign up, somebody used your address by mistake. "
+        "Ignore this and the account cannot send anything.",
+        from_email)
+
+
+@app.post("/api/client/verify-email")
+def verify_client_email(request: Request, body: dict = None,
+                        db: Session = Depends(get_db)):
+    """Prove the address, with the code that was sent to it."""
+    ip = request.client.host if request.client else "unknown"
+    if rate_limiter.is_rate_limited(f"verify:{ip}", max_requests=10, window=300):
+        raise HTTPException(status_code=429,
+                            detail="Too many attempts. Try again shortly.")
+
+    client = get_client_user(request, db)
+    body = body or {}
+    code = (body.get("code") or "").strip()
+    refused = HTTPException(status_code=400, detail="That code is not valid")
+    if not code:
+        raise refused
+
+    if email_is_verified(client):
+        return {"verified": True, "message": "Already verified"}
+
+    row = db.query(models.DBEmailVerification).filter(
+        models.DBEmailVerification.client_id == client.id,
+        models.DBEmailVerification.used_at == "").order_by(
+            models.DBEmailVerification.id.desc()).first()
+
+    live = bool(row) and (row.attempts or 0) < VERIFY_MAX_ATTEMPTS
+    if live:
+        try:
+            live = datetime.strptime(row.expires_at, "%Y-%m-%d %H:%M:%S") > datetime.now()
+        except Exception:
+            live = False
+    if not live:
+        raise refused
+
+    # Counted before it is compared, so a wrong guess costs an attempt.
+    row.attempts = (row.attempts or 0) + 1
+    db.commit()
+
+    if not hmac.compare_digest(row.code_hash, _hash_otp(code)):
+        raise refused
+
+    row.used_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    client.email_verified_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_audit(db, client.id, "email_verified", "client", client.id,
+              client.email, "", request)
+    db.commit()
+    return {"verified": True, "message": "Email verified"}
+
+
+@app.post("/api/client/resend-verification")
+def resend_client_verification(request: Request, background_tasks: BackgroundTasks,
+                               db: Session = Depends(get_db)):
+    ip = request.client.host if request.client else "unknown"
+    if rate_limiter.is_rate_limited(f"verify_send:{ip}", max_requests=3, window=300):
+        raise HTTPException(status_code=429,
+                            detail="Too many codes requested. Try again shortly.")
+
+    client = get_client_user(request, db)
+    if email_is_verified(client):
+        return {"verified": True, "message": "Already verified"}
+
+    ready, missing = email_delivery_ready(db)
+    if not ready:
+        raise HTTPException(
+            status_code=503,
+            detail=f"This server cannot send email at the moment - {missing}.")
+
+    issue_verification(db, background_tasks, client, request)
+    return {"verified": False, "message": "A new code is on its way."}
+
+
+@app.get("/api/client/verification-status")
+def client_verification_status(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    return {
+        "verified": email_is_verified(client),
+        "email": client.email or "",
+    }
+
+
 @app.post("/api/client/register")
-def client_register(body: ClientRegister, request: Request, db: Session = Depends(get_db)):
+def client_register(body: ClientRegister, background_tasks: BackgroundTasks,
+                    request: Request, db: Session = Depends(get_db)):
     ip = request.client.host if request.client else "unknown"
     if rate_limiter.is_rate_limited(f"register:{ip}", max_requests=5, window=300):
         raise HTTPException(status_code=429, detail="Too many registration attempts. Try again later.")
@@ -821,7 +947,15 @@ def client_register(body: ClientRegister, request: Request, db: Session = Depend
     db.add(client)
     db.commit()
     db.refresh(client)
-    return {"message": "Account created", "client_id": client.id}
+
+    # Sent if it can be. A signup is not lost because mail is down - the
+    # account exists, and the code can be asked for again.
+    ready, _missing = email_delivery_ready(db)
+    if ready:
+        issue_verification(db, background_tasks, client, request)
+
+    return {"message": "Account created", "client_id": client.id,
+            "verification_sent": ready, "email_verified": False}
 
 @app.post("/api/client/login")
 def client_login(body: ClientLogin, request: Request, db: Session = Depends(get_db)):
@@ -1513,14 +1647,26 @@ OTP_MINUTES = 10
 OTP_MAX_ATTEMPTS = 5
 
 
-def email_delivery_ready(db):
-    """(ok, what is missing) for whichever transport is in force.
+def email_delivery_ready(db, client_id=None):
+    """(ok, what is missing) for whichever transport would actually be used.
 
-    Nothing here depends on which account is asking, so saying it out loud
-    leaks nothing about who the operator is - it is a fact about the server.
-    Hiding whether an account exists is worth doing; hiding that email is
-    broken only means nobody finds out until somebody is locked out.
+    Nothing here depends on which account is asking - only on what that
+    account has set up - so saying it out loud leaks nothing about who the
+    operator is. Hiding whether an account exists is worth doing; hiding that
+    email is broken only means nobody finds out until somebody is locked out.
     """
+    # A business sending through its own server is checked against that,
+    # because the platform's being fine says nothing about theirs.
+    mine = client_email_settings(db, client_id) if client_id else None
+    if mine and (mine.transport or "") == "smtp":
+        if not (mine.smtp_host or "").strip():
+            return False, "no mail server is set for this business"
+        return True, ""
+    if mine and (mine.transport or "") == "gmail":
+        if not get_stored_refresh_token(db, client_id=client_id):
+            return False, "no Google account is connected for this business"
+        return True, ""
+
     transport = email_transport(db)
     if transport == "smtp":
         if not smtp_ready():
@@ -2825,6 +2971,14 @@ def create_invoice(invoice: InvoiceCreate, request: Request, db: Session = Depen
 @app.post("/api/invoices/{number}/send")
 def send_invoice_email(number: str, background_tasks: BackgroundTasks, request: Request, payload: Optional[SendInvoiceEmail] = None, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
+    # The one thing an unproved address is actually good for: signing up as
+    # somebody else and sending invoices in their name. Everything else about
+    # the account works meanwhile, and the bar in the app says how to fix it.
+    if not email_is_verified(client):
+        raise HTTPException(
+            status_code=403,
+            detail="Confirm your email address before sending invoices. "
+                   "There is a code in your inbox, or ask for a new one.")
     if payload is None:
         payload = SendInvoiceEmail()
     inv = db.query(models.DBInvoice).filter(models.DBInvoice.number == number, models.DBInvoice.client_id == client.id).first()
@@ -3059,6 +3213,14 @@ Powered by Aniprotech"""
 
     # Metered before the send is queued; charging afterwards would mean a
     # refused charge still delivered the email.
+    # Same reason as the payslip: charged and marked Sent before anybody knew
+    # whether it could go anywhere.
+    ready, missing = email_delivery_ready(db, client.id)
+    if not ready:
+        raise HTTPException(
+            status_code=503,
+            detail=f"This invoice cannot be emailed at the moment - {missing}.")
+
     require_credit(db, client.id, "invoice_send", 1, inv.number)
 
     # The message the customer reads is what was written, when something was.
@@ -3610,7 +3772,12 @@ async def auth_callback(request: Request, db: Session = Depends(get_db)):
             google_email = user.get('email', '')
 
             if oauth_role == 'superadmin' and google_email:
-                sa_user = db.query(models.DBSuperAdmin).filter(models.DBSuperAdmin.email == google_email).first()
+                # Google is not obliged to hand back the address in the same
+                # case it is stored in, and a mismatch here reads as "this
+                # Google account is not registered as a super admin".
+                sa_user = db.query(models.DBSuperAdmin).filter(
+                    sqlfunc.lower(models.DBSuperAdmin.email)
+                    == (google_email or "").strip().lower()).first()
                 if sa_user:
                     request.session.clear()
                     request.session['superadmin_id'] = sa_user.id
@@ -3621,7 +3788,9 @@ async def auth_callback(request: Request, db: Session = Depends(get_db)):
                     return RedirectResponse(url="/superadmin-login.html?error=not_admin")
 
             if google_email:
-                sa_check = db.query(models.DBSuperAdmin).filter(models.DBSuperAdmin.email == google_email).first()
+                sa_check = db.query(models.DBSuperAdmin).filter(
+                    sqlfunc.lower(models.DBSuperAdmin.email)
+                    == (google_email or "").strip().lower()).first()
                 if sa_check:
                     return RedirectResponse(url="/superadmin-login.html")
 
@@ -8847,6 +9016,16 @@ Best regards,
 
     pdf_b64 = payload.pdf_data if payload.pdf_data else None
     pdf_filename = f"{ps.number}.pdf" if pdf_b64 else "payslip.pdf"
+
+    # Checked before anybody is charged and before this is written down as
+    # sent. Handing the message to a background task and then recording
+    # success meant a business paid for a payslip that never left, and the
+    # record said it had.
+    ready, missing = email_delivery_ready(db, client.id)
+    if not ready:
+        raise HTTPException(
+            status_code=503,
+            detail=f"This payslip cannot be emailed at the moment - {missing}.")
 
     require_credit(db, client.id, "payslip_send", 1, ps.number)
 

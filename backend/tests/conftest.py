@@ -80,6 +80,41 @@ def _no_live_ai_calls(monkeypatch):
     llm.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _email_can_leave(monkeypatch):
+    """A working mail transport for the whole suite.
+
+    Sending an invoice or a payslip now refuses when the server cannot send
+    at all, rather than charging for it and writing it down as sent. Almost
+    every test is about something else and assumes a working system, so the
+    default here is a transport that exists. Tests about mail being broken
+    delete SMTP_HOST themselves, which overrides this.
+    """
+    monkeypatch.setenv("SMTP_HOST", "mail.example.test")
+    monkeypatch.setenv("SMTP_PORT", "587")
+    with main.SessionLocal() as db:
+        row = db.query(models.DBSettings).filter(
+            models.DBSettings.key == "email.transport",
+            models.DBSettings.client_id == None,        # noqa: E711
+        ).first()
+        was = row.value if row else None
+        if row:
+            row.value = "smtp"
+        else:
+            db.add(models.DBSettings(key="email.transport", client_id=None,
+                                     value="smtp"))
+        db.commit()
+    yield
+    with main.SessionLocal() as db:
+        row = db.query(models.DBSettings).filter(
+            models.DBSettings.key == "email.transport",
+            models.DBSettings.client_id == None,        # noqa: E711
+        ).first()
+        if row:
+            row.value = was or "gmail"
+            db.commit()
+
+
 @pytest.fixture
 def client():
     with TestClient(main.app) as c:
@@ -98,6 +133,17 @@ def account(client):
     assert res.status_code == 200, res.text
     res = client.post("/api/client/login", json={"email": email, "password": password})
     assert res.status_code == 200, res.text
+
+    # An established account, which is what nearly every test is about. A new
+    # signup has to confirm its address before it can send invoices as that
+    # address; the tests for that make their own unconfirmed accounts.
+    with main.SessionLocal() as db:
+        row = db.query(models.DBClient).filter(
+            main.sqlfunc.lower(models.DBClient.email) == email.lower()).first()
+        if row is not None:
+            row.email_verified_at = "2020-01-01 00:00:00"
+            db.commit()
+
     return {"client": client, "email": email, "password": password}
 
 
