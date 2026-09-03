@@ -578,7 +578,7 @@ def test_it_can_still_be_forced_back_for_a_locked_out_operator(password_restored
         row.password_hash = main.hash_password("SomethingElse123")
         db.commit()
 
-    monkeypatch.setenv("SUPERADMIN_PASSWORD_FORCE", "true")
+    monkeypatch.setenv("SUPERADMIN_RESET_ON_BOOT", "true")
     main.ensure_super_admin()
 
     with main.SessionLocal() as db:

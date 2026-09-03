@@ -1435,7 +1435,7 @@ def ensure_super_admin():
         # environment value after the next deploy - and never learned why.
         # The variable is for the first run, when there is nothing to keep.
         pwd = os.getenv("SUPERADMIN_PASSWORD", "")
-        force = (os.getenv("SUPERADMIN_PASSWORD_FORCE", "") or "").lower() in (
+        force = (os.getenv("SUPERADMIN_RESET_ON_BOOT", "") or "").lower() in (
             "1", "true", "yes", "on")
         if pwd:
             for sa in db.query(models.DBSuperAdmin).all():
