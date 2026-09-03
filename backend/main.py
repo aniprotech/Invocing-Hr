@@ -12686,7 +12686,8 @@ def _settle_gocardless_invoice(db: Session, ev, action, payment_id):
         note="Paid by bank debit")
     if recorded:
         record_settlement(db, inv, int(round(amount * 100)),
-                          (inv.currency or "GBP"), payment_id or invoice_id)
+                          (inv.currency or "GBP"), payment_id or invoice_id,
+                          gateway="gocardless")
     return {"action": action, "invoice": inv.number, "paid": bool(recorded)}
 
 
@@ -13249,6 +13250,33 @@ def capture_paypal(order_id: int, request: Request, db: Session = Depends(get_db
         capture_id = data["purchase_units"][0]["payments"]["captures"][0]["id"]
     except (KeyError, IndexError):
         pass
+
+    # Credit what PayPal says it took, not what we asked for. Every other
+    # money path here checks this and it was the one that did not - the
+    # wallet was topped up by the figure on our own order however much
+    # actually arrived.
+    taken = None
+    try:
+        paid = data["purchase_units"][0]["payments"]["captures"][0]["amount"]
+        taken = int(round(float(paid["value"]) * 100))
+        if (paid.get("currency_code") or "").upper() != (order.currency or "").upper():
+            logger.error("PayPal captured %s for an order in %s (order %s)",
+                         paid.get("currency_code"), order.currency, order.id)
+            raise HTTPException(
+                status_code=400,
+                detail="That payment was in a different currency to the top-up")
+    except (KeyError, IndexError, TypeError, ValueError):
+        logger.error("PayPal capture for order %s carried no readable amount", order.id)
+        raise HTTPException(status_code=502,
+                            detail="Could not confirm what was paid")
+
+    if taken < order.amount_minor:
+        logger.error("PayPal captured %s minor units for a top-up of %s (order %s)",
+                     taken, order.amount_minor, order.id)
+        raise HTTPException(
+            status_code=400,
+            detail="The payment was less than the top-up it was for")
+
     credit_topup_once(db, order, capture_id)
     db.commit()
     wallet = get_wallet(db, client.id)
@@ -19715,12 +19743,17 @@ def invoice_payment_methods(db: Session, inv):
 
 
 def record_settlement(db: Session, inv, amount_minor: int, currency: str,
-                      payment_id: str):
-    """Money taken into the platform account belongs to the tenant."""
+                      payment_id: str, gateway: str = "razorpay"):
+    """Money taken into the platform account belongs to the tenant.
+
+    The gateway is recorded because it is how the operator finds the money
+    again. Bank debits were being written down as Razorpay, so anybody
+    reconciling a payout would have looked in the wrong account for it.
+    """
     db.add(models.DBSettlement(
         client_id=inv.client_id, invoice_id=inv.id,
         amount_minor=amount_minor, currency=(currency or "INR").upper(),
-        status="owed", gateway="razorpay",
+        status="owed", gateway=(gateway or "razorpay"),
         gateway_payment_id=payment_id[:120]))
 
 

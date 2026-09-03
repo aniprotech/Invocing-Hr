@@ -30,7 +30,11 @@ def _reset_limiter():
     yield
 
 
-TODAY = datetime.now().date()
+# Read when it is needed, not when this file is imported. A run that
+# crosses midnight used to compare a due date worked out today against a
+# constant captured yesterday, and fail for no reason anybody could see.
+def today():
+    return datetime.now().date()
 
 
 def client_id(account):
@@ -200,7 +204,7 @@ def test_a_negative_offset_puts_the_task_before_the_start(tenant):
     make_employee(tenant)
 
     due = tasks(tenant)[0]["due_date"]
-    assert due == (TODAY - timedelta(days=3)).strftime("%Y-%m-%d")
+    assert due == (today() - timedelta(days=3)).strftime("%Y-%m-%d")
 
 
 def test_something_past_its_date_is_marked_late(tenant):

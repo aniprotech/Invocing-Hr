@@ -256,8 +256,14 @@ def test_a_completed_capture_credits_the_wallet_once(tenant, account, paypal_key
     def fake_post(url, **kw):
         if "oauth2/token" in url:
             return FakeResponse({"access_token": "tok"})
+        # A real capture always says what it took. The wallet is credited
+        # against this now rather than against our own order, so a stub
+        # without it is not a capture anybody would ever receive.
         return FakeResponse({"status": "COMPLETED", "purchase_units": [
-            {"payments": {"captures": [{"id": "CAP-1"}]}}]})
+            {"payments": {"captures": [{
+                "id": "CAP-1",
+                "amount": {"value": "25.00", "currency_code": "GBP"},
+            }]}}]})
 
     monkeypatch.setattr(main.httpx, "post", fake_post)
 
