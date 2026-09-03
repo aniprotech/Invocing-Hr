@@ -14,6 +14,40 @@ import models
 
 
 @pytest.fixture(autouse=True)
+def _email_can_send(monkeypatch):
+    """A transport that exists, so the readiness check is exercised rather
+    than stubbed.
+
+    A reset link nobody can send now says so instead of claiming to be on its
+    way - which is how a real "I reset it and it still says invalid" turned
+    out to be an email that never left.
+    """
+    monkeypatch.setenv("SMTP_HOST", "mail.example.test")
+    monkeypatch.setenv("SMTP_PORT", "587")
+    with main.SessionLocal() as db:
+        row = db.query(models.DBSettings).filter(
+            models.DBSettings.key == "email.transport",
+            models.DBSettings.client_id == None,        # noqa: E711
+        ).first()
+        was = row.value if row else None
+        if row:
+            row.value = "smtp"
+        else:
+            db.add(models.DBSettings(key="email.transport", client_id=None,
+                                     value="smtp"))
+        db.commit()
+    yield
+    with main.SessionLocal() as db:
+        row = db.query(models.DBSettings).filter(
+            models.DBSettings.key == "email.transport",
+            models.DBSettings.client_id == None,        # noqa: E711
+        ).first()
+        if row:
+            row.value = was or "gmail"
+            db.commit()
+
+
+@pytest.fixture(autouse=True)
 def _reset_limiter():
     main.rate_limiter._hits.clear()
     yield
@@ -232,3 +266,36 @@ def test_an_expired_staff_token_is_refused(client, staffer):
     raw = issue_employee_token(staffer["id"], minutes=-1)
     assert client.post("/api/client/reset-password",
                        json={"token": raw, "password": "NewStaff123"}).status_code == 400
+
+
+def test_a_reset_nobody_can_send_says_so(client, monkeypatch):
+    """Reported from production: "I reset it and it still says invalid".
+
+    The link was never sent - the server had no mail transport - but the page
+    said one was on its way, so the password was never actually changed and
+    the old one kept failing. Refusing here gives nothing away, because it is
+    checked before the address is looked at.
+    """
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    import uuid as _uuid
+    email = f"nomail-{_uuid.uuid4().hex[:8]}@example.com"
+    client.post("/api/client/register", json={
+        "email": email, "password": "OldPassw0rd", "company_name": "No Mail Ltd"})
+
+    main.rate_limiter._hits.clear()
+    res = client.post("/api/client/forgot-password", json={"email": email})
+    assert res.status_code == 503, res.text
+    assert "cannot send email" in res.json()["detail"]
+
+
+def test_that_refusal_is_the_same_for_a_stranger(client, monkeypatch):
+    """It must not become a way of finding out which addresses have accounts."""
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    main.rate_limiter._hits.clear()
+    known = client.post("/api/client/forgot-password",
+                        json={"email": "anybody@example.com"})
+    main.rate_limiter._hits.clear()
+    stranger = client.post("/api/client/forgot-password",
+                           json={"email": "nobody-at-all@example.com"})
+    assert known.status_code == stranger.status_code == 503
+    assert known.json() == stranger.json()

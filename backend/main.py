@@ -5116,6 +5116,19 @@ def forgot_password(body: ForgotPasswordIn, background_tasks: BackgroundTasks,
     if rate_limiter.is_rate_limited(f"forgot:{ip}", max_requests=5, window=300):
         raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
 
+    # Whether email can leave this server at all does not depend on who is
+    # asking, so saying it gives nothing away about which addresses have
+    # accounts. Staying quiet only means somebody waits for a link that was
+    # never going to arrive - which is exactly how this was found.
+    ready, missing = email_delivery_ready(db)
+    if not ready:
+        logger.error("A password reset was asked for but email cannot send: %s",
+                     missing)
+        raise HTTPException(
+            status_code=503,
+            detail=f"This server cannot send email at the moment - {missing}. "
+                   "Please tell whoever runs it.")
+
     generic = {"message": "If that email has an account, a reset link is on its way."}
     email = (body.email or "").strip().lower()
     if not email:
@@ -5221,6 +5234,19 @@ def employee_forgot_password(body: ForgotPasswordIn, background_tasks: Backgroun
     ip = request.client.host if request.client else "unknown"
     if rate_limiter.is_rate_limited(f"emp_forgot:{ip}", max_requests=5, window=300):
         raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+
+    # Whether email can leave this server at all does not depend on who is
+    # asking, so saying it gives nothing away about which addresses have
+    # accounts. Staying quiet only means somebody waits for a link that was
+    # never going to arrive - which is exactly how this was found.
+    ready, missing = email_delivery_ready(db)
+    if not ready:
+        logger.error("A password reset was asked for but email cannot send: %s",
+                     missing)
+        raise HTTPException(
+            status_code=503,
+            detail=f"This server cannot send email at the moment - {missing}. "
+                   "Please tell whoever runs it.")
 
     generic = {"message": "If that email has an account, a reset link is on its way."}
     email = (body.email or "").strip().lower()
