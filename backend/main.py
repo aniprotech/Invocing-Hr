@@ -801,11 +801,19 @@ def client_register(body: ClientRegister, request: Request, db: Session = Depend
     if rate_limiter.is_rate_limited(f"register:{ip}", max_requests=5, window=300):
         raise HTTPException(status_code=429, detail="Too many registration attempts. Try again later.")
     validate_password_strength(body.password)
-    existing = db.query(models.DBClient).filter(models.DBClient.email == body.email).first()
+    # Stored one way and matched one way. Signing up as Uday@Gmail.com and
+    # then signing in as uday@gmail.com used to be two different accounts as
+    # far as the login was concerned - and since the reset flow matched
+    # case-insensitively, a password could be changed on an account the
+    # sign-in could not find. That reads as "I reset it and it still says
+    # invalid credentials", which is exactly how it was reported.
+    signup_email = (body.email or "").strip().lower()
+    existing = db.query(models.DBClient).filter(
+        sqlfunc.lower(models.DBClient.email) == signup_email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     client = models.DBClient(
-        email=body.email,
+        email=signup_email,
         password_hash=hash_password(body.password),
         company_name=body.company_name,
         contact_name=body.contact_name,
@@ -820,7 +828,11 @@ def client_login(body: ClientLogin, request: Request, db: Session = Depends(get_
     ip = request.client.host if request.client else "unknown"
     if rate_limiter.is_rate_limited(f"login:{ip}", max_requests=10, window=60):
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
-    client = db.query(models.DBClient).filter(models.DBClient.email == body.email).first()
+    # Matched without regard to case or stray spaces, so accounts created
+    # before this - which were stored exactly as typed - still sign in.
+    login_email = (body.email or "").strip().lower()
+    client = db.query(models.DBClient).filter(
+        sqlfunc.lower(models.DBClient.email) == login_email).first()
     if not client or not verify_password(body.password, client.password_hash):
         # Not the account owner - it may be one of their colleagues.
         member = db.query(models.DBTeamMember).filter(
@@ -3567,7 +3579,7 @@ def employee_signing_in(db: Session, email: str, portal: str):
     if not emp:
         return None
     owns_an_account = db.query(models.DBClient).filter(
-        models.DBClient.email == email).first()
+        sqlfunc.lower(models.DBClient.email) == (email or "").strip().lower()).first()
     if owns_an_account and portal != 'employee':
         return None
     return emp
@@ -3628,7 +3640,9 @@ async def auth_callback(request: Request, db: Session = Depends(get_db)):
                     db.commit()
                     return RedirectResponse(url="/employee-dashboard.html")
 
-                existing_client = db.query(models.DBClient).filter(models.DBClient.email == google_email).first()
+                existing_client = db.query(models.DBClient).filter(
+                    sqlfunc.lower(models.DBClient.email)
+                    == (google_email or "").strip().lower()).first()
                 if existing_client:
                     client_id = existing_client.id
                     request.session['client_id'] = client_id
@@ -14065,7 +14079,8 @@ def hire_candidate(sub_id: int, request: Request, body: dict = None, db: Session
     if not email or not validate_email_address(email):
         raise HTTPException(status_code=400, detail="A valid email address is required to create the employee record")
     if db.query(models.DBEmployee).filter(
-        models.DBEmployee.email == email, models.DBEmployee.client_id == client.id
+        sqlfunc.lower(models.DBEmployee.email) == email.strip().lower(),
+        models.DBEmployee.client_id == client.id
     ).first():
         raise HTTPException(status_code=400, detail="An employee with this email already exists")
 
