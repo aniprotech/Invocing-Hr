@@ -2546,6 +2546,78 @@ def _send_via_smtp(raw_msg, to_email, cc="", bcc="", cfg=None):
             pass
 
 
+def deliver_and_record(delivery_id: int, *args, **kwargs):
+    """Send, then write down what happened.
+
+    Runs after the response has gone, so this is the only place that knows
+    whether the message left. A failure gives the charge back and leaves the
+    invoice alone - it was never sent, so it should not say it was.
+    """
+    ok, detail = False, "not attempted"
+    try:
+        ok, detail = send_email_background(*args, **kwargs)
+    except Exception as exc:                       # noqa: BLE001
+        detail = f"{type(exc).__name__}: {exc}"
+        logger.exception("Delivery %s raised", delivery_id)
+
+    with SessionLocal() as db:
+        row = db.query(models.DBEmailDelivery).filter(
+            models.DBEmailDelivery.id == delivery_id).first()
+        if not row:
+            return ok, detail
+
+        row.status = "sent" if ok else "failed"
+        row.error = "" if ok else str(detail)[:500]
+        row.completed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if ok:
+            _mark_delivered(db, row)
+        else:
+            logger.error("%s %s to %s was not delivered: %s",
+                         row.kind, row.reference, row.to_email, detail)
+            if row.charge_minor and not row.refunded:
+                # Nobody should pay for a message that never left.
+                credit_wallet(db, row.client_id, row.charge_minor,
+                              f"Refund: {row.kind} {row.reference} was not delivered",
+                              reference=row.reference, action_key="refund")
+                row.refunded = True
+        db.commit()
+    return ok, detail
+
+
+def _mark_delivered(db, row):
+    """Only now is it true that it was sent."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    if row.kind == "invoice":
+        inv = db.query(models.DBInvoice).filter(
+            models.DBInvoice.number == row.reference,
+            models.DBInvoice.client_id == row.client_id).first()
+        if inv:
+            if inv.status not in ("Paid", "Partially Paid", "Void"):
+                inv.status = "Sent"
+            inv.sent = today
+    elif row.kind == "payslip":
+        ps = db.query(models.DBPayslip).filter(
+            models.DBPayslip.number == row.reference,
+            models.DBPayslip.client_id == row.client_id).first()
+        if ps:
+            if ps.status == "Draft":
+                ps.status = "Sent"
+            ps.sent = today
+
+
+def start_delivery(db, client_id, kind, reference, to_email, charge_tx):
+    """Write the attempt down before it is made."""
+    row = models.DBEmailDelivery(
+        client_id=client_id, kind=kind, reference=reference or "",
+        to_email=to_email or "",
+        charge_minor=int(getattr(charge_tx, "amount_minor", 0) or 0))
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def send_email_background(to_email: str, subject: str, body: str, from_email: str, html_body: str = None, pdf_b64: str = None, pdf_filename: str = "invoice.pdf", logo_data: str = "", client_id: int = None, cc: str = "", bcc: str = ""):
     pdf_bytes = None
     if pdf_b64:
@@ -3221,14 +3293,15 @@ Powered by Aniprotech"""
             status_code=503,
             detail=f"This invoice cannot be emailed at the moment - {missing}.")
 
-    require_credit(db, client.id, "invoice_send", 1, inv.number)
+    charge = require_credit(db, client.id, "invoice_send", 1, inv.number)
+    delivery = start_delivery(db, client.id, "invoice", inv.number, recipient, charge)
 
     # The message the customer reads is what was written, when something was.
     # The generated HTML stays the presentation of it.
     if custom_body.strip():
         body = custom_body
 
-    background_tasks.add_task(send_email_background, recipient, subject, body, from_header, html_body, pdf_b64, pdf_filename, logo_data, client_id=client.id,
+    background_tasks.add_task(deliver_and_record, delivery.id, recipient, subject, body, from_header, html_body, pdf_b64, pdf_filename, logo_data, client_id=client.id,
                               cc=clean_address_list(payload.cc), bcc=clean_address_list(payload.bcc))
 
     # A copy to the sender, so there is a record in their own mailbox. Sent as
@@ -3244,13 +3317,17 @@ Powered by Aniprotech"""
                 client_id=client.id)
 
     # Re-sending a receipt must not walk a settled invoice back to unpaid.
-    if inv.status not in ("Paid", "Partially Paid", "Void"):
-        inv.status = "Sent"
-    inv.sent = datetime.now().strftime("%Y-%m-%d")
-    log_audit(db, client.id, "invoice_sent", "invoice", inv.id, inv.number, f"Sent to {inv.email}", request)
+    # Deliberately not marked Sent here. deliver_and_record does that, and
+    # only when the message actually left - otherwise a bounced invoice sits
+    # in the ledger looking delivered and nobody chases it.
+    log_audit(db, client.id, "invoice_queued", "invoice", inv.id, inv.number,
+              f"Being sent to {recipient}", request)
     db.commit()
 
-    return {"message": "Email sending initiated via Gmail API", "status": "Sent", "sent_date": inv.sent}
+    # Says what is true now. The status moves to Sent when the message
+    # actually leaves, and to nothing at all if it does not.
+    return {"message": f"Sending to {recipient}", "status": inv.status,
+            "sent_date": inv.sent or "", "delivery_id": delivery.id}
 
 def send_whatsapp_background(phone_number: str, message: str):
     with SessionLocal() as db:
@@ -9027,13 +9104,14 @@ Best regards,
             status_code=503,
             detail=f"This payslip cannot be emailed at the moment - {missing}.")
 
-    require_credit(db, client.id, "payslip_send", 1, ps.number)
+    charge = require_credit(db, client.id, "payslip_send", 1, ps.number)
+    delivery = start_delivery(db, client.id, "payslip", ps.number, emp.email, charge)
 
-    background_tasks.add_task(send_email_background, emp.email, subject, body_text, from_header, html_body, pdf_b64, pdf_filename, logo_data, client_id=client.id)
-    ps.status = "Sent" if ps.status == "Draft" else ps.status
-    ps.sent = datetime.now().strftime("%Y-%m-%d")
+    background_tasks.add_task(deliver_and_record, delivery.id, emp.email, subject, body_text, from_header, html_body, pdf_b64, pdf_filename, logo_data, client_id=client.id)
     db.commit()
-    return {"message": "Payslip email sent", "status": ps.status}
+    # Says what is true at this moment. The status moves when it arrives.
+    return {"message": "Payslip is being sent", "status": ps.status,
+            "delivery_id": delivery.id}
 
 @app.get("/api/payslip/track/open/{tracking_id}")
 def track_payslip_open(tracking_id: str, db: Session = Depends(get_db)):

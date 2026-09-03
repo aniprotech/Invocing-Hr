@@ -1780,6 +1780,33 @@ class DBStaffMessage(Base):
     request = relationship("DBStaffRequest", back_populates="messages")
 
 
+class DBEmailDelivery(Base):
+    """One attempt to email something, and how it ended.
+
+    Sending is handed to a background task, so the answer to the browser goes
+    out before anybody knows whether the message left. Marking the invoice
+    Sent at that moment was a guess, and when it was wrong the business had
+    paid, the record said Sent, and nobody chased it.
+
+    The attempt is written down as pending, and only what actually happened
+    is written over it.
+    """
+    __tablename__ = "email_deliveries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    kind = Column(String, index=True)              # invoice | payslip
+    reference = Column(String, default="", index=True)   # the invoice or payslip number
+    to_email = Column(String, default="")
+    status = Column(String, default="pending", index=True)   # pending | sent | failed
+    error = Column(String, default="")
+    # What was charged, so a failure gives back exactly what it took.
+    charge_minor = Column(Integer, default=0)
+    refunded = Column(Boolean, default=False)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    completed_at = Column(String, default="")
+
+
 class DBEmailVerification(Base):
     """A code proving the address on an account is reachable by whoever signed
     up with it.
