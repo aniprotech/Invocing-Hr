@@ -231,6 +231,113 @@
         .footer-links a:hover { color: var(--ap-blue-dark); }
         .footer-copy { font-size: 14px; color: var(--ap-muted); }
 
+
+        /* ── Arriving as you reach them ──────────────────────────────────
+           Everything below the fold used to be there already, fully drawn,
+           which reads as a wall. Each block now comes up as it is reached.
+           The reduced-motion rule below turns all of it off. */
+        .js-reveal .reveal { opacity: 0; transform: translateY(18px);
+                  transition: opacity 0.6s var(--ap-ease), transform 0.6s var(--ap-ease);
+                  transition-delay: var(--d, 0s); }
+        .js-reveal .reveal.is-in { opacity: 1; transform: none; }
+
+        /* ── How to use it ──────────────────────────────────────────────── */
+        .how-grid { display: grid; gap: 24px;
+                    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+        .how-step { position: relative; text-align: left; padding: 28px 24px;
+                    background: #ffffff; border: 1px solid var(--ap-line);
+                    border-radius: 18px; box-shadow: var(--ap-card-shadow); }
+        .how-step .step-num { margin: 0 0 20px; }
+        .how-step h3 { font-size: 17px; font-weight: 700; color: var(--ap-ink);
+                       margin-bottom: 8px; }
+        .how-step p { font-size: 14px; color: var(--ap-body); line-height: 1.7; }
+        .how-step ul { margin: 12px 0 0; padding-left: 18px; }
+        .how-step li { font-size: 13px; color: var(--ap-muted); line-height: 1.8; }
+
+        /* An invoice moving through its life, because that is the one thing
+           everybody who lands here wants to know the shape of. */
+        .flow { display: flex; align-items: center; justify-content: center;
+                gap: 10px; flex-wrap: wrap; margin-top: 48px; }
+        .flow-pill { font-size: 13px; font-weight: 600; padding: 8px 16px;
+                     border-radius: 999px; border: 1px solid var(--ap-line);
+                     color: var(--ap-muted); background: #ffffff;
+                     animation: flow-lit 6s var(--ap-ease) infinite; }
+        .flow-pill:nth-child(1) { animation-delay: 0s; }
+        .flow-pill:nth-child(3) { animation-delay: 1.5s; }
+        .flow-pill:nth-child(5) { animation-delay: 3s; }
+        .flow-pill:nth-child(7) { animation-delay: 4.5s; }
+        .flow-arrow { color: var(--ap-line); }
+        @keyframes flow-lit {
+            0%, 8% { border-color: var(--ap-blue); color: var(--ap-blue-dark);
+                     background: var(--ap-blue-soft); }
+            30%, 100% { border-color: var(--ap-line); color: var(--ap-muted);
+                        background: #ffffff; }
+        }
+
+        /* ── Installing ─────────────────────────────────────────────────── */
+        .install-wrap { display: grid; gap: 48px; align-items: center;
+                        grid-template-columns: 300px 1fr; }
+        @media (max-width: 860px) {
+            .install-wrap { grid-template-columns: 1fr; justify-items: center; }
+        }
+
+        /* A phone doing the thing the words describe, so nobody has to hold
+           six steps in their head to picture it. */
+        .phone { position: relative; width: 260px; height: 520px; flex: none;
+                 border-radius: 40px; background: #0f172a; padding: 12px;
+                 box-shadow: 0 24px 60px rgba(15, 23, 42, 0.24); }
+        .phone-screen { position: relative; height: 100%; overflow: hidden;
+                        border-radius: 30px; background: var(--ap-blue-soft); }
+        .phone-bar { height: 26px; display: flex; align-items: center;
+                     justify-content: center; font-size: 10px; font-weight: 600;
+                     color: var(--ap-muted); }
+        .phone-body { padding: 0 16px; }
+        .phone-line { height: 10px; border-radius: 5px; background: #e2e8f0;
+                      margin-bottom: 10px; }
+        .phone-line.w70 { width: 70%; }
+        .phone-line.w45 { width: 45%; }
+        .phone-card { margin-top: 16px; padding: 14px; border-radius: 12px;
+                      background: #ffffff; box-shadow: var(--ap-card-shadow); }
+        .phone-share { position: absolute; left: 8px; right: 8px; bottom: 8px;
+                       padding: 10px; border-radius: 18px; background: #ffffff;
+                       box-shadow: 0 -8px 24px rgba(15, 23, 42, 0.18);
+                       animation: sheet-rise 7s var(--ap-ease) infinite; }
+        .phone-row { display: flex; align-items: center; gap: 10px;
+                     padding: 9px 10px; border-radius: 10px; font-size: 12px;
+                     color: var(--ap-body); }
+        .phone-row.pick { animation: row-lit 7s var(--ap-ease) infinite; }
+        .phone-row span { width: 18px; height: 18px; border-radius: 5px;
+                          background: #e2e8f0; flex: none; }
+        @keyframes sheet-rise {
+            0%, 18% { transform: translateY(105%); }
+            32%, 88% { transform: translateY(0); }
+            100% { transform: translateY(105%); }
+        }
+        @keyframes row-lit {
+            0%, 46% { background: transparent; color: var(--ap-body); }
+            56%, 84% { background: var(--ap-blue-soft); color: var(--ap-blue-dark);
+                       font-weight: 600; }
+            94%, 100% { background: transparent; color: var(--ap-body); }
+        }
+
+        .install-tabs { display: flex; gap: 8px; flex-wrap: wrap;
+                        margin-bottom: 24px; }
+        .install-tab { font: inherit; font-size: 14px; font-weight: 600;
+                       cursor: pointer; padding: 10px 18px; border-radius: 999px;
+                       border: 1px solid var(--ap-line); background: #ffffff;
+                       color: var(--ap-body); transition: all 0.2s var(--ap-ease); }
+        .install-tab:hover { border-color: var(--ap-blue); color: var(--ap-blue-dark); }
+        .install-tab.is-on { background: var(--ap-blue); border-color: var(--ap-blue);
+                             color: #ffffff; }
+        .install-panel[hidden] { display: none; }
+        .install-steps { margin: 0; padding-left: 22px; }
+        .install-steps li { font-size: 15px; color: var(--ap-body); line-height: 1.8;
+                            margin-bottom: 10px; }
+        .install-steps b { color: var(--ap-ink); }
+        .install-note { margin-top: 20px; padding: 14px 16px; border-radius: 12px;
+                        background: var(--ap-blue-soft); font-size: 14px;
+                        color: var(--ap-blue-dark); line-height: 1.7; }
+
         /* Somebody reading this on a moving train does not need any of it. */
         @media (prefers-reduced-motion: reduce) {
             *, *::before, *::after {
@@ -239,6 +346,8 @@
                 transition-duration: 0.01ms !important;
             }
             .btn-white:hover, .btn-ghost:hover, .card:hover, .nav-login:hover { transform: none; }
+            /* Not animated in means shown, not never shown. */
+            .js-reveal .reveal { opacity: 1; transform: none; }
         }
 
         /* ── Sections carried over from aniprotech.com ────────────────────
@@ -394,11 +503,11 @@
         .footer-col a:hover { color: var(--ap-blue-dark); }
         .footer-about { font-size: 13.5px; color: var(--ap-body); line-height: 1.7; max-width: 320px; margin-top: 12px; }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=136">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=136">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=136">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=136">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=136">
+    <link rel="stylesheet" href="mobile.css?v=137">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=137">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=137">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=137">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=137">
     <script src="/dialogs.js?v=1"></script>
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="aniprotech">
@@ -434,8 +543,10 @@
                 <a href="#home">Home</a>
                 <a href="#modules">Modules</a>
                 <a href="#features">Features</a>
+                <a href="#how">How&nbsp;it&nbsp;works</a>
                 <a href="#industries">Industries</a>
                 <a href="#pricing">Pricing</a>
+                <a href="#install">Install</a>
                 <a href="#faq">FAQ</a>
                 <a href="#contact">Contact</a>
             </div>
@@ -451,9 +562,11 @@
             <a href="#home">Home</a>
             <a href="#modules">Modules</a>
             <a href="#features">Features</a>
+                <a href="#how">How&nbsp;it&nbsp;works</a>
             <a href="#industries">Industries</a>
             <a href="#pricing">Pricing</a>
-            <a href="#faq">FAQ</a>
+            <a href="#install">Install</a>
+                <a href="#faq">FAQ</a>
             <a href="#contact">Contact</a>
             <hr style="border:none;border-top:1px solid var(--ap-line);margin:8px 0;">
             <a href="/login.html" id="m-invoicing-link">Sign in</a>
@@ -595,7 +708,7 @@
         <div class="container">
             <div class="section-title">
                 <h2 data-cms="features_title">Everything You Need</h2>
-                <p data-cms="features_intro">Powerful features designed to streamline your invoicing workflow.</p>
+                <p data-cms="features_intro">The things people use every day, on both sides of the business.</p>
             </div>
             <div class="grid-3">
                 <div class="card">
@@ -619,107 +732,148 @@
                     <h3>Dashboard &amp; Reports</h3>
                     <p>Track cash flow, monitor payments, and view real-time reports in a beautiful dashboard.</p>
                 </div>
+                <div class="card">
+                    <div class="card-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>
+                    </div>
+                    <h3>Get paid online</h3>
+                    <p>Connect your own payment provider and put a pay button on the invoice. Card and bank payments land against the invoice they belong to.</p>
+                </div>
+                <div class="card">
+                    <div class="card-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+                    </div>
+                    <h3>A portal for your staff</h3>
+                    <p>Employees clock in, book leave and download their own payslips, without going through whoever runs payroll.</p>
+                </div>
+                <div class="card">
+                    <div class="card-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z"/></svg>
+                    </div>
+                    <h3>Delivery you can check</h3>
+                    <p>Every send is recorded. Anything that failed to leave is listed as failed rather than quietly marked as sent.</p>
+                </div>
             </div>
         </div>
     </section>
 
     <!-- How It Works -->
-    <section class="section">
-        <div class="container-sm">
-            <div class="section-title">
-                <h2 data-cms="how_title">How It Works</h2>
-                <p data-cms="how_intro">Get started in three simple steps.</p>
-            </div>
-            <div class="grid-3">
-                <div class="card step-card">
-                    <div class="step-num">1</div>
-                    <h3>Connect Google</h3>
-                    <p>Sign in with your Google account. One click to connect your Gmail for sending.</p>
-                </div>
-                <div class="card step-card">
-                    <div class="step-num">2</div>
-                    <h3>Create Invoice</h3>
-                    <p>Fill in details, add line items, apply discounts and tax — all in a clean editor.</p>
-                </div>
-                <div class="card step-card">
-                    <div class="step-num">3</div>
-                    <h3>Send &amp; Track</h3>
-                    <p>Deliver via email or WhatsApp, then track status and payments in real-time.</p>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Stats -->
-    <section class="section">
-        <div class="container-sm">
-            <div class="stats-card">
-                <div class="stats-grid">
-                    <div><div class="stat-num">500+</div><div class="stat-label">Invoices Created</div></div>
-                    <div><div class="stat-num">99%</div><div class="stat-label">Delivery Rate</div></div>
-                    <div><div class="stat-num">$2M+</div><div class="stat-label">Processed</div></div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Testimonials -->
-    <section id="testimonials" class="section">
+    <!-- ── How to use it ───────────────────────────────────────────────
+         Replaces a three-step version that had gone stale: it opened with
+         "Connect Google", which stopped being how anybody starts once
+         accounts could be made with an email and a password. -->
+    <section class="section" id="how">
         <div class="container">
-            <div class="section-title">
-                <h2 data-cms="testimonials_title">Loved by Businesses</h2>
-                <p data-cms="testimonials_intro">See what our users have to say.</p>
+            <div class="section-title reveal">
+                <span class="eyebrow">Getting started</span>
+                <h2>How to use aniprotech</h2>
+                <p>Four steps from signing up to being paid. Nothing to install on a server, and no card needed to look around.</p>
             </div>
-            <div class="grid-3">
-                <div class="card testimonial">
-                    <div class="stars">
-                        <svg viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-                        <svg viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-                        <svg viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-                        <svg viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-                        <svg viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-                    </div>
-                    <p>"AllInOne has completely transformed how we handle invoicing. Sending invoices via Gmail takes seconds now, and the dashboard gives us a clear picture of our cash flow."</p>
-                    <div class="testimonial-author">
-                        <div class="testimonial-avatar">SK</div>
-                        <div>
-                            <div class="testimonial-name">Sarah Kim</div>
-                            <div class="testimonial-role">CEO, BrightPath Studio</div>
+            <div class="how-grid">
+                <div class="how-step reveal" style="--d:0.05s">
+                    <div class="step-num">1</div>
+                    <h3>Create your account</h3>
+                    <p>Sign up with your email and a password. We send a code to that address and you enter it once, so the address on your invoices is one you actually own.</p>
+                </div>
+                <div class="how-step reveal" style="--d:0.15s">
+                    <div class="step-num">2</div>
+                    <h3>Set up your business</h3>
+                    <p>Your logo, address, currency and tax rates — they flow onto every document.</p>
+                    <ul>
+                        <li>Send through your own Gmail, or your own mail server</li>
+                        <li>Connect a payment provider to collect card and bank payments</li>
+                    </ul>
+                </div>
+                <div class="how-step reveal" style="--d:0.25s">
+                    <div class="step-num">3</div>
+                    <h3>Add your people and customers</h3>
+                    <p>Employees, departments, contacts and items. Staff get their own portal for attendance, leave and payslips.</p>
+                </div>
+                <div class="how-step reveal" style="--d:0.35s">
+                    <div class="step-num">4</div>
+                    <h3>Send it and get paid</h3>
+                    <p>Raise an invoice or a quote, send it, and watch what happens to it. Anything that fails to leave is listed rather than quietly marked as sent.</p>
+                </div>
+            </div>
+            <div class="flow reveal" aria-label="An invoice moves from draft to paid">
+                <div class="flow-pill">Draft</div>
+                <div class="flow-arrow">&rarr;</div>
+                <div class="flow-pill">Sent</div>
+                <div class="flow-arrow">&rarr;</div>
+                <div class="flow-pill">Viewed</div>
+                <div class="flow-arrow">&rarr;</div>
+                <div class="flow-pill">Paid</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ── Installing ──────────────────────────────────────────────────
+         There is no app store listing, so without this the honest answer to
+         "how do I install it" lived nowhere on the site. -->
+    <section class="section" id="install">
+        <div class="container">
+            <div class="section-title reveal">
+                <span class="eyebrow">Install</span>
+                <h2>Put aniprotech on your device</h2>
+                <p>There is nothing to download from an app store. It installs from your browser in a few taps and then opens full screen, with its own icon, like any other app.</p>
+            </div>
+            <div class="install-wrap">
+                <div class="phone reveal" aria-hidden="true">
+                    <div class="phone-screen">
+                        <div class="phone-bar">aniprotech</div>
+                        <div class="phone-body">
+                            <div class="phone-line w70"></div>
+                            <div class="phone-line w45"></div>
+                            <div class="phone-card">
+                                <div class="phone-line w70"></div>
+                                <div class="phone-line w45"></div>
+                            </div>
+                        </div>
+                        <div class="phone-share">
+                            <div class="phone-row"><span></span>Copy</div>
+                            <div class="phone-row pick"><span></span>Add to Home Screen</div>
+                            <div class="phone-row"><span></span>Add to Favourites</div>
                         </div>
                     </div>
                 </div>
-                <div class="card testimonial">
-                    <div class="stars">
-                        <svg viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-                        <svg viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-                        <svg viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-                        <svg viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-                        <svg viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
+
+                <div class="install-guide reveal" style="--d:0.1s">
+                    <div class="install-tabs" role="tablist" aria-label="Choose your device">
+                        <button type="button" class="install-tab is-on" role="tab" id="tab-ios"
+                                aria-controls="panel-ios" aria-selected="true">iPhone &amp; iPad</button>
+                        <button type="button" class="install-tab" role="tab" id="tab-android"
+                                aria-controls="panel-android" aria-selected="false" tabindex="-1">Android</button>
+                        <button type="button" class="install-tab" role="tab" id="tab-desktop"
+                                aria-controls="panel-desktop" aria-selected="false" tabindex="-1">Windows &amp; Mac</button>
                     </div>
-                    <p>"The WhatsApp integration is a game-changer for us. Our clients in Southeast Asia prefer WhatsApp, and now we can send invoices directly. Getting paid has never been easier."</p>
-                    <div class="testimonial-author">
-                        <div class="testimonial-avatar">MR</div>
-                        <div>
-                            <div class="testimonial-name">Marcus Rivera</div>
-                            <div class="testimonial-role">Freelance Developer</div>
-                        </div>
+
+                    <div class="install-panel" role="tabpanel" id="panel-ios" aria-labelledby="tab-ios" tabindex="0">
+                        <ol class="install-steps">
+                            <li>Open this site in <b>Safari</b>. Chrome and Firefox on an iPhone cannot do this properly.</li>
+                            <li>Tap the <b>Share</b> button — the square with an arrow coming out of it.</li>
+                            <li>Scroll down the list and tap <b>Add to Home Screen</b>.</li>
+                            <li>Give it a name and tap <b>Add</b>.</li>
+                        </ol>
+                        <p class="install-note">You will be asked to sign in again inside the installed app. iOS keeps a home-screen app's sign-in separate from Safari's, so this happens once and then it remembers you.</p>
                     </div>
-                </div>
-                <div class="card testimonial">
-                    <div class="stars">
-                        <svg viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-                        <svg viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-                        <svg viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-                        <svg viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-                        <svg viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
+
+                    <div class="install-panel" role="tabpanel" id="panel-android" aria-labelledby="tab-android" tabindex="0" hidden>
+                        <ol class="install-steps">
+                            <li>Open this site in <b>Chrome</b>.</li>
+                            <li>Tap the <b>three dots</b> at the top right.</li>
+                            <li>Tap <b>Install app</b>, or <b>Add to Home screen</b> on older versions.</li>
+                            <li>Confirm with <b>Install</b>.</li>
+                        </ol>
+                        <p class="install-note">Chrome often offers this by itself with a banner at the bottom of the screen. Taking the banner does the same thing.</p>
                     </div>
-                    <p>"We switched from QuickBooks and couldn't be happier. The dashboard reports give us real-time visibility into our finances, and the invoice templates look incredibly professional."</p>
-                    <div class="testimonial-author">
-                        <div class="testimonial-avatar">AP</div>
-                        <div>
-                            <div class="testimonial-name">Aisha Patel</div>
-                            <div class="testimonial-role">CFO, NovaTech Solutions</div>
-                        </div>
+
+                    <div class="install-panel" role="tabpanel" id="panel-desktop" aria-labelledby="tab-desktop" tabindex="0" hidden>
+                        <ol class="install-steps">
+                            <li><b>Chrome or Edge:</b> look for the install icon at the right-hand end of the address bar — a screen with a downward arrow — and click <b>Install</b>.</li>
+                            <li>No icon? Open the browser menu and choose <b>Install this site as an app</b>, or <b>Apps &rarr; Install this site</b>.</li>
+                            <li><b>Safari on a Mac:</b> choose <b>File</b>, then <b>Add to Dock</b>.</li>
+                        </ol>
+                        <p class="install-note">It opens in its own window without tabs or an address bar, and it lands in your Start menu, Launchpad or Dock like anything else.</p>
                     </div>
                 </div>
             </div>
@@ -887,6 +1041,7 @@
         <div class="footer-inner" style="border-top:1px solid var(--ap-line);">
             <span class="footer-copy" data-cms="footer_copy">&copy; 2026 Ani Protech. All rights reserved.</span>
             <div class="footer-links" id="footer-links">
+                <a href="#install">Install</a>
                 <a href="#faq">FAQ</a>
                 <a href="#pricing">Pricing</a>
             </div>
@@ -1153,6 +1308,72 @@
         .catch(function () { /* the page already reads correctly without this */ });
 })();
 </script>
-    <script src="/install-hint.js?v=136"></script>
+    <script src="/install-hint.js?v=137"></script>
+
+    <script>
+        // Each block comes up as it is reached. Where IntersectionObserver is
+        // missing, everything is simply shown - a page that never reveals is
+        // a blank page, which is far worse than one that does not animate.
+        (function () {
+            var blocks = document.querySelectorAll('.reveal');
+            if (!blocks.length || !('IntersectionObserver' in window)) return;
+            document.documentElement.classList.add('js-reveal');
+
+            // A last resort. If the observer never fires - a viewport with no
+            // height, a browser that disagrees about what counts as visible -
+            // the page must end up readable rather than empty.
+            setTimeout(function () {
+                for (var k = 0; k < blocks.length; k++) blocks[k].classList.add('is-in');
+            }, 2500);
+            var eye = new IntersectionObserver(function (entries) {
+                entries.forEach(function (e) {
+                    if (!e.isIntersecting) return;
+                    e.target.classList.add('is-in');
+                    eye.unobserve(e.target);      // once, not on every scroll past
+                });
+            }, { rootMargin: '0px 0px -10% 0px', threshold: 0.08 });
+            for (var j = 0; j < blocks.length; j++) eye.observe(blocks[j]);
+        })();
+
+        // The install instructions, one device at a time.
+        (function () {
+            var tabs = [].slice.call(document.querySelectorAll('.install-tab'));
+            if (!tabs.length) return;
+
+            function show(tab) {
+                tabs.forEach(function (t) {
+                    var on = t === tab;
+                    t.classList.toggle('is-on', on);
+                    t.setAttribute('aria-selected', on ? 'true' : 'false');
+                    t.tabIndex = on ? 0 : -1;
+                    var panel = document.getElementById(t.getAttribute('aria-controls'));
+                    if (panel) panel.hidden = !on;
+                });
+            }
+
+            tabs.forEach(function (tab, i) {
+                tab.addEventListener('click', function () { show(tab); });
+                tab.addEventListener('keydown', function (e) {
+                    var step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+                    if (!step) return;
+                    e.preventDefault();
+                    var next = tabs[(i + step + tabs.length) % tabs.length];
+                    show(next);
+                    next.focus();
+                });
+            });
+
+            // Somebody arriving on an iPhone should not have to find their own
+            // tab first.
+            var ua = navigator.userAgent;
+            var isIOS = /iPad|iPhone|iPod/.test(ua) ||
+                (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+            var want = isIOS ? 'tab-ios'
+                : /Android/.test(ua) ? 'tab-android'
+                : /Mobi/.test(ua) ? null : 'tab-desktop';
+            var pick = want && document.getElementById(want);
+            if (pick) show(pick);
+        })();
+    </script>
 </body>
 </html>
