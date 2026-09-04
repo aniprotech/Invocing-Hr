@@ -40,6 +40,12 @@ const PRECACHE = [
     '/icons/favicon-32.png',
     '/icons/favicon-16.png',
     '/icons/apple-touch-icon.png',
+    // The staff app is a second installable app on the same origin, with its
+    // own icon so the two can be told apart on a home screen.
+    '/icons/icon-staff-192.png',
+    '/icons/icon-staff-512.png',
+    '/icons/icon-staff.svg',
+    '/icons/apple-touch-icon-staff.png',
 ];
 
 self.addEventListener('install', (event) => {
