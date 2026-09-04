@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=137">
+  <link rel="stylesheet" href="tailwind.css?v=138">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -38,11 +38,11 @@
     .notification-badge { animation: notifPulse 2s infinite; }
     @keyframes notifPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.1); } }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=137">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=137">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=137">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=137">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=137">
+    <link rel="stylesheet" href="mobile.css?v=138">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=138">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=138">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=138">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=138">
     <script src="/dialogs.js?v=1"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
@@ -352,10 +352,26 @@
           <div id="teamPresence" class="space-y-2"></div>
         </div>
       </div>
+
+      <!-- Things addressed to this person by name. The endpoint existed and
+           nothing called it, so a task assigned to somebody was visible to
+           everyone except them. -->
+      <div class="bg-white rounded-2xl border border-gray-100 p-5 mt-4" id="myTasksCard">
+        <h3 class="font-semibold text-gray-900 mb-4 flex items-center gap-2">
+          <svg class="w-5 h-5 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>
+          My tasks
+        </h3>
+        <div id="myTasks" class="space-y-2"></div>
+      </div>
     </div>
 
     <!-- Tab: Attendance History -->
     <div id="tab-attendance" class="tab-panel hidden fade-in">
+      <!-- The totals behind the history. The rows were listed but never added
+           up, so the one question anybody has about their own attendance -
+           how many hours, how many days - had no answer here. -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4" id="attendanceStats"></div>
+
       <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden">
         <div class="p-5 border-b border-gray-100">
           <h3 class="font-semibold text-gray-900">Attendance History</h3>
@@ -500,6 +516,18 @@
     </div>
 
     <div id="tab-calendar" class="tab-panel hidden fade-in">
+      <!-- The most-asked question in any staff portal, and the portal could
+           answer it all along. Without it people book annual leave over days
+           that were already free. -->
+      <div class="bg-white rounded-2xl border border-gray-100 p-5 mb-4">
+        <div class="flex items-center gap-3 mb-4">
+          <h3 class="font-semibold text-gray-900">Holidays</h3>
+          <select id="holidayYear" onchange="loadHolidays()"
+                  class="ml-auto px-3 py-1.5 rounded-lg border border-gray-200 text-sm"></select>
+        </div>
+        <div id="holidayList" class="space-y-2"></div>
+      </div>
+
       <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden mb-4">
         <div class="p-4 border-b border-gray-100 flex items-center gap-3 flex-wrap">
           <button onclick="shiftCalendarMonth(-1)" aria-label="Previous month"
@@ -595,6 +623,14 @@
         </div>
         <div class="p-5">
           <div class="grid sm:grid-cols-2 gap-4" id="profileDetails"></div>
+
+          <!-- What this person is holding. The first anybody usually hears of
+               a laptop they were never given is the day they are asked to
+               hand it back. -->
+          <div class="mt-6" id="myAssetsCard">
+            <h3 class="font-semibold text-gray-900 mb-3">Equipment you have</h3>
+            <div id="myAssets" class="space-y-2"></div>
+          </div>
         </div>
       </div>
 
@@ -950,6 +986,285 @@
     function apiPost(url, body) { return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: body ? JSON.stringify(body) : '{}' }); }
     function apiPatch(url, body) { return fetch(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(body) }); }
 
+    // --- Six things the portal could already answer -------------------------
+    //
+    // Every endpoint below existed and nothing in the browser called it. A
+    // task assigned to somebody was visible to everyone except them; the
+    // holidays the office is closed for could not be looked up by the people
+    // booking leave around them; and the attendance rows were listed but
+    // never added up.
+
+    var _fmtDay = function (iso) {
+        try {
+            return new Date(iso + 'T00:00:00').toLocaleDateString(undefined, {
+                weekday: 'short', day: 'numeric', month: 'short' });
+        } catch (e) { return iso; }
+    };
+
+    async function loadMyTasks() {
+        var host = document.getElementById('myTasks');
+        if (!host) return;
+        try {
+            var res = await fetch('/api/employee/tasks');
+            if (!res.ok) throw new Error('Request failed: ' + res.status);
+            renderMyTasks(await res.json());
+        } catch (e) {
+            host.textContent = 'Could not load your tasks.';
+        }
+    }
+    window.loadMyTasks = loadMyTasks;
+
+    function renderMyTasks(rows) {
+        var host = document.getElementById('myTasks');
+        host.textContent = '';
+        if (!rows.length) {
+            var none = document.createElement('p');
+            none.className = 'text-sm text-gray-400';
+            none.textContent = 'Nothing outstanding.';
+            host.appendChild(none);
+            return;
+        }
+        rows.forEach(function (t) {
+            var row = document.createElement('label');
+            row.className = 'flex items-start gap-3 p-3 rounded-xl border ' +
+                (t.overdue ? 'border-rose-200 bg-rose-50' : 'border-gray-100');
+
+            var box = document.createElement('input');
+            box.type = 'checkbox';
+            box.className = 'mt-0.5 w-4 h-4 rounded';
+            box.checked = !!t.done;
+            box.onchange = function () { setTaskDone(t.id, box.checked); };
+            row.appendChild(box);
+
+            var text = document.createElement('div');
+            text.className = 'flex-1 min-w-0';
+
+            var title = document.createElement('div');
+            title.className = 'text-sm font-medium ' +
+                (t.done ? 'text-gray-400 line-through' : 'text-gray-900');
+            title.textContent = t.title;
+            text.appendChild(title);
+
+            if (t.notes) {
+                var notes = document.createElement('div');
+                notes.className = 'text-xs text-gray-500 mt-0.5';
+                notes.textContent = t.notes;
+                text.appendChild(notes);
+            }
+            if (t.due_date) {
+                var due = document.createElement('div');
+                due.className = 'text-xs mt-1 ' +
+                    (t.overdue ? 'text-rose-600 font-semibold' : 'text-gray-400');
+                // Said rather than left to be worked out from the date.
+                due.textContent = (t.overdue ? 'Overdue - was due ' : 'Due ') +
+                    _fmtDay(t.due_date);
+                text.appendChild(due);
+            }
+            row.appendChild(text);
+            host.appendChild(row);
+        });
+    }
+
+    async function setTaskDone(id, done) {
+        try {
+            var res = await fetch('/api/employee/tasks/' + id + '/done', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ done: done }),
+            });
+            if (!res.ok) throw new Error('Request failed: ' + res.status);
+        } catch (e) {
+            alert('Could not save that. Please try again.');
+        }
+        loadMyTasks();
+    }
+    window.setTaskDone = setTaskDone;
+
+    // --- What the attendance rows add up to ---------------------------------
+    async function loadAttendanceStats() {
+        var host = document.getElementById('attendanceStats');
+        if (!host) return;
+        try {
+            var res = await fetch('/api/employee/analytics?days=30');
+            if (!res.ok) throw new Error('Request failed: ' + res.status);
+            renderAttendanceStats(await res.json());
+        } catch (e) {
+            host.textContent = '';
+        }
+    }
+    window.loadAttendanceStats = loadAttendanceStats;
+
+    function renderAttendanceStats(d) {
+        var host = document.getElementById('attendanceStats');
+        host.textContent = '';
+        [
+            ['Hours', (d.total_hours || 0).toFixed ? d.total_hours.toFixed(1) : d.total_hours, 'text-gray-900'],
+            ['Days present', d.days_present || 0, 'text-gray-900'],
+            ['Average day', (d.avg_hours || 0) + 'h', 'text-gray-900'],
+            // Only coloured when there is something to say, so a clean record
+            // does not look like a warning.
+            ['Late arrivals', d.late_days || 0,
+             (d.late_days ? 'text-amber-600' : 'text-gray-900')],
+        ].forEach(function (pair) {
+            var card = document.createElement('div');
+            card.className = 'bg-white rounded-2xl border border-gray-100 p-4';
+
+            var label = document.createElement('div');
+            label.className = 'text-xs text-gray-400 uppercase tracking-wider';
+            label.textContent = pair[0];
+            card.appendChild(label);
+
+            var value = document.createElement('div');
+            value.className = 'text-2xl font-bold tabular-nums mt-1 ' + pair[2];
+            value.textContent = pair[1];
+            card.appendChild(value);
+            host.appendChild(card);
+        });
+
+        var note = document.createElement('div');
+        note.className = 'col-span-2 sm:col-span-4 text-xs text-gray-400';
+        note.textContent = 'Over the last ' + (d.period_days || 30) + ' days.';
+        host.appendChild(note);
+    }
+
+    // --- When the office is closed ------------------------------------------
+    async function loadHolidays() {
+        var host = document.getElementById('holidayList');
+        var pick = document.getElementById('holidayYear');
+        if (!host || !pick) return;
+
+        if (!pick.options.length) {
+            var thisYear = new Date().getFullYear();
+            [thisYear, thisYear + 1].forEach(function (y) {
+                var o = document.createElement('option');
+                o.value = String(y);
+                o.textContent = String(y);
+                pick.appendChild(o);
+            });
+        }
+        try {
+            var res = await fetch('/api/employee/holidays?year=' + pick.value);
+            if (!res.ok) throw new Error('Request failed: ' + res.status);
+            renderHolidays(await res.json());
+        } catch (e) {
+            host.textContent = 'Could not load the holidays.';
+        }
+    }
+    window.loadHolidays = loadHolidays;
+
+    function renderHolidays(data) {
+        var host = document.getElementById('holidayList');
+        var rows = Array.isArray(data) ? data : (data.holidays || []);
+        host.textContent = '';
+        if (!rows.length) {
+            var none = document.createElement('p');
+            none.className = 'text-sm text-gray-400';
+            none.textContent = 'No holidays listed for this year.';
+            host.appendChild(none);
+            return;
+        }
+        var today = new Date().toISOString().slice(0, 10);
+        rows.forEach(function (h) {
+            var row = document.createElement('div');
+            row.className = 'flex items-center gap-3 p-3 rounded-xl border border-gray-100' +
+                (h.date < today ? ' opacity-50' : '');
+
+            var when = document.createElement('div');
+            when.className = 'text-sm font-medium text-gray-900 w-32 shrink-0';
+            when.textContent = _fmtDay(h.date);
+            row.appendChild(when);
+
+            var name = document.createElement('div');
+            name.className = 'text-sm text-gray-700 flex-1 min-w-0';
+            name.textContent = h.name;
+            row.appendChild(name);
+
+            // An optional day is one you may work, so it still costs leave to
+            // take. Somebody planning around this needs to know which it is.
+            var tag = document.createElement('span');
+            tag.className = 'text-xs px-2 py-0.5 rounded-full ' +
+                (h.office_closed ? 'bg-emerald-50 text-emerald-700'
+                                 : 'bg-amber-50 text-amber-700');
+            tag.textContent = h.office_closed ? 'Office closed' : 'Optional';
+            row.appendChild(tag);
+
+            host.appendChild(row);
+        });
+    }
+
+    // --- What you are holding -------------------------------------------------
+    async function loadMyAssets() {
+        var host = document.getElementById('myAssets');
+        if (!host) return;
+        try {
+            var res = await fetch('/api/employee/assets');
+            if (!res.ok) throw new Error('Request failed: ' + res.status);
+            renderMyAssets(await res.json());
+        } catch (e) {
+            host.textContent = 'Could not load your equipment.';
+        }
+    }
+    window.loadMyAssets = loadMyAssets;
+
+    function renderMyAssets(rows) {
+        var host = document.getElementById('myAssets');
+        host.textContent = '';
+        if (!rows.length) {
+            var none = document.createElement('p');
+            none.className = 'text-sm text-gray-400';
+            none.textContent = 'Nothing is assigned to you.';
+            host.appendChild(none);
+            return;
+        }
+        rows.forEach(function (a) {
+            var row = document.createElement('div');
+            row.className = 'flex items-center gap-3 p-3 rounded-xl border border-gray-100';
+
+            var text = document.createElement('div');
+            text.className = 'flex-1 min-w-0';
+
+            var name = document.createElement('div');
+            name.className = 'text-sm font-medium text-gray-900';
+            name.textContent = a.name;
+            text.appendChild(name);
+
+            var meta = document.createElement('div');
+            meta.className = 'text-xs text-gray-500';
+            // The tag is what is written on the thing itself, so it is the
+            // part that matters when somebody is asked which one they have.
+            meta.textContent = [a.tag, a.category,
+                a.issued_at ? 'since ' + a.issued_at : ''
+            ].filter(Boolean).join(' \u00b7 ');
+            text.appendChild(meta);
+
+            row.appendChild(text);
+            host.appendChild(row);
+        });
+    }
+
+    // --- The shift nobody remembered to close ---------------------------------
+    //
+    // The server closes a shift that has run past the limit, but only when it
+    // is asked. Nothing asked, so somebody who forgot to clock out stayed
+    // clocked in until they next signed in - which is how a ten-hour day
+    // becomes a thirty-hour one on the record.
+    (function keepShiftHonest() {
+        var EVERY = 5 * 60 * 1000;
+        async function beat() {
+            if (document.hidden) return;
+            try {
+                var res = await fetch('/api/employee/heartbeat', { method: 'POST' });
+                if (!res.ok) return;
+                var d = await res.json();
+                if (d.status === 'auto_clocked_out' && typeof loadToday === 'function') {
+                    loadToday();
+                }
+            } catch (e) { /* a missed beat costs nothing; the next one runs */ }
+        }
+        setInterval(beat, EVERY);
+        beat();
+    })();
+
     function switchTab(tab) {
       document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.add('hidden'); });
       document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('tab-active'); b.classList.add('text-gray-500'); });
@@ -957,15 +1272,17 @@
       var btn = document.querySelector('[data-tab="' + tab + '"]');
       if (panel) panel.classList.remove('hidden');
       if (btn) { btn.classList.add('tab-active'); btn.classList.remove('text-gray-500'); }
+      if (tab === 'overview') loadMyTasks();
+      if (tab === 'attendance') loadAttendanceStats();
       if (tab === 'goals') loadGoals();
       if (tab === 'leave') { loadLeave(); loadLeaveBalance(); }
       if (tab === 'documents') { loadDocuments(); loadDocumentRequests(); }
       if (tab === 'team') loadTeamPresence();
-      if (tab === 'profile') { loadProfileTab(); loadMyChanges(); }
+      if (tab === 'profile') { loadProfileTab(); loadMyChanges(); loadMyAssets(); }
       if (tab === 'requests') loadStaffRequests();
       if (tab === 'payslips') loadPayslips();
       if (tab === 'assistant') startAssistant();
-      if (tab === 'calendar') loadCalendar();
+      if (tab === 'calendar') { loadCalendar(); loadHolidays(); }
       if (tab === 'surveys') loadMySurveys();
       if (tab === 'notices') loadNotices();
     }
@@ -2414,7 +2731,7 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=137"></script>
-    <script src="/pwa.js?v=137"></script>
+    <script src="/install-hint.js?v=138"></script>
+    <script src="/pwa.js?v=138"></script>
 </body>
 </html>
