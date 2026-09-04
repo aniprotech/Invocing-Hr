@@ -34,6 +34,8 @@ const PRECACHE = [
     '/tailwind.css?v=137',
     '/mobile.css?v=137',
     '/app.js?v=137',
+    // Every page loads this, so it is worth having before it is asked for.
+    '/pwa.js?v=137',
     '/icons/icon-192.png',
     '/icons/icon-512.png',
     '/icons/icon.svg',
@@ -46,6 +48,13 @@ const PRECACHE = [
     '/icons/icon-staff-512.png',
     '/icons/icon-staff.svg',
     '/icons/apple-touch-icon-staff.png',
+    // Android masks a home-screen icon to the launcher's own shape. One that
+    // does not say it can be masked gets shrunk into a white circle instead,
+    // so both apps ship a full-bleed version as well.
+    '/icons/icon-192-maskable.png',
+    '/icons/icon-512-maskable.png',
+    '/icons/icon-staff-192-maskable.png',
+    '/icons/icon-staff-512-maskable.png',
 ];
 
 self.addEventListener('install', (event) => {

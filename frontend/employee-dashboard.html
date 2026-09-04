@@ -9,7 +9,7 @@
        their own portal got an icon called aniprotech that opened the
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
-  <meta name="theme-color" content="#0b0f19">
+  <meta name="theme-color" content="#0f172a">
   <link rel="stylesheet" href="tailwind.css?v=137">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
@@ -2375,19 +2375,6 @@
     loadProfile();
   </script>
 
-  <script>
-    // The portal ships a manifest and icons, so it can be installed to a phone
-    // home screen - which is how most employees reach it. Without a worker
-    // registered that install had no caching and no offline behaviour at all.
-    // Registered after load so it never competes with first paint, and failure
-    // is ignored: this is an optimisation, and the page works without it.
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', function () {
-        navigator.serviceWorker.register('/sw.js').catch(function () {});
-      });
-    }
-  </script>
-
   <!-- Asking for a day to be corrected. Nothing here changes the record; it
        goes to HR as a request, which is the same shape as a bank-detail
        change for the same reason. -->
@@ -2428,5 +2415,6 @@
     </div>
   </div>
     <script src="/install-hint.js?v=137"></script>
+    <script src="/pwa.js?v=137"></script>
 </body>
 </html>
