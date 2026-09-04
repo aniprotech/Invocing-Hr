@@ -596,6 +596,15 @@
              is a row in the settings table; nothing here is a secret, and
              the reason is written on the page rather than only in the code. -->
         <section class="admin-panel" id="panel-control">
+            <div class="section-header" style="margin-top:4px;">
+                <h2>Platform email</h2>
+                <span style="font-size:0.78rem;color:#94a3b8;">Signup codes, your own sign-in codes, password resets</span>
+                <button class="action-btn" onclick="loadPlatformEmail()" style="margin-left:auto;">Reload</button>
+            </div>
+            <div id="platform-email-body" style="margin-bottom:34px;">
+              <div style="padding:22px;color:#94a3b8;font-size:0.85rem;">Loading&hellip;</div>
+            </div>
+
             <div class="section-header">
                 <h2>Application settings</h2>
                 <span style="font-size:0.78rem;color:#94a3b8;">Applies to every tenant, straight away</span>
@@ -1845,6 +1854,133 @@
 
         var _settings = [];
 
+        // Whether the platform can send at all, and what to do about it.
+        //
+        // There was no screen for this, and it is the single point every code
+        // in the product depends on: a signup code, an operator's own sign-in
+        // code, a password reset. When it is not set up they all fail the same
+        // quiet way, so the state is said plainly here rather than inferred
+        // from codes going missing.
+        async function loadPlatformEmail() {
+            var host = document.getElementById('platform-email-body');
+            if (!host) return;
+            try {
+                var res = await fetch('/api/superadmin/email-status');
+                if (!res.ok) throw new Error('Request failed: ' + res.status);
+                renderPlatformEmail(await res.json());
+            } catch (e) {
+                host.textContent = 'Could not read the email setup: ' + e.message;
+            }
+        }
+        window.loadPlatformEmail = loadPlatformEmail;
+
+        function renderPlatformEmail(d) {
+            var host = document.getElementById('platform-email-body');
+            host.textContent = '';
+
+            var box = document.createElement('div');
+            box.style.cssText = 'border:1px solid ' +
+                (d.can_send ? '#10b981' : '#f43f5e') +
+                ';border-radius:12px;padding:18px 20px;background:#0f172a;';
+
+            var head = document.createElement('div');
+            head.style.cssText = 'font-weight:700;font-size:0.95rem;color:' +
+                (d.can_send ? '#34d399' : '#fb7185') + ';margin-bottom:6px;';
+            head.textContent = d.can_send
+                ? 'The platform can send email.'
+                : 'The platform cannot send email.';
+            box.appendChild(head);
+
+            var why = document.createElement('div');
+            why.style.cssText = 'font-size:0.84rem;color:#cbd5e1;line-height:1.7;';
+            why.textContent = d.can_send
+                ? (d.transport === 'smtp'
+                    ? 'Going out over SMTP.'
+                    : 'Going out through ' + (d.connected_as || 'the connected Google account') + '.')
+                : (d.blocked_reason || 'No transport is set up.') +
+                  ' Every verification code and password reset is failing until this is fixed.';
+            box.appendChild(why);
+
+            // A token that no longer works looks exactly like one that does,
+            // until somebody needs a code.
+            if (d.google_connected && !d.google_works) {
+                var stale = document.createElement('div');
+                stale.style.cssText = 'margin-top:10px;font-size:0.84rem;color:#fbbf24;';
+                stale.textContent = 'A Google account is connected but the ' +
+                    'stored authorisation no longer works. Connect it again.';
+                box.appendChild(stale);
+            }
+
+            var note = document.createElement('div');
+            note.style.cssText = 'margin-top:12px;font-size:0.78rem;color:#94a3b8;line-height:1.7;';
+            note.textContent = d.note || '';
+            box.appendChild(note);
+
+            var row = document.createElement('div');
+            row.style.cssText = 'margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;';
+
+            var connect = document.createElement('a');
+            connect.href = '/api/superadmin/gmail/connect';
+            connect.className = 'action-btn';
+            connect.style.cssText = 'text-decoration:none;background:#0284c7;color:#ffffff;border-color:#0284c7;';
+            connect.textContent = d.google_connected
+                ? 'Reconnect a Google account' : 'Connect a Google account';
+            row.appendChild(connect);
+
+            if (d.google_connected) {
+                var off = document.createElement('button');
+                off.type = 'button';
+                off.className = 'action-btn';
+                off.textContent = 'Disconnect';
+                off.onclick = disconnectPlatformGmail;
+                row.appendChild(off);
+            }
+
+            var alt = document.createElement('span');
+            alt.style.cssText = 'font-size:0.78rem;color:#94a3b8;';
+            alt.textContent = d.smtp_host_set
+                ? 'SMTP_HOST is set, so SMTP is available as well.'
+                : 'Or set SMTP_HOST, SMTP_PORT, SMTP_USER and SMTP_PASSWORD in the ' +
+                  'environment and choose smtp below. A mail password is a secret, ' +
+                  'so it is not editable here.';
+            row.appendChild(alt);
+
+            box.appendChild(row);
+            host.appendChild(box);
+        }
+
+        async function disconnectPlatformGmail() {
+            // Worth asking: with nothing else set up this stops every code the
+            // product sends, which "Disconnect" does not convey on its own.
+            if (!confirm('Disconnect the Google account the platform sends through?\n\n' +
+                         'If no mail server is set up, verification codes and ' +
+                         'password resets will stop working for everyone.')) return;
+            try {
+                var res = await fetch('/api/superadmin/gmail/disconnect', { method: 'POST' });
+                var data = await res.json().catch(function () { return {}; });
+                alert(data.message || 'Disconnected.');
+            } catch (e) {
+                alert('Could not disconnect: ' + e.message);
+            }
+            loadPlatformEmail();
+        }
+        window.disconnectPlatformGmail = disconnectPlatformGmail;
+
+        // What came back from Google, said once and then cleared so a refresh
+        // does not repeat it.
+        (function reportPlatformEmailConnect() {
+            var said = (window.location.hash || '').match(/email=([a-z]+)/);
+            if (!said) return;
+            var words = {
+                connected: 'Google connected. The platform can send email now.',
+                failed: 'Google refused the connection. Nothing has changed.',
+                norefresh: 'Google did not grant lasting access. Try again.',
+                notlinked: 'That connection was not started from this screen.'
+            }[said[1]];
+            window.location.hash = '#control';
+            if (words) setTimeout(function () { alert(words); }, 50);
+        })();
+
         async function loadPlatformSettings() {
             var host = document.getElementById('platform-settings-body');
             if (!host) return;
@@ -1992,7 +2128,7 @@
             trends:   [loadTrends],
             activity: [loadLoginLogs],
             clients:  [loadClients],
-            control:  [loadPlatformSettings, loadLandingItems]
+            control:  [loadPlatformEmail, loadPlatformSettings, loadLandingItems]
         };
         var _tabLoaded = {};
 

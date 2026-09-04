@@ -4189,6 +4189,147 @@ def disconnect_gmail(request: Request, db: Session = Depends(get_db)):
         db.commit()
     return {"ok": True, "message": "Gmail disconnected. Re-authorize with your Google account."}
 
+# ============================================================================
+# THE PLATFORM'S OWN WAY OF SENDING
+#
+# Signup codes, operator sign-in codes and password resets all leave on the
+# platform transport rather than any tenant's. That transport defaults to
+# Gmail and needs a refresh token filed against no tenant at all - and nothing
+# in the product could write one. The tenant connect flow files it against the
+# tenant, so does the sign-in callback, and this screen had no way to connect
+# anything. Unless SMTP variables were set in the environment the platform
+# could send to nobody, and every code in the product went missing silently.
+# ============================================================================
+
+@app.get("/api/superadmin/email-status")
+def superadmin_email_status(request: Request, db: Session = Depends(get_db),
+                            _: int = SuperAdmin):
+    """Whether the platform can send, and what is stopping it if not."""
+    ready, missing = email_delivery_ready(db)
+    transport = email_transport(db)
+
+    row = db.query(models.DBSettings).filter(
+        models.DBSettings.key == "GOOGLE_REFRESH_TOKEN",
+        models.DBSettings.client_id == None).first()      # noqa: E711
+
+    # Which Google account, if we can find out cheaply. A stored token that no
+    # longer works is worth knowing about before somebody relies on it.
+    connected_as = ""
+    if row and row.value:
+        try:
+            creds = get_gmail_credentials(access_token=None, refresh_token=row.value)
+            service = build('gmail', 'v1', credentials=creds)
+            connected_as = service.users().getProfile(
+                userId="me").execute().get("emailAddress", "")
+        except Exception as exc:                          # noqa: BLE001
+            logger.warning("Stored platform Google token did not work: %s", exc)
+            connected_as = ""
+
+    return {
+        "can_send": ready,
+        "blocked_reason": "" if ready else missing,
+        "transport": transport,
+        "google_connected": bool(row and row.value),
+        "google_works": bool(connected_as),
+        "connected_as": connected_as,
+        "smtp_host_set": bool(smtp_config().get("host")),
+        # Said plainly, because the alternative is an operator wondering why a
+        # working-looking screen still sends nothing.
+        "note": ("Everything the platform sends itself - signup codes, your own "
+                 "sign-in codes, password resets - goes out this way. A tenant "
+                 "who has connected their own Gmail or mail server is not "
+                 "affected by this."),
+    }
+
+
+@app.get("/api/superadmin/gmail/connect")
+async def superadmin_gmail_connect(request: Request, _: int = SuperAdmin):
+    """Begin connecting a Google account for the platform itself."""
+    # Remembered so the callback knows this was the operator asking rather
+    # than a tenant, and files the token against no tenant at all.
+    request.session["platform_gmail_link"] = True
+
+    redirect_uri = str(request.url_for('superadmin_gmail_callback'))
+    if redirect_uri.startswith('http://') and 'localhost' not in redirect_uri:
+        redirect_uri = redirect_uri.replace('http://', 'https://', 1)
+    return await oauth.google.authorize_redirect(
+        request, redirect_uri, access_type='offline', prompt='consent')
+
+
+@app.get("/api/superadmin/gmail/callback")
+async def superadmin_gmail_callback(request: Request,
+                                    db: Session = Depends(get_db)):
+    """Store the token against the platform rather than any tenant."""
+    # Refused outright rather than redirected, the same as every other route
+    # under /api/superadmin. This one writes the Google account every tenant's
+    # mail goes out through, so "not an operator" is a refusal, not a message.
+    # Signing out pops superadmin_id and leaves the rest of the session alone,
+    # so a browser that started a connection and then signed out still carries
+    # the marker - which is exactly the case this stops.
+    require_superadmin(request)
+
+    started = request.session.pop("platform_gmail_link", False)
+    if not started:
+        # An operator, but nothing was started here. Worth a word rather than
+        # a bare refusal, since it is most likely a stale tab.
+        return RedirectResponse(url="/superadmin.html#email=notlinked")
+
+    try:
+        token = await oauth.google.authorize_access_token(request)
+    except Exception:
+        logger.exception("Google refused the platform connection")
+        return RedirectResponse(url="/superadmin.html#email=failed")
+
+    refresh_token = token.get("refresh_token")
+    if not refresh_token:
+        # Without one this stops working whenever the browser token expires,
+        # which would be long after anybody remembers doing this.
+        logger.error("Google returned no refresh token for the platform")
+        return RedirectResponse(url="/superadmin.html#email=norefresh")
+
+    row = db.query(models.DBSettings).filter(
+        models.DBSettings.key == "GOOGLE_REFRESH_TOKEN",
+        models.DBSettings.client_id == None).first()      # noqa: E711
+    if row:
+        row.value = refresh_token
+    else:
+        db.add(models.DBSettings(key="GOOGLE_REFRESH_TOKEN",
+                                 value=refresh_token, client_id=None,
+                                 description="How the platform itself sends email"))
+
+    # Connecting an account to send from is also choosing to send through it.
+    set_platform_setting(db, "email.transport", "gmail")
+
+    who = (token.get("userinfo") or {}).get("email", "")
+    logger.info("Platform email connected to %s", who)
+    db.commit()
+    return RedirectResponse(url="/superadmin.html#email=connected")
+
+
+@app.post("/api/superadmin/gmail/disconnect")
+def superadmin_gmail_disconnect(request: Request, db: Session = Depends(get_db),
+                                _: int = SuperAdmin):
+    """Stop sending through the connected account.
+
+    Said out loud rather than done quietly: with nothing else set up this
+    stops every code the platform sends, which is not obvious from a button
+    marked Disconnect.
+    """
+    row = db.query(models.DBSettings).filter(
+        models.DBSettings.key == "GOOGLE_REFRESH_TOKEN",
+        models.DBSettings.client_id == None).first()      # noqa: E711
+    if row:
+        db.delete(row)
+        db.commit()
+
+    ready, missing = email_delivery_ready(db)
+    return {"ok": True, "can_send": ready,
+            "message": ("Disconnected. " + ("Email still goes out over SMTP."
+                        if ready else
+                        "The platform can no longer send anything - "
+                        + missing + "."))}
+
+
 # --- Test Email Endpoint (for demos) ---
 
 @app.post("/api/send-test-email")
