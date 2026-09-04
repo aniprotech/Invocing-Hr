@@ -9438,8 +9438,14 @@ async function checkEmailVerified() {
         var status = await res.json();
         if (status.verified) { bar.style.display = 'none'; return; }
 
+        // Registering does not make a code when the server cannot send one, so
+        // asking somebody to enter it would be asking for something that was
+        // never sent. Say what is actually wrong instead.
         document.getElementById('verify-bar-text').textContent =
-            'Confirm ' + status.email + ' before you can send invoices from it.';
+            status.can_send === false
+                ? 'We could not send a code to ' + status.email + ' - ' +
+                  (status.blocked_reason || 'this server cannot send email') + '.'
+                : 'Confirm ' + status.email + ' before you can send invoices from it.';
         document.getElementById('verify-email-address').textContent = status.email;
         bar.style.display = 'flex';
     } catch (e) { /* the app works; this is a nudge, not a gate */ }

@@ -921,9 +921,18 @@ def resend_client_verification(request: Request, background_tasks: BackgroundTas
 @app.get("/api/client/verification-status")
 def client_verification_status(request: Request, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
+    # Whether a code can be sent at all. Registering does not create one when
+    # the server cannot send, so without this the screen asks somebody to
+    # confirm their address with a code that was never made - and the only way
+    # to find that out was to press resend and read the error. The code goes
+    # out on the platform's transport, not the tenant's, because at this point
+    # they have not set one up.
+    ready, missing = email_delivery_ready(db)
     return {
         "verified": email_is_verified(client),
         "email": client.email or "",
+        "can_send": ready,
+        "blocked_reason": "" if ready else missing,
     }
 
 
@@ -1623,7 +1632,8 @@ def superadmin_login(request: Request, body: dict = None, db: Session = Depends(
     sa = None
     if identifier:
         sa = db.query(models.DBSuperAdmin).filter(
-            (models.DBSuperAdmin.email == identifier) | (models.DBSuperAdmin.username == identifier)
+            (sqlfunc.lower(models.DBSuperAdmin.email) == identifier)
+            | (sqlfunc.lower(models.DBSuperAdmin.username) == identifier)
         ).first()
     if sa:
         ok = False
@@ -1752,8 +1762,8 @@ def superadmin_request_otp(request: Request, background_tasks: BackgroundTasks,
         return same_answer
 
     sa = db.query(models.DBSuperAdmin).filter(
-        (models.DBSuperAdmin.email == identifier)
-        | (models.DBSuperAdmin.username == identifier)).first()
+        (sqlfunc.lower(models.DBSuperAdmin.email) == identifier)
+        | (sqlfunc.lower(models.DBSuperAdmin.username) == identifier)).first()
     if not sa or not sa.email:
         return same_answer
 
@@ -1830,8 +1840,8 @@ def superadmin_verify_otp(request: Request, background_tasks: BackgroundTasks,
         raise refused
 
     sa = db.query(models.DBSuperAdmin).filter(
-        (models.DBSuperAdmin.email == identifier)
-        | (models.DBSuperAdmin.username == identifier)).first()
+        (sqlfunc.lower(models.DBSuperAdmin.email) == identifier)
+        | (sqlfunc.lower(models.DBSuperAdmin.username) == identifier)).first()
     if not sa:
         log_login(db, None, identifier, "superadmin", "otp", request, "failed")
         db.commit()
