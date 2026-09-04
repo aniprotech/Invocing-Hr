@@ -4204,7 +4204,33 @@ async function loadReports() {
 window.loadReports = loadReports;
 
 // --- Gmail API Status ---
+// The connect flow comes back to #/settings?gmail=..., so the answer lives in
+// the hash rather than the query string. Without reading it, a refusal looked
+// exactly like a success that had not loaded yet.
+function reportGmailConnect() {
+    var hash = window.location.hash || '';
+    var at = hash.indexOf('?');
+    if (at === -1) return;
+    var said = new URLSearchParams(hash.slice(at + 1)).get('gmail');
+    if (!said) return;
+
+    var words = {
+        connected: ['Gmail connected. Your email will send through it.', 'success'],
+        failed: ['Google refused the connection. Nothing has changed.', 'error'],
+        // Google only hands one over the first time unless consent is forced,
+        // and without it nothing can be sent later.
+        norefresh: ['Google did not grant lasting access. Try connecting again.', 'error'],
+        notlinked: ['That connection was not started from your account.', 'error'],
+    }[said];
+    if (words && typeof showToast === 'function') showToast(words[0], words[1]);
+
+    // Cleared so a refresh does not say it all over again.
+    window.location.hash = hash.slice(0, at);
+}
+window.reportGmailConnect = reportGmailConnect;
+
 async function loadGmailStatus() {
+    reportGmailConnect();
     try {
         var res = await fetch('/api/gmail/status');
         if (!res.ok) throw new Error("Request failed: " + res.status);

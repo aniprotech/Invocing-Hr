@@ -4043,6 +4043,84 @@ def logout(request: Request):
     request.session.clear()
     return RedirectResponse(url="/")
 
+# ============================================================================
+# CONNECTING A GOOGLE ACCOUNT TO SEND FROM
+#
+# The only way to do this used to be the sign-in route. For somebody who
+# signed up with an email and a password that was worse than useless: if their
+# Google address differed from the one they signed up with - uday@company.com
+# and uday@gmail.com - the callback found no account with it, created a brand
+# new empty one, moved their session into it, and filed the token there. They
+# were left staring at an account with none of their invoices in it, and their
+# real account still could not send.
+#
+# Signing in and linking are different acts. This one requires an account
+# already signed in, and attaches the token to that account whatever address
+# Google hands back. It never looks a client up by the Google address, and it
+# never creates one.
+# ============================================================================
+
+@app.get("/api/gmail/connect")
+async def gmail_connect(request: Request, db: Session = Depends(get_db)):
+    """Begin linking a Google account to the one already signed in."""
+    client = get_client_user(request, db)
+    # Remembered so the callback knows this was a link and whose it is, rather
+    # than working it out from whatever Google says.
+    request.session["gmail_link_client_id"] = client.id
+
+    redirect_uri = str(request.url_for('gmail_connect_callback'))
+    if redirect_uri.startswith('http://') and 'localhost' not in redirect_uri:
+        redirect_uri = redirect_uri.replace('http://', 'https://', 1)
+    return await oauth.google.authorize_redirect(
+        request, redirect_uri, access_type='offline', prompt='consent')
+
+
+@app.get("/api/gmail/connect/callback")
+async def gmail_connect_callback(request: Request, db: Session = Depends(get_db)):
+    """Store the token against the account that asked for it."""
+    client_id = request.session.get("gmail_link_client_id")
+    if not client_id:
+        # Nobody asked for this, so it is not obvious whose it would be.
+        return RedirectResponse(url="/app.html#/settings?gmail=notlinked")
+
+    try:
+        token = await oauth.google.authorize_access_token(request)
+    except Exception:
+        logger.exception("Google refused the connection for client %s", client_id)
+        return RedirectResponse(url="/app.html#/settings?gmail=failed")
+    finally:
+        request.session.pop("gmail_link_client_id", None)
+
+    refresh_token = token.get("refresh_token")
+    if not refresh_token:
+        # Google only sends one the first time unless consent is forced. Without
+        # it nothing can be sent later, so this is a failure, not a success.
+        logger.error("Google returned no refresh token for client %s", client_id)
+        return RedirectResponse(url="/app.html#/settings?gmail=norefresh")
+
+    row = db.query(models.DBSettings).filter(
+        models.DBSettings.key == "GOOGLE_REFRESH_TOKEN",
+        models.DBSettings.client_id == client_id).first()
+    if row:
+        row.value = refresh_token
+    else:
+        db.add(models.DBSettings(key="GOOGLE_REFRESH_TOKEN",
+                                 value=refresh_token, client_id=client_id))
+
+    # Connecting an account to send from is also choosing to send through it.
+    settings_row = client_email_settings(db, client_id)
+    if not settings_row:
+        settings_row = models.DBClientEmailSettings(client_id=client_id)
+        db.add(settings_row)
+    settings_row.transport = "gmail"
+    settings_row.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    who = (token.get("userinfo") or {}).get("email", "")
+    log_audit(db, client_id, "gmail_connected", "client", client_id, who, "", request)
+    db.commit()
+    return RedirectResponse(url="/app.html#/settings?gmail=connected")
+
+
 @app.get("/api/gmail/status")
 def gmail_status(request: Request, db: Session = Depends(get_db)):
     user = request.session.get('user')
