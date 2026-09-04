@@ -492,6 +492,26 @@
             </div>
         </div>
 
+        <!-- Money the platform is holding on somebody else's behalf.
+             In platform mode every customer payment lands in our Razorpay
+             account, so each one is owed to the business that raised the
+             invoice until it is paid out - and none of that was visible from
+             any screen. -->
+        <div class="section-header" style="margin-top:32px;">
+            <h2>Settlements</h2>
+            <span style="font-size:0.78rem;color:#94a3b8;">Customer money we are holding for a business</span>
+            <button class="action-btn" onclick="loadSettlements()" style="margin-left:auto;">Reload</button>
+        </div>
+        <div id="collection-mode-box" style="margin-bottom:14px;"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;" id="settlement-filters">
+            <button type="button" class="action-btn" data-settle="owed" onclick="setSettlementFilter('owed')">Owed</button>
+            <button type="button" class="action-btn" data-settle="paid_out" onclick="setSettlementFilter('paid_out')">Paid out</button>
+            <button type="button" class="action-btn" data-settle="all" onclick="setSettlementFilter('all')">All</button>
+        </div>
+        <div id="settlements-list">
+            <div style="padding:22px;color:#94a3b8;font-size:0.85rem;">Loading&hellip;</div>
+        </div>
+
         <div class="section-header" style="margin-top:32px;">
             <h2>AI</h2>
             <button class="action-btn" onclick="checkAi()" style="margin-left:auto;">Check AI</button>
@@ -1861,6 +1881,249 @@
         // code, a password reset. When it is not set up they all fail the same
         // quiet way, so the state is said plainly here rather than inferred
         // from codes going missing.
+        // Settlements: customer money sitting in the platform's account that
+        // belongs to the business that raised the invoice.
+        //
+        // In platform mode every payment lands with us, so each one is a debt
+        // until it is paid out. None of it was on any screen - the endpoints
+        // existed and nothing called them, so the only way to know what was
+        // owed was to read the table by hand.
+        var _settlementFilter = 'owed';
+
+        async function loadSettlements() {
+            var host = document.getElementById('settlements-list');
+            if (!host) return;
+            try {
+                var url = '/api/superadmin/settlements' +
+                    (_settlementFilter === 'all' ? '?status=all' : '?status=' + _settlementFilter);
+                var res = await fetch(url);
+                if (!res.ok) throw new Error('Request failed: ' + res.status);
+                var data = await res.json();
+                renderSettlements(data.settlements || []);
+            } catch (e) {
+                host.textContent = 'Could not load settlements: ' + e.message;
+            }
+            loadCollectionMode();
+        }
+        window.loadSettlements = loadSettlements;
+
+        function setSettlementFilter(which) {
+            _settlementFilter = which;
+            document.querySelectorAll('#settlement-filters .action-btn').forEach(function (b) {
+                b.classList.toggle('active', b.getAttribute('data-settle') === which);
+            });
+            loadSettlements();
+        }
+        window.setSettlementFilter = setSettlementFilter;
+
+        async function loadCollectionMode() {
+            var host = document.getElementById('collection-mode-box');
+            if (!host) return;
+            try {
+                var res = await fetch('/api/superadmin/collection-mode');
+                if (!res.ok) throw new Error('Request failed: ' + res.status);
+                renderCollectionMode(await res.json());
+            } catch (e) {
+                host.textContent = 'Could not read the collection mode: ' + e.message;
+            }
+        }
+        window.loadCollectionMode = loadCollectionMode;
+
+        function renderCollectionMode(d) {
+            var host = document.getElementById('collection-mode-box');
+            host.textContent = '';
+
+            var box = document.createElement('div');
+            box.style.cssText = 'border:1px solid rgba(255,255,255,0.06);border-radius:14px;' +
+                'padding:16px 20px;background:rgba(15, 23, 42, 0.6);';
+
+            var line = document.createElement('div');
+            line.style.cssText = 'display:flex;gap:12px;align-items:center;flex-wrap:wrap;';
+
+            var label = document.createElement('span');
+            label.style.cssText = 'font-size:0.85rem;font-weight:600;';
+            label.textContent = 'Customer payments land in:';
+            line.appendChild(label);
+
+            var pick = document.createElement('select');
+            pick.id = 'collection-mode-pick';
+            pick.style.cssText = 'background:#0f172a;color:#e2e8f0;border:1px solid #334155;' +
+                'border-radius:8px;padding:7px 10px;font-size:0.85rem;';
+            (d.modes || ['direct', 'platform']).forEach(function (m) {
+                var o = document.createElement('option');
+                o.value = m;
+                o.textContent = m === 'platform'
+                    ? "the platform's account (we owe it on)"
+                    : "each business's own account";
+                if (m === d.mode) o.selected = true;
+                pick.appendChild(o);
+            });
+            line.appendChild(pick);
+
+            var save = document.createElement('button');
+            save.type = 'button';
+            save.className = 'action-btn';
+            save.textContent = 'Save';
+            save.onclick = saveCollectionMode;
+            line.appendChild(save);
+            box.appendChild(line);
+
+            // Switching to platform mode without keys is refused by the
+            // server; saying so first saves somebody finding out by error.
+            if (!d.platform_keys_ready) {
+                var warn = document.createElement('div');
+                warn.style.cssText = 'margin-top:10px;font-size:0.78rem;color:#fbbf24;';
+                warn.textContent = "The platform's own Razorpay keys are not set (" +
+                    (d.platform_key_env || []).join(', ') +
+                    '), so payments cannot be collected into it.';
+                box.appendChild(warn);
+            }
+
+            if (d.owed_count) {
+                var owed = document.createElement('div');
+                owed.style.cssText = 'margin-top:12px;font-size:0.85rem;color:#fb7185;font-weight:600;';
+                owed.textContent = 'Owed to businesses: ' +
+                    (d.owed_to_tenants || []).map(function (t) {
+                        return t.amount + ' ' + t.currency;
+                    }).join(', ') + '  (' + d.owed_count + ' payment' +
+                    (d.owed_count === 1 ? '' : 's') + ')';
+                box.appendChild(owed);
+            }
+
+            var note = document.createElement('div');
+            note.style.cssText = 'margin-top:10px;font-size:0.75rem;color:#94a3b8;line-height:1.7;';
+            note.textContent = d.note || '';
+            box.appendChild(note);
+
+            host.appendChild(box);
+        }
+
+        async function saveCollectionMode() {
+            var pick = document.getElementById('collection-mode-pick');
+            if (!pick) return;
+            try {
+                var res = await fetch('/api/superadmin/collection-mode', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode: pick.value }),
+                });
+                var data = await res.json().catch(function () { return {}; });
+                if (!res.ok) throw new Error(data.detail || 'Could not save');
+                alert('Customer payments now land in ' +
+                    (data.mode === 'platform' ? "the platform's account." : "each business's own account."));
+            } catch (e) {
+                alert(e.message);
+            }
+            loadCollectionMode();
+        }
+        window.saveCollectionMode = saveCollectionMode;
+
+        function renderSettlements(rows) {
+            var host = document.getElementById('settlements-list');
+            host.textContent = '';
+
+            if (!rows.length) {
+                var none = document.createElement('div');
+                none.style.cssText = 'padding:22px;color:#94a3b8;font-size:0.85rem;';
+                none.textContent = _settlementFilter === 'owed'
+                    ? 'Nothing is owed to anybody.'
+                    : 'Nothing here yet.';
+                host.appendChild(none);
+                return;
+            }
+
+            var table = document.createElement('table');
+            table.className = 'data-table';
+            table.style.cssText = 'width:100%;';
+
+            var head = document.createElement('thead');
+            var hr = document.createElement('tr');
+            ['Business', 'Invoice', 'Amount', 'Collected', 'Status', ''].forEach(function (h) {
+                var th = document.createElement('th');
+                th.textContent = h;
+                hr.appendChild(th);
+            });
+            head.appendChild(hr);
+            table.appendChild(head);
+
+            var tb = document.createElement('tbody');
+            tb.id = 'settlements-tbody';
+            rows.forEach(function (r) {
+                var tr = document.createElement('tr');
+
+                var biz = document.createElement('td');
+                biz.textContent = r.business || ('Client ' + r.client_id);
+                tr.appendChild(biz);
+
+                var inv = document.createElement('td');
+                inv.textContent = r.invoice_number || '-';
+                tr.appendChild(inv);
+
+                var amt = document.createElement('td');
+                amt.style.cssText = "font-family:'Courier New',monospace;font-weight:700;";
+                amt.textContent = r.amount + ' ' + r.currency;
+                tr.appendChild(amt);
+
+                var when = document.createElement('td');
+                when.style.cssText = 'font-size:0.8rem;color:#94a3b8;';
+                when.textContent = (r.collected_at || '').slice(0, 16);
+                tr.appendChild(when);
+
+                var st = document.createElement('td');
+                st.style.cssText = 'font-weight:600;color:' +
+                    (r.status === 'paid_out' ? '#34d399' : '#fb7185') + ';';
+                st.textContent = r.status === 'paid_out' ? 'Paid out' : 'Owed';
+                tr.appendChild(st);
+
+                var act = document.createElement('td');
+                if (r.status === 'paid_out') {
+                    // The reference is the proof it was sent, so it is the
+                    // thing worth showing once it has been.
+                    var ref = document.createElement('span');
+                    ref.style.cssText = 'font-size:0.78rem;color:#94a3b8;';
+                    ref.textContent = r.payout_reference || '';
+                    act.appendChild(ref);
+                } else {
+                    var btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'action-btn';
+                    btn.textContent = 'Mark paid out';
+                    btn.onclick = function () { markSettlementPaid(r); };
+                    act.appendChild(btn);
+                }
+                tr.appendChild(act);
+
+                tb.appendChild(tr);
+            });
+            table.appendChild(tb);
+            host.appendChild(table);
+        }
+
+        async function markSettlementPaid(row) {
+            // The server refuses without a reference, and it is right to: this
+            // is the only record that the money actually left.
+            var reference = prompt('Payout reference for ' + row.amount + ' ' +
+                row.currency + ' to ' + (row.business || 'this business') +
+                '?\n\nThis is the proof it was sent - a bank reference or ' +
+                'transfer id.');
+            if (reference === null) return;
+            if (!reference.trim()) { alert('A reference is required.'); return; }
+
+            try {
+                var res = await fetch('/api/superadmin/settlements/' + row.id + '/paid-out', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reference: reference.trim() }),
+                });
+                var data = await res.json().catch(function () { return {}; });
+                if (!res.ok) throw new Error(data.detail || 'Could not record that');
+            } catch (e) {
+                alert(e.message);
+            }
+            loadSettlements();
+        }
+        window.markSettlementPaid = markSettlementPaid;
+
         async function loadPlatformEmail() {
             var host = document.getElementById('platform-email-body');
             if (!host) return;
@@ -2124,7 +2387,7 @@
         // 401s on the way to the login redirect.
         var TAB_LOADERS = {
             overview: [loadInsights, loadPlatformStats, loadLoginStats],
-            billing:  [loadRevenue, loadGatewayStatus, loadPricing, loadWallets],
+            billing:  [loadRevenue, loadGatewayStatus, loadPricing, loadWallets, loadSettlements],
             trends:   [loadTrends],
             activity: [loadLoginLogs],
             clients:  [loadClients],
