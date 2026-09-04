@@ -830,8 +830,15 @@ def issue_verification(db, background_tasks, client, request):
     db.commit()
 
     from_email = os.getenv("FROM_EMAIL", "") or client.email
+    # Written down before it is attempted, and the outcome written after. This
+    # was the one message in the product that could fail in silence: somebody
+    # waits for a code that never left, and nothing anywhere says so. It is
+    # also the worst one to lose, being the first thing a new account needs.
+    row = start_delivery(db, client.id, "verification", client.email,
+                         client.email, None)
     background_tasks.add_task(
-        send_email_background,
+        deliver_and_record,
+        row.id,
         client.email,
         f"Your verification code: {code}",
         f"Welcome to aniprotech.\n\n"
@@ -934,6 +941,14 @@ def client_register(body: ClientRegister, background_tasks: BackgroundTasks,
     # sign-in could not find. That reads as "I reset it and it still says
     # invalid credentials", which is exactly how it was reported.
     signup_email = (body.email or "").strip().lower()
+    # Checked here and not only in the browser. type="email" on the form is a
+    # convenience, not a rule, and anything posting straight at this endpoint
+    # skips it. An account made with an address that is not an address can
+    # never be confirmed, and an unconfirmed account cannot send - so this is
+    # not a small thing to let through, it is an account that will never work
+    # with no way for its owner to find out why.
+    if not validate_email_address(signup_email):
+        raise HTTPException(status_code=400, detail="Enter a valid email address")
     existing = db.query(models.DBClient).filter(
         sqlfunc.lower(models.DBClient.email) == signup_email).first()
     if existing:
@@ -978,6 +993,9 @@ def client_login(body: ClientLogin, request: Request, db: Session = Depends(get_
                 models.DBClient.id == member.client_id).first()
             if not owner or not owner.is_active:
                 raise HTTPException(status_code=403, detail="Account disabled")
+            # A fresh session, the same as every other way in. A cookie
+            # somebody else already knows must not become this one's.
+            request.session.clear()
             request.session["client_id"] = owner.id
             request.session["member_id"] = member.id
             member.last_login = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -990,8 +1008,11 @@ def client_login(body: ClientLogin, request: Request, db: Session = Depends(get_
     if not client.is_active:
         log_login(db, client.id, body.email, "client", "password", request, "disabled")
         raise HTTPException(status_code=403, detail="Account disabled")
+    # Cleared rather than added to. Besides the fixation problem, a session
+    # left from a Google sign-in kept its 'user', so the header went on naming
+    # whoever that was while every action ran as this account.
+    request.session.clear()
     request.session["client_id"] = client.id
-    request.session.pop("member_id", None)
     log_login(db, client.id, body.email, "client", "password", request, "success")
     return {"message": "Logged in", "is_onboarded": client.is_onboarded, "company_name": client.company_name}
 

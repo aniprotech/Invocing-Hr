@@ -32,13 +32,17 @@ def _reset_limiter():
 
 
 @pytest.fixture
-def superadmin(client):
+def superadmin():
+    """The operator, on a session of their own - a tenant signing in on the
+    same cookie now starts a fresh session and would evict this one."""
+    from fastapi.testclient import TestClient
     main.rate_limiter._hits.clear()
-    res = client.post("/api/superadmin/login", json={
-        "identifier": "hello@keyroutes.co", "password": "TestSuper123",
-    })
-    assert res.status_code == 200, res.text
-    return client
+    with TestClient(main.app) as operator:
+        res = operator.post("/api/superadmin/login", json={
+            "identifier": "hello@keyroutes.co", "password": "TestSuper123",
+        })
+        assert res.status_code == 200, res.text
+        yield operator
 
 
 @pytest.fixture

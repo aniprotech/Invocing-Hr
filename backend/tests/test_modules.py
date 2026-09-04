@@ -22,15 +22,22 @@ def _reset_limiter():
 
 
 @pytest.fixture
-def superadmin(client):
-    """Signs in as the operator on the same client the tenant uses. The
-    session carries both ids at once, so the two do not evict each other
-    and a test can act as each in turn."""
+def superadmin():
+    """The operator, in a browser of their own.
+
+    This used to sign in on the same client the tenant uses, and relied on one
+    session carrying both ids at once. Signing in now starts a fresh session
+    rather than adding to whatever was already there - so on one cookie the
+    tenant login evicts the operator, which is the point of it: a tenant
+    signing in must not inherit operator powers from the session before it.
+    Two people, two browsers."""
+    from fastapi.testclient import TestClient
     main.rate_limiter._hits.clear()
-    res = client.post("/api/superadmin/login", json={
-        "identifier": "hello@keyroutes.co", "password": "TestSuper123"})
-    assert res.status_code == 200, res.text
-    return client
+    with TestClient(main.app) as operator:
+        res = operator.post("/api/superadmin/login", json={
+            "identifier": "hello@keyroutes.co", "password": "TestSuper123"})
+        assert res.status_code == 200, res.text
+        yield operator
 
 
 def set_modules(tenant, value):
