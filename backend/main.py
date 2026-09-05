@@ -11833,6 +11833,25 @@ def charge_wallet(db, client_id, action_key, quantity=1, reference="", performed
         return None
 
     wallet = get_wallet(db, client_id)
+
+    # Both sides are created from PLATFORM_CURRENCY, so these agree - until
+    # somebody changes that variable. Wallets keep the currency they were
+    # opened in and rules keep theirs, so a change leaves a price in one
+    # currency being subtracted from a balance in another. Nothing about that
+    # looks wrong: five paise and five pence are both the number 5, and the
+    # charge is simply a hundred times off.
+    #
+    # Treated as unpriced rather than refused. An unpriced action already
+    # costs nothing here, so the action still happens and nobody is charged
+    # the wrong amount - and the operator gets an error naming both currencies
+    # instead of a silent hundredfold mistake.
+    if rule and (rule.currency or "") != (wallet.currency or ""):
+        logger.error(
+            "Not charging %s: priced in %s but this wallet is in %s. "
+            "PLATFORM_CURRENCY has changed since one of them was created.",
+            action_key, rule.currency, wallet.currency)
+        return None
+
     if wallet.balance_minor < cost:
         raise InsufficientCredit(cost, wallet.balance_minor, wallet.currency, rule.label)
 

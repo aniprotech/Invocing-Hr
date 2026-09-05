@@ -144,3 +144,68 @@ def test_nothing_is_charged_for_without_being_advertised(client):
             models.DBPricingRule.is_active == False).all()}     # noqa: E712
     assert not (charged - listed - switched_off), \
         sorted(charged - listed - switched_off)
+
+
+# --- one currency on both sides -------------------------------------------------
+
+def test_prices_and_wallets_agree_on_the_currency(client, tenant):
+    """Both are created from PLATFORM_CURRENCY, so they agree until somebody
+    changes it. Worth asserting, because nothing else would notice."""
+    cid = tenant.get("/api/client/me").json()["id"]
+    with main.SessionLocal() as db:
+        wallet = main.get_wallet(db, cid)
+        rules = db.query(models.DBPricingRule).all()
+        odd = {r.action_key: r.currency for r in rules
+               if (r.currency or "") != (wallet.currency or "")}
+    assert not odd, f"wallet is {wallet.currency}, these are not: {odd}"
+
+
+def test_a_price_in_another_currency_does_not_charge_the_wallet(client, tenant,
+                                                                rules_restored):
+    """Five paise and five pence are both the number 5. Subtracting one from
+    the other looks like nothing at all and is a hundred times wrong, so it
+    must not happen quietly."""
+    cid = tenant.get("/api/client/me").json()["id"]
+    with main.SessionLocal() as db:
+        wallet = main.get_wallet(db, cid)
+        wallet.balance_minor = 100_000
+        rule = db.query(models.DBPricingRule).filter(
+            models.DBPricingRule.action_key == "invoice_send").first()
+        rule.currency = "JPY" if wallet.currency != "JPY" else "GBP"
+        rule.unit_price_minor = 500
+        rule.free_allowance = 0
+        db.commit()
+        before = wallet.balance_minor
+
+    with main.SessionLocal() as db:
+        tx = main.charge_wallet(db, cid, "invoice_send", 1)
+        db.commit()
+
+    assert tx is None, "it charged across two different currencies"
+    with main.SessionLocal() as db:
+        assert main.get_wallet(db, cid).balance_minor == before, \
+            "the balance moved on a charge that should not have happened"
+
+
+def test_and_the_same_currency_still_charges(client, tenant, rules_restored):
+    """The guard must not be a way of never charging anybody."""
+    cid = tenant.get("/api/client/me").json()["id"]
+    with main.SessionLocal() as db:
+        wallet = main.get_wallet(db, cid)
+        wallet.balance_minor = 100_000
+        rule = db.query(models.DBPricingRule).filter(
+            models.DBPricingRule.action_key == "invoice_send").first()
+        rule.currency = wallet.currency
+        rule.unit_price_minor = 500
+        rule.free_allowance = 0
+        rule.is_active = True
+        db.commit()
+        before = wallet.balance_minor
+
+    with main.SessionLocal() as db:
+        tx = main.charge_wallet(db, cid, "invoice_send", 1)
+        db.commit()
+
+    assert tx is not None
+    with main.SessionLocal() as db:
+        assert main.get_wallet(db, cid).balance_minor == before - 500
