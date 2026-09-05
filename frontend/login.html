@@ -398,7 +398,36 @@
     var error = params.get('error');
     if (error) {
         var msg = 'Something went wrong. Please try again.';
-        if (error === 'auth_failed') msg = 'Google authentication failed. Please try again.';
+        if (error === 'auth_failed') {
+            // "Please try again" is wrong for every one of these - trying
+            // again fixes none of them. The reason was only ever in the
+            // server log, so somebody hitting this had nothing to go on.
+            msg = {
+                redirect_uri_mismatch:
+                    'Google rejected the address it was sent back to. The '
+                    + 'exact address of this site has to be listed as an '
+                    + 'authorised redirect URI in the Google Cloud console.',
+                invalid_client:
+                    'Google did not recognise this app. The client ID or '
+                    + 'secret on the server does not match the Google project.',
+                invalid_scope:
+                    'Google refused one of the permissions asked for. Check '
+                    + 'the scopes on the consent screen.',
+                access_denied:
+                    'You cancelled, or this Google account is not allowed to '
+                    + 'sign in to this app yet.',
+                unauthorized_client:
+                    'This app is not allowed to sign people in this way yet.',
+                admin_policy_enforced:
+                    'Your Google Workspace administrator has blocked this app.',
+                org_internal:
+                    'This app only accepts accounts from the organisation that '
+                    + 'owns it.',
+                invalid_grant:
+                    'That sign-in had already been used or had expired. Start '
+                    + 'again from this page.',
+            }[params.get('why')] || 'Google authentication failed. Please try again.';
+        }
         if (error === 'callback_failed') msg = 'Login callback failed. Please try again.';
         if (error === 'not_client') msg = 'This email is registered as an administrator. Please use the Super Admin login.';
         var box = document.getElementById('error-msg');

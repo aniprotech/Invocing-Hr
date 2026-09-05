@@ -280,3 +280,39 @@ def test_and_says_out_loud_that_nothing_can_be_sent_now(superadmin, google,
     body = superadmin.post("/api/superadmin/gmail/disconnect").json()
     assert body["can_send"] is False
     assert "no longer send" in body["message"].lower(), body["message"]
+
+
+def test_a_live_token_is_not_reported_as_broken(superadmin, google, monkeypatch):
+    """The screen used to ask Gmail for the account profile to decide this.
+
+    getProfile needs gmail.readonly or gmail.metadata, and the only Gmail
+    scope this app asks for anywhere is gmail.send - so that call always
+    failed and a perfectly good connection was reported as one that had
+    stopped working. Liveness is the refresh token still exchanging for an
+    access token, which is exactly what sending needs and nothing more.
+    """
+    connect(superadmin)
+
+    # Exchanging works; anything reaching for a Gmail scope we do not have
+    # would raise, the way the real API does.
+    monkeypatch.setattr(main, "get_gmail_credentials",
+                        lambda access_token=None, refresh_token=None: object())
+    monkeypatch.setattr(main, "build", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("Request had insufficient authentication scopes")))
+
+    d = superadmin.get("/api/superadmin/email-status").json()
+    assert d["google_connected"] is True
+    assert d["google_works"] is True, "a live token was called broken"
+    assert d["connected_as"] == "ops@aniprotech.com", d
+
+
+def test_a_dead_token_is_still_reported_as_dead(superadmin, google, monkeypatch):
+    """The guard must not become a way of always saying it is fine."""
+    connect(superadmin)
+    monkeypatch.setattr(main, "get_gmail_credentials",
+                        lambda access_token=None, refresh_token=None: None)
+
+    d = superadmin.get("/api/superadmin/email-status").json()
+    assert d["google_connected"] is True
+    assert d["google_works"] is False
+    assert d["connected_as"] == ""

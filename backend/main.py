@@ -14,7 +14,7 @@ import time
 from collections import defaultdict
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import RedirectResponse, StreamingResponse, JSONResponse, Response, HTMLResponse
+from fastapi.responses import RedirectResponse, StreamingResponse, JSONResponse, Response, HTMLResponse, FileResponse
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -962,6 +962,10 @@ def client_verification_status(request: Request, db: Session = Depends(get_db)):
         "email": client.email or "",
         "can_send": ready,
         "blocked_reason": "" if ready else missing,
+        # Whether this business can send its own mail, which is a different
+        # question: the platform being fine says nothing about a tenant who
+        # has chosen their own server and got it wrong.
+        "mine": client_email_readiness(db, client),
     }
 
 
@@ -3930,13 +3934,35 @@ def employee_signing_in(db: Session, email: str, portal: str):
     return emp
 
 
+# What Google said, reduced to a word the sign-in page can act on.
+#
+# Every one of these failures used to arrive as "Google authentication failed.
+# Please try again", and trying again does not fix any of them - the reason
+# was only ever in the server log. These are Google's own public error codes
+# and carry nothing secret: they say what is misconfigured, not who by. The
+# exception text itself is never passed on, because it can carry the client
+# id and the request parameters.
+GOOGLE_FAILURES = ("redirect_uri_mismatch", "invalid_client", "invalid_grant",
+                   "access_denied", "invalid_scope", "unauthorized_client",
+                   "admin_policy_enforced", "org_internal")
+
+
+def google_failure_code(exc) -> str:
+    said = str(exc).lower()
+    for code in GOOGLE_FAILURES:
+        if code in said:
+            return code
+    return "unknown"
+
+
 @app.get("/api/auth/callback")
 async def auth_callback(request: Request, db: Session = Depends(get_db)):
     try:
         token = await oauth.google.authorize_access_token(request)
     except Exception as e:
         logger.error(f"Google token exchange failed: {e}")
-        return RedirectResponse(url="/login.html?error=auth_failed")
+        return RedirectResponse(
+            url=f"/login.html?error=auth_failed&why={google_failure_code(e)}")
     user = token.get('userinfo')
     access_token = token.get('access_token')
     refresh_token = token.get('refresh_token')
@@ -4230,6 +4256,19 @@ def disconnect_gmail(request: Request, db: Session = Depends(get_db)):
 # could send to nobody, and every code in the product went missing silently.
 # ============================================================================
 
+def platform_setting_raw(db, key: str) -> str:
+    """A settings row that is not one of the declared PLATFORM_SETTINGS.
+
+    platform_setting() resolves through a spec and returns "" for anything it
+    does not know about, which is right for the settings screen and wrong for
+    a value the app writes for itself.
+    """
+    row = db.query(models.DBSettings).filter(
+        models.DBSettings.key == key,
+        models.DBSettings.client_id == None).first()      # noqa: E711
+    return (row.value if row else "") or ""
+
+
 @app.get("/api/superadmin/email-status")
 def superadmin_email_status(request: Request, db: Session = Depends(get_db),
                             _: int = SuperAdmin):
@@ -4241,25 +4280,33 @@ def superadmin_email_status(request: Request, db: Session = Depends(get_db),
         models.DBSettings.key == "GOOGLE_REFRESH_TOKEN",
         models.DBSettings.client_id == None).first()      # noqa: E711
 
-    # Which Google account, if we can find out cheaply. A stored token that no
-    # longer works is worth knowing about before somebody relies on it.
-    connected_as = ""
+    # A stored token that no longer works is worth knowing about before
+    # somebody relies on it - a revoked one looks exactly like a live one.
+    #
+    # Tested by exchanging it for an access token, which is the whole of what
+    # sending needs. It used to ask Gmail for the account profile instead, and
+    # that was wrong: getProfile needs gmail.readonly or gmail.metadata, and
+    # the only Gmail scope asked for anywhere here is gmail.send. So the call
+    # always failed and a working connection was reported as broken.
+    #
+    # The address comes from what Google said when it was connected. It is
+    # already known, and asking again would need a scope this app has no other
+    # reason to request.
+    works = False
     if row and row.value:
-        try:
-            creds = get_gmail_credentials(access_token=None, refresh_token=row.value)
-            service = build('gmail', 'v1', credentials=creds)
-            connected_as = service.users().getProfile(
-                userId="me").execute().get("emailAddress", "")
-        except Exception as exc:                          # noqa: BLE001
-            logger.warning("Stored platform Google token did not work: %s", exc)
-            connected_as = ""
+        works = get_gmail_credentials(access_token=None,
+                                      refresh_token=row.value) is not None
+        if not works:
+            logger.warning("The stored platform Google token no longer works")
+
+    connected_as = platform_setting_raw(db, "GOOGLE_SENDER_EMAIL") if works else ""
 
     return {
         "can_send": ready,
         "blocked_reason": "" if ready else missing,
         "transport": transport,
         "google_connected": bool(row and row.value),
-        "google_works": bool(connected_as),
+        "google_works": works,
         "connected_as": connected_as,
         "smtp_host_set": bool(smtp_config().get("host")),
         # Said plainly, because the alternative is an operator wondering why a
@@ -4329,7 +4376,19 @@ async def superadmin_gmail_callback(request: Request,
     # Connecting an account to send from is also choosing to send through it.
     set_platform_setting(db, "email.transport", "gmail")
 
+    # Kept because the screen shows it later, and asking Gmail for it would
+    # need a scope this app has no other reason to request.
     who = (token.get("userinfo") or {}).get("email", "")
+    sender = db.query(models.DBSettings).filter(
+        models.DBSettings.key == "GOOGLE_SENDER_EMAIL",
+        models.DBSettings.client_id == None).first()      # noqa: E711
+    if sender:
+        sender.value = who
+    else:
+        db.add(models.DBSettings(key="GOOGLE_SENDER_EMAIL", value=who,
+                                 client_id=None,
+                                 description="The account the platform sends through"))
+
     logger.info("Platform email connected to %s", who)
     db.commit()
     return RedirectResponse(url="/superadmin.html#email=connected")
@@ -19101,12 +19160,25 @@ def client_email_to_dict(row, client):
     }
 
 
+def client_email_readiness(db, client):
+    """Whether this business can send anything at all, and what is stopping it.
+
+    Nothing asked this until an invoice was already written and the send was
+    refused with a 503. The answer was knowable the moment they signed in, so
+    it is worth saying then instead - the alternative is somebody finding out
+    at the point they were trying to get paid.
+    """
+    ready, missing = email_delivery_ready(db, client.id)
+    return {"can_send": ready, "blocked_reason": "" if ready else missing}
+
+
 @app.get("/api/email-settings")
 def read_client_email_settings(request: Request, db: Session = Depends(get_db)):
     """How this business sends its own mail."""
     client = get_client_user(request, db)
     row = client_email_settings(db, client.id)
-    return client_email_to_dict(row, client)
+    return dict(client_email_to_dict(row, client),
+                **client_email_readiness(db, client))
 
 
 @app.put("/api/email-settings")
@@ -20237,6 +20309,33 @@ def public_platform_landing(db: Session = Depends(get_db)):
         # that happens by deleting the last row.
         "items": landing_items_by_kind(db),
     }
+
+
+def frontend_dir():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
+
+
+# The two documents that have to keep the same address forever.
+#
+# The operator-managed policies live at /policy.html?id=N, which is fine for
+# anything the operator adds and wrong for these two. Google records the
+# privacy policy URL at verification and rechecks it afterwards; an address
+# built from a database row id breaks the day that row is deleted and
+# recreated, which is exactly what happens while a policy is being drafted -
+# and it fails weeks later with nothing to point at.
+#
+# Served as files in the repository for the same reason: a legal document
+# should not be one click in an admin screen away from disappearing.
+@app.get("/privacy")
+def privacy_policy():
+    return FileResponse(os.path.join(frontend_dir(), "privacy.html"),
+                        media_type="text/html")
+
+
+@app.get("/terms")
+def terms_of_service():
+    return FileResponse(os.path.join(frontend_dir(), "terms.html"),
+                        media_type="text/html")
 
 
 @app.get("/api/platform/pricing")

@@ -539,6 +539,7 @@ function showView(viewId) {
     if (viewId === 'settings-view' && typeof loadGmailStatus === 'function') loadGmailStatus();
     if (viewId === 'settings-view' && typeof loadEmailSettings === 'function') loadEmailSettings();
     if (typeof checkEmailVerified === 'function') checkEmailVerified();
+    if (typeof checkEmailSending === 'function') checkEmailSending();
     if (viewId === 'settings-view' && typeof loadSettings === 'function') loadSettings();
     if (viewId === 'settings-view' && typeof loadTaxRates === 'function') loadTaxRates();
     if (viewId === 'settings-view' && typeof loadTeam === 'function') loadTeam();
@@ -9517,6 +9518,56 @@ window.loadEmailSettings = loadEmailSettings;
 // Signing up asked for an address and believed it, so anybody could register
 // with somebody else's and then send invoices in their name. Nothing is
 // blocked until there is somewhere to type the code, which is here.
+
+// Sending has to be set up before anything can be sent.
+//
+// Nothing said so until an invoice was already written and the send came back
+// refused. The answer is knowable the moment somebody signs in, so it is said
+// then - once per session, because a business that has deliberately left this
+// alone should not be nagged on every screen, and one that cannot send at all
+// should not have to discover it at the point of getting paid.
+var EMAIL_SETUP_ASKED = 'email-setup-asked';
+
+async function checkEmailSending() {
+    try {
+        if (sessionStorage.getItem(EMAIL_SETUP_ASKED)) return;
+    } catch (e) { /* private window: ask again, which is the safe way round */ }
+
+    try {
+        var res = await fetch('/api/client/verification-status');
+        if (!res.ok) return;
+        var status = await res.json();
+        var mine = status.mine || {};
+        if (mine.can_send !== false) return;
+
+        var why = document.getElementById('email-setup-why');
+        if (why && mine.blocked_reason) {
+            why.textContent = 'Right now: ' + mine.blocked_reason + '.';
+            why.style.display = 'block';
+        }
+        var modal = document.getElementById('email-setup-modal');
+        if (modal) modal.style.display = 'flex';
+    } catch (e) { /* a prompt is a nudge; the app works without it */ }
+}
+window.checkEmailSending = checkEmailSending;
+
+function closeEmailSetup() {
+    var modal = document.getElementById('email-setup-modal');
+    if (modal) modal.style.display = 'none';
+    // Remembered for this session only, so it comes back next sign-in while
+    // it is still true.
+    try { sessionStorage.setItem(EMAIL_SETUP_ASKED, '1'); } catch (e) { }
+}
+window.closeEmailSetup = closeEmailSetup;
+
+function goToEmailSetup() {
+    closeEmailSetup();
+    window.location.hash = '#/settings';
+    if (typeof loadEmailSettings === 'function') loadEmailSettings();
+    var card = document.getElementById('email-transport');
+    if (card && card.scrollIntoView) card.scrollIntoView({ block: 'center' });
+}
+window.goToEmailSetup = goToEmailSetup;
 
 async function checkEmailVerified() {
     var bar = document.getElementById('verify-email-bar');

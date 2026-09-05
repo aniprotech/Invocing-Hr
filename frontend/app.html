@@ -2633,6 +2633,33 @@
                      invoices in their name. The bar sits above the app until
                      the address is proved, and nothing else is blocked while
                      it is there. -->
+                <!-- Somebody who cannot send anything finds out when an invoice
+                     is already written and the send is refused. The answer is
+                     knowable at sign-in, so it is said then. -->
+                <div id="email-setup-modal" class="modal-overlay" style="display:none;">
+                    <div class="modal" style="max-width:480px;">
+                        <div class="modal-header">
+                            <h3>Set up how your email goes out</h3>
+                            <button class="btn-icon" onclick="closeEmailSetup()" aria-label="Close">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <p style="margin-bottom:12px;">
+                                Invoices, quotes and payslips cannot be sent until this is set up.
+                            </p>
+                            <p id="email-setup-why" style="display:none;font-size:0.85rem;color:var(--warning-color);margin-bottom:12px;"></p>
+                            <p style="font-size:0.85rem;color:var(--text-secondary);line-height:1.7;">
+                                You can connect your own Gmail, or use your own mail server.
+                                Either way your customers see your address rather than ours,
+                                and replies come back to you.
+                            </p>
+                        </div>
+                        <div class="modal-footer">
+                            <button class="btn btn-outline" onclick="closeEmailSetup()">Later</button>
+                            <button class="btn btn-primary" onclick="goToEmailSetup()">Set it up</button>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="verify-email-modal" class="modal-overlay" style="display:none;">
                     <div class="modal" style="max-width:460px;">
                         <div class="modal-header">
