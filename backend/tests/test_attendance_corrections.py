@@ -8,6 +8,8 @@ The rule these hold down is that a request never changes the record. The
 proposed times wait until HR decides, and a rejection leaves the attendance
 row exactly as it was.
 """
+from datetime import datetime, timedelta
+
 import pytest
 
 import database
@@ -35,8 +37,22 @@ def portal(client, tenant, staffer):
     return client
 
 
-def add_shift(tenant, emp_id, day="2026-08-06", clock_in="09:00:00",
+def a_recent_day():
+    """A day inside whatever window the screens look at.
+
+    This used to be a fixed "2026-08-06". The portal dashboard returns the last
+    thirty days, so the date was inside the window when it was written and
+    quietly aged out of it - the test then failed every day from that point on,
+    with nothing about the failure suggesting the date was the reason. Three
+    days back is far enough to be a past shift and close enough to stay inside
+    any window worth having.
+    """
+    return (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+
+
+def add_shift(tenant, emp_id, day=None, clock_in="09:00:00",
               clock_out="", status="needs_review"):
+    day = day or a_recent_day()
     cid = tenant.get("/api/client/me").json()["id"]
     with database.SessionLocal() as db:
         att = models.DBAttendance(
