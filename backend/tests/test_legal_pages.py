@@ -123,7 +123,7 @@ def test_the_front_page_links_to_both(client):
     assert 'href="/terms"' in home
 
 
-# --- the parts only the operator can fill in ----------------------------------------
+# --- who is behind it ---------------------------------------------------------------
 
 @pytest.mark.parametrize("path", ["/privacy", "/terms"])
 def test_the_operator_is_named_and_reachable(client, path):
@@ -133,17 +133,3 @@ def test_the_operator_is_named_and_reachable(client, path):
     assert "Ani Protech" in text
     assert "info@aniprotech.co.uk" in text
     assert "+44 7480 422277" in text
-
-
-@pytest.mark.parametrize("path", ["/privacy", "/terms"])
-def test_what_is_left_is_marked_rather_than_invented(client, path):
-    """A company number, a registered office, a database region, a retention
-    period and which of the UK's three legal systems applies are facts about
-    the business rather than the code. Guessing any of them would put a false
-    statement in a legal document, so each is left as a marked gap.
-
-    Delete this test once they are filled in - that is the point of it.
-    """
-    text = client.get(path).text
-    assert "still to add" in text or "Confirm this one" in text, (
-        f"{path} no longer marks its gaps - if they are filled in, delete this test")
