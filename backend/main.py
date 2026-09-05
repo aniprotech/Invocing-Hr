@@ -1727,7 +1727,7 @@ def email_delivery_ready(db, client_id=None):
             return False, "no mail server is set for this business"
         return True, ""
     if mine and (mine.transport or "") == "gmail":
-        if not get_stored_refresh_token(db, client_id=client_id):
+        if not get_stored_refresh_token(db, client_id=client_id, own_only=True):
             return False, "no Google account is connected for this business"
         return True, ""
 
@@ -2403,18 +2403,34 @@ def get_gmail_credentials(access_token: str = None, refresh_token: str = None):
         return None
     return creds
 
-def get_stored_refresh_token(db: Session, client_id: int = None):
-    q = db.query(models.DBSettings).filter(models.DBSettings.key == "GOOGLE_REFRESH_TOKEN")
+def get_stored_refresh_token(db: Session, client_id: int = None,
+                             own_only: bool = False):
+    """The Google account to send through: this business's, else the platform's.
+
+    Two things this deliberately will not do.
+
+    It will not return some other business's token. It used to end with a bare
+    "take any row in the table", which was reachable whenever there was no
+    platform token - and then one business's invoices left through another
+    business's Gmail account. Nothing about that is visible from either side.
+
+    And with own_only it will not fall back at all. A business that has chosen
+    to send through its own Google account and then disconnected has said what
+    it wants; carrying on through the platform sends from an address nobody
+    picked, which is the same reason the SMTP path refuses to fall back here.
+    """
+    q = db.query(models.DBSettings).filter(
+        models.DBSettings.key == "GOOGLE_REFRESH_TOKEN")
+
     if client_id:
-        # Try client-specific token first
-        setting = q.filter(models.DBSettings.client_id == client_id).first()
-        if setting:
-            return setting.value
-    # Fallback to global token (no client_id) for backward compat
-    setting = q.filter(models.DBSettings.client_id == None).first()
-    if not setting:
-        setting = q.first()
-    return setting.value if setting else None
+        mine = q.filter(models.DBSettings.client_id == client_id).first()
+        if mine:
+            return mine.value
+        if own_only:
+            return None
+
+    platform = q.filter(models.DBSettings.client_id == None).first()  # noqa: E711
+    return platform.value if platform else None
 
 def validate_email_address(email: str) -> bool:
     import re as _re
@@ -2774,10 +2790,16 @@ def send_email_background(to_email: str, subject: str, body: str, from_email: st
             return False, f"SMTP error: {str(e)}"
 
     with SessionLocal() as db:
-        refresh_token = get_stored_refresh_token(db, client_id=client_id)
+        # "chosen" means this business picked Gmail for itself, so its own
+        # account is the only one that will do. Falling back to ours would put
+        # our address on their invoice - the thing they connected to avoid.
+        refresh_token = get_stored_refresh_token(
+            db, client_id=client_id, own_only=(chosen == "gmail"))
 
     if not refresh_token:
-        return False, "Gmail refresh token not configured"
+        return False, ("No Google account is connected for this business"
+                       if chosen == "gmail"
+                       else "Gmail refresh token not configured")
 
     try:
         creds = get_gmail_credentials(access_token=None, refresh_token=refresh_token)
