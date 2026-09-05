@@ -19815,6 +19815,15 @@ PLATFORM_SETTINGS = [
     Setting("landing.how_intro", "How: paragraph", "Landing", "longtext",
             "Four steps from signing up to being paid. Nothing to install on a "
             "server, and no card needed to look around."),
+    Setting("landing.pricing_eyebrow", "Pricing: strapline", "Landing", "text",
+            "Pricing"),
+    Setting("landing.pricing_title", "Pricing: heading", "Landing", "text",
+            "Pay for what you send"),
+    # The paragraph under it is not here on purpose: it is served by
+    # /api/platform/pricing beside the prices themselves, so the wording and
+    # the numbers it describes cannot drift apart.
+    Setting("landing.pricing_headline", "Pricing: the line in large type", "Landing",
+            "text", "No monthly fee"),
     Setting("landing.install_eyebrow", "Install: strapline", "Landing", "text",
             "Install"),
     Setting("landing.install_title", "Install: heading", "Landing", "text",
@@ -20179,6 +20188,47 @@ def public_platform_landing(db: Session = Depends(get_db)):
         # a section to operator-managed is a decision rather than something
         # that happens by deleting the last row.
         "items": landing_items_by_kind(db),
+    }
+
+
+@app.get("/api/platform/pricing")
+def public_pricing(db: Session = Depends(get_db)):
+    """What using this costs, for somebody who has not signed up yet.
+
+    Open, like the landing copy, and for the same reason: a price a visitor
+    cannot see before signing up is not a price, it is a surprise. The same
+    rows the operator edits, so the page cannot drift from what is actually
+    charged - which is the failure mode of a price list written into a page.
+
+    Only active rules, and nothing about any tenant.
+    """
+    rows = db.query(models.DBPricingRule).filter(
+        models.DBPricingRule.is_active == True       # noqa: E712
+    ).order_by(models.DBPricingRule.sort_order.asc(),
+               models.DBPricingRule.id.asc()).all()
+    if not rows:
+        rows = seed_pricing_rules(db)
+        db.commit()
+        rows = [r for r in rows if r.is_active]
+
+    return {
+        "currency": PLATFORM_CURRENCY,
+        "symbol": currency_symbol(PLATFORM_CURRENCY),
+        "actions": [{
+            "action_key": r.action_key,
+            "label": r.label,
+            "description": r.description or "",
+            "module": r.module or "platform",
+            "unit_price": to_major(r.unit_price_minor, r.currency),
+            "free_allowance": r.free_allowance or 0,
+        } for r in rows],
+        # Said here rather than written into the page, because it is the part
+        # people get wrong about this kind of billing: nothing is a
+        # subscription, and the free allowance comes back every month.
+        "note": ("There is no monthly fee and no plan to choose. You add credit "
+                 "and each action draws from it, so a quiet month costs "
+                 "nothing. The free allowance on each action resets at the "
+                 "start of every calendar month."),
     }
 
 

@@ -338,6 +338,37 @@
                         background: var(--ap-blue-soft); font-size: 14px;
                         color: var(--ap-blue-dark); line-height: 1.7; }
 
+
+        /* ── What it costs ──────────────────────────────────────────────── */
+        .price-head { display: flex; gap: 12px; align-items: baseline;
+                      flex-wrap: wrap; justify-content: center;
+                      margin-bottom: 12px; }
+        .price-free { font-size: clamp(28px, 4vw, 36px); font-weight: 800;
+                      color: var(--ap-ink); letter-spacing: -0.03em; }
+        .price-note { max-width: 640px; margin: 0 auto 40px; text-align: center;
+                      color: var(--ap-body); line-height: 1.8; font-size: 15px; }
+        .price-group { margin-bottom: 32px; }
+        .price-group h3 { font-size: 13px; font-weight: 700; letter-spacing: 0.08em;
+                          text-transform: uppercase; color: var(--ap-muted);
+                          margin-bottom: 12px; }
+        .price-table { width: 100%; border-collapse: collapse;
+                       background: #ffffff; border: 1px solid var(--ap-line);
+                       border-radius: 14px; overflow: hidden;
+                       box-shadow: var(--ap-card-shadow); }
+        .price-table td { padding: 14px 16px; border-top: 1px solid var(--ap-line);
+                          font-size: 14px; color: var(--ap-body); vertical-align: top; }
+        .price-table tr:first-child td { border-top: 0; }
+        .price-what { font-weight: 600; color: var(--ap-ink); }
+        .price-why { display: block; font-size: 12.5px; color: var(--ap-muted);
+                     margin-top: 3px; line-height: 1.6; }
+        .price-cost { text-align: right; white-space: nowrap; font-weight: 700;
+                      color: var(--ap-ink); font-variant-numeric: tabular-nums; }
+        .price-included { display: block; font-size: 12px; font-weight: 600;
+                          color: #0369a1; margin-top: 3px; }
+        @media (max-width: 560px) {
+            .price-table td { padding: 12px; font-size: 13.5px; }
+        }
+
         /* Somebody reading this on a moving train does not need any of it. */
         @media (prefers-reduced-motion: reduce) {
             *, *::before, *::after {
@@ -889,7 +920,38 @@
     </section>
 
     <!-- CTA / Pricing -->
+    <!-- ── What it costs ───────────────────────────────────────────────
+         The nav has said Pricing for as long as there has been a nav and it
+         landed here, on a call to action with no prices on it. There are no
+         tiers to list either: nothing here is a subscription. Every action
+         draws from a wallet, and the prices are read from the same rows that
+         are actually charged - a price list typed into a page drifts from the
+         one being billed, and the first to notice is somebody who has just
+         paid it. -->
     <section id="pricing" class="section">
+        <div class="container">
+            <div class="section-title reveal">
+                <span class="eyebrow" data-cms="pricing_eyebrow">Pricing</span>
+                <h2 data-cms="pricing_title">Pay for what you send</h2>
+                <div class="price-head">
+                    <span class="price-free" data-cms="pricing_headline">No monthly fee</span>
+                </div>
+                <p class="price-note" id="pricing-note">
+                    There is no plan to choose. You add credit and each action
+                    draws from it, so a quiet month costs nothing. Every action
+                    has a free allowance that resets at the start of each month.
+                </p>
+            </div>
+            <div id="pricing-groups" class="reveal"></div>
+            <p style="text-align:center;margin-top:28px;font-size:14px;color:var(--ap-muted);">
+                Prices are per action, in the platform's own currency.
+                <a href="/login.html" style="color:var(--ap-blue-dark);font-weight:600;">Create an account</a>
+                to see your balance and what you have used.
+            </p>
+        </div>
+    </section>
+
+    <section class="section">
         <div class="container-sm">
             <div class="cta-card">
                 <h2 data-cms="invoice_cta_title">Ready to streamline your invoicing?</h2>
@@ -1382,6 +1444,108 @@
                 : /Mobi/.test(ua) ? null : 'tab-desktop';
             var pick = want && document.getElementById(want);
             if (pick) show(pick);
+        })();
+    </script>
+
+    <script>
+        // The prices, read from the rows that are actually charged.
+        //
+        // Grouped the way somebody thinks about them - invoicing, HR, the rest
+        // - rather than in the order they happen to be stored. If the request
+        // fails the section is removed rather than left showing an empty
+        // promise: no prices at all is better than a heading with nothing
+        // under it.
+        (function () {
+            var GROUPS = [
+                ['invoicing', 'Invoicing'],
+                ['hr', 'People and payroll'],
+                ['platform', 'Everything else'],
+            ];
+
+            function money(symbol, amount) {
+                return symbol + amount;
+            }
+
+            function render(d) {
+                var host = document.getElementById('pricing-groups');
+                if (!host) return;
+                var actions = d.actions || [];
+                if (!actions.length) throw new Error('no prices');
+
+                var note = document.getElementById('pricing-note');
+                if (note && d.note) note.textContent = d.note;
+
+                host.textContent = '';
+                GROUPS.forEach(function (pair) {
+                    var mine = actions.filter(function (a) {
+                        return (a.module || 'platform') === pair[0];
+                    });
+                    if (!mine.length) return;
+
+                    var block = document.createElement('div');
+                    block.className = 'price-group';
+
+                    var title = document.createElement('h3');
+                    title.textContent = pair[1];
+                    block.appendChild(title);
+
+                    var table = document.createElement('table');
+                    table.className = 'price-table';
+                    var body = document.createElement('tbody');
+
+                    mine.forEach(function (a) {
+                        var row = document.createElement('tr');
+
+                        var what = document.createElement('td');
+                        var name = document.createElement('span');
+                        name.className = 'price-what';
+                        name.textContent = a.label;
+                        what.appendChild(name);
+                        if (a.description) {
+                            var why = document.createElement('span');
+                            why.className = 'price-why';
+                            why.textContent = a.description;
+                            what.appendChild(why);
+                        }
+                        row.appendChild(what);
+
+                        var cost = document.createElement('td');
+                        cost.className = 'price-cost';
+                        cost.textContent = money(d.symbol, a.unit_price);
+                        // The allowance is the part that decides whether this
+                        // costs anybody anything at all, so it is not a
+                        // footnote.
+                        if (a.free_allowance > 0) {
+                            var free = document.createElement('span');
+                            free.className = 'price-included';
+                            free.textContent = 'first ' + a.free_allowance +
+                                ' free each month';
+                            cost.appendChild(free);
+                        }
+                        row.appendChild(cost);
+
+                        body.appendChild(row);
+                    });
+                    table.appendChild(body);
+                    block.appendChild(table);
+                    host.appendChild(block);
+                });
+            }
+
+            fetch('/api/platform/pricing')
+                .then(function (r) {
+                    if (!r.ok) throw new Error('Request failed: ' + r.status);
+                    return r.json();
+                })
+                .then(render)
+                .catch(function () {
+                    // A pricing section with no prices in it is worse than
+                    // none: it reads as a page that is still being written.
+                    var section = document.getElementById('pricing');
+                    if (section) section.remove();
+                    document.querySelectorAll('a[href="#pricing"]').forEach(
+                        function (a) { a.remove(); });
+                });
         })();
     </script>
 </body>
