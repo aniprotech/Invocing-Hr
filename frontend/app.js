@@ -11121,9 +11121,321 @@ async function loadWallet() {
     }
 
     loadWalletTransactions();
+    loadAutoTopUp();
+    loadWalletUsage();
+    loadMandates();
     loadTopUpHistory();
 }
 window.loadWallet = loadWallet;
+
+// --- The payment settings that had no screen ------------------------------
+//
+// All three endpoints existed and nothing called them. The wallet could top
+// itself up and there was no switch, so the only way to avoid running dry in
+// the middle of a payroll run was to watch the balance by hand. The spending
+// was listed transaction by transaction and never grouped, so "why is this
+// month higher" had no answer. And a customer who had agreed their invoices
+// could be charged could not be seen, let alone stopped.
+
+async function loadAutoTopUp() {
+    var host = document.getElementById('wallet-autotopup');
+    if (!host) return;
+    try {
+        var res = await fetch('/api/wallet/auto-topup');
+        if (!res.ok) throw new Error("Request failed: " + res.status);
+        renderAutoTopUp(await res.json());
+    } catch (e) {
+        host.textContent = 'Could not load the top-up settings.';
+    }
+}
+window.loadAutoTopUp = loadAutoTopUp;
+
+function renderAutoTopUp(d) {
+    var host = document.getElementById('wallet-autotopup');
+    host.textContent = '';
+
+    var row = document.createElement('label');
+    row.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:14px;cursor:pointer;';
+
+    var on = document.createElement('input');
+    on.type = 'checkbox';
+    on.id = 'autotopup-on';
+    on.checked = !!d.enabled;
+    // Turning it on without permission to charge is refused by the server, so
+    // the control says why rather than letting somebody find out by error.
+    on.disabled = !d.has_mandate && !d.enabled;
+    row.appendChild(on);
+
+    var label = document.createElement('span');
+    label.style.cssText = 'font-weight:600;';
+    label.textContent = 'Top up automatically when the balance runs low';
+    row.appendChild(label);
+    host.appendChild(row);
+
+    var fields = document.createElement('div');
+    fields.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:12px;';
+
+    [['autotopup-threshold', 'When it drops below', d.threshold],
+     ['autotopup-amount', 'Top up by', d.amount]].forEach(function (f) {
+        var wrap = document.createElement('div');
+        var lab = document.createElement('label');
+        lab.className = 'form-label';
+        lab.textContent = f[1] + ' (' + d.currency + ')';
+        lab.setAttribute('for', f[0]);
+        wrap.appendChild(lab);
+
+        var input = document.createElement('input');
+        input.type = 'number';
+        input.min = '0';
+        input.step = '1';
+        input.id = f[0];
+        input.className = 'form-control';
+        input.value = f[2];
+        wrap.appendChild(input);
+        fields.appendChild(wrap);
+    });
+    host.appendChild(fields);
+
+    if (!d.has_mandate) {
+        var need = document.createElement('p');
+        need.style.cssText = 'margin-top:12px;font-size:0.82rem;color:var(--warning-color);';
+        need.textContent = 'Authorise a payment method first - without one there ' +
+            'is nothing to charge, so this cannot be switched on.';
+        host.appendChild(need);
+    } else if (d.mandate) {
+        var has = document.createElement('p');
+        has.style.cssText = 'margin-top:12px;font-size:0.82rem;color:var(--text-secondary);';
+        has.textContent = 'Charging ' + (d.mandate.masked || d.mandate.method || 'your saved method') + '.';
+        host.appendChild(has);
+    }
+
+    var save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'btn btn-primary';
+    save.style.cssText = 'margin-top:14px;';
+    save.textContent = 'Save';
+    save.onclick = saveAutoTopUp;
+    host.appendChild(save);
+}
+
+async function saveAutoTopUp() {
+    var body = {
+        enabled: document.getElementById('autotopup-on').checked,
+        threshold: parseFloat(document.getElementById('autotopup-threshold').value || '0'),
+        amount: parseFloat(document.getElementById('autotopup-amount').value || '0'),
+    };
+    try {
+        var res = await fetch('/api/wallet/auto-topup', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) throw new Error(data.detail || 'Could not save that');
+        showToast(data.enabled
+            ? 'Automatic top-up is on.'
+            : 'Automatic top-up is off.', 'success');
+        renderAutoTopUp(data);
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+window.saveAutoTopUp = saveAutoTopUp;
+
+// --- Where the credit went -------------------------------------------------
+async function loadWalletUsage() {
+    var host = document.getElementById('wallet-usage');
+    if (!host) return;
+    var months = (document.getElementById('wallet-usage-months') || {}).value || '3';
+    try {
+        var res = await fetch('/api/wallet/usage?months=' + months);
+        if (!res.ok) throw new Error("Request failed: " + res.status);
+        renderWalletUsage(await res.json());
+    } catch (e) {
+        host.textContent = 'Could not load your spending.';
+    }
+}
+window.loadWalletUsage = loadWalletUsage;
+
+function renderWalletUsage(d) {
+    var host = document.getElementById('wallet-usage');
+    host.textContent = '';
+
+    if (!(d.by_action || []).length) {
+        var none = document.createElement('p');
+        none.className = 'muted';
+        none.textContent = 'Nothing spent in this period.';
+        host.appendChild(none);
+        return;
+    }
+
+    var total = document.createElement('div');
+    total.style.cssText = 'font-size:1.3rem;font-weight:700;margin-bottom:12px;';
+    total.textContent = d.symbol + d.total_spent;
+    host.appendChild(total);
+
+    // Ordered biggest first by the server, so the bar widths are relative to
+    // the top one and the largest cost is the first thing read.
+    var top = Math.max.apply(null, d.by_action.map(function (a) {
+        return parseFloat(a.spent) || 0;
+    })) || 1;
+
+    d.by_action.forEach(function (a) {
+        var line = document.createElement('div');
+        line.style.cssText = 'margin-bottom:10px;';
+
+        var head = document.createElement('div');
+        head.style.cssText = 'display:flex;gap:8px;font-size:0.82rem;margin-bottom:4px;';
+
+        var name = document.createElement('span');
+        name.textContent = a.action_key.replace(/_/g, ' ');
+        head.appendChild(name);
+
+        var units = document.createElement('span');
+        units.className = 'muted';
+        units.textContent = '\u00d7' + a.units;
+        head.appendChild(units);
+
+        var spent = document.createElement('span');
+        spent.style.cssText = 'margin-left:auto;font-weight:600;';
+        spent.textContent = d.symbol + a.spent;
+        head.appendChild(spent);
+        line.appendChild(head);
+
+        var track = document.createElement('div');
+        track.style.cssText = 'height:6px;border-radius:3px;background:var(--border-color);overflow:hidden;';
+        var fill = document.createElement('div');
+        fill.style.cssText = 'height:100%;border-radius:3px;background:var(--primary-color);width:' +
+            Math.max(2, Math.round((parseFloat(a.spent) || 0) / top * 100)) + '%;';
+        track.appendChild(fill);
+        line.appendChild(track);
+
+        host.appendChild(line);
+    });
+
+    if ((d.by_month || []).length > 1) {
+        var months = document.createElement('div');
+        months.style.cssText = 'margin-top:14px;padding-top:12px;border-top:1px solid var(--border-color);font-size:0.8rem;';
+        d.by_month.forEach(function (m) {
+            var r = document.createElement('div');
+            r.style.cssText = 'display:flex;justify-content:space-between;padding:2px 0;';
+            var when = document.createElement('span');
+            when.className = 'muted';
+            when.textContent = m.month;
+            r.appendChild(when);
+            var amt = document.createElement('span');
+            amt.textContent = d.symbol + m.spent;
+            r.appendChild(amt);
+            months.appendChild(r);
+        });
+        host.appendChild(months);
+    }
+}
+
+// --- Standing permission to charge -------------------------------------------
+async function loadMandates() {
+    var host = document.getElementById('wallet-mandates');
+    if (!host) return;
+    try {
+        var res = await fetch('/api/autopay/mandates');
+        if (!res.ok) throw new Error("Request failed: " + res.status);
+        renderMandates(await res.json());
+    } catch (e) {
+        host.textContent = 'Could not load the automatic payments.';
+    }
+}
+window.loadMandates = loadMandates;
+
+function renderMandates(d) {
+    var host = document.getElementById('wallet-mandates');
+    host.textContent = '';
+
+    function line(m, who) {
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 0;' +
+            'border-bottom:1px solid var(--border-color);';
+
+        var text = document.createElement('div');
+        text.style.cssText = 'flex:1;min-width:0;';
+
+        var name = document.createElement('div');
+        name.style.cssText = 'font-size:0.86rem;font-weight:600;';
+        name.textContent = who;
+        text.appendChild(name);
+
+        var meta = document.createElement('div');
+        meta.className = 'muted';
+        meta.style.cssText = 'font-size:0.76rem;';
+        // A cancelled or failed one still matters: it is why a payment that
+        // used to go through has stopped.
+        meta.textContent = [m.masked || m.method,
+            m.status !== 'active' ? m.status : '',
+            m.failure_reason || '',
+            m.last_used_at ? 'last charged ' + m.last_used_at.slice(0, 10) : ''
+        ].filter(Boolean).join(' \u00b7 ');
+        text.appendChild(meta);
+        row.appendChild(text);
+
+        if (m.status === 'active') {
+            var stop = document.createElement('button');
+            stop.type = 'button';
+            stop.className = 'btn btn-outline';
+            stop.style.cssText = 'font-size:0.78rem;padding:4px 10px;';
+            stop.textContent = 'Stop';
+            stop.onclick = function () { cancelMandate(m, who); };
+            row.appendChild(stop);
+        }
+        return row;
+    }
+
+    if (d.own) {
+        var mine = document.createElement('div');
+        mine.style.cssText = 'font-size:0.76rem;font-weight:700;text-transform:uppercase;' +
+            'letter-spacing:0.04em;color:var(--text-secondary);margin-bottom:4px;';
+        mine.textContent = 'Your own';
+        host.appendChild(mine);
+        host.appendChild(line(d.own, 'Topping up this wallet'));
+    }
+
+    var customers = d.customers || [];
+    if (customers.length) {
+        var head = document.createElement('div');
+        head.style.cssText = 'font-size:0.76rem;font-weight:700;text-transform:uppercase;' +
+            'letter-spacing:0.04em;color:var(--text-secondary);margin:14px 0 4px;';
+        head.textContent = 'Customers paying automatically';
+        host.appendChild(head);
+        customers.forEach(function (m) {
+            host.appendChild(line(m, m.payer_ref || 'A customer'));
+        });
+    }
+
+    if (!d.own && !customers.length) {
+        var none = document.createElement('p');
+        none.className = 'muted';
+        none.textContent = 'Nobody has agreed to be charged automatically.';
+        host.appendChild(none);
+    }
+}
+
+async function cancelMandate(m, who) {
+    // Stopping the wallet's own arrangement also stops it topping itself up,
+    // which is not obvious from a button marked Stop.
+    var extra = m.payer_type === 'tenant'
+        ? '\n\nAutomatic top-up will stop with it.' : '';
+    if (!await uiConfirm(who + ' will no longer be charged automatically.' + extra,
+                         { title: 'Stop automatic payment?',
+                           confirmText: 'Stop it', danger: true })) return;
+    try {
+        var res = await fetch('/api/autopay/mandates/' + m.id, { method: 'DELETE' });
+        if (!res.ok) throw new Error("Request failed: " + res.status);
+        showToast('Stopped.', 'success');
+    } catch (e) {
+        showToast('Could not stop it: ' + e.message, 'error');
+    }
+    loadMandates();
+    loadAutoTopUp();
+}
+window.cancelMandate = cancelMandate;
 
 async function loadWalletTransactions() {
     var body = document.getElementById('wallet-tx-body');

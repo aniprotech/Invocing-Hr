@@ -516,9 +516,39 @@
                             </div>
                         </div>
                         <div>
+                            <!-- Topping itself up. The wallet could already do
+                                 this and there was no switch, so the only way
+                                 to avoid running dry mid-payroll was to watch
+                                 the balance by hand. -->
+                            <div class="glass-widget mb-24">
+                                <div class="widget-header"><h3>Top up automatically</h3></div>
+                                <div class="widget-content" id="wallet-autotopup"></div>
+                            </div>
+                            <!-- Where the credit actually went. The
+                                 transactions were listed one by one and never
+                                 grouped, so "why is this month higher" had no
+                                 answer. -->
+                            <div class="glass-widget mb-24">
+                                <div class="widget-header">
+                                    <h3>Where it went</h3>
+                                    <select id="wallet-usage-months" class="form-control" style="width:auto;padding:6px 10px;font-size:0.82rem;margin-left:auto;" onchange="loadWalletUsage()">
+                                        <option value="3">Last 3 months</option>
+                                        <option value="6">Last 6 months</option>
+                                        <option value="12">Last 12 months</option>
+                                    </select>
+                                </div>
+                                <div class="widget-content" id="wallet-usage"></div>
+                            </div>
                             <div class="glass-widget mb-24">
                                 <div class="widget-header"><h3>What things cost</h3></div>
                                 <div class="widget-content" id="wallet-pricing"></div>
+                            </div>
+                            <!-- Standing permission to charge, on both sides:
+                                 customers who agreed their invoices may be
+                                 taken, and this business's own arrangement. -->
+                            <div class="glass-widget mb-24">
+                                <div class="widget-header"><h3>Automatic payments</h3></div>
+                                <div class="widget-content" id="wallet-mandates"></div>
                             </div>
                             <div class="glass-widget">
                                 <div class="widget-header"><h3>Top-up history</h3></div>
