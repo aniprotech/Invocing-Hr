@@ -326,12 +326,41 @@ def currency_symbol(code):
     code = (code or "").upper()
     return CURRENCY_SYMBOLS.get(code, code or "£")
 
+def ensure_pricing_rules():
+    """Give every known action a price row, on every boot.
+
+    seed_pricing_rules skips keys that already exist - it was written to
+    backfill - but every place that called it guarded the call with "only if
+    the table is empty". So it ran once, on the first boot, and an action
+    added to DEFAULT_PRICING afterwards never got a row anywhere that had
+    already started.
+
+    That is not a cosmetic gap. An action with no rule costs nothing, on
+    purpose, so metering can be rolled out gradually - which means a missing
+    row is a feature being given away rather than an error anybody sees. Six
+    of them were free in production, five being AI calls that cost us money
+    on every use.
+    """
+    try:
+        with SessionLocal() as db:
+            created = seed_pricing_rules(db)
+            if created:
+                db.commit()
+                logger.info("Priced %s action(s) that had no rule: %s",
+                            len(created), ", ".join(r.action_key for r in created))
+    except Exception as exc:                          # noqa: BLE001
+        # A price that failed to seed must not stop the app booting; it is the
+        # same trade the schema updates make.
+        logger.error("Could not seed pricing rules: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
         models.Base.metadata.create_all(bind=engine)
         ensure_columns()
         ensure_admin_user()
+        ensure_pricing_rules()
         logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
