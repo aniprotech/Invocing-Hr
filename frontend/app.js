@@ -9152,11 +9152,12 @@ window.deleteContact = deleteContact;
 // REPORTS MODULE
 // ============================================================
 function showReportsTab(tab) {
-    ['reports-content', 'reports-pl-content', 'reports-bs-content', 'reports-cash-content'].forEach(function(id) {
+    ['reports-content', 'reports-pl-content', 'reports-bs-content', 'reports-cash-content',
+     'reports-aged-content'].forEach(function(id) {
         var el = document.getElementById(id);
         if (el) el.style.display = 'none';
     });
-    ['rpt-pl-btn', 'rpt-bs-btn', 'rpt-cash-btn'].forEach(function(id) {
+    ['rpt-pl-btn', 'rpt-bs-btn', 'rpt-cash-btn', 'rpt-aged-btn'].forEach(function(id) {
         var el = document.getElementById(id);
         if (el) { el.style.fontWeight = 'normal'; el.classList.remove('btn-primary'); el.classList.add('btn-outline'); }
     });
@@ -9169,6 +9170,9 @@ function showReportsTab(tab) {
     } else if (tab === 'cash') {
         var el = document.getElementById('reports-cash-content'); if (el) el.style.display = 'block';
         var btn = document.getElementById('rpt-cash-btn'); if (btn) { btn.style.fontWeight = '700'; }
+    } else if (tab === 'aged') {
+        var el = document.getElementById('reports-aged-content'); if (el) el.style.display = 'block';
+        var btn = document.getElementById('rpt-aged-btn'); if (btn) { btn.style.fontWeight = '700'; }
     } else {
         var el = document.getElementById('reports-content'); if (el) el.style.display = 'block';
     }
@@ -9191,6 +9195,91 @@ function otherCurrencyNote(data, pick) {
         'Invoiced separately: ' + parts +
         '<br><span style="opacity:0.75;">Currencies are never added together, as no exchange rate is set.</span>' +
         '</div>';
+}
+
+// Aged receivables: what is outstanding, grouped by how late it is.
+//
+// The endpoint called this "the report every finance team asks for first" and
+// nothing in the browser asked for it. Without it the only way to see who was
+// ninety days late was to sort the invoice list by date and count.
+
+var AGED_BUCKETS = [
+    ['current', 'Not yet due'],
+    ['1_30', '1-30 days'],
+    ['31_60', '31-60 days'],
+    ['61_90', '61-90 days'],
+    ['over_90', 'Over 90 days'],
+];
+
+async function loadAgedReceivables() {
+    showReportsTab('aged');
+    var buckets = document.getElementById('aged-buckets');
+    if (buckets) buckets.innerHTML =
+        '<div style="padding:16px;color:var(--text-secondary);">Loading...</div>';
+    try {
+        var res = await fetch('/api/reports/aged-receivables', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('Failed');
+        renderAgedReceivables(await res.json());
+    } catch (e) {
+        if (buckets) buckets.innerHTML =
+            '<div style="padding:16px;color:var(--danger-color);">Could not load the report.</div>';
+    }
+}
+window.loadAgedReceivables = loadAgedReceivables;
+
+function renderAgedReceivables(data) {
+    var host = document.getElementById('aged-buckets');
+    var list = document.getElementById('aged-rows');
+    if (!host || !list) return;
+
+    // The same note the other reports carry: currencies are never added
+    // together, because no exchange rate is set anywhere in the product.
+    var head = otherCurrencyNote(data, function (b) { return b.total_outstanding; });
+
+    var cells = AGED_BUCKETS.map(function (pair) {
+        var value = (data.buckets || {})[pair[0]] || 0;
+        // Only the late columns are coloured. Colouring "not yet due" would
+        // make an account in perfectly good order look like a problem.
+        var colour = pair[0] === 'current' ? 'var(--text-primary)'
+            : (value > 0 ? 'var(--danger-color)' : 'var(--text-secondary)');
+        return '<div style="text-align:center;padding:18px 8px;">' +
+            '<div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:6px;">' +
+            pair[1] + '</div>' +
+            '<div style="font-size:1.25rem;font-weight:700;color:' + colour + ';">' +
+            formatCurrency(value, data.currency) + '</div></div>';
+    }).join('');
+
+    host.innerHTML = head +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));">' +
+        cells + '</div>' +
+        '<div style="text-align:center;padding:14px 0 4px;border-top:1px solid var(--border-color);">' +
+        '<span style="font-size:0.82rem;color:var(--text-secondary);">Total outstanding</span> ' +
+        '<strong style="font-size:1.1rem;margin-left:8px;">' +
+        formatCurrency(data.total_outstanding || 0, data.currency) + '</strong></div>';
+
+    var rows = data.invoices || [];
+    if (!rows.length) {
+        list.innerHTML = '<div style="padding:20px;color:var(--text-secondary);">' +
+            'Nothing is outstanding.</div>';
+        return;
+    }
+
+    list.innerHTML = '<div class="table-responsive"><table class="data-table">' +
+        '<thead><tr><th>Invoice</th><th>Customer</th><th>Due</th>' +
+        '<th class="text-right">Late by</th><th class="text-right">Outstanding</th></tr></thead>' +
+        '<tbody>' + rows.map(function (r) {
+            // Sorted latest-first by the server, so the worst is read first.
+            var late = r.days_overdue > 0
+                ? '<span style="color:var(--danger-color);font-weight:600;">' +
+                  r.days_overdue + ' day' + (r.days_overdue === 1 ? '' : 's') + '</span>'
+                : '<span style="color:var(--text-secondary);">Not due</span>';
+            return '<tr><td>' + esc(r.number) + '</td>' +
+                '<td>' + esc(r.contact || '') + '</td>' +
+                '<td>' + esc(r.due_date || '') + '</td>' +
+                '<td class="text-right">' + late + '</td>' +
+                '<td class="text-right">' +
+                formatCurrency(r.outstanding, r.currency) + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
 }
 
 async function loadProfitLoss() {
@@ -11124,6 +11213,7 @@ async function loadWallet() {
     loadAutoTopUp();
     loadWalletUsage();
     loadMandates();
+    loadLoginHistory();
     loadTopUpHistory();
 }
 window.loadWallet = loadWallet;
@@ -11436,6 +11526,61 @@ async function cancelMandate(m, who) {
     loadAutoTopUp();
 }
 window.cancelMandate = cancelMandate;
+
+// Who has signed in to this account.
+//
+// Every sign-in was already recorded and only the operator could read the log,
+// so a business had no way to answer "was that me?" about its own account -
+// which is the first question anybody asks when something looks wrong.
+async function loadLoginHistory() {
+    var host = document.getElementById('login-history');
+    if (!host) return;
+    try {
+        var res = await fetch('/api/my/login-history?limit=20');
+        if (!res.ok) throw new Error("Request failed: " + res.status);
+        renderLoginHistory(await res.json());
+    } catch (e) {
+        host.textContent = 'Could not load the sign-in history.';
+    }
+}
+window.loadLoginHistory = loadLoginHistory;
+
+function renderLoginHistory(rows) {
+    var host = document.getElementById('login-history');
+    host.textContent = '';
+    if (!rows.length) {
+        var none = document.createElement('p');
+        none.className = 'muted';
+        none.textContent = 'Nothing recorded yet.';
+        host.appendChild(none);
+        return;
+    }
+    rows.forEach(function (r) {
+        var line = document.createElement('div');
+        line.style.cssText = 'display:flex;gap:10px;align-items:baseline;padding:6px 0;' +
+            'border-bottom:1px solid var(--border-color);font-size:0.82rem;';
+
+        var when = document.createElement('span');
+        when.style.cssText = 'min-width:130px;';
+        when.textContent = (r.created_at || '').slice(0, 16);
+        line.appendChild(when);
+
+        var how = document.createElement('span');
+        how.className = 'muted';
+        how.textContent = [r.login_type, r.ip_address].filter(Boolean).join(' \u00b7 ');
+        line.appendChild(how);
+
+        // A failed attempt is the one worth seeing. A list of successes says
+        // nothing about somebody trying and not getting in.
+        var status = document.createElement('span');
+        status.style.cssText = 'margin-left:auto;font-weight:600;color:' +
+            (r.status === 'success' ? 'var(--text-secondary)' : 'var(--danger-color)') + ';';
+        status.textContent = r.status === 'success' ? 'Signed in' : r.status;
+        line.appendChild(status);
+
+        host.appendChild(line);
+    });
+}
 
 async function loadWalletTransactions() {
     var body = document.getElementById('wallet-tx-body');

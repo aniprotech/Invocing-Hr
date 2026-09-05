@@ -550,6 +550,14 @@
                                 <div class="widget-header"><h3>Automatic payments</h3></div>
                                 <div class="widget-content" id="wallet-mandates"></div>
                             </div>
+                            <!-- Who has signed in to this account. The log was
+                                 kept and only the operator could read it, so a
+                                 business could not answer "was that me?" about
+                                 its own account. -->
+                            <div class="glass-widget mb-24">
+                                <div class="widget-header"><h3>Recent sign-ins</h3></div>
+                                <div class="widget-content" id="login-history"></div>
+                            </div>
                             <div class="glass-widget">
                                 <div class="widget-header"><h3>Top-up history</h3></div>
                                 <div class="widget-content" id="wallet-topups"></div>
@@ -1322,6 +1330,7 @@
                             <button class="btn btn-outline" id="rpt-pl-btn" onclick="loadProfitLoss()" style="font-weight:600;">Profit & Loss</button>
                             <button class="btn btn-outline" id="rpt-bs-btn" onclick="loadBalanceSheet()">Balance Sheet</button>
                             <button class="btn btn-outline" id="rpt-cash-btn" onclick="loadCashSummary()">Cash Summary</button>
+                            <button class="btn btn-outline" id="rpt-aged-btn" onclick="loadAgedReceivables()">Aged Receivables</button>
                         </div>
                     </div>
                     <div id="reports-content">
@@ -1336,6 +1345,19 @@
                                 <div class="widget-header"><h3>Invoice Status</h3></div>
                                 <div class="widget-content" id="reports-status-chart"></div>
                             </section>
+                        </div>
+                    </div>
+                    <!-- The report every finance team asks for first, and the
+                         one this screen did not have: what is outstanding,
+                         bucketed by how late it is. -->
+                    <div id="reports-aged-content" style="display:none;">
+                        <div class="glass-widget" style="margin-bottom:24px;">
+                            <div class="widget-header"><h3>Outstanding by age</h3></div>
+                            <div class="widget-content" id="aged-buckets"></div>
+                        </div>
+                        <div class="glass-widget">
+                            <div class="widget-header"><h3>Every unpaid invoice</h3></div>
+                            <div class="widget-content" style="padding:0;" id="aged-rows"></div>
                         </div>
                     </div>
                     <div id="reports-pl-content" style="display:none;">

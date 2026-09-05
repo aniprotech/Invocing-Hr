@@ -625,6 +625,44 @@
               <div style="padding:22px;color:#94a3b8;font-size:0.85rem;">Loading&hellip;</div>
             </div>
 
+            <!-- Schema updates that failed at boot. They are applied
+                 non-fatally so a partial failure cannot stop the app starting,
+                 which means a migration that never ran looks exactly like one
+                 that worked - and there was nowhere to find out which. -->
+            <div class="section-header" style="margin-top:4px;">
+                <h2>Schema updates</h2>
+                <span style="font-size:0.78rem;color:#94a3b8;">Applied at boot, non-fatally</span>
+                <button class="action-btn" onclick="loadMigrationWarnings()" style="margin-left:auto;">Reload</button>
+            </div>
+            <div id="migration-body" style="margin-bottom:34px;">
+              <div style="padding:22px;color:#94a3b8;font-size:0.85rem;">Loading&hellip;</div>
+            </div>
+
+            <!-- Which variables production is actually running with. Never a
+                 value, only whether one is set - this answers "did that take
+                 effect?" without putting a secret in an HTTP response. -->
+            <div class="section-header" style="margin-top:4px;">
+                <h2>Environment</h2>
+                <span style="font-size:0.78rem;color:#94a3b8;">Whether each is set, never what it is</span>
+                <button class="action-btn" onclick="loadEnvironment()" style="margin-left:auto;">Reload</button>
+            </div>
+            <div id="environment-body" style="margin-bottom:34px;">
+              <div style="padding:22px;color:#94a3b8;font-size:0.85rem;">Loading&hellip;</div>
+            </div>
+
+            <!-- The work that happens without anybody: recurring invoices and
+                 overdue chases. A scheduler that stopped ticking looks exactly
+                 like a quiet week. -->
+            <div class="section-header" style="margin-top:4px;">
+                <h2>Scheduled work</h2>
+                <span style="font-size:0.78rem;color:#94a3b8;">Recurring invoices and overdue reminders</span>
+                <button class="action-btn" onclick="runJobsNow()" style="margin-left:auto;">Run now</button>
+                <button class="action-btn" onclick="loadJobRuns()">Reload</button>
+            </div>
+            <div id="jobruns-body" style="margin-bottom:34px;">
+              <div style="padding:22px;color:#94a3b8;font-size:0.85rem;">Loading&hellip;</div>
+            </div>
+
             <div class="section-header">
                 <h2>Application settings</h2>
                 <span style="font-size:0.78rem;color:#94a3b8;">Applies to every tenant, straight away</span>
@@ -2124,6 +2162,233 @@
         }
         window.markSettlementPaid = markSettlementPaid;
 
+        // Schema updates that failed on the way up.
+        //
+        // They are applied non-fatally on purpose - a partial failure must not
+        // stop the app booting - but that means a migration which never ran is
+        // indistinguishable from one that worked. /api/health reports only a
+        // count, because the messages carry table and column names and it is a
+        // public endpoint. The operator needs the messages themselves to tell
+        // an expected failure, like dropping an index that was already gone,
+        // from a column that genuinely is not there.
+        async function loadMigrationWarnings() {
+            var host = document.getElementById('migration-body');
+            if (!host) return;
+            try {
+                var res = await fetch('/api/superadmin/migration-warnings');
+                if (!res.ok) throw new Error('Request failed: ' + res.status);
+                renderMigrationWarnings(await res.json());
+            } catch (e) {
+                host.textContent = 'Could not read the schema report: ' + e.message;
+            }
+        }
+        window.loadMigrationWarnings = loadMigrationWarnings;
+
+        function renderMigrationWarnings(d) {
+            var host = document.getElementById('migration-body');
+            host.textContent = '';
+            var warnings = d.warnings || [];
+
+            var box = document.createElement('div');
+            box.style.cssText = 'border:1px solid ' +
+                (warnings.length ? '#fbbf24' : 'rgba(255,255,255,0.06)') +
+                ';border-radius:12px;padding:16px 20px;background:rgba(15, 23, 42, 0.6);';
+
+            var head = document.createElement('div');
+            head.style.cssText = 'font-weight:700;font-size:0.9rem;color:' +
+                (warnings.length ? '#fbbf24' : '#34d399') + ';';
+            head.textContent = warnings.length
+                ? warnings.length + ' schema step' + (warnings.length === 1 ? '' : 's') +
+                  ' did not complete'
+                : 'Every schema update applied.';
+            box.appendChild(head);
+
+            if (!warnings.length) {
+                var fine = document.createElement('div');
+                fine.style.cssText = 'margin-top:6px;font-size:0.8rem;color:#94a3b8;';
+                fine.textContent = 'Nothing was skipped on the last boot.';
+                box.appendChild(fine);
+                host.appendChild(box);
+                return;
+            }
+
+            var why = document.createElement('div');
+            why.style.cssText = 'margin-top:8px;font-size:0.8rem;color:#cbd5e1;line-height:1.7;';
+            why.textContent = 'Some of these are expected - dropping an index ' +
+                'that was already dropped reads as a failure. What matters is a ' +
+                'step that was meant to add something and did not, because the ' +
+                'app boots either way and the column simply will not be there.';
+            box.appendChild(why);
+
+            var list = document.createElement('div');
+            list.style.cssText = 'margin-top:12px;display:flex;flex-direction:column;gap:8px;';
+            warnings.forEach(function (w) {
+                var line = document.createElement('div');
+                // The provider's own words. Paraphrasing these would lose the
+                // table and column names, which are the whole message.
+                line.style.cssText = "font-family:'Courier New',monospace;font-size:0.78rem;" +
+                    'color:#e2e8f0;background:#0f172a;border:1px solid #334155;' +
+                    'border-radius:8px;padding:9px 12px;white-space:pre-wrap;word-break:break-word;';
+                line.textContent = w;
+                list.appendChild(line);
+            });
+            box.appendChild(list);
+            host.appendChild(box);
+        }
+
+        // Which variables production is running with.
+        //
+        // Never a value, only whether one is present: this is a page an
+        // operator reads to answer "did that take effect?", and a secret does
+        // not belong in an HTTP response even behind an admin check.
+        async function loadEnvironment() {
+            var host = document.getElementById('environment-body');
+            if (!host) return;
+            try {
+                var res = await fetch('/api/superadmin/environment');
+                if (!res.ok) throw new Error('Request failed: ' + res.status);
+                renderEnvironment(await res.json());
+            } catch (e) {
+                host.textContent = 'Could not read the environment: ' + e.message;
+            }
+        }
+        window.loadEnvironment = loadEnvironment;
+
+        function renderEnvironment(d) {
+            var host = document.getElementById('environment-body');
+            host.textContent = '';
+            var checks = d.checks || d.settings || (Array.isArray(d) ? d : []);
+            if (!checks.length) {
+                host.textContent = 'Nothing to report.';
+                return;
+            }
+
+            checks.forEach(function (c) {
+                var row = document.createElement('div');
+                row.style.cssText = 'display:flex;gap:12px;align-items:flex-start;' +
+                    'padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.06);';
+
+                var dot = document.createElement('span');
+                dot.style.cssText = 'width:9px;height:9px;border-radius:50%;margin-top:6px;' +
+                    'flex:none;background:' + (c.ok ? '#34d399' : '#fbbf24') + ';';
+                row.appendChild(dot);
+
+                var text = document.createElement('div');
+                text.style.cssText = 'flex:1;min-width:0;';
+
+                var name = document.createElement('div');
+                name.style.cssText = "font-family:'Courier New',monospace;font-size:0.82rem;font-weight:700;";
+                name.textContent = c.name;
+                text.appendChild(name);
+
+                var why = document.createElement('div');
+                why.style.cssText = 'font-size:0.8rem;color:#cbd5e1;line-height:1.6;margin-top:2px;';
+                why.textContent = c.detail || '';
+                text.appendChild(why);
+
+                // What to do about it, not only that it is wrong.
+                if (!c.ok && c.fix) {
+                    var fix = document.createElement('div');
+                    fix.style.cssText = 'font-size:0.78rem;color:#94a3b8;margin-top:4px;';
+                    fix.textContent = c.fix;
+                    text.appendChild(fix);
+                }
+                row.appendChild(text);
+                host.appendChild(row);
+            });
+        }
+
+        // The work that happens without anybody asking.
+        //
+        // Recurring invoices and overdue chases run on a tick. A scheduler that
+        // has stopped looks exactly like a quiet week, so the last runs are
+        // listed and there is a way to run them now rather than wait.
+        async function loadJobRuns() {
+            var host = document.getElementById('jobruns-body');
+            if (!host) return;
+            try {
+                var res = await fetch('/api/superadmin/job-runs?limit=25');
+                if (!res.ok) throw new Error('Request failed: ' + res.status);
+                renderJobRuns(await res.json());
+            } catch (e) {
+                host.textContent = 'Could not read the job history: ' + e.message;
+            }
+        }
+        window.loadJobRuns = loadJobRuns;
+
+        function renderJobRuns(rows) {
+            var host = document.getElementById('jobruns-body');
+            host.textContent = '';
+            if (!rows.length) {
+                var none = document.createElement('div');
+                none.style.cssText = 'padding:16px 0;color:#fbbf24;font-size:0.85rem;line-height:1.7;';
+                // An empty list is the alarming case, not the calm one.
+                none.textContent = 'Nothing has run. Recurring invoices and overdue ' +
+                    'reminders go out on a tick - if this stays empty, the scheduler ' +
+                    'is not running and neither are they.';
+                host.appendChild(none);
+                return;
+            }
+
+            var table = document.createElement('table');
+            table.className = 'data-table';
+            table.style.cssText = 'width:100%;';
+            var head = document.createElement('thead');
+            var hr = document.createElement('tr');
+            ['Job', 'Period', 'Started', 'Status', 'Detail'].forEach(function (t) {
+                var th = document.createElement('th');
+                th.textContent = t;
+                hr.appendChild(th);
+            });
+            head.appendChild(hr);
+            table.appendChild(head);
+
+            var tb = document.createElement('tbody');
+            tb.id = 'jobruns-tbody';
+            rows.forEach(function (r) {
+                var tr = document.createElement('tr');
+                [r.job, r.period, (r.started_at || '').slice(0, 16)].forEach(function (v) {
+                    var td = document.createElement('td');
+                    td.textContent = v || '';
+                    tr.appendChild(td);
+                });
+
+                var st = document.createElement('td');
+                st.style.cssText = 'font-weight:600;color:' +
+                    (r.status === 'ok' || r.status === 'done' ? '#34d399' : '#fb7185') + ';';
+                st.textContent = r.status || '';
+                tr.appendChild(st);
+
+                var detail = document.createElement('td');
+                detail.style.cssText = 'font-size:0.78rem;color:#94a3b8;';
+                detail.textContent = r.detail || '';
+                tr.appendChild(detail);
+
+                tb.appendChild(tr);
+            });
+            table.appendChild(tb);
+            host.appendChild(table);
+        }
+
+        async function runJobsNow() {
+            // Safe to press: each job still claims its period, so running it
+            // early cannot send the same thing twice.
+            try {
+                var res = await fetch('/api/superadmin/run-jobs', { method: 'POST' });
+                var data = await res.json().catch(function () { return {}; });
+                if (!res.ok) throw new Error(data.detail || 'Could not run them');
+                var results = data.results || {};
+                var names = Object.keys(results);
+                alert(names.length
+                    ? names.map(function (n) { return n + ': ' + results[n]; }).join('\n')
+                    : 'Nothing was due.');
+            } catch (e) {
+                alert(e.message);
+            }
+            loadJobRuns();
+        }
+        window.runJobsNow = runJobsNow;
+
         async function loadPlatformEmail() {
             var host = document.getElementById('platform-email-body');
             if (!host) return;
@@ -2391,7 +2656,8 @@
             trends:   [loadTrends],
             activity: [loadLoginLogs],
             clients:  [loadClients],
-            control:  [loadPlatformEmail, loadPlatformSettings, loadLandingItems]
+            control:  [loadPlatformEmail, loadMigrationWarnings, loadEnvironment, loadJobRuns,
+                       loadPlatformSettings, loadLandingItems]
         };
         var _tabLoaded = {};
 
