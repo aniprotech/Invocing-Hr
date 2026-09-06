@@ -35,7 +35,7 @@ from sqladmin.authentication import AuthenticationBackend
 
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-from database import engine, get_db, SessionLocal, ensure_columns
+from database import engine, get_db, SessionLocal, ensure_columns, MIGRATION_ERRORS
 import httpx
 import models
 
@@ -1703,14 +1703,55 @@ def save_logo(body: LogoUpdate, request: Request, db: Session = Depends(get_db))
 
 # --- Super Admin ---
 
+def a_free_operator_username(taken, email):
+    """A name no other operator already has.
+
+    Every operator used to be created as "superadmin", and the column is
+    unique - fine for the first one and an IntegrityError for the second. The
+    first name is kept for whoever holds it so nobody who signs in by username
+    loses their way in; anybody after that is named from their address.
+    """
+    if "superadmin" not in taken:
+        return "superadmin"
+    base = re.sub(r"[^a-z0-9._-]", "", (email or "").split("@")[0].lower()) or "operator"
+    if base not in taken:
+        return base
+    nth = 2
+    while f"{base}{nth}" in taken:
+        nth += 1
+    return f"{base}{nth}"
+
+
 def ensure_super_admin():
+    """Make sure every address in SUPERADMIN_EMAILS has an operator account.
+
+    Wrapped, because this runs during startup and used to be the one step
+    there that could refuse to let the application boot. Adding a second
+    address to SUPERADMIN_EMAILS did not add an operator: it raised on the
+    duplicate username, took the lifespan down with it, and every deploy from
+    then on failed its health check with nothing to see but a timeout. The
+    schema updates and the pricing seed both already decline to be fatal for
+    the same reason, and an operator account that could not be created is
+    worth less than an application that starts.
+    """
+    try:
+        _ensure_super_admin()
+    except Exception as exc:                          # noqa: BLE001
+        logger.error("Could not set up operator accounts: %s", exc)
+        MIGRATION_ERRORS.append(f"operator accounts: {exc}")
+
+
+def _ensure_super_admin():
     with SessionLocal() as db:
         env_emails = [e.strip().lower() for e in os.getenv("SUPERADMIN_EMAILS", "hello@keyroutes.co").split(",") if e.strip()]
         existing_all = db.query(models.DBSuperAdmin).all()
         existing_emails = {e.email.strip().lower() for e in existing_all if e.email}
+        taken = {(a.username or "").strip().lower() for a in existing_all}
         for em in env_emails:
             if em not in existing_emails:
-                db.add(models.DBSuperAdmin(username="superadmin", password_hash="", email=em))
+                name = a_free_operator_username(taken, em)
+                taken.add(name)
+                db.add(models.DBSuperAdmin(username=name, password_hash="", email=em))
                 existing_emails.add(em)
         # This used to overwrite the password on every startup, so an operator
         # who changed theirs in the app found it silently back to the
