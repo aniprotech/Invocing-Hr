@@ -27,15 +27,15 @@
 const CACHE = 'aniprotech-static-v1';
 
 const PRECACHE = [
-    '/styles.css?v=139',
+    '/styles.css?v=140',
     // The employee portal's stylesheet. It used to come from the Tailwind
     // CDN, which this worker refuses to cache because it is another origin -
     // so the busiest page in the product got none of the benefit.
-    '/tailwind.css?v=139',
-    '/mobile.css?v=139',
-    '/app.js?v=139',
+    '/tailwind.css?v=140',
+    '/mobile.css?v=140',
+    '/app.js?v=140',
     // Every page loads this, so it is worth having before it is asked for.
-    '/pwa.js?v=139',
+    '/pwa.js?v=140',
     '/icons/icon-192.png',
     '/icons/icon-512.png',
     '/icons/icon.svg',

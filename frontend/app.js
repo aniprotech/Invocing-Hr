@@ -3248,7 +3248,13 @@ window.generateQuotePDF = generateQuotePDF;
 var _sendTemplates = [];
 var _sendPreviewTimer = null;
 
-async function sendEmail() {
+// `draft` is an optional {subject, body} handed over by one of the AI panels,
+// so a generated email can be sent from here rather than copied out and pasted
+// into something else. It goes through this screen rather than straight out:
+// the recipient, the attachment and the wallet charge are all decided here,
+// and a generated draft in particular tends to arrive with [Your Name] still
+// in it.
+async function sendEmail(draft) {
     var number = document.getElementById('view-inv-number-val').textContent;
     if (!number) { showToast('No invoice loaded', 'error'); return; }
 
@@ -3262,6 +3268,14 @@ async function sendEmail() {
 
     await Promise.all([loadEmailTemplates(), loadPlaceholderPicker()]);
     applyEmailTemplate();
+
+    // After the template, which fills the same two fields and would otherwise
+    // overwrite what the draft came here to say.
+    if (draft && (draft.subject || draft.body)) {
+        if (draft.subject) document.getElementById('send-subject').value = draft.subject;
+        if (draft.body) document.getElementById('send-body').value = draft.body;
+        refreshEmailPreview();
+    }
 }
 window.sendEmail = sendEmail;
 
@@ -8663,6 +8677,56 @@ async function aiGenerateOnboarding() {
 }
 window.aiGenerateOnboarding = aiGenerateOnboarding;
 
+// --- Which account an AI draft would leave through -------------------------
+// These panels used to end at "Copy Email", so the draft was pasted into
+// whatever mail client the person happened to have - which meant it did not
+// go out through the address the account is set up to send from, was not
+// recorded as a delivery, and could not be chased when it bounced. They can
+// send from here now, and since that puts a customer one step away, each
+// panel says whose address it will leave through first.
+var _emailAccount = null;
+
+async function sendingAccount() {
+    if (_emailAccount) return _emailAccount;
+    try {
+        var res = await fetch('/api/email-settings', { credentials: 'same-origin' });
+        _emailAccount = res.ok ? await res.json() : {};
+    } catch (e) { _emailAccount = {}; }
+    return _emailAccount;
+}
+
+function sendingAccountLine(account) {
+    var a = account || {};
+    if (a.can_send === false) {
+        return '<div style="font-size:0.78rem;color:var(--warning-color);margin-bottom:8px;">' +
+            '<i class="bi bi-exclamation-triangle"></i> No email account connected' +
+            (a.blocked_reason ? ' &mdash; ' + esc(a.blocked_reason) : '') +
+            ' &middot; <a href="#/settings" style="color:inherit;text-decoration:underline;">Set it up</a></div>';
+    }
+    return '<div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:8px;">' +
+        '<i class="bi bi-envelope-check"></i> Sends from <strong>' +
+        esc(a.from_email || 'your connected account') + '</strong></div>';
+}
+
+// A generated draft signs off with [Your Name] and [Your Company] until
+// somebody replaces them. Worth saying out loud now that sending is a button
+// rather than a paste, because the placeholder reaches the customer verbatim.
+function draftPlaceholderWarning(draft) {
+    var body = (draft && draft.body) || '';
+    if (!/\[[A-Za-z][^\]\n]{2,40}\]/.test(body)) return '';
+    return '<div style="font-size:0.78rem;color:var(--warning-color);margin-bottom:8px;">' +
+        '<i class="bi bi-pencil"></i> Still has [placeholders] to fill in before this goes out.</div>';
+}
+
+function aiDraftActions(draft, regenerateCall, sendFn, copyFn) {
+    return sendingAccountLine(_emailAccount) + draftPlaceholderWarning(draft) +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+            '<button class="btn btn-primary btn-sm" onclick="' + sendFn + '()">Send&hellip;</button>' +
+            '<button class="btn btn-outline btn-sm" onclick="' + copyFn + '()">Copy</button>' +
+            regenerateCall +
+        '</div>';
+}
+
 // --- AI: Invoice Email Personalization ---
 async function aiPersonalizeEmail(invoiceNumber, clientName, total, dueDate) {
     var el = document.getElementById('ai-email-preview');
@@ -8677,14 +8741,16 @@ async function aiPersonalizeEmail(invoiceNumber, clientName, total, dueDate) {
         // Held rather than threaded through an onclick attribute; the body is
         // multi-line free text and would not survive the quoting.
         _lastAiEmail = { subject: data.subject || '', body: data.body || '' };
+        await sendingAccount();
         if (el) {
+            var regenerate = '<button class="btn btn-outline btn-sm" onclick="aiPersonalizeEmail(\'' +
+                invoiceNumber + '\',\'' + esc(clientName) + '\',' + total + ',\'' + dueDate +
+                '\')">Regenerate</button>';
             el.innerHTML = '<div style="padding:12px;">' +
                 '<div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:4px;">Subject: ' + esc(data.subject || '') + '</div>' +
-                '<div style="background:rgba(255, 255, 255, 0.03);border:1px solid var(--border-color);border-radius:8px;padding:12px;font-size:0.85rem;white-space:pre-wrap;">' + esc(data.body || '') + '</div>' +
-                '<div style="display:flex;gap:8px;margin-top:8px;">' +
-                    '<button class="btn btn-primary btn-sm" onclick="useAiEmail()">Copy Email</button>' +
-                    '<button class="btn btn-outline btn-sm" onclick="aiPersonalizeEmail(\'' + invoiceNumber + '\',\'' + esc(clientName) + '\',' + total + ',\'' + dueDate + '\')">Regenerate</button>' +
-                '</div></div>';
+                '<div style="background:rgba(255, 255, 255, 0.03);border:1px solid var(--border-color);border-radius:8px;padding:12px;font-size:0.85rem;white-space:pre-wrap;margin-bottom:8px;">' + esc(data.body || '') + '</div>' +
+                aiDraftActions(_lastAiEmail, regenerate, 'sendAiEmail', 'useAiEmail') +
+                '</div>';
             el.style.display = 'block';
         }
     } catch(e) {
@@ -8695,9 +8761,11 @@ window.aiPersonalizeEmail = aiPersonalizeEmail;
 
 var _lastAiEmail = null;
 
-function useAiEmail() {
-    if (!_lastAiEmail) { showToast('Generate an email first', 'error'); return; }
-    var text = 'Subject: ' + _lastAiEmail.subject + '\n\n' + _lastAiEmail.body;
+var _lastAiFollowup = null;
+
+function copyDraft(draft) {
+    if (!draft) { showToast('Generate an email first', 'error'); return; }
+    var text = 'Subject: ' + draft.subject + '\n\n' + draft.body;
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).then(function () {
             showToast('Email copied to clipboard', 'success');
@@ -8708,6 +8776,32 @@ function useAiEmail() {
         showToast('Could not copy - select the text above instead', 'error');
     }
 }
+
+function useAiEmail() { copyDraft(_lastAiEmail); }
+function useAiFollowup() { copyDraft(_lastAiFollowup); }
+
+// Both hand the draft to the send screen rather than posting it themselves.
+// That screen owns the recipient, the PDF attachment, cc/bcc and the wallet
+// charge, and it is already the one path that reports a refused send properly.
+function sendAiEmail() {
+    if (!_lastAiEmail) { showToast('Generate an email first', 'error'); return; }
+    sendEmail(_lastAiEmail);
+}
+
+function sendAiFollowup() {
+    if (!_lastAiFollowup) { showToast('Generate a reminder first', 'error'); return; }
+    sendEmail(_lastAiFollowup);
+}
+
+function dismissAiFollowup() {
+    var el = document.getElementById('ai-followup-result');
+    if (el) { el.innerHTML = ''; el.style.display = 'none'; }
+}
+
+window.useAiFollowup = useAiFollowup;
+window.sendAiEmail = sendAiEmail;
+window.sendAiFollowup = sendAiFollowup;
+window.dismissAiFollowup = dismissAiFollowup;
 
 // --- AI: Overdue Follow-up ---
 async function aiGenerateFollowup(invoiceNumber, clientName, total, daysOverdue) {
@@ -8720,11 +8814,16 @@ async function aiGenerateFollowup(invoiceNumber, clientName, total, daysOverdue)
         });
         if (!res.ok) throw new Error("Request failed: " + res.status);
         var data = await res.json();
+        // Held for the same reason the invoice draft is: the body is
+        // multi-line free text and would not survive an onclick attribute.
+        _lastAiFollowup = { subject: data.subject || '', body: data.body || '' };
+        await sendingAccount();
         if (el) {
+            var dismiss = '<button class="btn btn-outline btn-sm" onclick="dismissAiFollowup()">Dismiss</button>';
             el.innerHTML = '<div style="padding:12px;">' +
                 '<div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:4px;">Subject: ' + esc(data.subject || '') + '</div>' +
-                '<div style="background:rgba(255, 255, 255, 0.03);border:1px solid var(--border-color);border-radius:8px;padding:12px;font-size:0.85rem;white-space:pre-wrap;">' + esc(data.body || '') + '</div>' +
-                '<button class="btn btn-outline btn-sm" onclick="this.parentElement.remove()" style="margin-top:8px;">Dismiss</button>' +
+                '<div style="background:rgba(255, 255, 255, 0.03);border:1px solid var(--border-color);border-radius:8px;padding:12px;font-size:0.85rem;white-space:pre-wrap;margin-bottom:8px;">' + esc(data.body || '') + '</div>' +
+                aiDraftActions(_lastAiFollowup, dismiss, 'sendAiFollowup', 'useAiFollowup') +
             '</div>';
             el.style.display = 'block';
         }
