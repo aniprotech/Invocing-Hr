@@ -123,7 +123,12 @@
         .glass { background: #ffffff; border: 1px solid var(--ap-line); box-shadow: var(--ap-card-shadow); }
 
         /* Nav */
-        .nav { position: fixed; top: 0; left: 0; right: 0; z-index: 50; background: rgba(255, 255, 255, 0.86); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-bottom: 1px solid var(--ap-line); }
+        /* padding-top: the installed app draws its content behind the status
+           bar, and this nav is pinned to the top of the screen, so it grows by
+           that strip and keeps its own contents below the clock and battery.
+           Everything measured against the nav's height grows with it. See the
+           safe-area note in mobile.css. */
+        .nav { position: fixed; top: 0; left: 0; right: 0; z-index: 50; background: rgba(255, 255, 255, 0.86); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-bottom: 1px solid var(--ap-line); padding-top: env(safe-area-inset-top, 0px); }
         .nav-inner { max-width: 1200px; margin: 0 auto; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; height: 64px; }
         .nav-logo { display: flex; align-items: center; gap: 10px; }
         .nav-logo-icon { width: 32px; height: 32px; border-radius: 8px; background: linear-gradient(135deg, var(--ap-blue), var(--ap-blue-dark)); display: flex; align-items: center; justify-content: center; box-shadow: 0 6px 16px rgba(2, 132, 199, 0.24); }
@@ -162,7 +167,7 @@
         }
 
         /* Hero */
-        .hero { position: relative; z-index: 10; padding: 160px 16px 100px; text-align: center; }
+        .hero { position: relative; z-index: 10; padding: 160px 16px 100px; text-align: center; padding-top: calc(160px + env(safe-area-inset-top, 0px)); }
         .hero-badge { display: inline-flex; align-items: center; gap: 8px; padding: 7px 16px; border-radius: 20px; background: var(--ap-blue-soft); border: 1px solid #e0f2fe; color: var(--ap-blue-dark); font-size: 13px; font-weight: 700; letter-spacing: 0.02em; margin-bottom: 32px; }
         .hero-badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ap-blue); animation: pulse 2s infinite; }
         .hero h1 { font-size: clamp(36px, 6vw, 60px); font-weight: 800; line-height: 1.05; letter-spacing: -0.045em; margin-bottom: 24px; color: var(--ap-ink); }
@@ -387,7 +392,7 @@
 
         /* The nav is fixed, so an anchor would otherwise land with its
            heading tucked underneath it. */
-        section[id], div[id="home"] { scroll-margin-top: 88px; }
+        section[id], div[id="home"] { scroll-margin-top: calc(88px + env(safe-area-inset-top, 0px)); }
 
         .eyebrow {
             display: block;
@@ -534,11 +539,11 @@
         .footer-col a:hover { color: var(--ap-blue-dark); }
         .footer-about { font-size: 13.5px; color: var(--ap-body); line-height: 1.7; max-width: 320px; margin-top: 12px; }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=138">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=138">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=138">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=138">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=138">
+    <link rel="stylesheet" href="mobile.css?v=139">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=139">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=139">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=139">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=139">
     <script src="/dialogs.js?v=1"></script>
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="aniprotech">
@@ -553,7 +558,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="aniprotech">
 </head>
-<body>
+<body class="owns-the-safe-area">
 
     <div class="bg-shapes">
         <div class="bg-shape bg-shape-1"></div>
@@ -1384,8 +1389,8 @@
         .catch(function () { /* the page already reads correctly without this */ });
 })();
 </script>
-    <script src="/install-hint.js?v=138"></script>
-    <script src="/pwa.js?v=138"></script>
+    <script src="/install-hint.js?v=139"></script>
+    <script src="/pwa.js?v=139"></script>
 
     <script>
         // Each block comes up as it is reached. Where IntersectionObserver is

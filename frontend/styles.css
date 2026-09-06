@@ -175,13 +175,22 @@ h1, h2, h3, h4, p, td, th, li, .stat-value { overflow-wrap: anywhere; }
 }
 
 /* ===== TOPBAR ===== */
+/* The installed app draws its own content behind the status bar, so the bar
+   has to be taller than it looks by exactly that strip and hold its contents
+   below it. Without this the hamburger and the logo were drawn underneath the
+   clock and the battery. See the safe-area note in mobile.css.
+
+   Kept as its own property so everything that positions itself against the
+   bar - the mobile drawer, its scroll height - stays in step with it. */
+:root { --topbar-total: calc(var(--topbar-height) + env(safe-area-inset-top, 0px)); }
 .enterprise-topbar {
-    height: var(--topbar-height); background-color: rgba(11, 15, 25, 0.9);
+    height: var(--topbar-total); background-color: rgba(11, 15, 25, 0.9);
     backdrop-filter: blur(12px); border-bottom: 1px solid var(--border-color);
     color: var(--text-primary); display: flex; align-items: center;
     z-index: var(--layer-topbar); flex-shrink: 0; gap: 16px;
     /* Clear the notch when a phone is held in landscape. */
     padding: 0 max(24px, env(safe-area-inset-right, 0px)) 0 max(24px, env(safe-area-inset-left, 0px));
+    padding-top: env(safe-area-inset-top, 0px);
 }
 .topbar-left { display: flex; align-items: center; gap: 24px; min-width: 0; flex-shrink: 1; }
 .logo { font-size: 1.2rem; font-weight: 700; letter-spacing: -0.5px; white-space: nowrap; }
@@ -851,12 +860,12 @@ textarea.table-input.item-desc {
 @media (max-width: 768px) {
     .hamburger { display: flex; }
     .top-nav-menu {
-        position: fixed; top: var(--topbar-height); left: 0; right: 0;
+        position: fixed; top: var(--topbar-total); left: 0; right: 0;
         background: rgba(11, 15, 25, 0.98); backdrop-filter: blur(16px);
         flex-direction: column; padding: 16px; gap: 4px;
         border-bottom: 1px solid var(--border-color);
         transform: translateY(-120%); transition: transform 0.3s ease;
-        z-index: var(--layer-drawer); max-height: calc(100vh - var(--topbar-height));
+        z-index: var(--layer-drawer); max-height: calc(100vh - var(--topbar-total));
         overflow-y: auto;
     }
     .top-nav-menu::-webkit-scrollbar { display: none; }
@@ -869,7 +878,7 @@ textarea.table-input.item-desc {
     }
     /* The drawer must not be trapped behind the address bar or home indicator. */
     .top-nav-menu {
-        max-height: calc(100dvh - var(--topbar-height));
+        max-height: calc(100dvh - var(--topbar-total));
         padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
         /* The base rule fades the right edge to hint that the desktop nav
            scrolls sideways. Once the nav is a full-width vertical drawer that
@@ -956,13 +965,13 @@ textarea.table-input.item-desc {
 @media (max-width: 1024px) {
     .hamburger { display: flex; }
     .top-nav-menu {
-        position: fixed; top: var(--topbar-height); left: 0; right: 0;
+        position: fixed; top: var(--topbar-total); left: 0; right: 0;
         background: rgba(11, 15, 25, 0.98); backdrop-filter: blur(16px);
         flex-direction: column; padding: 16px; gap: 4px;
         border-bottom: 1px solid var(--border-color);
         transform: translateY(-120%); transition: transform 0.3s ease;
         z-index: var(--layer-drawer);
-        max-height: calc(100vh - var(--topbar-height));
+        max-height: calc(100vh - var(--topbar-total));
         overflow-y: auto; overflow-x: hidden;
         /* A horizontal fade over a vertical drawer washes out every item. */
         -webkit-mask-image: none;
@@ -1022,7 +1031,7 @@ textarea.table-input.item-desc {
     .dashboard-header .subtitle { display: none; }
     .modal { max-height: 92vh; }
     .modal-overlay { align-items: center; }
-    .top-nav-menu { max-height: calc(100dvh - var(--topbar-height)); }
+    .top-nav-menu { max-height: calc(100dvh - var(--topbar-total)); }
 }
 
 /* Large desktops: stop content stretching into an unreadable line length. */

@@ -34,6 +34,36 @@ h1, h2, h3, h4, p, td, th, li { overflow-wrap: anywhere; }
     .h-screen { height: 100dvh; }
 }
 
+/* ===========================================================================
+   THE STRIP BEHIND THE STATUS BAR
+
+   Every page asks iOS for a translucent status bar and declares
+   viewport-fit=cover, so an installed app draws its own content from the very
+   top of the screen - underneath the clock, the signal bars and the battery.
+   Android 15 does the same to an installed PWA. Nothing reserved that strip,
+   so on both the top bar was drawn behind the system icons and the two
+   collided: the hamburger sat under the clock and the logo under the battery.
+
+   env(safe-area-inset-top) is how tall that strip is - around 44-59px on a
+   notched iPhone, 24px on an iPad, 0 in an ordinary browser tab, where the
+   browser has already made room. It reports 0 unless the page declares
+   viewport-fit=cover, which is why every fix here is a no-op elsewhere.
+
+   Two shapes of page, and they need opposite treatment. A page with nothing
+   anchored to the top can simply start lower, which is the rule below. A page
+   whose own bar is fixed or sticky cannot: the bar would still be drawn at
+   the top of the screen and the reserved strip would just show the page
+   scrolling past behind it. Those grow the bar itself and opt out here.
+   =========================================================================== */
+body {
+    /* Height rules elsewhere are written against 100dvh, so the padding has to
+       count inside it rather than adding to it. */
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+}
+
+body.owns-the-safe-area { padding-top: 0; }
+
 /* Keep fixed bottom bars and page ends clear of the home indicator. */
 body { padding-bottom: env(safe-area-inset-bottom, 0px); }
 

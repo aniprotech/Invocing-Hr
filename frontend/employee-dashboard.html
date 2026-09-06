@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=138">
+  <link rel="stylesheet" href="tailwind.css?v=139">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -37,22 +37,34 @@
     ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.15); border-radius: 3px; }
     .notification-badge { animation: notifPulse 2s infinite; }
     @keyframes notifPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.1); } }
+
+    /* The staff app is installed to a home screen and draws its own content
+       behind the status bar, so the two bars stuck to the top of this page
+       have to account for that strip themselves - otherwise the logo and the
+       account button are drawn underneath the clock and the battery. See the
+       safe-area note in mobile.css.
+
+       They are also stacked, so the second has to start where the first ends.
+       It was pinned at top-16 (64px) under a bar that is h-14 (56px), leaving
+       an 8px slot of the page scrolling between them. */
+    .app-bar { padding-top: env(safe-area-inset-top, 0px); }
+    .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=138">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=138">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=138">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=138">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=138">
+    <link rel="stylesheet" href="mobile.css?v=139">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=139">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=139">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=139">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=139">
     <script src="/dialogs.js?v=1"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="aniprotech Staff">
 </head>
-<body class="bg-gray-50 min-h-screen">
+<body class="bg-gray-50 min-h-screen owns-the-safe-area">
 
   <!-- Top Navigation -->
-  <nav class="gradient-dark sticky top-0 z-50 shadow-lg shadow-dark-900/50">
+  <nav class="app-bar gradient-dark sticky top-0 z-50 shadow-lg shadow-dark-900/50">
     <div class="max-w-6xl mx-auto px-4 sm:px-6">
       <div class="flex items-center justify-between h-14">
         <div class="flex items-center gap-3">
@@ -95,7 +107,7 @@
   </nav>
 
   <!-- Tabs -->
-  <div class="bg-white border-b border-gray-200 sticky top-16 z-40">
+  <div class="app-bar-second bg-white border-b border-gray-200 sticky top-16 z-40">
     <div class="max-w-6xl mx-auto px-4 sm:px-6">
       <div class="flex gap-1 overflow-x-auto py-2 scrollbar-hide" id="tabs">
         <button onclick="switchTab('overview')" class="tab-btn tab-active px-4 py-2.5 rounded-xl text-sm font-medium whitespace-nowrap transition-all flex items-center gap-2" data-tab="overview">
@@ -2731,7 +2743,7 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=138"></script>
-    <script src="/pwa.js?v=138"></script>
+    <script src="/install-hint.js?v=139"></script>
+    <script src="/pwa.js?v=139"></script>
 </body>
 </html>

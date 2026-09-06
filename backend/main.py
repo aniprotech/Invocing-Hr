@@ -686,6 +686,79 @@ async def security_middleware(request: Request, call_next):
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
+
+# The proxy terminates TLS and forwards to this container over plain HTTP, so
+# without this everything inside sees scheme "http" and a client address
+# belonging to the proxy. Off by default only for a deployment that is reached
+# directly, where the headers below would be attacker-controlled.
+TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "true").strip().lower() not in ("false", "0", "no")
+
+
+class TrustTheProxy:
+    """Believe the proxy in front of us about the scheme and the caller.
+
+    Three things went wrong quietly while the application thought every
+    request had arrived over plain HTTP:
+
+      - Strict-Transport-Security is only set on an https request, so it was
+        never sent at all. A browser arriving over http had nothing telling
+        it to use https next time.
+      - Absolute links built from the request came out as http:// - the
+        invoice a customer opens, the password reset, the open-tracking
+        pixel, the address a payment provider returns to. The OAuth callback
+        had already been patched back to https by hand in three places
+        because of exactly this; nothing else was.
+      - Every sign-in was logged against the proxy's own address, so the
+        sign-in history an account holder is shown for spotting somebody
+        else's access listed one address for all of them.
+
+    uvicorn ships this and has it on by default, but only trusts a proxy
+    calling from 127.0.0.1, which the platform's is not. Doing it in the
+    application rather than by setting FORWARDED_ALLOW_IPS keeps it testable
+    and keeps it true wherever the app is run from.
+
+    The forwarded-for chain is read from the right rather than the left.
+    Each hop appends what it saw, so the rightmost entry is the one our own
+    proxy observed and the only one a caller cannot forge by sending a
+    header of their own. uvicorn takes the leftmost; with a single trusted
+    proxy in front, this is the same value when the header is honest and the
+    correct one when it is not.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            headers = {}
+            for key, value in scope.get("headers") or ():
+                headers.setdefault(key, value)  # first header of a repeated name
+
+            proto = headers.get(b"x-forwarded-proto", b"").decode("latin-1")
+            proto = proto.split(",")[0].strip().lower()
+            if proto in ("http", "https", "ws", "wss"):
+                # A proxy says "https" for a websocket too, and a websocket
+                # scope spells its scheme ws/wss rather than http/https.
+                secure = proto in ("https", "wss")
+                if scope["type"] == "http":
+                    scope["scheme"] = "https" if secure else "http"
+                else:
+                    scope["scheme"] = "wss" if secure else "ws"
+
+            chain = headers.get(b"x-forwarded-for", b"").decode("latin-1")
+            caller = chain.split(",")[-1].strip()
+            if caller:
+                port = scope["client"][1] if scope.get("client") else 0
+                scope["client"] = (caller, port)
+
+        await self.app(scope, receive, send)
+
+
+# Registered last so it wraps everything else: the scheme has to be right
+# before any other middleware or route reads it.
+if TRUST_PROXY_HEADERS:
+    app.add_middleware(TrustTheProxy)
+
 # --- Client Registration & Auth ---
 
 class ClientRegister(BaseModel):
