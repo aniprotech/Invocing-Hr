@@ -4558,11 +4558,37 @@ def superadmin_gmail_disconnect(request: Request, db: Session = Depends(get_db),
 
 @app.post("/api/send-test-email")
 def send_test_email(test: TestEmail, background_tasks: BackgroundTasks, request: Request, db: Session = Depends(get_db)):
+    """Send a business a test message through its own email setup.
+
+    This had no authentication of any kind. It took a recipient, a subject and
+    a body from anybody who could reach the URL and sent them through the
+    platform's own Gmail account - an open relay wearing our sending identity,
+    reachable from the internet, on a domain we are in the middle of having
+    verified by Google. Spam sent through it would have been spam sent by us.
+
+    Two things fix it. The caller has to be a signed-in business, like every
+    other send in the product; and the message goes out through *their*
+    transport rather than ours, which is what the button was always meant to
+    be testing. A business that has connected nothing is told so instead of
+    quietly borrowing the platform's account to produce a passing test.
+    """
+    client = get_client_user(request, db)
+    ip = request.client.host if request.client else "unknown"
+    if rate_limiter.is_rate_limited(f"test_email:{ip}", max_requests=10, window=300):
+        raise HTTPException(status_code=429, detail="Too many test emails. Try again shortly.")
+
+    ready, why = email_delivery_ready(db, client.id)
+    if not ready:
+        raise HTTPException(status_code=503, detail=f"Cannot send yet: {why}")
+
     from_email = os.getenv("FROM_EMAIL", "hello@keyroutes.co")
-    sender_name = os.getenv("FROM_NAME", "aniprotech")
+    sender_name = client.company_name or os.getenv("FROM_NAME", "aniprotech")
     from_header = f"{sender_name} <{from_email}>"
 
-    background_tasks.add_task(send_email_background, test.to_email, test.subject, test.body, from_header)
+    # client_id is what sends it through their account rather than ours; without
+    # it send_email_background falls back to the platform transport.
+    background_tasks.add_task(send_email_background, test.to_email, test.subject,
+                              test.body, from_header, client_id=client.id)
     return {"message": f"Email queued for delivery to {test.to_email}"}
 
 # --- Invoice Management ---

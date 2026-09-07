@@ -601,7 +601,7 @@ function workflowRow(w) {
     return '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;' +
         'padding:12px 0;border-bottom:1px solid var(--border-color);">' +
         '<div style="flex:1;min-width:200px;">' +
-            '<div style="font-weight:600;font-size:0.9rem;">' + esc(w.name) + '</div>' +
+            '<div style="font-weight:600;font-size:0.9rem;">' + esc(jsq(w.name)) + '</div>' +
             '<div style="font-size:0.75rem;color:var(--text-secondary);margin-top:2px;">' +
                 esc(w.trigger_label) + ' &middot; ' +
                 w.step_count + ' step' + (w.step_count === 1 ? '' : 's') +
@@ -617,7 +617,7 @@ function workflowRow(w) {
             (w.active ? 'false' : 'true') + ')">' + (w.active ? 'Turn off' : 'Turn on') + '</button>' +
         (w.run_count ? '' :
             '<button class="btn btn-sm btn-outline" onclick="removeWorkflow(' + w.id +
-            ', &quot;' + esc(w.name) + '&quot;)">Delete</button>') +
+            ', &quot;' + esc(jsq(w.name)) + '&quot;)">Delete</button>') +
     '</div>';
 }
 
@@ -845,7 +845,7 @@ async function loadSurveys() {
         return '<div class="widget" style="margin-bottom:12px;">' +
             '<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:4px 0;">' +
                 '<div style="flex:1;min-width:220px;">' +
-                    '<div style="font-weight:600;">' + esc(s.title) + '</div>' +
+                    '<div style="font-weight:600;">' + esc(jsq(s.title)) + '</div>' +
                     '<div style="font-size:0.78rem;color:var(--text-secondary);margin-top:2px;">' +
                         esc(s.question_count + ' question' + (s.question_count === 1 ? '' : 's')) +
                         ' &middot; ' +
@@ -868,7 +868,7 @@ window.loadSurveys = loadSurveys;
 function surveyActions(s) {
     if (s.status === 'draft') {
         return '<button class="btn btn-sm btn-primary" onclick="openSurveyToStaff(' + s.id + ')">Send it out</button>' +
-               '<button class="btn btn-sm btn-outline" onclick="deleteSurvey(' + s.id + ', &quot;' + esc(s.title) + '&quot;)">Delete</button>';
+               '<button class="btn btn-sm btn-outline" onclick="deleteSurvey(' + s.id + ', &quot;' + esc(jsq(s.title)) + '&quot;)">Delete</button>';
     }
     var out = '<button class="btn btn-sm btn-outline" onclick="showSurveyResults(' + s.id + ')">Results</button>';
     if (s.status === 'open') {
@@ -1182,7 +1182,7 @@ window.loadAssets = loadAssets;
 function assetRow(a) {
     var held = a.held_by;
     return '<tr style="border-top:1px solid var(--border-color);">' +
-        '<td style="padding:10px 12px;font-weight:600;font-size:0.85rem;">' + esc(a.tag) + '</td>' +
+        '<td style="padding:10px 12px;font-weight:600;font-size:0.85rem;">' + esc(jsq(a.tag)) + '</td>' +
         '<td style="padding:10px 12px;font-size:0.85rem;">' + esc(a.name) +
             '<div style="font-size:0.72rem;color:var(--text-secondary);">' +
             esc((a.category || '').replace(/_/g, ' ')) +
@@ -1196,10 +1196,10 @@ function assetRow(a) {
         '</td>' +
         '<td style="padding:10px 12px;text-align:right;white-space:nowrap;">' +
             (held
-                ? '<button class="btn btn-sm btn-outline" onclick="takeAssetBack(' + a.id + ', &quot;' + esc(a.tag) + '&quot;)">Take back</button>'
+                ? '<button class="btn btn-sm btn-outline" onclick="takeAssetBack(' + a.id + ', &quot;' + esc(jsq(a.tag)) + '&quot;)">Take back</button>'
                 : (a.status === 'retired'
                     ? ''
-                    : '<button class="btn btn-sm btn-outline" onclick="issueAsset(' + a.id + ', &quot;' + esc(a.tag) + '&quot;)">Issue</button>')) +
+                    : '<button class="btn btn-sm btn-outline" onclick="issueAsset(' + a.id + ', &quot;' + esc(jsq(a.tag)) + '&quot;)">Issue</button>')) +
         '</td>' +
     '</tr>';
 }
@@ -1237,13 +1237,13 @@ async function loadAssetSummary() {
             return '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;' +
                 'padding:10px 0;border-bottom:1px solid var(--border-color);">' +
                 '<div style="flex:1;min-width:200px;font-size:0.86rem;">' +
-                    '<strong>' + esc(r.tag) + '</strong> ' + esc(r.name) +
+                    '<strong>' + esc(jsq(r.tag)) + '</strong> ' + esc(r.name) +
                     '<div style="font-size:0.75rem;color:var(--text-secondary);">' +
                     esc(r.employee) + ' &middot; ' + esc(r.employee_status) +
                     ' &middot; since ' + esc(r.since) + '</div>' +
                 '</div>' +
                 '<button class="btn btn-sm btn-primary" onclick="takeAssetBack(' + r.asset_id +
-                    ', &quot;' + esc(r.tag) + '&quot;)">Mark returned</button>' +
+                    ', &quot;' + esc(jsq(r.tag)) + '&quot;)">Mark returned</button>' +
             '</div>';
         }).join('') + '</div></div>';
 }
@@ -1957,7 +1957,7 @@ function renderInvoices(invoices) {
             dueCell = '<span style="color:var(--danger-text);font-weight:600;" title="' + inv.days_overdue +
                       ' days overdue">' + esc(inv.due_date) + ' &#9888;</span>';
         }
-        tbody.insertAdjacentHTML('beforeend', '<tr><td><a href="#" class="link" onclick="event.preventDefault();viewInvoice(\'' + esc(inv.number) + '\')">' + esc(inv.number) + '</a></td><td>' + esc(inv.ref || '-') + '</td><td>' + esc(inv.to) + '</td><td>' + esc(inv.date) + '</td><td>' + dueCell + '</td><td class="text-right">' + formatCurrency(inv.paid, inv.currency) + '</td><td class="text-right">' + formatCurrency(inv.due, inv.currency) + '</td><td><span class="status-pill status-' + statusClass + '">' + esc(inv.status) + '</span></td><td class="text-right">' + openBadge + '</td><td>' + esc(inv.sent || '-') + '</td></tr>');
+        tbody.insertAdjacentHTML('beforeend', '<tr><td><a href="#" class="link" onclick="event.preventDefault();viewInvoice(\'' + esc(jsq(inv.number)) + '\')">' + esc(jsq(inv.number)) + '</a></td><td>' + esc(inv.ref || '-') + '</td><td>' + esc(inv.to) + '</td><td>' + esc(inv.date) + '</td><td>' + dueCell + '</td><td class="text-right">' + formatCurrency(inv.paid, inv.currency) + '</td><td class="text-right">' + formatCurrency(inv.due, inv.currency) + '</td><td><span class="status-pill status-' + statusClass + '">' + esc(inv.status) + '</span></td><td class="text-right">' + openBadge + '</td><td>' + esc(inv.sent || '-') + '</td></tr>');
     });
 }
 
@@ -2382,7 +2382,7 @@ function renderInvoicePayments(inv) {
                     '<td style="padding:6px 0;text-align:right;font-weight:600;">' + sym + (p.amount || 0).toFixed(2) + '</td>' +
                     '<td style="padding:6px 0;text-align:right;width:32px;">' +
                     '<button type="button" title="Reverse payment" style="background:none;border:none;cursor:pointer;color:var(--danger-color);" ' +
-                    'onclick="reversePayment(\'' + esc(inv.number) + '\',' + p.id + ')">&times;</button></td></tr>';
+                    'onclick="reversePayment(\'' + esc(jsq(inv.number)) + '\',' + p.id + ')">&times;</button></td></tr>';
         });
         html += '<tr><td colspan="2" style="padding:6px 0;font-weight:700;">Outstanding</td>' +
                 '<td colspan="2" style="padding:6px 0;text-align:right;font-weight:700;">' + sym + (inv.due || 0).toFixed(2) + '</td></tr>';
@@ -8191,6 +8191,33 @@ function esc(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+// For a value that lands inside a JavaScript string literal which is itself
+// inside an HTML attribute - an onclick built by concatenation, which is how
+// most of the list buttons on this page are made.
+//
+// esc() alone is wrong there, and wrong in a way that looks right. A browser
+// decodes the entities in an attribute value BEFORE the JavaScript inside it
+// is parsed, so esc()'s &#39; turns back into an apostrophe and ends the
+// string early. An employee called O'Brien made the Approve button on their
+// leave request throw a SyntaxError, so it did nothing at all - no error, no
+// message, just a button that never worked for them. An asset tagged
+// 24" Monitor did the same to Issue and Take back.
+//
+// So escape for the JavaScript first and let esc() escape for the attribute
+// after: jsq() puts in the backslash, esc() makes the attribute well formed,
+// the browser decodes the entity back to a quote, and the parser then sees
+// the backslash that was always meant to be there. Always esc(jsq(value)),
+// in that order.
+function jsq(s) {
+    if (s === null || s === undefined) return '';
+    return String(s)
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/"/g, '\\"')
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r');
+}
+
 function escapeRegex(s) {
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -8256,9 +8283,9 @@ function leaveRowHtml(l) {
                     : l.status === 'rejected' ? 'status-terminated' : 'status-onboarding';
     var actions = l.status === 'pending'
         ? '<button class="btn btn-sm" style="background:var(--success-color);color:#fff;margin-right:4px;" ' +
-          'onclick="actionLeave(' + l.id + ',\'approve\',\'' + esc(l.employee_name) + '\')">Approve</button>' +
+          'onclick="actionLeave(' + l.id + ',\'approve\',\'' + esc(jsq(l.employee_name)) + '\')">Approve</button>' +
           '<button class="btn btn-sm" style="background:var(--danger-color);color:#fff;" ' +
-          'onclick="actionLeave(' + l.id + ',\'reject\',\'' + esc(l.employee_name) + '\')">Reject</button>'
+          'onclick="actionLeave(' + l.id + ',\'reject\',\'' + esc(jsq(l.employee_name)) + '\')">Reject</button>'
         : '<span style="color:var(--text-secondary);font-size:0.82rem;">' + esc(l.approved_by || '') + '</span>';
     var type = String(l.leave_type || '');
     return '<tr><td><strong>' + employeeLink(l.employee_id, l.employee_name) + '</strong></td>' +
@@ -8744,7 +8771,7 @@ async function aiPersonalizeEmail(invoiceNumber, clientName, total, dueDate) {
         await sendingAccount();
         if (el) {
             var regenerate = '<button class="btn btn-outline btn-sm" onclick="aiPersonalizeEmail(\'' +
-                invoiceNumber + '\',\'' + esc(clientName) + '\',' + total + ',\'' + dueDate +
+                invoiceNumber + '\',\'' + esc(jsq(clientName)) + '\',' + total + ',\'' + dueDate +
                 '\')">Regenerate</button>';
             el.innerHTML = '<div style="padding:12px;">' +
                 '<div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:4px;">Subject: ' + esc(data.subject || '') + '</div>' +
