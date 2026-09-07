@@ -2915,8 +2915,32 @@ def send_email_background(to_email: str, subject: str, body: str, from_email: st
                        if chosen == "gmail"
                        else "Gmail refresh token not configured")
 
+    creds = get_gmail_credentials(access_token=None, refresh_token=refresh_token)
+    if creds is None:
+        # get_gmail_credentials returns None when the token could not be
+        # refreshed - almost always because the account's access was revoked or
+        # the refresh token expired. This has to stop here.
+        #
+        # It did not. None went to build(), which sends
+        # google-api-python-client looking for Application Default Credentials
+        # instead: a three second wait for a GCE metadata server that does not
+        # exist on this host, and then a failure reading
+        #
+        #   Failed to retrieve http://metadata.google.internal/computeMetadata/
+        #   v1/universe/universe-domain ...
+        #
+        # which was what the business saw. Nothing in it mentions Google
+        # access, a token, or reconnecting, so the one message that could have
+        # explained why no email was arriving instead described a machine that
+        # was never involved. The real reason was in the log, one line above.
+        if not (os.getenv("GOOGLE_CLIENT_ID") and os.getenv("GOOGLE_CLIENT_SECRET")):
+            return False, ("Google sign-in is not configured on this "
+                           "deployment, so mail cannot be sent through Gmail.")
+        return False, ("The connected Google account is no longer authorised - "
+                       "its access was revoked or has expired. Reconnect it "
+                       "under Settings, Email.")
+
     try:
-        creds = get_gmail_credentials(access_token=None, refresh_token=refresh_token)
         service = build('gmail', 'v1', credentials=creds)
         encoded_message = base64.urlsafe_b64encode(raw_msg.encode('utf-8')).decode()
         send_result = service.users().messages().send(userId="me", body={'raw': encoded_message}).execute()
@@ -3568,13 +3592,21 @@ Powered by Aniprotech"""
     # once already, so there is nothing to refund if the copy fails.
     copy_to, copy_skipped = "", ""
     if payload.send_copy:
-        own = (settings_map.get("email", "")
-               or (inv_client.email if inv_client else ""))
+        # The first address that is actually usable, not merely the first one
+        # present. `settings or account` stopped at whatever the company
+        # profile held, so a profile email with a typo, a trailing space or no
+        # domain took the copy down with it - while the account's own address,
+        # which is always valid because it is how they sign in, sat unused one
+        # line away. That is a copy that silently never arrives, with a valid
+        # address available the whole time.
+        candidates = [settings_map.get("email", ""),
+                      (inv_client.email if inv_client else ""),
+                      client.email]
+        own = next((c.strip() for c in candidates
+                    if c and validate_email_address(c)), "")
         if not own:
-            copy_skipped = "no address is set for your business to copy in"
-        elif not validate_email_address(own):
-            copy_skipped = f"your own address ({own}) does not look valid"
-        elif own == recipient:
+            copy_skipped = "no valid address is set for your business to copy in"
+        elif own.lower() == (recipient or "").strip().lower():
             copy_skipped = "you are the recipient, so the copy would be the same message"
         else:
             copy_to = own
@@ -4363,7 +4395,20 @@ async def gmail_connect_callback(request: Request, db: Session = Depends(get_db)
     settings_row.transport = "gmail"
     settings_row.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # Kept, not just logged. The settings screen could not say which Google
+    # account was connected, so somebody reconnecting had no way to tell they
+    # had picked the wrong one - and users.getProfile cannot answer it either,
+    # since this app only holds gmail.send.
     who = (token.get("userinfo") or {}).get("email", "")
+    if who:
+        seen = db.query(models.DBSettings).filter(
+            models.DBSettings.key == "GOOGLE_SENDER_EMAIL",
+            models.DBSettings.client_id == client_id).first()
+        if seen:
+            seen.value = who
+        else:
+            db.add(models.DBSettings(key="GOOGLE_SENDER_EMAIL", value=who,
+                                     client_id=client_id))
     log_audit(db, client_id, "gmail_connected", "client", client_id, who, "", request)
     db.commit()
     return RedirectResponse(url="/app.html#/settings?gmail=connected")
@@ -4371,28 +4416,63 @@ async def gmail_connect_callback(request: Request, db: Session = Depends(get_db)
 
 @app.get("/api/gmail/status")
 def gmail_status(request: Request, db: Session = Depends(get_db)):
+    """Whether this account can actually send, not whether a row exists.
+
+    gmail_ready used to be bool(refresh_token) - true the moment a token had
+    ever been stored, and true forever after. A token that Google had revoked
+    still counted, so the settings screen said Gmail was connected and ready
+    while every message failed. Somebody reading that screen has no reason to
+    reconnect, which is exactly the state to be stuck in: the app reports
+    healthy, the mail does not arrive, and the two never meet.
+
+    Readiness is whether the token can still be exchanged. That is the same
+    question sending asks, so the screen and the outcome now agree.
+
+    The address is read from the refresh, not from users.getProfile. This app
+    only holds gmail.send, and getProfile needs gmail.readonly or
+    gmail.metadata - so that call was always a 403 and the address was always
+    blank, for working accounts as much as broken ones.
+    """
     user = request.session.get('user')
     client_id = request.session.get('client_id')
     refresh_token = get_stored_refresh_token(db, client_id=client_id)
-    # Try to get the authorized Gmail email from the refresh token owner
-    gmail_email = None
-    if refresh_token:
-        try:
-            creds = get_gmail_credentials(access_token=None, refresh_token=refresh_token)
-            if creds and creds.valid:
-                service = build('gmail', 'v1', credentials=creds)
-                profile = service.users().getProfile(userId="me").execute()
-                gmail_email = profile.get("emailAddress")
-        except Exception:
-            pass
+
+    works, why = False, ""
+    if not refresh_token:
+        why = "no Google account is connected"
+    else:
+        creds = get_gmail_credentials(access_token=None, refresh_token=refresh_token)
+        if creds and creds.valid:
+            works = True
+        else:
+            why = ("the connected Google account is no longer authorised - "
+                   "its access was revoked or has expired, so it needs "
+                   "connecting again")
+
     return {
         "logged_in": bool(user),
         "user_email": user.get('email') if user else None,
         "user_name": user.get('name') if user else None,
         "refresh_token_stored": bool(refresh_token),
-        "gmail_ready": bool(refresh_token),
-        "gmail_authorized_email": gmail_email
+        "gmail_ready": works,
+        # Kept so a stored-but-dead token is distinguishable from none at all.
+        "gmail_broken": bool(refresh_token) and not works,
+        "gmail_problem": why,
+        # Theirs if they connected one, otherwise the platform's, matching
+        # whichever token get_stored_refresh_token just handed back.
+        "gmail_authorized_email": connected_google_address(db, client_id),
     }
+
+
+def connected_google_address(db, client_id):
+    """Which Google account is sending for this business, as far as we know."""
+    if client_id:
+        mine = db.query(models.DBSettings).filter(
+            models.DBSettings.key == "GOOGLE_SENDER_EMAIL",
+            models.DBSettings.client_id == client_id).first()
+        if mine and (mine.value or "").strip():
+            return mine.value.strip()
+    return platform_setting_raw(db, "GOOGLE_SENDER_EMAIL") or None
 
 @app.post("/api/gmail/disconnect")
 def disconnect_gmail(request: Request, db: Session = Depends(get_db)):

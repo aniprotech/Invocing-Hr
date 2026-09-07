@@ -220,3 +220,44 @@ def test_the_callback_cannot_be_replayed(tenant, google):
     again = tenant.get("/api/gmail/connect/callback", follow_redirects=False)
     assert outcome(again) == "notlinked"
     assert token_held_by(mine) == "refresh-abc"
+
+
+def test_which_google_account_was_connected_is_kept(client, tenant, google):
+    """The settings screen has to be able to say which account is sending, so
+    somebody who connected the wrong one can see that they did.
+
+    It cannot be asked for later: users.getProfile needs gmail.readonly or
+    gmail.metadata and this app holds only gmail.send, so that call is a 403
+    for a healthy account as much as a broken one. The address arrives once,
+    in the token response, and is only ours if we write it down then.
+    """
+    google["email"] = "billing@theirs.test"
+    connect(tenant)
+
+    who = whose_session(tenant)
+    with main.SessionLocal() as db:
+        row = db.query(models.DBSettings).filter(
+            models.DBSettings.key == "GOOGLE_SENDER_EMAIL",
+            models.DBSettings.client_id == who).first()
+    assert row is not None, "nothing recorded which account was connected"
+    assert row.value == "billing@theirs.test", row.value
+
+    assert tenant.get("/api/gmail/status").json()["gmail_authorized_email"]         == "billing@theirs.test"
+
+
+def test_reconnecting_a_different_account_replaces_the_old_one(client, tenant, google):
+    """Otherwise the screen keeps naming an account that is no longer the one
+    sending, which is worse than naming none."""
+    google["email"] = "first@theirs.test"
+    connect(tenant)
+    google["email"] = "second@theirs.test"
+    google["refresh_token"] = "refresh-second"
+    connect(tenant)
+
+    who = whose_session(tenant)
+    with main.SessionLocal() as db:
+        rows = db.query(models.DBSettings).filter(
+            models.DBSettings.key == "GOOGLE_SENDER_EMAIL",
+            models.DBSettings.client_id == who).all()
+    assert len(rows) == 1, [r.value for r in rows]
+    assert rows[0].value == "second@theirs.test", rows[0].value

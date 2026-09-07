@@ -124,6 +124,61 @@ def test_a_failed_copy_does_not_hold_back_the_invoice(client, tenant, outbox):
 
 # --- and when it cannot be sent at all, it says why -------------------------------------
 
+def set_company_email(tenant, value):
+    """What the business typed into its own profile, typos and all."""
+    with main.SessionLocal() as db:
+        mine = tenant.get("/api/client/me").json()["id"]
+        row = db.query(models.DBSettings).filter(
+            models.DBSettings.client_id == mine,
+            models.DBSettings.key == "email").first()
+        if not row:
+            row = models.DBSettings(client_id=mine, key="email", value="")
+            db.add(row)
+        row.value = value
+        db.commit()
+
+
+@pytest.mark.parametrize("typed,why", [
+    ("info@aniprotech", "no domain ending"),
+    ("Ani Protech", "a name rather than an address"),
+    ("", "left blank"),
+    ("   ", "only spaces"),
+])
+def test_a_bad_address_in_the_profile_does_not_take_the_copy_with_it(
+        client, tenant, outbox, typed, why):
+    """The reason a copy could silently never arrive. The address was taken
+    from the company profile if anything at all was in it - so one with a typo
+    stopped the copy dead, while the account's own address, which is valid
+    because it is how they sign in, sat unused one line away."""
+    set_company_email(tenant, typed)
+    inv = make_invoice(tenant, email="customer@example.com")
+    res = send(tenant, inv["number"], send_copy=True)
+
+    assert res.json()["copy_to"] == my_email(tenant), \
+        f"profile holding {why} lost the copy: {res.json()}"
+    assert [m for m in outbox["sent"] if m["subject"].startswith("[Copy]")]
+
+
+def test_a_good_address_in_the_profile_is_preferred(client, tenant, outbox):
+    """It is still the one they chose to be contacted on."""
+    set_company_email(tenant, "billing@theirdomain.test")
+    inv = make_invoice(tenant, email="customer@example.com")
+    res = send(tenant, inv["number"], send_copy=True)
+    assert res.json()["copy_to"] == "billing@theirdomain.test", res.json()
+
+
+def test_a_stray_space_does_not_reach_the_transport(client, tenant, outbox):
+    """It passed validation, which strips before matching, and was then handed
+    to the mail server with the space still on it."""
+    set_company_email(tenant, "  spaced@theirdomain.test  ")
+    inv = make_invoice(tenant, email="customer@example.com")
+    res = send(tenant, inv["number"], send_copy=True)
+
+    assert res.json()["copy_to"] == "spaced@theirdomain.test", res.json()
+    copies = [m for m in outbox["sent"] if m["subject"].startswith("[Copy]")]
+    assert copies and copies[0]["to"] == "spaced@theirdomain.test", copies
+
+
 def test_being_your_own_customer_is_explained(client, tenant, outbox):
     """Copying yourself on a message already addressed to you is the same
     message twice. Skipping it is right; skipping it in silence is not."""
@@ -134,6 +189,19 @@ def test_being_your_own_customer_is_explained(client, tenant, outbox):
     assert res.json()["copy_skipped"], res.json()
     assert "recipient" in res.json()["copy_skipped"]
     assert not [m for m in outbox["sent"] if m["subject"].startswith("[Copy]")]
+
+
+def test_the_same_address_in_different_case_is_still_you(client, tenant, outbox):
+    """Mailboxes are not case sensitive in practice. Comparing the two exactly
+    means Billing@x.test and billing@x.test read as two different people, and
+    the same message is sent to the same inbox twice."""
+    set_company_email(tenant, "Billing@Theirdomain.test")
+    inv = make_invoice(tenant, email="billing@theirdomain.test")
+    res = send(tenant, inv["number"], to="billing@theirdomain.test", send_copy=True)
+
+    assert res.json()["copy_skipped"], res.json()
+    assert not [m for m in outbox["sent"] if m["subject"].startswith("[Copy]")], \
+        "the same inbox got the message twice"
 
 
 def test_a_successful_copy_names_where_it_went(client, tenant, outbox):
