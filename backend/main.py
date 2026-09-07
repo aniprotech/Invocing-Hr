@@ -4418,6 +4418,13 @@ async def gmail_connect_callback(request: Request, db: Session = Depends(get_db)
 def gmail_status(request: Request, db: Session = Depends(get_db)):
     """Whether this account can actually send, not whether a row exists.
 
+    Signed in, because this describes how mail leaves. The route never checked,
+    and while the address it returned was always blank that leaked little. It
+    is no longer blank: naming the connected account is the point of the change
+    below, and an anonymous caller was being told the platform's own sending
+    address and whether Gmail was connected. One caller, the settings screen,
+    and it is behind a login already.
+
     gmail_ready used to be bool(refresh_token) - true the moment a token had
     ever been stored, and true forever after. A token that Google had revoked
     still counted, so the settings screen said Gmail was connected and ready
@@ -4433,13 +4440,29 @@ def gmail_status(request: Request, db: Session = Depends(get_db)):
     gmail.metadata - so that call was always a 403 and the address was always
     blank, for working accounts as much as broken ones.
     """
+    client = get_client_user(request, db)
     user = request.session.get('user')
-    client_id = request.session.get('client_id')
-    refresh_token = get_stored_refresh_token(db, client_id=client_id)
+    client_id = client.id
+
+    # Their own account, not whatever get_stored_refresh_token would fall back
+    # to. This panel is about the Google account this business connected, and
+    # asking without own_only answered with the platform's token instead - so
+    # a business that had connected nothing was still shown "Connected".
+    #
+    # That is what broke both buttons. Connect hides itself when the status
+    # says ready, so it was never available to press; Disconnect deletes this
+    # business's own row, so with nothing of theirs to delete it removed
+    # nothing, the status came back ready off the platform token again, and
+    # the screen did not move. Neither button was broken in itself. They were
+    # both being told the wrong thing about whose account was connected.
+    refresh_token = get_stored_refresh_token(db, client_id=client_id, own_only=True)
+    platform_token = get_stored_refresh_token(db, client_id=None)
 
     works, why = False, ""
     if not refresh_token:
-        why = "no Google account is connected"
+        why = ("no Google account is connected for this business"
+               + (" - mail is going out through the platform's account"
+                  if platform_token else ""))
     else:
         creds = get_gmail_credentials(access_token=None, refresh_token=refresh_token)
         if creds and creds.valid:
@@ -4458,6 +4481,9 @@ def gmail_status(request: Request, db: Session = Depends(get_db)):
         # Kept so a stored-but-dead token is distinguishable from none at all.
         "gmail_broken": bool(refresh_token) and not works,
         "gmail_problem": why,
+        # Nothing of theirs connected, but mail still leaves - so the screen
+        # can say that rather than implying they cannot send at all.
+        "using_platform_account": bool(platform_token) and not refresh_token,
         # Theirs if they connected one, otherwise the platform's, matching
         # whichever token get_stored_refresh_token just handed back.
         "gmail_authorized_email": connected_google_address(db, client_id),
@@ -4476,15 +4502,36 @@ def connected_google_address(db, client_id):
 
 @app.post("/api/gmail/disconnect")
 def disconnect_gmail(request: Request, db: Session = Depends(get_db)):
+    """Remove this business's own Google account.
+
+    It answered "ok" whether or not there was anything of theirs to remove, and
+    the screen then re-read a status that fell back to the platform's token and
+    still said Connected. Pressing Disconnect changed nothing visible, so it
+    looked broken. Say which of the two happened.
+    """
     client = get_client_user(request, db)
-    setting = db.query(models.DBSettings).filter(
-        models.DBSettings.key == "GOOGLE_REFRESH_TOKEN",
+    rows = db.query(models.DBSettings).filter(
+        models.DBSettings.key.in_(("GOOGLE_REFRESH_TOKEN", "GOOGLE_SENDER_EMAIL")),
         models.DBSettings.client_id == client.id
-    ).first()
-    if setting:
-        db.delete(setting)
-        db.commit()
-    return {"ok": True, "message": "Gmail disconnected. Re-authorize with your Google account."}
+    ).all()
+    had_one = any(r.key == "GOOGLE_REFRESH_TOKEN" for r in rows)
+    for row in rows:
+        db.delete(row)
+
+    # Choosing Gmail and then having no Gmail is a business that cannot send at
+    # all - email_delivery_ready refuses rather than falling back to ours, on
+    # purpose. Returning the choice to unset puts them back on the platform
+    # account instead of stranding them.
+    mine = client_email_settings(db, client.id)
+    if mine and (mine.transport or "") == "gmail":
+        mine.transport = ""
+    db.commit()
+
+    if not had_one:
+        return {"ok": True, "disconnected": False,
+                "message": "There was no Google account connected for this business."}
+    return {"ok": True, "disconnected": True,
+            "message": "Gmail disconnected. Re-authorize with your Google account."}
 
 # ============================================================================
 # THE PLATFORM'S OWN WAY OF SENDING

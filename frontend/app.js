@@ -4278,6 +4278,30 @@ async function loadGmailStatus() {
             loginBtn.style.display = 'none';
             if (disconnectBtn) disconnectBtn.style.display = 'inline-block';
             if (demoSection) demoSection.style.display = 'block';
+        } else if (data.using_platform_account) {
+            // Nothing of theirs, but mail still leaves. Saying "not connected"
+            // on its own reads as "you cannot send", which is not true.
+            statusEl.textContent = 'Using the platform account';
+            statusEl.style.color = 'var(--warning-color)';
+            emailEl.textContent = 'Connect your own Google account to send from your address.';
+            emailEl.style.display = 'block';
+            emailEl.style.color = 'var(--text-secondary)';
+            emailEl.style.fontWeight = '400';
+            loginBtn.style.display = 'inline-block';
+            if (disconnectBtn) disconnectBtn.style.display = 'none';
+            if (demoSection) demoSection.style.display = 'block';
+        } else if (data.gmail_broken) {
+            // The state that had no way of being seen: a token is stored, the
+            // screen said Connected, and every message failed.
+            statusEl.textContent = 'Needs reconnecting';
+            statusEl.style.color = 'var(--danger-color)';
+            emailEl.textContent = data.gmail_problem || '';
+            emailEl.style.display = 'block';
+            emailEl.style.color = 'var(--danger-color)';
+            emailEl.style.fontWeight = '600';
+            loginBtn.style.display = 'inline-block';
+            if (disconnectBtn) disconnectBtn.style.display = 'inline-block';
+            if (demoSection) demoSection.style.display = 'none';
         } else if (data.logged_in) {
             statusEl.textContent = 'Logged in (re-login for refresh token)';
             statusEl.style.color = 'var(--warning-color)';
@@ -4302,11 +4326,16 @@ async function disconnectGmail() {
     if (!await uiConfirm('Disconnect Gmail? Emails will stop sending until you re-authorize with the correct Google account.')) return;
     try {
         var res = await fetch('/api/gmail/disconnect', { method: 'POST' });
+        var data = await res.json().catch(function () { return {}; });
         if (res.ok) {
-            showToast('Gmail disconnected. Re-authorize with your Google account.', 'success');
+            // Say which of the two happened. It used to report success either
+            // way, and the panel then redrew itself as still Connected off the
+            // platform's token - so the button looked like it had done nothing.
+            showToast(data.message || 'Gmail disconnected.',
+                      data.disconnected === false ? 'error' : 'success');
             loadGmailStatus();
         } else {
-            showToast('Failed to disconnect', 'error');
+            showToast((data.detail || 'Failed to disconnect'), 'error');
         }
     } catch (e) { showToast('Failed: ' + e, 'error'); }
 }
