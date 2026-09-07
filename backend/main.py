@@ -4080,11 +4080,37 @@ def employee_by_email(db: Session, email: str):
     """
     if not email:
         return None
-    emp = db.query(models.DBEmployee).filter(
-        models.DBEmployee.email.ilike(email.strip())).first()
-    if emp and emp.status == "terminated":
+    people = employees_with_email(db, email)
+    # More than one business employs somebody at this address - a contractor,
+    # an agency, shared operations staff. Signing in with Google carries no
+    # password, so there is nothing here to tell them apart, and .first() used
+    # to hand back whichever row had the lowest id. That is somebody dropped
+    # into a stranger's HR portal, seeing their colleagues and their payslips,
+    # with no way to reach their own. Refusing is the only honest answer.
+    if len(people) != 1:
+        if len(people) > 1:
+            logger.warning(
+                "Google sign-in for %s matches %s businesses; refusing to guess",
+                email, len(people))
         return None
-    return emp
+    return people[0]
+
+
+def employees_with_email(db, email):
+    """Every active employee at this address, across all businesses.
+
+    An employee's address is unique inside one business - clean_employee_email
+    enforces that - and deliberately not across the platform, because the same
+    person really can work for two of them. Nothing that resolves a login can
+    therefore assume one row, and everything used to: three separate lookups
+    took .first() on a platform-wide match, so which business you reached
+    depended on which record happened to be created first.
+    """
+    if not email:
+        return []
+    rows = db.query(models.DBEmployee).filter(
+        sqlfunc.lower(models.DBEmployee.email) == email.strip().lower()).all()
+    return [e for e in rows if e.status != "terminated"]
 
 
 def start_employee_session(request: Request, emp, replace_other_sessions=False):
@@ -6212,25 +6238,31 @@ def employee_forgot_password(body: ForgotPasswordIn, background_tasks: Backgroun
     if not email:
         return generic
 
-    emp = db.query(models.DBEmployee).filter(models.DBEmployee.email.ilike(email)).first()
     # Someone with no password set has never signed in; there is nothing to reset.
-    if not emp or not emp.password_hash or emp.status == "terminated":
+    people = [e for e in employees_with_email(db, email) if e.password_hash]
+    if not people:
         return generic
 
-    token = issue_reset_token(db, "employee", emp.id, ip)
-    db.commit()
-
+    # One link per account at this address. Two businesses can each employ the
+    # same person, and this used to reset whichever record came first - so the
+    # contractor locked out of employer B was sent a link for employer A and
+    # stayed locked out. They demonstrably hold the mailbox, and each link
+    # names the one account it belongs to.
     base = (os.getenv("APP_BASE_URL") or str(request.base_url)).rstrip("/")
-    link = f"{base}/reset-password.html?token={token}&portal=employee"
-    who = f"{emp.first_name} {emp.last_name}".strip() or emp.email
-    text_body, html_body = reset_email_bodies(link, who, RESET_TOKEN_TTL_MINUTES)
     from_email = os.getenv("FROM_EMAIL", "hello@keyroutes.co")
+    for emp in people:
+        token = issue_reset_token(db, "employee", emp.id, ip)
+        db.commit()
 
-    background_tasks.add_task(
-        send_email_background, emp.email, "Reset your aniprotech password",
-        text_body, f"aniprotech <{from_email}>", html_body, None, "", "",
-        client_id=emp.client_id,
-    )
+        link = f"{base}/reset-password.html?token={token}&portal=employee"
+        who = f"{emp.first_name} {emp.last_name}".strip() or emp.email
+        text_body, html_body = reset_email_bodies(link, who, RESET_TOKEN_TTL_MINUTES)
+
+        background_tasks.add_task(
+            send_email_background, emp.email, "Reset your aniprotech password",
+            text_body, f"aniprotech <{from_email}>", html_body, None, "", "",
+            client_id=emp.client_id,
+        )
     return generic
 
 
@@ -10704,13 +10736,33 @@ def employee_login(request: Request, body: dict = None, db: Session = Depends(ge
     if not body or not body.get("email") or not body.get("password"):
         raise HTTPException(status_code=400, detail="Email and password required")
     email = body["email"].strip().lower()
-    emp = db.query(models.DBEmployee).filter(models.DBEmployee.email.ilike(email)).first()
-    if not emp:
+    # The password is what says which of them you are. Two businesses can each
+    # employ somebody at this address, and taking .first() on a platform-wide
+    # match signed people into whichever record was created first - a stranger's
+    # HR portal, with their own unreachable. Checking the password against each
+    # candidate lands them in the account they actually hold, and lets the
+    # contractor case keep working instead of being banned.
+    people = employees_with_email(db, email)
+    if not people:
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    if not emp.password_hash:
+    if not any(e.password_hash for e in people):
         raise HTTPException(status_code=401, detail="Password not set. Contact your administrator.")
-    if not models.verify_password(body["password"], emp.password_hash):
+
+    matched = [e for e in people
+               if e.password_hash and models.verify_password(body["password"], e.password_hash)]
+    if not matched:
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    if len(matched) > 1:
+        # Same address and the same password at two employers. Nothing here can
+        # tell them apart, and picking one would be the original bug with extra
+        # steps.
+        logger.warning("Employee sign-in for %s is ambiguous across %s businesses",
+                       email, len(matched))
+        raise HTTPException(
+            status_code=409,
+            detail=("This address is registered at more than one business with "
+                    "the same password. Ask your employer to change one of them."))
+    emp = matched[0]
     if emp.status in ("terminated",):
         raise HTTPException(status_code=403, detail="Account deactivated")
     start_employee_session(request, emp)

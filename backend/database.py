@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import uuid
@@ -6,6 +7,8 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
@@ -1574,4 +1577,15 @@ def ensure_columns():
                 MIGRATION_ERRORS.append(f"migration step 51: {sys.exc_info()[1]}")
 
     except Exception as e:
-        print(f"Column check skipped: {e}")
+        # Recorded, not printed. Every one of the 51 steps above appends here
+        # when it fails, which is the whole point of MIGRATION_ERRORS - but the
+        # outer handler did not, so a failure early on (a dropped connection, a
+        # lock timeout, anything raised between steps) skipped every remaining
+        # migration and left the list empty. /api/health reads that list, found
+        # nothing, and answered "ok".
+        #
+        # That is the worst possible combination: columns missing, screens
+        # failing on them, and the one instrument built to catch exactly this
+        # reporting green. A print goes to a log nobody reads.
+        MIGRATION_ERRORS.append(f"schema update stopped early: {e}")
+        logger.error("Schema updates stopped early: %s", e)
