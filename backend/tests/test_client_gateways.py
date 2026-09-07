@@ -147,7 +147,35 @@ def test_a_settled_invoice_is_not_offered_for_payment(client, tenant):
 
 # --- the verification boundary ------------------------------------------------
 
-def pay(client, tid, order_id="order_ABC", payment_id="pay_XYZ", signature=None):
+def an_order_for(tid):
+    """Open an order against this invoice, as starting a payment would.
+
+    The confirmation now requires the order it names to have been opened for
+    the invoice it is confirming: the signature proves a real payment happened
+    on this business's account, but every invoice of theirs is signed with the
+    same secret, so on its own it would let a receipt for one settle another.
+    These tests used to post a fixed "order_ABC" that nothing had opened.
+    """
+    import uuid as _uuid
+    order_id = f"order_{_uuid.uuid4().hex[:16]}"
+    with main.SessionLocal() as db:
+        inv = db.query(models.DBInvoice).filter(
+            models.DBInvoice.tracking_id == tid).first()
+        if not inv:
+            # A guessed link. The endpoint turns it away before it ever looks
+            # at the order, so hand back an id that opens nothing.
+            return order_id
+        db.add(models.DBInvoicePaymentOrder(
+            invoice_id=inv.id, client_id=inv.client_id, provider="razorpay",
+            provider_order_id=order_id,
+            amount_minor=int(round((inv.due or 0) * 100)),
+            currency=inv.currency or "INR"))
+        db.commit()
+    return order_id
+
+
+def pay(client, tid, order_id=None, payment_id="pay_XYZ", signature=None):
+    order_id = order_id or an_order_for(tid)
     return client.post(f"/api/public/invoices/{tid}/pay/razorpay/verify", json={
         "razorpay_order_id": order_id,
         "razorpay_payment_id": payment_id,
@@ -216,9 +244,10 @@ def test_tampering_with_the_amount_is_impossible(client, tenant):
         {"description": "Work", "qty": 1, "price": 500.0, "tax_rate": "No Tax"}])
     tid = link_for(tenant, inv["number"])
 
+    order_id = an_order_for(tid)
     res = client.post(f"/api/public/invoices/{tid}/pay/razorpay/verify", json={
-        "razorpay_order_id": "order_ABC", "razorpay_payment_id": "pay_XYZ",
-        "razorpay_signature": sign("order_ABC", "pay_XYZ"),
+        "razorpay_order_id": order_id, "razorpay_payment_id": "pay_XYZ",
+        "razorpay_signature": sign(order_id, "pay_XYZ"),
         "amount": 1, "due": 1,
     })
     assert res.status_code == 200

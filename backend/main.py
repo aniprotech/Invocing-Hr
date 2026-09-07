@@ -19828,9 +19828,22 @@ def start_invoice_payment(tracking_id: str, request: Request,
         raise HTTPException(status_code=502,
                             detail=razorpay_complaint(resp, currency))
     order = resp.json()
+    order_id = order.get("id") or ""
+
+    # Written down before the customer is sent to pay, because the
+    # confirmation coming back is only trustworthy if we can check the order it
+    # names was opened for this invoice. See DBInvoicePaymentOrder.
+    if not order_id:
+        logger.error("Razorpay returned no order id for invoice %s", inv.number)
+        raise HTTPException(status_code=502,
+                            detail="Could not start the payment. Please try again shortly.")
+    db.add(models.DBInvoicePaymentOrder(
+        invoice_id=inv.id, client_id=inv.client_id, provider="razorpay",
+        provider_order_id=order_id, amount_minor=amount_minor, currency=currency))
+    db.commit()
 
     return {
-        "order_id": order.get("id"),
+        "order_id": order_id,
         "key_id": key_id,                 # public half only
         "amount": amount_minor,
         "currency": currency,
@@ -19869,10 +19882,42 @@ def confirm_invoice_payment(tracking_id: str, request: Request,
         logger.warning("Rejected an unverified payment claim for %s", inv.number)
         raise HTTPException(status_code=400, detail="That payment could not be verified")
 
-    amount = money(inv.due or 0)
+    # The signature proves a real payment happened on this business's account.
+    # It does not say which invoice it was for - both invoices of the same
+    # business are signed with the same secret - so a customer holding a valid
+    # receipt for their own small invoice could post it against a large one and
+    # have it marked paid in full. The order is what carries that link.
+    order = db.query(models.DBInvoicePaymentOrder).filter(
+        models.DBInvoicePaymentOrder.provider_order_id == order_id).first()
+    if not order or order.invoice_id != inv.id:
+        logger.warning(
+            "Payment %s was verified but its order %s does not belong to invoice %s",
+            payment_id, order_id, inv.number)
+        raise HTTPException(status_code=400,
+                            detail="That payment was not for this invoice")
+
+    # One order, one payment. A gateway can carry more than one payment id
+    # against the same order - a failed attempt and then a successful one - and
+    # each is signed, so without this a second id could be presented for the
+    # same order and credited a second time. The same id arriving twice is a
+    # customer refreshing the page and is handled below instead.
+    if order.status == "paid" and order.provider_payment_id != payment_id:
+        logger.warning("Order %s was already paid by %s; refused %s on invoice %s",
+                       order_id, order.provider_payment_id, payment_id, inv.number)
+        raise HTTPException(status_code=409, detail="That payment has already been used")
+
+    # What the payer was actually charged, rather than whatever is outstanding
+    # by the time they get back - which may have moved, and which is the number
+    # that let a small receipt clear a large invoice.
+    amount = money((order.amount_minor or 0) / 100.0)
     recorded = record_invoice_payment(
         db, inv, amount, "razorpay", payment_id,
         note="Paid online by the customer")
+
+    if recorded:
+        order.status = "paid"
+        order.provider_payment_id = payment_id
+        order.paid_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # Taken into the platform's account, so the customer has paid and the
     # business has not. Recorded once, alongside the receipt.

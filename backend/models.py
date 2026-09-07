@@ -110,6 +110,39 @@ class DBPayment(Base):
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
+class DBInvoicePaymentOrder(Base):
+    """The order we opened at the gateway, and the invoice it was opened for.
+
+    Without this a receipt could be moved between invoices. The gateway signs
+    order_id|payment_id with the business's secret, and checking that signature
+    proves a real payment happened on that account - but it says nothing about
+    *which* invoice the money was for. Nothing recorded the link, so a customer
+    holding a valid receipt for their own small invoice could post it against a
+    large one from the same business and have it marked paid in full.
+
+    So the order is written down when it is opened, and the confirmation has to
+    name an order that belongs to the invoice it is confirming. The amount comes
+    from here too: it is what the payer was actually charged, rather than
+    whatever happened to be outstanding by the time they got back.
+
+    provider_order_id is unique because it is unique at the gateway, and because
+    that makes reusing one somewhere else impossible rather than merely checked.
+    """
+    __tablename__ = "invoice_payment_orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=False, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    provider = Column(String, default="razorpay", index=True)
+    provider_order_id = Column(String, default="", index=True, unique=True)
+    provider_payment_id = Column(String, default="")
+    amount_minor = Column(Integer, default=0)
+    currency = Column(String, default="INR")
+    status = Column(String, default="created", index=True)   # created | paid
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    paid_at = Column(String, default="")
+
+
 class DBLineItem(Base):
     __tablename__ = "line_items"
 
