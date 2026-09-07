@@ -3448,7 +3448,18 @@ async function confirmSendEmail() {
             return;
         }
         closeSendEmail();
-        showToast('Invoice sent to ' + to, 'success');
+        // "Sending", not "sent": the status moves to Sent when the message
+        // actually leaves, which is after this response. Saying it has already
+        // arrived and then repainting the invoice as Draft told the user two
+        // different things in the same second.
+        showToast('Sending to ' + to, 'success');
+        // A copy that could not be sent used to be skipped in silence, so the
+        // tickbox looked broken. Say which it was.
+        if (data.copy_skipped) {
+            showToast('No copy to you: ' + data.copy_skipped, 'error');
+        } else if (data.copy_to) {
+            showToast('A copy is on its way to ' + data.copy_to, 'success');
+        }
         fetchInvoices();
         viewInvoice(number);
     } catch (e) {

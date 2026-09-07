@@ -3553,12 +3553,35 @@ Powered by Aniprotech"""
     # A copy to the sender, so there is a record in their own mailbox. Sent as
     # a second message rather than a Bcc, because the Gmail send used here
     # takes one recipient.
+    #
+    # Tracked like the invoice is. It used to be handed straight to
+    # send_email_background, which never raises and returns (False, reason) on
+    # every failure - and BackgroundTasks discards a return value. So a copy
+    # that did not arrive looked exactly like one that did: no delivery row,
+    # nothing in the failed-deliveries banner, no error anywhere. Somebody
+    # ticking the box had no way to find out it had not worked, which is the
+    # complaint that led here.
+    #
+    # Its own kind, not "invoice": _mark_delivered moves the invoice to Sent
+    # for that one, and whether the seller got their own copy is not what says
+    # the customer received theirs. No charge either - the send was paid for
+    # once already, so there is nothing to refund if the copy fails.
+    copy_to, copy_skipped = "", ""
     if payload.send_copy:
         own = (settings_map.get("email", "")
                or (inv_client.email if inv_client else ""))
-        if own and validate_email_address(own) and own != recipient:
+        if not own:
+            copy_skipped = "no address is set for your business to copy in"
+        elif not validate_email_address(own):
+            copy_skipped = f"your own address ({own}) does not look valid"
+        elif own == recipient:
+            copy_skipped = "you are the recipient, so the copy would be the same message"
+        else:
+            copy_to = own
+            copy_delivery = start_delivery(db, client.id, "invoice_copy",
+                                           inv.number, own, None)
             background_tasks.add_task(
-                send_email_background, own, f"[Copy] {subject}", body,
+                deliver_and_record, copy_delivery.id, own, f"[Copy] {subject}", body,
                 from_header, html_body, pdf_b64, pdf_filename, logo_data,
                 client_id=client.id)
 
@@ -3572,8 +3595,11 @@ Powered by Aniprotech"""
 
     # Says what is true now. The status moves to Sent when the message
     # actually leaves, and to nothing at all if it does not.
+    # copy_skipped is said out loud rather than swallowed: a tickbox that
+    # quietly does nothing is the thing being fixed here.
     return {"message": f"Sending to {recipient}", "status": inv.status,
-            "sent_date": inv.sent or "", "delivery_id": delivery.id}
+            "sent_date": inv.sent or "", "delivery_id": delivery.id,
+            "copy_to": copy_to, "copy_skipped": copy_skipped}
 
 def send_whatsapp_background(phone_number: str, message: str):
     with SessionLocal() as db:

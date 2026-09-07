@@ -90,7 +90,8 @@ function boot(opts) {
                     json: () => Promise.resolve({ detail: opts.sendError }) });
             }
             return Promise.resolve({ ok: true, status: 200,
-                json: () => Promise.resolve({ message: 'sent' }) });
+                json: () => Promise.resolve(Object.assign(
+                    { message: 'sent' }, opts.copy || {})) });
         }
         const body = p.endsWith('s') ? [] : {};
         return Promise.resolve({ ok: true, status: 200,
@@ -101,6 +102,11 @@ function boot(opts) {
     w.eval(fs.readFileSync(path.join(ROOT, 'dialogs.js'), 'utf8'));
     w.eval(fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8'));
     w.document.dispatchEvent(new w.Event('DOMContentLoaded', { bubbles: true }));
+
+    w.toasts = [];
+    const realToast = w.showToast;
+    w.showToast = (msg, kind) => { w.toasts.push({ msg, kind }); };
+    void realToast;
 
     // The screen reads the invoice number off the view, as it does in the app.
     w.document.getElementById('view-inv-number-val').textContent = 'INV-0010';
@@ -302,6 +308,39 @@ const el = (w, id) => w.document.getElementById(id);
         await wait(80);
         const body = JSON.parse(sent.find(s => s.url.endsWith('/send')).body);
         check('hiding the row clears what was in it', !body.bcc, body.bcc);
+    }
+
+    // --- what happened to the copy ----------------------------------------------
+    // The tickbox was reported as doing nothing. It was queuing the message and
+    // then discarding the result, so a copy that failed - or was skipped before
+    // it was ever attempted - looked exactly like one that arrived.
+    {
+        const { w } = boot({ copy: { copy_to: 'me@acme.test', copy_skipped: '' } });
+        await wait(60);
+        await w.sendEmail();
+        await wait(60);
+        el(w, 'send-to').value = 'ada@acme.test';
+        el(w, 'send-copy-me').checked = true;
+        await w.confirmSendEmail();
+        await wait(60);
+        check('a copy on its way is confirmed by name',
+            w.toasts.some(t => /copy.*me@acme\.test/i.test(t.msg)),
+            JSON.stringify(w.toasts));
+    }
+
+    {
+        const { w } = boot({ copy: {
+            copy_to: '', copy_skipped: 'you are the recipient, so the copy would be the same message' } });
+        await wait(60);
+        await w.sendEmail();
+        await wait(60);
+        el(w, 'send-to').value = 'ada@acme.test';
+        el(w, 'send-copy-me').checked = true;
+        await w.confirmSendEmail();
+        await wait(60);
+        check('and a copy that was not sent says why rather than going quiet',
+            w.toasts.some(t => t.kind === 'error' && /No copy to you/i.test(t.msg)),
+            JSON.stringify(w.toasts));
     }
 
     // --- refusals -------------------------------------------------------------
