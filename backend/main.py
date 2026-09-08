@@ -931,7 +931,7 @@ def issue_verification(db, background_tasks, client, request):
                     ).strftime("%Y-%m-%d %H:%M:%S")))
     db.commit()
 
-    from_email = os.getenv("FROM_EMAIL", "") or client.email
+    from_email = platform_from_address()
     # Written down before it is attempted, and the outcome written after. This
     # was the one message in the product that could fail in silence: somebody
     # waits for a code that never left, and nothing anywhere says so. It is
@@ -1938,7 +1938,7 @@ def superadmin_request_otp(request: Request, background_tasks: BackgroundTasks,
     db.add(row)
     db.commit()
 
-    from_email = os.getenv("FROM_EMAIL", "") or sa.email
+    from_email = platform_from_address()
     subject = f"Your sign-in code: {code}"
     message = (
         f"Your sign-in code is {code}.\n\n"
@@ -2034,7 +2034,7 @@ def superadmin_verify_otp(request: Request, background_tasks: BackgroundTasks,
         f"{datetime.now().strftime('%Y-%m-%d %H:%M')} from {ip}.\n\n"
         "If that was you there is nothing to do. If it was not, change your "
         "password now - whoever did it can read your email.",
-        os.getenv("FROM_EMAIL", "") or sa.email)
+        platform_from_address())
 
     return {"ok": True, "username": sa.username, "email": sa.email}
 
@@ -2702,6 +2702,40 @@ def email_transport(db=None):
         return "gmail"
 
 
+def platform_from_address(db=None) -> str:
+    """The address the platform's own mail should say it comes from.
+
+    Sign-in codes, verification codes, password resets and team invites all
+    leave on the platform transport - which is whichever Google account the
+    operator connected. They claimed to come from hello@keyroutes.co, a
+    different company's domain left over from somewhere else, in thirteen
+    places.
+
+    That is not only wrong on the face of it. Gmail sends as the account that
+    authenticated, whatever the header says, so the mail went out claiming one
+    domain while being sent by another - which is precisely what SPF and DMARC
+    exist to catch. The mild outcome is sign-in codes in a spam folder. The
+    less mild one is a receiving server rejecting them outright, which looks
+    from here exactly like a code that was sent and never arrived.
+
+    So: the account that is actually doing the sending, then an address the
+    operator set deliberately, then the old constant as a last resort for a
+    deployment that has neither.
+    """
+    connected = ""
+    try:
+        if db is not None:
+            connected = platform_setting_raw(db, "GOOGLE_SENDER_EMAIL")
+        else:
+            with SessionLocal() as own:
+                connected = platform_setting_raw(own, "GOOGLE_SENDER_EMAIL")
+    except Exception:                                  # noqa: BLE001
+        connected = ""
+    return ((connected or "").strip()
+            or os.getenv("FROM_EMAIL", "").strip()
+            or "hello@keyroutes.co")
+
+
 def _send_via_smtp(raw_msg, to_email, cc="", bcc="", cfg=None):
     """Hand the message to a mail server.
 
@@ -3332,7 +3366,7 @@ def send_invoice_email(number: str, background_tasks: BackgroundTasks, request: 
         raise HTTPException(status_code=400, detail=f"Invalid email address: {inv.email}")
 
     user = request.session.get('user', {})
-    from_email = os.getenv("FROM_EMAIL", "hello@keyroutes.co")
+    from_email = platform_from_address()
     if not from_email:
         raise HTTPException(status_code=400, detail="No sender email configured.")
 
@@ -4760,7 +4794,7 @@ def send_test_email(test: TestEmail, background_tasks: BackgroundTasks, request:
     if not ready:
         raise HTTPException(status_code=503, detail=f"Cannot send yet: {why}")
 
-    from_email = os.getenv("FROM_EMAIL", "hello@keyroutes.co")
+    from_email = platform_from_address()
     sender_name = client.company_name or os.getenv("FROM_NAME", "aniprotech")
     from_header = f"{sender_name} <{from_email}>"
 
@@ -5644,7 +5678,7 @@ def job_overdue_reminders(db, now):
         </body></html>
         """
 
-        from_email = os.getenv("FROM_EMAIL", "hello@keyroutes.co")
+        from_email = platform_from_address()
         # Recorded before sending, and the unique index means a second worker
         # racing this cannot send the same rung twice.
         db.add(models.DBInvoiceReminder(
@@ -5741,7 +5775,7 @@ def job_interview_reminders(db, now):
         client = db.query(models.DBClient).filter(
             models.DBClient.id == iv.client_id).first()
         company = (client.company_name if client else "") or "the team"
-        from_email = os.getenv("FROM_EMAIL", "hello@keyroutes.co")
+        from_email = platform_from_address()
         where = iv.meeting_link or iv.location or (
             "a video call" if iv.mode == "video" else iv.mode)
 
@@ -5838,7 +5872,7 @@ def _send_calendar_reminder(client, subject, lines):
     """One plain-English email about one thing coming up. Everything on the
     calendar reaches this the same way, so a new source type is a new list of
     lines rather than a new template."""
-    from_email = os.getenv("FROM_EMAIL", "hello@keyroutes.co")
+    from_email = platform_from_address()
     company = client.company_name or "there"
     body = "Hello {},\n\n{}\n\n{}\n".format(
         company, subject, "\n".join(lines))
@@ -6132,7 +6166,7 @@ def forgot_password(body: ForgotPasswordIn, background_tasks: BackgroundTasks,
     base = (os.getenv("APP_BASE_URL") or str(request.base_url)).rstrip("/")
     link = f"{base}/reset-password.html?token={token}"
     company = client.company_name or "your account"
-    from_email = os.getenv("FROM_EMAIL", "hello@keyroutes.co")
+    from_email = platform_from_address()
 
     text_body, html_body = reset_email_bodies(link, company, RESET_TOKEN_TTL_MINUTES)
 
@@ -6249,7 +6283,7 @@ def employee_forgot_password(body: ForgotPasswordIn, background_tasks: Backgroun
     # stayed locked out. They demonstrably hold the mailbox, and each link
     # names the one account it belongs to.
     base = (os.getenv("APP_BASE_URL") or str(request.base_url)).rstrip("/")
-    from_email = os.getenv("FROM_EMAIL", "hello@keyroutes.co")
+    from_email = platform_from_address()
     for emp in people:
         token = issue_reset_token(db, "employee", emp.id, ip)
         db.commit()
@@ -6380,7 +6414,7 @@ def invite_member(body: TeamInvite, background_tasks: BackgroundTasks,
     text_body, html_body = reset_email_bodies(link, who, RESET_TOKEN_TTL_MINUTES)
     text_body = text_body.replace("Someone asked to reset the password for",
                                   "You have been invited to")
-    from_email = os.getenv("FROM_EMAIL", "hello@keyroutes.co")
+    from_email = platform_from_address()
     background_tasks.add_task(
         send_email_background, email, f"You have been added to {who} on aniprotech",
         text_body, f"aniprotech <{from_email}>", html_body, None, "", "",
@@ -7751,7 +7785,7 @@ def send_quote_email(number: str, background_tasks: BackgroundTasks, request: Re
     if not validate_email_address(q.email):
         raise HTTPException(status_code=400, detail=f"Invalid email address: {q.email}")
 
-    from_email = os.getenv("FROM_EMAIL", "hello@keyroutes.co")
+    from_email = platform_from_address()
     if not from_email:
         raise HTTPException(status_code=400, detail="No sender email configured.")
 
@@ -9734,7 +9768,7 @@ def send_payslip_email(ps_id: int, request: Request, background_tasks: Backgroun
     company_phone = settings_map.get("phone_number", "") or client.phone_number or ""
     company_address = settings_map.get("company_address", "") or client.address or ""
 
-    from_email = os.getenv("FROM_EMAIL", "hello@keyroutes.co")
+    from_email = platform_from_address()
     sender_name = os.getenv("FROM_NAME", "aniprotech")
     from_header = f"{sender_name} <{from_email}>"
     subject = f"Payslip {ps.number} from {company_name}"
@@ -9815,7 +9849,7 @@ Best regards,
 <div style="padding:24px 40px;background-color:#f8fafc;border-top:1px solid #e2e8f0;text-align:center;">
 <p style="font-size:13px;color:#94a3b8;margin:0;">Thank you for your hard work!</p>
 <p style="font-size:12px;color:#64748b;margin:4px 0 0 0;">{esc(company_name)}</p>
-<p style="font-size:11px;color:#94a3b8;margin:12px 0 0 0;"><a href="mailto:hello@keyroutes.co?subject=unsubscribe" style="color:#94a3b8;">Unsubscribe</a> from these notifications</p>
+<p style="font-size:11px;color:#94a3b8;margin:12px 0 0 0;"><a href="mailto:{esc(company_email or from_email)}?subject=unsubscribe" style="color:#94a3b8;">Unsubscribe</a> from these notifications</p>
 </div>
 </div>
 </div><img src="{request.base_url}api/payslip/track/open/{ps.tracking_id}" width="1" height="1" style="display:none;" alt="">
@@ -11959,7 +11993,7 @@ def email_candidate(sub_id: int, request: Request, background_tasks: BackgroundT
         subject = subject or default_subject
         text_body = text_body or default_body
 
-    from_email = os.getenv("FROM_EMAIL", "hello@keyroutes.co")
+    from_email = platform_from_address()
     company = client.company_name or "Recruitment"
     html_body = (
         '<div style="font-family:Arial,Helvetica,sans-serif;color:#1e293b;line-height:1.6;'
