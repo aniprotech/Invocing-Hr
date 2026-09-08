@@ -116,8 +116,16 @@ def test_an_operator_sign_in_code_is_sent_from_the_connected_account(client, mon
     monkeypatch.setattr(main, "send_email_background", capture)
     monkeypatch.setattr(main, "email_delivery_ready", lambda db, cid=None: (True, ""))
 
+    # By the address, not by .first(). There can be more than one operator row
+    # - every TestClient started with a context manager runs the lifespan, and
+    # ensure_super_admin() adds one for any address in SUPERADMIN_EMAILS that
+    # is missing - and .first() has no ordering, so this asked for a code for
+    # whichever row the database happened to hand back.
     with main.SessionLocal() as db:
-        who = db.query(models.DBSuperAdmin).first()
+        who = db.query(models.DBSuperAdmin).filter(
+            main.sqlfunc.lower(models.DBSuperAdmin.email) == "hello@keyroutes.co"
+        ).order_by(models.DBSuperAdmin.id).first()
+        assert who is not None, "the seeded operator is not in the database"
         address = who.email
 
     res = client.post("/api/superadmin/request-otp", json={"identifier": address})

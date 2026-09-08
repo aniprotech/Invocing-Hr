@@ -1576,6 +1576,22 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 51: {sys.exc_info()[1]}")
 
+            # 52. An authenticator app for the operator, so signing in stops
+            # depending on a mailbox existing.
+            try:
+                for column, spec in (
+                    ("totp_secret", "VARCHAR DEFAULT ''"),
+                    ("totp_confirmed_at", "VARCHAR DEFAULT ''"),
+                    ("totp_recovery", "TEXT DEFAULT ''"),
+                    ("totp_last_step", "BIGINT DEFAULT 0"),
+                ):
+                    conn.execute(text(
+                        f"ALTER TABLE super_admins ADD COLUMN IF NOT EXISTS "
+                        f"{column} {spec}"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 52: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

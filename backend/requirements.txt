@@ -1,4 +1,10 @@
 fastapi==0.115.0
+# Pinned, though fastapi would pull it in anyway. It was not, so the
+# same requirements file installed a different starlette depending on
+# the day - and the version decides whether a request's database
+# session is still open when a background task runs. CI and production
+# were not testing the same software.
+starlette==0.38.6
 uvicorn[standard]==0.30.6
 gunicorn==22.0.0
 sqlalchemy==2.0.35

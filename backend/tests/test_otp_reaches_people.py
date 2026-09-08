@@ -135,19 +135,39 @@ def test_a_code_cannot_be_spent_twice(client):
 # --- the operator's own code ------------------------------------------------------
 
 def operator_stored_as(email, username="superadmin"):
-    """Put the operator's address in the database exactly as given."""
+    """Put the operator's address in the database exactly as given.
+
+    The row is found by id and handed back with the saved values, rather than
+    by .first() at both ends. .first() has no ordering, and there can be more
+    than one operator row by the time this runs: every TestClient started with
+    a context manager runs the lifespan, which runs ensure_super_admin(), which
+    adds an operator for any address in SUPERADMIN_EMAILS that is missing - and
+    while these tests have the address temporarily changed, hello@keyroutes.co
+    *is* missing. So one can be created mid-test, and then save and restore can
+    land on different rows and leave the real operator under a name nothing
+    looks for. Every test afterwards that signs in as the operator then fails,
+    which is what happened in CI and not here, because which row .first()
+    returns depends on the platform's SQLite.
+    """
     with main.SessionLocal() as db:
-        row = db.query(models.DBSuperAdmin).first()
-        was = (row.email, row.username)
+        row = db.query(models.DBSuperAdmin).order_by(models.DBSuperAdmin.id).first()
+        was = (row.id, row.email, row.username)
         row.email, row.username = email, username
         db.commit()
     return was
 
 
 def restore_operator(was):
+    row_id, email, username = was
     with main.SessionLocal() as db:
-        row = db.query(models.DBSuperAdmin).first()
-        row.email, row.username = was
+        row = db.query(models.DBSuperAdmin).filter(
+            models.DBSuperAdmin.id == row_id).first()
+        if row:
+            row.email, row.username = email, username
+        # Anything ensure_super_admin() minted while the address was changed is
+        # not part of this test's world and must not outlive it.
+        db.query(models.DBSuperAdmin).filter(
+            models.DBSuperAdmin.id != row_id).delete(synchronize_session=False)
         db.commit()
 
 
@@ -159,7 +179,7 @@ def codes_for_operator():
     and 1 after, whether or not anything happened.
     """
     with main.SessionLocal() as db:
-        row = db.query(models.DBSuperAdmin).first()
+        row = db.query(models.DBSuperAdmin).order_by(models.DBSuperAdmin.id).first()
         return db.query(models.DBSuperAdminOtp).filter(
             models.DBSuperAdminOtp.super_admin_id == row.id).count()
 

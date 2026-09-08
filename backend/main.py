@@ -3,6 +3,7 @@ import calendar
 import hashlib
 import hmac
 import secrets
+import struct
 import uuid
 import smtplib
 import ssl
@@ -1820,6 +1821,83 @@ def superadmin_login(request: Request, body: dict = None, db: Session = Depends(
 #   - The code is never in a response body. Not once, not in development.
 # ============================================================================
 
+# ============================================================================
+# AN AUTHENTICATOR APP, WHICH NEEDS NOTHING DELIVERED
+#
+# The emailed code is only ever as good as the mailbox it goes to. A domain
+# with no MX record has no mailbox, so the code is accepted by Google, bounces,
+# and the operator waits for something that was never going to arrive - which
+# is how the operator of this platform came to be locked out of it. Nothing in
+# the sending path can detect that; the bounce happens somewhere else, later.
+#
+# A time-based code fixes it by having nothing to deliver. The phone and the
+# server hold the same secret and both compute the same number from the clock.
+#
+# Implemented here rather than pulled in, because TOTP is a published
+# construction - RFC 6238 over RFC 4226 - and this is the whole of it: an HMAC
+# of the time step, truncated. The reason that is safe to write out is that the
+# RFC publishes test vectors for it, and the tests check against those rather
+# than against my own arithmetic. A wrong implementation cannot agree with
+# them by accident.
+# ============================================================================
+
+TOTP_STEP_SECONDS = 30
+# One step either side of now. A phone's clock drifts, and somebody typing six
+# digits can cross a boundary while they do it - so the code they are reading
+# has to still work for a moment after it changes on screen. That makes any one
+# code usable for about 45 seconds on average, 90 at the outside.
+TOTP_DRIFT_STEPS = 1
+TOTP_DIGITS = 6
+TOTP_RECOVERY_CODES = 8
+
+
+def totp_secret_new() -> str:
+    """A fresh shared secret, in the base32 an authenticator app expects."""
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+
+def totp_at(secret: str, step: int) -> str:
+    """The code for one 30-second step. RFC 4226 truncation, RFC 6238 counter."""
+    padding = "=" * (-len(secret) % 8)
+    key = base64.b32decode(secret + padding, casefold=True)
+    digest = hmac.new(key, struct.pack(">Q", step), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    truncated = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return str(truncated % (10 ** TOTP_DIGITS)).zfill(TOTP_DIGITS)
+
+
+def totp_step_now(at: float = None) -> int:
+    return int((at if at is not None else time.time()) // TOTP_STEP_SECONDS)
+
+
+def totp_check(secret: str, code: str, at: float = None, after_step: int = 0):
+    """(ok, the step it matched on) for a code, allowing for clock drift.
+
+    The step is returned so the caller can refuse a code it has already
+    accepted. A code is valid for its whole window, so without that it can be
+    used again inside the window by anybody who saw it over a shoulder.
+    """
+    code = (code or "").strip().replace(" ", "")
+    if not secret or not code.isdigit() or len(code) != TOTP_DIGITS:
+        return False, 0
+    now = totp_step_now(at)
+    for offset in range(-TOTP_DRIFT_STEPS, TOTP_DRIFT_STEPS + 1):
+        step = now + offset
+        if step <= after_step:
+            continue                      # already used, or older than one we used
+        if secrets.compare_digest(totp_at(secret, step), code):
+            return True, step
+    return False, 0
+
+
+def totp_setup_uri(secret: str, account: str, issuer: str = "aniprotech") -> str:
+    """The otpauth:// URI an authenticator app scans."""
+    from urllib.parse import quote
+    label = quote(f"{issuer}:{account}", safe="")
+    return (f"otpauth://totp/{label}?secret={secret}&issuer={quote(issuer)}"
+            f"&algorithm=SHA1&digits={TOTP_DIGITS}&period={TOTP_STEP_SECONDS}")
+
+
 OTP_LENGTH = 6
 OTP_MINUTES = 10
 OTP_MAX_ATTEMPTS = 5
@@ -1946,13 +2024,30 @@ def superadmin_request_otp(request: Request, background_tasks: BackgroundTasks,
         "If you did not ask for this, somebody knows your operator address. "
         "The code alone does not let them in, but it is worth knowing.")
 
+    # Read out now, while the session is still open, rather than reached for
+    # inside the task.
+    #
+    # A background task runs after the response, and the request's database
+    # session is torn down around the same point - which of the two happens
+    # first has changed between versions of the framework. db.commit() just
+    # above expires every attribute on sa (expire_on_commit defaults to True),
+    # so sa.email in there is not a value but a lazy re-read that needs a live
+    # session. Where the session goes first it raises, the task dies, and the
+    # code is never sent - while the request has already answered 200 and said
+    # one was. Exactly the failure this endpoint exists to avoid, and invisible
+    # because the whole point of the task is that nobody is waiting on it.
+    #
+    # It bit CI and not this machine because starlette is not pinned: the same
+    # requirements file installs a different version depending on the day.
+    to_address = sa.email
+
     def deliver():
         # By the time this runs nobody is waiting on it, so the log is the only
         # place a failure can be said. It gets said loudly rather than dropped.
-        ok, why = send_email_background(sa.email, subject, message, from_email)
+        ok, why = send_email_background(to_address, subject, message, from_email)
         if not ok:
             logger.error("Operator sign-in code to %s was not delivered: %s",
-                         sa.email, why)
+                         to_address, why)
 
     # Handed off rather than sent inline, so signing in does not wait on the
     # mail provider - and so a slow send cannot be timed to tell a stranger
@@ -2037,6 +2132,185 @@ def superadmin_verify_otp(request: Request, background_tasks: BackgroundTasks,
         platform_from_address())
 
     return {"ok": True, "username": sa.username, "email": sa.email}
+
+
+# --- the authenticator app ---------------------------------------------------
+# Setting one up needs an operator session already, so this makes future
+# sign-ins independent of mail rather than opening a new way in.
+
+def _hash_recovery(code: str) -> str:
+    return hashlib.sha256((code or "").strip().upper().encode()).hexdigest()
+
+
+def _new_recovery_codes():
+    """Readable, unambiguous, and meant to be written on paper."""
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"      # no O/0, no I/1
+    out = []
+    for _ in range(TOTP_RECOVERY_CODES):
+        raw = "".join(secrets.choice(alphabet) for _ in range(10))
+        out.append(f"{raw[:5]}-{raw[5:]}")
+    return out
+
+
+@app.get("/api/superadmin/totp/status")
+def superadmin_totp_status(request: Request, db: Session = Depends(get_db)):
+    sa_id = require_superadmin(request)
+    sa = db.query(models.DBSuperAdmin).filter(models.DBSuperAdmin.id == sa_id).first()
+    if not sa:
+        raise HTTPException(status_code=401, detail="Not found")
+    left = [c for c in (sa.totp_recovery or "").split(",") if c]
+    return {"enabled": bool(sa.totp_secret and sa.totp_confirmed_at),
+            "started": bool(sa.totp_secret and not sa.totp_confirmed_at),
+            "confirmed_at": sa.totp_confirmed_at or "",
+            "recovery_codes_left": len(left)}
+
+
+@app.post("/api/superadmin/totp/setup")
+def superadmin_totp_setup(request: Request, db: Session = Depends(get_db)):
+    """Mint a secret and hand back what an app needs to scan.
+
+    Not switched on yet - a code has to be confirmed first, or a mistyped scan
+    would lock the operator out of the very thing meant to let them in.
+    """
+    sa_id = require_superadmin(request)
+    sa = db.query(models.DBSuperAdmin).filter(models.DBSuperAdmin.id == sa_id).first()
+    if not sa:
+        raise HTTPException(status_code=401, detail="Not found")
+    if sa.totp_secret and sa.totp_confirmed_at:
+        raise HTTPException(status_code=409,
+                            detail="An authenticator is already set up. Remove it first.")
+
+    sa.totp_secret = totp_secret_new()
+    sa.totp_confirmed_at = ""
+    db.commit()
+    account = sa.email or sa.username or "operator"
+    # The only time the secret leaves the server. Afterwards it is treated like
+    # a password and never returned again.
+    return {"secret": sa.totp_secret,
+            "uri": totp_setup_uri(sa.totp_secret, account),
+            "account": account, "digits": TOTP_DIGITS,
+            "period": TOTP_STEP_SECONDS}
+
+
+@app.post("/api/superadmin/totp/confirm")
+def superadmin_totp_confirm(request: Request, body: dict = None,
+                            db: Session = Depends(get_db)):
+    """Prove the app holds the same secret, then turn it on."""
+    sa_id = require_superadmin(request)
+    sa = db.query(models.DBSuperAdmin).filter(models.DBSuperAdmin.id == sa_id).first()
+    if not sa or not sa.totp_secret:
+        raise HTTPException(status_code=400, detail="Start the setup first")
+
+    ok, step = totp_check(sa.totp_secret, (body or {}).get("code", ""))
+    if not ok:
+        raise HTTPException(
+            status_code=400,
+            detail="That code is not right. Check your phone's clock and use the current one.")
+
+    codes = _new_recovery_codes()
+    sa.totp_confirmed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    sa.totp_recovery = ",".join(_hash_recovery(c) for c in codes)
+    sa.totp_last_step = step
+    log_audit(db, None, "totp_enabled", "superadmin", sa.id,
+              sa.email or sa.username, "", request, user_type="superadmin")
+    db.commit()
+
+    # Shown once. A phone can be lost or wiped, and with no working mailbox
+    # these are the only remaining way back in.
+    return {"ok": True, "recovery_codes": codes}
+
+
+@app.post("/api/superadmin/totp/disable")
+def superadmin_totp_disable(request: Request, body: dict = None,
+                            db: Session = Depends(get_db)):
+    """Remove it, having proved it is you. Anybody who can remove it can put
+    the account back to depending on a mailbox that may not exist, so it asks
+    for the same proof as changing the password."""
+    sa_id = require_superadmin(request)
+    sa = db.query(models.DBSuperAdmin).filter(models.DBSuperAdmin.id == sa_id).first()
+    if not sa:
+        raise HTTPException(status_code=401, detail="Not found")
+
+    body = body or {}
+    proved = False
+    if sa.totp_secret:
+        proved = totp_check(sa.totp_secret, body.get("code", ""))[0]
+    if not proved and sa.password_hash and body.get("password"):
+        proved = verify_password(body["password"], sa.password_hash)
+    if not proved:
+        raise HTTPException(status_code=401,
+                            detail="Enter a current code from the app, or your password.")
+
+    sa.totp_secret = ""
+    sa.totp_confirmed_at = ""
+    sa.totp_recovery = ""
+    sa.totp_last_step = 0
+    log_audit(db, None, "totp_disabled", "superadmin", sa.id,
+              sa.email or sa.username, "", request, user_type="superadmin")
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/superadmin/login-with-app")
+def superadmin_login_with_app(request: Request, body: dict = None,
+                              db: Session = Depends(get_db)):
+    """Sign in with the authenticator, or with a recovery code.
+
+    The same shape as the emailed code it stands beside - an identifier and a
+    number - except that nothing has to be delivered for it to work.
+    """
+    ip = request.client.host if request.client else "unknown"
+    if rate_limiter.is_rate_limited(f"sa_app_try:{ip}", max_requests=10, window=300):
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again shortly.")
+
+    body = body or {}
+    identifier = (body.get("identifier") or "").strip().lower()
+    code = (body.get("code") or "").strip()
+    # One answer for every failure. Anything more would say whether the account
+    # exists and whether it has an authenticator on it.
+    refused = HTTPException(status_code=401, detail="That code is not right.")
+    if identifier and rate_limiter.is_rate_limited(
+            f"sa_app_id:{identifier}", max_requests=10, window=300):
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again shortly.")
+    if not identifier or not code:
+        raise refused
+
+    sa = db.query(models.DBSuperAdmin).filter(
+        (sqlfunc.lower(models.DBSuperAdmin.email) == identifier)
+        | (sqlfunc.lower(models.DBSuperAdmin.username) == identifier)).first()
+    if not sa or not sa.totp_secret or not sa.totp_confirmed_at:
+        log_login(db, None, identifier, "superadmin", "app", request, "failed")
+        db.commit()
+        raise refused
+
+    ok, step = totp_check(sa.totp_secret, code, after_step=sa.totp_last_step or 0)
+    used_recovery = False
+    if ok:
+        sa.totp_last_step = step
+    else:
+        # A recovery code instead, single use and burnt on the way through.
+        held = [c for c in (sa.totp_recovery or "").split(",") if c]
+        offered = _hash_recovery(code)
+        match = next((c for c in held if secrets.compare_digest(c, offered)), None)
+        if not match:
+            log_login(db, None, identifier, "superadmin", "app", request, "failed")
+            db.commit()
+            raise refused
+        held.remove(match)
+        sa.totp_recovery = ",".join(held)
+        used_recovery = True
+
+    request.session.clear()
+    request.session["superadmin_id"] = sa.id
+    # The same standing as an emailed code: proof of a second factor, so it may
+    # be used to set a password that has been forgotten.
+    request.session["superadmin_otp_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_login(db, None, identifier or sa.email, "superadmin",
+              "recovery" if used_recovery else "app", request, "success")
+    db.commit()
+    return {"ok": True, "username": sa.username, "email": sa.email,
+            "used_recovery": used_recovery,
+            "recovery_codes_left": len([c for c in (sa.totp_recovery or "").split(",") if c])}
 
 
 # How long a code counts as proof for setting a new password. Long enough to

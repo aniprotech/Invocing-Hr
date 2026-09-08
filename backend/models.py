@@ -437,6 +437,25 @@ class DBSuperAdmin(Base):
     email = Column(String, default="")
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
+    # An authenticator app, as a way in that does not depend on mail arriving.
+    # The emailed code is only as good as the mailbox it goes to, and a domain
+    # with no MX record has none - which is how the operator of this platform
+    # came to be locked out of it. The phone holds the secret; nothing has to
+    # be delivered at sign-in time.
+    #
+    # totp_secret is the shared base32 secret. It is only a second factor's
+    # worth of secret, but it is enough to mint codes, so it is treated like a
+    # password: never returned by any endpoint after setup.
+    totp_secret = Column(String, default="")
+    totp_confirmed_at = Column(String, default="")
+    # Single-use fallbacks, stored hashed, for a lost or wiped phone. Without
+    # these, losing the device means losing the platform.
+    totp_recovery = Column(String, default="")
+    # The last 30-second step this account signed in on. A code stays valid for
+    # its whole window, so without remembering the last one it can be replayed
+    # inside that window by anybody who saw it.
+    totp_last_step = Column(Integer, default=0)
+
 
 class DBSuperAdminOtp(Base):
     """A single-use sign-in code.
