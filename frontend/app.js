@@ -3546,8 +3546,16 @@ function recordPayment(number) {
     var outstanding = Number(_viewOutstanding || 0);
     var sym = getCurrencySymbol();
 
+    // Who is paying, not only how much. The screen showed an invoice number
+    // and an amount, so the only name on it was "Bank transfer" under a label
+    // reading "Paid by" - which answers a question nobody asked and leaves the
+    // one they did ask unanswered. Somebody recording a payment is matching it
+    // against a name on a bank statement.
+    var payer = (document.getElementById('view-inv-contact') || {}).textContent || '';
+    payer = payer.trim();
     document.getElementById('payment-owed').innerHTML =
-        'Outstanding on ' + esc(number) + ': <strong>' + esc(sym + outstanding.toFixed(2)) + '</strong>';
+        (payer && payer !== '-' ? 'From <strong>' + esc(payer) + '</strong> &middot; ' : '') +
+        'outstanding on ' + esc(number) + ': <strong>' + esc(sym + outstanding.toFixed(2)) + '</strong>';
     document.getElementById('payment-amount').value = outstanding > 0 ? outstanding.toFixed(2) : '';
     document.getElementById('payment-amount').max = outstanding > 0 ? outstanding.toFixed(2) : '';
 

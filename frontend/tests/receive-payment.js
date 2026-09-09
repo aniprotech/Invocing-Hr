@@ -104,6 +104,16 @@ const today = () => {
             /250\.00/.test(el(w, 'payment-owed').textContent),
             el(w, 'payment-owed').textContent);
 
+        // The screen used to carry an invoice number and an amount and no
+        // name at all, so the only company-shaped thing on it was "Bank
+        // transfer" sitting under a label reading "Paid by". Somebody
+        // recording a payment is matching it to a name on a bank statement.
+        el(w, 'view-inv-contact').textContent = 'Acme Trading Ltd';
+        w.recordPayment('INV-0010');
+        check('and so is whoever is paying it',
+            /Acme Trading Ltd/.test(el(w, 'payment-owed').textContent),
+            el(w, 'payment-owed').textContent);
+
         check('there is a date, which used not to exist at all',
             el(w, 'payment-date').value === today(), el(w, 'payment-date').value);
         check('and it cannot be set past today',
