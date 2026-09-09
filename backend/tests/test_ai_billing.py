@@ -7,6 +7,7 @@ actually be billed when the model does produce something.
 import pytest
 
 import main
+from conftest import past_trial
 
 
 @pytest.fixture
@@ -21,9 +22,15 @@ def superadmin(client):
 
 @pytest.fixture
 def priced_account(client, account, superadmin):
-    """A funded tenant with AI screening priced and no free allowance."""
+    """A funded tenant with AI screening priced and no free allowance.
+
+    Past its free month as well: for the first thirty days nothing is charged
+    at all, so a fixture called "priced" that left the account inside one would
+    be describing something that cannot happen.
+    """
     rows = superadmin.get("/api/superadmin/clients").json()
     cid = next(r["id"] for r in rows if r["email"] == account["email"])
+    past_trial(cid)
     superadmin.post(f"/api/superadmin/wallets/{cid}/adjust",
                     json={"amount": 10, "reason": "test credit"})
     rules = superadmin.get("/api/superadmin/pricing").json()

@@ -1592,6 +1592,21 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 52: {sys.exc_info()[1]}")
 
+            # 53. When a business stops being free. Backfilled from created_at
+            # for everybody already here, so accounts that predate trials get
+            # the same thirty days from the day they signed up rather than
+            # being billed from the moment this ships.
+            try:
+                conn.execute(text(
+                    "ALTER TABLE clients ADD COLUMN IF NOT EXISTS "
+                    "trial_ends_at VARCHAR DEFAULT ''"))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_clients_trial_ends_at "
+                    "ON clients (trial_ends_at)"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 53: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

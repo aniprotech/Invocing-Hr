@@ -53,6 +53,13 @@ class DBClient(Base):
     # before this column did was already reaching both, and taking that
     # away on upgrade would be a silent downgrade.
     modules = Column(String, default="invoicing,hr")
+    # Everything is free until this moment, and nothing is charged for before
+    # it - no card, no wallet, no credit. Stamped at signup rather than
+    # counted from created_at on every read, so extending somebody's trial is
+    # changing one date rather than an exception somewhere in the billing
+    # code. Blank on accounts that existed before trials did; those fall back
+    # to created_at plus the same number of days.
+    trial_ends_at = Column(String, default="", index=True)
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     settings = relationship("DBSettings", back_populates="client")

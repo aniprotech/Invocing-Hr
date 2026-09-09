@@ -12,7 +12,7 @@ import time
 import pytest
 
 import main
-from conftest import make_employee
+from conftest import past_trial, make_employee
 
 
 @pytest.fixture
@@ -120,6 +120,8 @@ def test_quote_respects_the_free_allowance(tenant):
 
 def test_charge_lands_on_the_ledger(client, account, superadmin):
     cid = client_id_for(superadmin, account["email"])
+    # Being charged at all is something that starts after the free month.
+    past_trial(cid)
     superadmin.post(f"/api/superadmin/wallets/{cid}/adjust", json={"amount": 20, "reason": "seed"})
     # Remove the free allowance so the next call is billable.
     rules = superadmin.get("/api/superadmin/pricing").json()
@@ -150,7 +152,7 @@ def test_charge_lands_on_the_ledger(client, account, superadmin):
 
 
 def test_running_out_of_credit_is_refused_with_402(client, account, superadmin):
-    client_id_for(superadmin, account["email"])
+    past_trial(client_id_for(superadmin, account["email"]))
     rules = superadmin.get("/api/superadmin/pricing").json()
     rule = next(r for r in rules if r["action_key"] == "invoice_send")
     superadmin.put(f"/api/superadmin/pricing/{rule['id']}",

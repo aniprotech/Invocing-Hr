@@ -165,6 +165,27 @@ def make_employee(tenant, **overrides):
     return res.json()
 
 
+def past_trial(client_id):
+    """Put this account beyond its free month.
+
+    A new account gets thirty days of everything free, with no wallet and no
+    card - so a test about being charged has to say it is testing what happens
+    afterwards. Written here rather than in each test because the alternative
+    is every future billing test failing in the same puzzling way: the charge
+    simply does not happen, and nothing says why.
+
+    Deliberately not a default for the whole suite. A fresh account really is
+    in a trial, and a conftest that quietly ended it would make the suite
+    describe a product that does not exist.
+    """
+    from datetime import datetime, timedelta
+    with main.SessionLocal() as db:
+        row = db.query(models.DBClient).filter(models.DBClient.id == client_id).first()
+        row.trial_ends_at = (datetime.now() - timedelta(days=1)
+                             ).strftime("%Y-%m-%d %H:%M:%S")
+        db.commit()
+
+
 def make_invoice(tenant, line_items=None, **overrides):
     payload = {
         "contact": "Customer Ltd",

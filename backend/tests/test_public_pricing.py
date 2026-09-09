@@ -129,7 +129,10 @@ def test_nothing_about_any_tenant_comes_with_it(client, priced, tenant):
     wolf. The keys are the contract, so the keys are what is pinned.
     """
     body = get(client)
-    assert set(body) == {"currency", "symbol", "actions", "note"}, sorted(body)
+    # trial_days is a platform constant rather than anything about a tenant -
+    # how long the free month lasts, which the page needs in order to say so.
+    assert set(body) == {"currency", "symbol", "actions", "note",
+                         "trial_days"}, sorted(body)
     for action in body["actions"]:
         assert set(action) == {
             "action_key", "label", "description", "module",

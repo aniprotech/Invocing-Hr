@@ -9742,6 +9742,9 @@ async function checkEmailVerified() {
         var res = await fetch('/api/client/verification-status');
         if (!res.ok) return;
         var status = await res.json();
+        // The same answer drives both bars, so the trial does not cost a
+        // second request on every screen.
+        showTrialBar(status.trial || {});
         if (status.verified) { bar.style.display = 'none'; return; }
 
         // Registering does not make a code when the server cannot send one, so
@@ -9757,6 +9760,34 @@ async function checkEmailVerified() {
     } catch (e) { /* the app works; this is a nudge, not a gate */ }
 }
 window.checkEmailVerified = checkEmailVerified;
+
+// Everything is free for the first month, with no card and no wallet. This
+// says so only when it is about to stop being true - a bar counting down all
+// thirty days is noise, and one that appears with a week to go is the first
+// time anybody needs to think about it.
+function showTrialBar(trial) {
+    var bar = document.getElementById('trial-bar');
+    if (!bar) return;
+    var text = document.getElementById('trial-bar-text');
+
+    if (trial.active && trial.ending_soon) {
+        var d = trial.days_left;
+        text.textContent = 'Your free trial ends in ' + d + (d === 1 ? ' day' : ' days')
+            + '. Add credit to keep sending invoices and payslips.';
+        bar.style.display = 'flex';
+        return;
+    }
+    // Over, and nothing behind it. Somebody who topped up last week has
+    // already done the thing this would be asking for.
+    if (!trial.active && trial.needs_credit) {
+        text.textContent = 'Your free trial has ended. Add credit to send '
+            + 'invoices and payslips again.';
+        bar.style.display = 'flex';
+        return;
+    }
+    bar.style.display = 'none';
+}
+window.showTrialBar = showTrialBar;
 
 function openVerifyEmail() {
     document.getElementById('verify-code').value = '';
@@ -11398,8 +11429,24 @@ async function loadWallet() {
     }
 
     var banner = document.getElementById('wallet-low-banner');
+    var trial = _wallet.trial || {};
     if (banner) {
-        if (_wallet.is_empty || _wallet.is_low) {
+        // During the free month an empty wallet means nothing - there is
+        // nothing to fill and no card on file. Saying "your wallet is empty,
+        // sending needs credit" on day three is both alarming and untrue, and
+        // it asks somebody to pay before they have decided to.
+        if (trial.active) {
+            var d = trial.days_left;
+            banner.style.display = 'block';
+            banner.innerHTML = '<div style="padding:12px 16px;border-radius:8px;margin-bottom:24px;' +
+                'background:rgba(52, 211, 153, 0.12);border:1px solid rgba(52, 211, 153, 0.35);' +
+                'display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:0.87rem;">' +
+                '<strong style="color:var(--success-color);">' +
+                d + (d === 1 ? ' day' : ' days') + ' left of your free trial.</strong>' +
+                '<span style="color:var(--text-secondary);">Everything is included and nothing is '
+                + 'charged until it ends. You can add credit whenever you like.</span>' +
+                '<button class="btn btn-outline btn-sm" style="margin-left:auto;" onclick="openTopUpModal()">Add credit</button></div>';
+        } else if (_wallet.is_empty || _wallet.is_low) {
             banner.style.display = 'block';
             banner.innerHTML = '<div style="padding:12px 16px;border-radius:8px;margin-bottom:24px;' +
                 'background:rgba(251, 191, 36, 0.12);border:1px solid rgba(251, 191, 36, 0.35);' +

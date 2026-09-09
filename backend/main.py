@@ -1040,7 +1040,33 @@ def client_verification_status(request: Request, db: Session = Depends(get_db)):
         # question: the platform being fine says nothing about a tenant who
         # has chosen their own server and got it wrong.
         "mine": client_email_readiness(db, client),
+        # Carried here because every screen already asks this endpoint on load,
+        # so the banner does not need a request of its own - and a trial that
+        # is about to end has to be said everywhere, not only on the money
+        # screen somebody has no reason to open.
+        "trial": trial_with_credit(db, client),
     }
+
+
+def trial_with_credit(db, client) -> dict:
+    """The trial, plus whether the account is about to be stuck.
+
+    A finished trial is only worth saying anything about when there is no
+    credit behind it. Somebody who topped up last week has done the thing the
+    banner would be asking for, and telling them their trial ended is both
+    stale and slightly alarming.
+
+    The wallet is read rather than fetched-or-created: this endpoint is polled
+    on every screen, and a GET has no business writing a row.
+    """
+    state = trial_state(client)
+    if state["active"]:
+        state["needs_credit"] = False
+        return state
+    wallet = db.query(models.DBWallet).filter(
+        models.DBWallet.client_id == client.id).first()
+    state["needs_credit"] = (wallet.balance_minor if wallet else 0) <= 0
+    return state
 
 
 @app.post("/api/client/register")
@@ -1074,6 +1100,10 @@ def client_register(body: ClientRegister, background_tasks: BackgroundTasks,
         password_hash=hash_password(body.password),
         company_name=body.company_name,
         contact_name=body.contact_name,
+        # Stamped now rather than derived later, so extending a trial is
+        # changing one date rather than an exception in the billing code.
+        trial_ends_at=(datetime.now() + timedelta(days=TRIAL_DAYS)
+                       ).strftime("%Y-%m-%d %H:%M:%S"),
     )
     db.add(client)
     db.commit()
@@ -4560,6 +4590,11 @@ async def auth_callback(request: Request, db: Session = Depends(get_db)):
                         company_name=user.get('name', ''),
                         contact_name=user.get('name', ''),
                         is_onboarded=False,
+                        # Signing up with Google is signing up. The same thirty
+                        # days, or the trial would depend on which button was
+                        # pressed.
+                        trial_ends_at=(datetime.now() + timedelta(days=TRIAL_DAYS)
+                                       ).strftime("%Y-%m-%d %H:%M:%S"),
                     )
                     db.add(new_client)
                     db.flush()
@@ -12528,6 +12563,90 @@ def month_usage(db, client_id, action_key):
     return sum(r.quantity or 1 for r in rows)
 
 
+# ============================================================================
+# THE FIRST THIRTY DAYS
+#
+# Everything is free for a month, with no card and no wallet. Nothing is
+# charged for, nothing is refused for want of credit, and there is nothing to
+# set up before using the product - which is the whole point: somebody
+# evaluating this should be able to run a month of real payroll through it
+# before deciding, not five invoices.
+#
+# After that the wallet is how it is paid for, exactly as before. There is
+# still no subscription and no plan.
+# ============================================================================
+
+TRIAL_DAYS = int(os.getenv("TRIAL_DAYS", "30") or 30)
+
+# How close to the end counts as "about to run out", for the sake of saying so
+# before it does rather than after.
+TRIAL_WARN_DAYS = 7
+
+
+def trial_ends_for(client) -> str:
+    """When this account stops being free, as a stored timestamp.
+
+    Read from the account where it was stamped at signup. Accounts that
+    existed before trials did have nothing stamped, so they get the same
+    number of days counted from when they signed up - which is the honest
+    reading of "thirty days free" for somebody who has been here for six
+    months, and does not hand them a fresh month for having been early.
+    """
+    stamped = (getattr(client, "trial_ends_at", "") or "").strip()
+    if stamped:
+        return stamped
+    started = (getattr(client, "created_at", "") or "").strip()
+    if not started:
+        return ""
+    try:
+        began = datetime.strptime(started, "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return ""
+    return (began + timedelta(days=TRIAL_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def trial_state(client, now=None) -> dict:
+    """Whether this account is still free, and for how much longer.
+
+    An unreadable date ends the trial rather than extending it. Getting that
+    the other way round would hand out unlimited free use of the platform on
+    the strength of a malformed string, and nothing would ever say so.
+    """
+    now = now or datetime.now()
+    ends = trial_ends_for(client)
+    if not ends:
+        return {"active": False, "ends_at": "", "days_left": 0,
+                "days_total": TRIAL_DAYS, "ending_soon": False}
+    try:
+        ends_at = datetime.strptime(ends, "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        logger.warning("Client %s has an unreadable trial end (%r); treating it "
+                       "as over", getattr(client, "id", "?"), ends)
+        return {"active": False, "ends_at": "", "days_left": 0,
+                "days_total": TRIAL_DAYS, "ending_soon": False}
+
+    remaining = ends_at - now
+    active = remaining.total_seconds() > 0
+    # Rounded up, so the last partial day still reads as "1 day left" rather
+    # than "0 days left" while the account is demonstrably still working.
+    days_left = max(0, -(-int(remaining.total_seconds()) // 86400)) if active else 0
+    return {
+        "active": active,
+        "ends_at": ends,
+        "days_left": days_left,
+        "days_total": TRIAL_DAYS,
+        "ending_soon": active and days_left <= TRIAL_WARN_DAYS,
+    }
+
+
+def client_trial_state(db, client_id, now=None) -> dict:
+    client = db.query(models.DBClient).filter(models.DBClient.id == client_id).first()
+    if not client:
+        return {"active": False, "ends_at": "", "days_left": 0,
+                "days_total": TRIAL_DAYS, "ending_soon": False}
+    return trial_state(client, now=now)
+
+
 def quote_action(db, client_id, action_key, quantity=1):
     """What an action would cost right now, after any free allowance.
 
@@ -12562,6 +12681,14 @@ def charge_wallet(db, client_id, action_key, quantity=1, reference="", performed
     Raises InsufficientCredit when the balance will not cover it, so callers
     can refuse the action *before* doing the work rather than after.
     """
+    # Free for the first thirty days, and refused for nothing during them.
+    # Checked before the price is even looked up, because during a trial there
+    # is no wallet to draw on and no card on file - asking for credit that was
+    # never required would refuse the action, which is the opposite of what a
+    # trial is.
+    if client_trial_state(db, client_id)["active"]:
+        return None
+
     rule, chargeable, cost = quote_action(db, client_id, action_key, quantity)
     if cost <= 0:
         return None
@@ -12660,6 +12787,10 @@ def wallet_state(db, client, include_rules=True):
         "is_suspended": bool(wallet.is_suspended),
         "lifetime_topped_up": to_major(wallet.lifetime_topped_up_minor, wallet.currency),
         "lifetime_spent": to_major(wallet.lifetime_spent_minor, wallet.currency),
+        # An empty wallet means nothing while the trial is running, and the
+        # screen has to say which of the two it is looking at - "you have no
+        # credit" is alarming and wrong on day three.
+        "trial": trial_state(client),
     }
     if include_rules:
         rules = db.query(models.DBPricingRule).filter(
@@ -20588,7 +20719,7 @@ PLATFORM_SETTINGS = [
     # with textContent, never as markup, so nothing here can put a script on
     # the front page however it is typed.
     Setting("landing.eyebrow", "Strapline above the headline", "Landing", "text",
-            "Smart HR & Business Management Platform"),
+            "Free for 30 days - no card needed"),
     Setting("landing.headline", "Headline", "Landing", "text",
             "Everything Your Business Needs."),
     Setting("landing.headline_accent", "Headline, second line", "Landing", "text",
@@ -20598,7 +20729,8 @@ PLATFORM_SETTINGS = [
             "Manage HR, Attendance, Payroll, Leave, Employee Records, Timesheets, "
             "Shift Management, Invoicing and Business Operations from one secure "
             "cloud platform."),
-    Setting("landing.cta_primary", "Main button", "Landing", "text", "Open the app"),
+    Setting("landing.cta_primary", "Main button", "Landing", "text",
+            "Start free for 30 days"),
     Setting("landing.cta_secondary", "Second button", "Landing", "text",
             "Employee Portal"),
 
@@ -20658,12 +20790,18 @@ PLATFORM_SETTINGS = [
     Setting("landing.pricing_eyebrow", "Pricing: strapline", "Landing", "text",
             "Pricing"),
     Setting("landing.pricing_title", "Pricing: heading", "Landing", "text",
-            "Pay for what you send"),
+            "Free for 30 days. Then pay for what you send."),
+    Setting("landing.pricing_trial", "Pricing: the free-trial line", "Landing",
+            "longtext",
+            "Everything is included for your first 30 days - invoicing, "
+            "payroll, attendance, HR, the lot. No card, no plan to choose and "
+            "nothing to cancel. When the month is up you add credit to carry "
+            "on, and only pay for what you actually send."),
     # The paragraph under it is not here on purpose: it is served by
     # /api/platform/pricing beside the prices themselves, so the wording and
     # the numbers it describes cannot drift apart.
     Setting("landing.pricing_headline", "Pricing: the line in large type", "Landing",
-            "text", "No monthly fee"),
+            "text", "30 days free, no card"),
     Setting("landing.install_eyebrow", "Install: strapline", "Landing", "text",
             "Install"),
     Setting("landing.install_title", "Install: heading", "Landing", "text",
@@ -21092,10 +21230,13 @@ def public_pricing(db: Session = Depends(get_db)):
         # Said here rather than written into the page, because it is the part
         # people get wrong about this kind of billing: nothing is a
         # subscription, and the free allowance comes back every month.
-        "note": ("There is no monthly fee and no plan to choose. You add credit "
-                 "and each action draws from it, so a quiet month costs "
-                 "nothing. The free allowance on each action resets at the "
-                 "start of every calendar month."),
+        "trial_days": TRIAL_DAYS,
+        "note": (f"Your first {TRIAL_DAYS} days are free and need no card - "
+                 "everything below is included. After that there is still no "
+                 "monthly fee and no plan to choose: you add credit and each "
+                 "action draws from it, so a quiet month costs nothing. The "
+                 "free allowance on each action resets at the start of every "
+                 "calendar month."),
     }
 
 

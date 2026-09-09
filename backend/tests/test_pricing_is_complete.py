@@ -16,6 +16,7 @@ import pytest
 
 import main
 import models
+from conftest import past_trial
 
 
 @pytest.fixture
@@ -166,6 +167,7 @@ def test_a_price_in_another_currency_does_not_charge_the_wallet(client, tenant,
     the other looks like nothing at all and is a hundred times wrong, so it
     must not happen quietly."""
     cid = tenant.get("/api/client/me").json()["id"]
+    past_trial(cid)          # charging is what happens after the free month
     with main.SessionLocal() as db:
         wallet = main.get_wallet(db, cid)
         wallet.balance_minor = 100_000
@@ -190,6 +192,7 @@ def test_a_price_in_another_currency_does_not_charge_the_wallet(client, tenant,
 def test_and_the_same_currency_still_charges(client, tenant, rules_restored):
     """The guard must not be a way of never charging anybody."""
     cid = tenant.get("/api/client/me").json()["id"]
+    past_trial(cid)          # charging is what happens after the free month
     with main.SessionLocal() as db:
         wallet = main.get_wallet(db, cid)
         wallet.balance_minor = 100_000

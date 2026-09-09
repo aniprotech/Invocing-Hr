@@ -7,7 +7,7 @@ pointed at business data will confidently invent balances and headcounts.
 import pytest
 
 import main
-from conftest import make_employee, make_invoice
+from conftest import make_employee, make_invoice, past_trial
 
 
 @pytest.fixture
@@ -190,6 +190,7 @@ def test_describe_item_strips_model_quoting(tenant, monkeypatch):
 def test_assistant_is_billed_only_on_a_real_answer(client, account, superadmin, monkeypatch):
     rows = superadmin.get("/api/superadmin/clients").json()
     cid = next(r["id"] for r in rows if r["email"] == account["email"])
+    past_trial(cid)          # being billed is what happens after the free month
     superadmin.post(f"/api/superadmin/wallets/{cid}/adjust",
                     json={"amount": 5, "reason": "seed"})
     rules = superadmin.get("/api/superadmin/pricing").json()
