@@ -367,11 +367,11 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=146">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=146">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=146">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=146">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=146">
+    <link rel="stylesheet" href="mobile.css?v=147">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=147">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=147">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=147">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=147">
     <script src="/dialogs.js?v=1"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
@@ -388,6 +388,7 @@
         <div class="user-area">
             <span id="admin-name">Admin</span>
             <button class="btn-logout" style="background:rgba(56, 189, 248, 0.1);color:#7dd3fc;border-color:rgba(56, 189, 248, 0.3);" onclick="openPasswordModal()">Change Password</button>
+            <button class="btn-logout" style="background:rgba(52, 211, 153, 0.1);color:#6ee7b7;border-color:rgba(52, 211, 153, 0.3);" onclick="openTotpModal()">Authenticator App</button>
             <button class="btn-logout" onclick="logout()">Sign Out</button>
         </div>
     </div>
@@ -763,6 +764,19 @@
                 <button class="action-btn" onclick="closePasswordModal()">Cancel</button>
                 <button class="action-btn" style="color:#0b0f19;background:linear-gradient(135deg,#0ea5e9,#38bdf8);border:none;font-weight:700;" onclick="changePassword()">Save</button>
             </div>
+        </div>
+    </div>
+
+    <!-- AN AUTHENTICATOR APP
+         The emailed code is only ever as good as the mailbox it goes to, and
+         a bounce happens somewhere else, later, where nothing in the sending
+         path can see it. This one has nothing to deliver. -->
+    <div class="modal-overlay" id="totp-modal">
+        <div class="modal" style="max-width:460px;">
+            <button class="close-btn" onclick="closeTotpModal()">&times;</button>
+            <h2>Authenticator App</h2>
+            <div class="error-msg" id="totp-error" style="display:none;background:rgba(244, 63, 94, 0.1);border:1px solid rgba(244, 63, 94, 0.3);color:#fda4af;padding:10px 14px;border-radius:8px;font-size:0.85rem;margin-bottom:16px;"></div>
+            <div id="totp-body" style="font-size:0.88rem;color:#cbd5e1;">Loading...</div>
         </div>
     </div>
 
@@ -1764,6 +1778,150 @@
                 }
             } catch (e) { /* the field stays, which is the safe way round */ }
         }
+        // ---- the authenticator app -------------------------------------------
+        // Three states, and they are not interchangeable: nothing set up, a
+        // secret minted but not yet proved, and on. The middle one exists so a
+        // mistyped setup key cannot switch on a factor the operator is unable
+        // to produce - which would lock them out of the thing meant to let
+        // them in.
+        function totpErr(msg) {
+            var el = document.getElementById('totp-error');
+            el.textContent = msg || '';
+            el.style.display = msg ? 'block' : 'none';
+        }
+
+        async function openTotpModal() {
+            document.getElementById('totp-modal').classList.add('show');
+            totpErr('');
+            document.getElementById('totp-body').innerHTML = 'Loading...';
+            try {
+                var res = await fetch('/api/superadmin/totp/status');
+                if (!res.ok) { totpErr('Could not read the current setting.'); return; }
+                renderTotp(await res.json());
+            } catch (e) { totpErr('Could not read the current setting: ' + e.message); }
+        }
+
+        function closeTotpModal() {
+            document.getElementById('totp-modal').classList.remove('show');
+        }
+
+        function renderTotp(st) {
+            var body = document.getElementById('totp-body');
+            if (st.enabled) {
+                body.innerHTML =
+                    '<p style="color:#6ee7b7;font-weight:600;margin-top:0;">This account uses an authenticator app.</p>' +
+                    '<p>On since ' + esc(st.confirmed_at) + '. <strong>' +
+                    st.recovery_codes_left + '</strong> recovery codes left.</p>' +
+                    '<p style="color:#94a3b8;font-size:0.82rem;">Removing it puts this account back to needing ' +
+                    'a code delivered by email, which is the part that stopped working.</p>' +
+                    '<div class="form-group" style="margin:14px 0;">' +
+                    '<label style="display:block;font-size:0.72rem;font-weight:700;text-transform:uppercase;' +
+                    'letter-spacing:0.5px;color:#94a3b8;margin-bottom:6px;">Current code, or your password</label>' +
+                    '<input type="text" id="totp-off-proof" class="search-box" style="width:100%;" autocomplete="off"></div>' +
+                    '<div style="display:flex;justify-content:flex-end;gap:8px;">' +
+                    '<button class="action-btn" onclick="closeTotpModal()">Close</button>' +
+                    '<button class="action-btn" style="color:#fda4af;" onclick="disableTotp()">Remove</button></div>';
+                return;
+            }
+            body.innerHTML =
+                '<p style="margin-top:0;">A code worked out from the clock, on your phone and on the ' +
+                'server at the same moment. Nothing is sent, so nothing can fail to arrive.</p>' +
+                '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">' +
+                '<button class="action-btn" onclick="closeTotpModal()">Cancel</button>' +
+                '<button class="action-btn" style="color:#0b0f19;background:linear-gradient(135deg,#0ea5e9,#38bdf8);' +
+                'border:none;font-weight:700;" onclick="startTotp()">Set it up</button></div>';
+        }
+
+        async function startTotp() {
+            totpErr('');
+            try {
+                var res = await fetch('/api/superadmin/totp/setup', { method: 'POST' });
+                var data = await res.json().catch(function () { return {}; });
+                if (!res.ok) { totpErr(data.detail || 'Could not start the setup.'); return; }
+
+                // Grouped in fours because it gets typed by hand. Every
+                // authenticator app accepts a key this way, and unlike a
+                // scanned image it needs nothing sent anywhere - which matters
+                // when the thing being sent would be the secret itself.
+                var pretty = String(data.secret || '').replace(/(.{4})/g, '$1 ').trim();
+                document.getElementById('totp-body').innerHTML =
+                    '<p style="margin-top:0;">In your authenticator app choose <strong>enter a setup key</strong>, ' +
+                    'then type this. The account name is ' + esc(data.account) + '.</p>' +
+                    '<div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:1.05rem;' +
+                    'letter-spacing:1px;background:rgba(148,163,184,0.12);padding:12px 14px;' +
+                    'border-radius:8px;word-break:break-all;color:#e2e8f0;">' + esc(pretty) + '</div>' +
+                    '<p style="font-size:0.82rem;margin-top:10px;"><a href="' + esc(data.uri) +
+                    '" style="color:#7dd3fc;">On this phone, tap here to add it directly</a></p>' +
+                    '<p style="color:#94a3b8;font-size:0.82rem;">It is not on yet. Type the six digits your app ' +
+                    'now shows, so we both know it took.</p>' +
+                    '<div class="form-group" style="margin:14px 0;">' +
+                    '<input type="text" id="totp-confirm-code" class="search-box" style="width:100%;" ' +
+                    'inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code"></div>' +
+                    '<div style="display:flex;justify-content:flex-end;gap:8px;">' +
+                    '<button class="action-btn" onclick="closeTotpModal()">Cancel</button>' +
+                    '<button class="action-btn" style="color:#0b0f19;background:linear-gradient(135deg,#0ea5e9,#38bdf8);' +
+                    'border:none;font-weight:700;" onclick="confirmTotp()">Turn it on</button></div>';
+                document.getElementById('totp-confirm-code').focus();
+            } catch (e) { totpErr('Could not start the setup: ' + e.message); }
+        }
+
+        async function confirmTotp() {
+            totpErr('');
+            var code = (document.getElementById('totp-confirm-code').value || '').trim();
+            if (!code) { totpErr('Enter the six digits showing in your app.'); return; }
+            try {
+                var res = await fetch('/api/superadmin/totp/confirm', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code: code })
+                });
+                var data = await res.json().catch(function () { return {}; });
+                if (!res.ok) { totpErr(data.detail || 'That code is not right.'); return; }
+
+                // Shown once and never again. With no working mailbox these are
+                // the only way back in from a lost phone, so they go in front of
+                // the operator rather than being mentioned in passing.
+                window.__recoveryCodes = (data.recovery_codes || []).join('\n');
+                var codes = (data.recovery_codes || []).map(function (c) {
+                    return '<div>' + esc(c) + '</div>';
+                }).join('');
+                document.getElementById('totp-body').innerHTML =
+                    '<p style="color:#6ee7b7;font-weight:600;margin-top:0;">It is on.</p>' +
+                    '<p><strong>Write these down now.</strong> They are shown once. If your phone is lost ' +
+                    'or wiped these are the only remaining way into this account, and each works once.</p>' +
+                    '<div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.95rem;' +
+                    'line-height:1.8;background:rgba(148,163,184,0.12);padding:12px 14px;' +
+                    'border-radius:8px;color:#e2e8f0;">' + codes + '</div>' +
+                    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">' +
+                    '<button class="action-btn" onclick="copyRecovery()">Copy</button>' +
+                    '<button class="action-btn" style="color:#0b0f19;background:linear-gradient(135deg,#0ea5e9,#38bdf8);' +
+                    'border:none;font-weight:700;" onclick="closeTotpModal()">I have written them down</button></div>';
+            } catch (e) { totpErr('Could not turn it on: ' + e.message); }
+        }
+
+        function copyRecovery() {
+            if (navigator.clipboard) navigator.clipboard.writeText(window.__recoveryCodes || '');
+        }
+
+        async function disableTotp() {
+            totpErr('');
+            var proof = (document.getElementById('totp-off-proof').value || '').trim();
+            if (!proof) { totpErr('Enter a current code from the app, or your password.'); return; }
+            // Six digits is a code from the app; anything else is a password.
+            var body = /^[0-9]{6}$/.test(proof) ? { code: proof } : { password: proof };
+            try {
+                var res = await fetch('/api/superadmin/totp/disable', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                var data = await res.json().catch(function () { return {}; });
+                if (!res.ok) { totpErr(data.detail || 'Could not remove it.'); return; }
+                closeTotpModal();
+                await uiAlert('The authenticator app has been removed from this account.');
+            } catch (e) { totpErr('Could not remove it: ' + e.message); }
+        }
+
         function closePasswordModal() {
             document.getElementById('password-modal').classList.remove('show');
         }
@@ -2747,6 +2905,6 @@
         <div id="wallet-panel-body"></div>
       </div>
     </div>
-    <script src="/pwa.js?v=146"></script>
+    <script src="/pwa.js?v=147"></script>
 </body>
 </html>

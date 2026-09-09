@@ -104,11 +104,11 @@
         .link-home a:hover { color: #38bdf8; }
         .hint { margin-top: 20px; font-size: 0.78rem; color: #475569; }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=146">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=146">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=146">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=146">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=146">
+    <link rel="stylesheet" href="mobile.css?v=147">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=147">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=147">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=147">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=147">
     <script src="/dialogs.js?v=1"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
@@ -119,7 +119,7 @@
     <div class="auth-container">
         <div class="auth-card">
             <div class="brand">
-                <img src="/icons/logo-full-light.svg?v=146" alt="aniprotech"
+                <img src="/icons/logo-full-light.svg?v=147" alt="aniprotech"
                      width="212" height="56" style="display:block;margin:0 auto 18px;">
                 <h1>Super Admin</h1>
                 <p>Operator sign-in</p>
@@ -144,6 +144,29 @@
             <button type="button" class="btn-link-quiet" id="otp-start" onclick="startOtp()">
                 Email me a sign-in code instead
             </button>
+
+            <!-- The emailed code is only as good as the mailbox it goes to,
+                 and a bounce happens somewhere else, later, where nothing
+                 here can see it. This one has nothing to deliver: the phone
+                 and the server compute the same number from the clock. -->
+            <button type="button" class="btn-link-quiet" id="app-start" onclick="startApp()">
+                Use my authenticator app
+            </button>
+
+            <form id="app-form" onsubmit="finishApp(event)" class="text-left" style="display:none;">
+                <div class="form-group">
+                    <label for="app-code">Code from your app</label>
+                    <input type="text" class="form-input" id="app-code"
+                           inputmode="numeric" autocomplete="one-time-code"
+                           maxlength="14" placeholder="000000">
+                </div>
+                <p class="hint" style="margin-top:0;">
+                    The six digits showing in your authenticator app. A recovery
+                    code works here too.
+                </p>
+                <button type="submit" class="btn-password">Sign in</button>
+                <button type="button" class="btn-link-quiet" onclick="cancelApp()">Use a password instead</button>
+            </form>
 
             <form id="otp-form" onsubmit="finishOtp(event)" class="text-left" style="display:none;">
                 <div class="form-group">
@@ -225,6 +248,65 @@
             }
         }
 
+        // Nothing is sent, so there is no "sending" step - the code is already
+        // on the operator's phone before they open this page.
+        function startApp() {
+            var identifier = document.getElementById('login-id').value.trim();
+            if (!identifier) {
+                showError('Enter your email or username first.');
+                document.getElementById('login-id').focus();
+                return;
+            }
+            document.getElementById('error-msg').style.display = 'none';
+            document.getElementById('app-form').style.display = 'block';
+            document.getElementById('app-start').style.display = 'none';
+            document.getElementById('app-code').focus();
+        }
+
+        function cancelApp() {
+            document.getElementById('app-form').style.display = 'none';
+            document.getElementById('app-start').style.display = '';
+            document.getElementById('app-code').value = '';
+        }
+
+        async function finishApp(e) {
+            e.preventDefault();
+            var identifier = document.getElementById('login-id').value.trim();
+            var code = document.getElementById('app-code').value.trim();
+            if (!code) { showError('Enter the code showing in your app.'); return; }
+
+            var btn = e.target.querySelector('button[type="submit"]');
+            btn.disabled = true;
+            btn.textContent = 'Checking...';
+            try {
+                var res = await fetch('/api/superadmin/login-with-app', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ identifier: identifier, code: code })
+                });
+                var data = await res.json().catch(function () { return {}; });
+                if (res.ok) {
+                    // Said out loud, because a recovery code is spent once and
+                    // running out with no working mailbox is how somebody ends
+                    // up locked out for good.
+                    if (data.used_recovery) {
+                        alert('That was a recovery code and it has now been used. '
+                            + data.recovery_codes_left + ' left. '
+                            + 'Set the authenticator up again to get a new set.');
+                    }
+                    window.location.href = '/superadmin.html';
+                    return;
+                }
+                showError(data.detail || 'That code is not right.');
+                document.getElementById('app-code').value = '';
+            } catch (err) {
+                showError('Could not check that code: ' + err.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Sign in';
+            }
+        }
+
         function cancelOtp() {
             document.getElementById('otp-form').style.display = 'none';
             document.getElementById('otp-start').style.display = '';
@@ -286,6 +368,6 @@
             }
         }
     </script>
-    <script src="/pwa.js?v=146"></script>
+    <script src="/pwa.js?v=147"></script>
 </body>
 </html>
