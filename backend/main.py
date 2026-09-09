@@ -8263,7 +8263,7 @@ Powered by Aniprotech"""
 # HR MODULE - Departments, Employees, Payroll, Onboarding
 # ============================================================================
 
-from sqlalchemy import func as sqlfunc, or_
+from sqlalchemy import func as sqlfunc, or_, and_
 
 class DepartmentCreate(BaseModel):
     name: str
@@ -8948,6 +8948,7 @@ def get_departments(request: Request, db: Session = Depends(get_db)):
         result.append({
             "id": d.id, "name": d.name, "description": d.description,
             "color": d.color or "#00f0ff", "icon": d.icon or "building",
+            "head_id": d.head_id,
             "employee_count": len(employees), "employees": emp_list, "created_at": d.created_at,
         })
     return result
@@ -8963,6 +8964,7 @@ def get_department(dept_id: int, request: Request, db: Session = Depends(get_db)
     return {
         "id": d.id, "name": d.name, "description": d.description,
         "color": d.color or "#00f0ff", "icon": d.icon or "building",
+        "head_id": d.head_id,
         "employee_count": len(employees), "employees": emp_list, "created_at": d.created_at,
     }
 
@@ -10202,45 +10204,108 @@ def track_payslip_open(tracking_id: str, db: Session = Depends(get_db)):
 
 @app.get("/api/org-chart")
 def get_org_chart(request: Request, db: Session = Depends(get_db)):
+    """The reporting structure, once.
+
+    It used to be returned twice. Every person was nested into the tree under
+    their manager, and then every person was listed again, flat, under their
+    department - so the page drew the hierarchy and then drew the whole
+    company a second time underneath it. With no departments set up nobody saw
+    that; with departments it is most of the screen, and it is why the chart
+    did not look like a chart.
+
+    Departments come back as what they are - a name, a colour, who heads them
+    and how many people - rather than as a second copy of the staff list.
+    """
     client = get_client_user(request, db)
     employees = db.query(models.DBEmployee).filter(
         models.DBEmployee.client_id == client.id,
         models.DBEmployee.status.in_(["active", "onboarding"])
     ).all()
-    departments = db.query(models.DBDepartment).filter(models.DBDepartment.client_id == client.id).all()
+    departments = db.query(models.DBDepartment).filter(
+        models.DBDepartment.client_id == client.id).all()
+
+    # Looked up once. This was a query per employee inside the loop, which on
+    # a company of any size is the slowest thing on the screen.
+    dept_by_id = {d.id: d for d in departments}
+    heads = {d.head_id for d in departments if d.head_id}
 
     emp_map = {}
     for e in employees:
-        dept_name = ""
-        if e.department_id:
-            dept = db.query(models.DBDepartment).filter(models.DBDepartment.id == e.department_id).first()
-            dept_name = dept.name if dept else ""
+        dept = dept_by_id.get(e.department_id)
         emp_map[e.id] = {
             "id": e.id, "employee_id": e.employee_id,
-            "name": f"{e.first_name} {e.last_name}",
-            "job_title": e.job_title, "email": e.email,
+            "name": f"{e.first_name} {e.last_name}".strip(),
+            "job_title": e.job_title or "", "email": e.email or "",
             "level": e.level or "", "role": e.role or "employee",
-            "department": dept_name, "reports_to": e.reports_to,
+            "department": dept.name if dept else "",
+            "department_id": e.department_id,
+            "department_color": (dept.color if dept else "") or "",
+            "heads_department": e.id in heads,
+            "reports_to": e.reports_to,
             "status": e.status,
+            "children": [],
         }
 
+    # A manager who has left is not in emp_map, so their reports would silently
+    # become founders. They are roots either way - somebody has to draw them -
+    # but the reason is worth carrying, because "reports to nobody" and
+    # "reports to somebody who is gone" need different things done about them.
     roots = []
-    for e_id, e_data in emp_map.items():
-        if e_data["reports_to"] and e_data["reports_to"] in emp_map:
-            parent = emp_map[e_data["reports_to"]]
-            if "children" not in parent:
-                parent["children"] = []
-            parent["children"].append(e_data)
+    for e_id, node in emp_map.items():
+        parent = emp_map.get(node["reports_to"]) if node["reports_to"] else None
+        if parent:
+            parent["children"].append(node)
         else:
-            roots.append(e_data)
+            node["orphaned"] = bool(node["reports_to"])
+            roots.append(node)
 
-    dept_groups = {}
-    for d in departments:
-        dept_employees = [e for e in emp_map.values() if e["department"] == d.name]
-        if dept_employees:
-            dept_groups[d.name] = dept_employees
+    def sort_children(node, depth=0):
+        """Depth-capped. The manager endpoint rejects loops, but a row written
+        before that guard existed could still contain one, and a cycle here
+        would recurse until the process died."""
+        if depth > 40:
+            node["children"] = []
+            return 0, 0
+        node["children"].sort(key=lambda c: (not c["heads_department"],
+                                             c["name"].lower()))
+        below = 0
+        for child in node["children"]:
+            _, sub = sort_children(child, depth + 1)
+            below += 1 + sub
+        node["direct_reports"] = len(node["children"])
+        # Everyone underneath, not just the next row down. This is the number
+        # that says what a post is actually responsible for.
+        node["total_reports"] = below
+        return node["direct_reports"], below
 
-    return {"roots": roots, "departments": dept_groups, "total_employees": len(employees)}
+    roots.sort(key=lambda n: (not n["heads_department"], n["name"].lower()))
+    for r in roots:
+        sort_children(r)
+
+    counts = {}
+    for e in employees:
+        if e.department_id:
+            counts[e.department_id] = counts.get(e.department_id, 0) + 1
+
+    return {
+        "roots": roots,
+        "departments": [{
+            "id": d.id, "name": d.name, "color": d.color or "",
+            "head_id": d.head_id,
+            "head_name": (emp_map.get(d.head_id, {}).get("name", "")
+                          if d.head_id else ""),
+            "count": counts.get(d.id, 0),
+        } for d in sorted(departments, key=lambda x: x.name.lower())],
+        "total_employees": len(employees),
+        # Said plainly rather than left for the reader to count. These are the
+        # reason a chart looks like a row of islands, and they are different
+        # problems: nobody was ever set, versus the person set has gone.
+        #
+        # One person at the top is a company, not a fault, so the page only
+        # remarks on this above one.
+        "unmanaged": sum(1 for r in roots if not r.get("orphaned")),
+        "orphaned": sum(1 for r in roots if r.get("orphaned")),
+    }
 
 # --- HR Dashboard Stats ---
 
@@ -17744,7 +17809,96 @@ WORKFLOW_TRIGGERS = {
     "employee_joins": "When somebody joins",
     "employee_leaves": "When somebody leaves",
 }
-TASK_OWNERS = ("hr", "manager", "employee")
+TASK_OWNERS = ("hr", "manager", "department_head", "employee", "person")
+
+# How a role turns into a person, and what happens when it cannot.
+#
+# The old model wrote a role on the task and left it there. A step owned by
+# "manager" landed on nobody at all: the employee's own list filters to
+# owner='employee', and there was no manager-facing list anywhere in the app,
+# so it sat in the HR list looking like HR's job. Nothing was wrong with the
+# data - there was simply no question anyone could ask that returned it.
+#
+# So it is worked out when the workflow fires and written down. Two reasons it
+# happens then rather than when somebody looks:
+#
+#   - It is a fact about the moment. Who your manager was when you joined is
+#     what the checklist meant, and it stays true after you move team.
+#   - A task with no answer must still land somewhere. Resolving late means a
+#     person with no manager produces a task that no query returns, which is
+#     the same invisibility in a new place.
+#
+# Every failure falls back to the HR pool, and records which failure it was.
+# "HR owns this" and "this was meant for a manager who does not exist" need
+# different things done about them.
+def resolve_task_owner(db, client_id, emp, owner, owner_employee_id=None):
+    """(assignee_id, how). A null assignee is the HR pool, never an accident."""
+    owner = (owner or "hr").strip().lower()
+
+    if owner == "employee":
+        return emp.id, "employee"
+
+    if owner == "manager":
+        if not emp.reports_to:
+            return None, "no_manager"
+        return emp.reports_to, "manager"
+
+    if owner == "department_head":
+        if not emp.department_id:
+            return None, "no_department"
+        dept = db.query(models.DBDepartment).filter(
+            models.DBDepartment.id == emp.department_id,
+            models.DBDepartment.client_id == client_id).first()
+        if not dept or not dept.head_id:
+            return None, "no_department_head"
+        # Somebody heading their own department cannot be their own reviewer
+        # on a task about them - that is a rubber stamp, so it goes to HR.
+        if dept.head_id == emp.id:
+            return None, "head_is_the_subject"
+        return dept.head_id, "department_head"
+
+    if owner == "person":
+        if not owner_employee_id:
+            return None, "no_person_named"
+        named = db.query(models.DBEmployee).filter(
+            models.DBEmployee.id == owner_employee_id,
+            models.DBEmployee.client_id == client_id).first()
+        # A leaver still on a template is the common case, and the one that
+        # would otherwise send the task into a list nobody opens again.
+        if not named or not employee_is_current(named):
+            return None, "person_gone"
+        return named.id, "person"
+
+    return None, "hr"
+
+
+def employee_is_current(emp) -> bool:
+    """Still working here. Read defensively - the column has been spelled
+    differently across the life of this table and a missing one must not make
+    everybody a leaver."""
+    status = (getattr(emp, "status", "") or "").strip().lower()
+    if status in ("left", "leaver", "terminated", "resigned", "inactive"):
+        return False
+    active = getattr(emp, "is_active", None)
+    if active is not None and not active:
+        return False
+    return True
+
+
+# Said in words, because "no_manager" on a screen is not an explanation.
+ASSIGNED_HOW_LABEL = {
+    "employee": "the person themselves",
+    "manager": "their manager",
+    "department_head": "their department head",
+    "person": "a named person",
+    "hr": "HR",
+    "no_manager": "HR - they have no manager on file",
+    "no_department": "HR - they are in no department",
+    "no_department_head": "HR - that department has no head set",
+    "head_is_the_subject": "HR - they head that department themselves",
+    "no_person_named": "HR - no person was chosen on the step",
+    "person_gone": "HR - the person it named has left",
+}
 
 
 def run_workflows_for(db, client_id, emp, trigger):
@@ -17781,13 +17935,24 @@ def run_workflows_for(db, client_id, emp, trigger):
             db.flush()
 
             base = datetime.now().date()
+            # Counted as the tasks are made. Reading them back off run.tasks
+            # afterwards works, but only because a freshly flushed collection
+            # happens to lazy-load - which is a detail of the ORM rather than
+            # something this should rest on.
+            landed = {}
             for step in sorted(flow.steps or [], key=lambda x: (x.position, x.id)):
                 due = base + timedelta(days=step.due_offset_days or 0)
+                who, how = resolve_task_owner(
+                    db, client_id, emp, step.owner,
+                    getattr(step, "owner_employee_id", None))
+                if who and who != emp.id:
+                    landed[who] = landed.get(who, 0) + 1
                 db.add(models.DBWorkflowTask(
                     client_id=client_id, run_id=run.id, employee_id=emp.id,
                     # Copied from the step for the same reason: editing the
                     # template must not rewrite what was already asked for.
                     title=step.title, owner=step.owner,
+                    assignee_id=who, assigned_how=how,
                     due_date=due.strftime("%Y-%m-%d"), notes=step.notes or ""))
                 made += 1
 
@@ -17796,6 +17961,21 @@ def run_workflows_for(db, client_id, emp, trigger):
                 notify_employee(
                     db, emp, "There are a few things to do",
                     f"{flow.name}: check your list when you get a moment.",
+                    kind="info")
+
+            # And so does whoever else it landed on. Without this a manager
+            # finds out that something was asked of them by happening to look,
+            # which for a joiner checklist is usually after the joiner arrives.
+            subject = f"{emp.first_name} {emp.last_name}".strip() or "somebody"
+            for who, count in landed.items():
+                target = db.query(models.DBEmployee).filter(
+                    models.DBEmployee.id == who).first()
+                if not target:
+                    continue
+                notify_employee(
+                    db, target,
+                    "1 thing to do" if count == 1 else f"{count} things to do",
+                    f"{flow.name}, for {subject}.",
                     kind="info")
     except Exception as exc:      # noqa: BLE001
         logger.error("Workflow run failed for employee %s: %s", emp.id, exc)
@@ -17813,7 +17993,9 @@ def workflow_to_dict(w, with_steps=False):
     if with_steps:
         out["steps"] = [{
             "id": st.id, "position": st.position, "title": st.title,
-            "owner": st.owner, "due_offset_days": st.due_offset_days,
+            "owner": st.owner,
+            "owner_employee_id": getattr(st, "owner_employee_id", None),
+            "due_offset_days": st.due_offset_days,
             "notes": st.notes or "",
         } for st in sorted(w.steps or [], key=lambda x: (x.position, x.id))]
     return out
@@ -17857,9 +18039,26 @@ def create_workflow(request: Request, body: dict = None,
         owner = str(st.get("owner") or "hr").strip().lower()
         if owner not in TASK_OWNERS:
             owner = "hr"
+        # Only meaningful for "person", and checked against this business so a
+        # step cannot be pointed at somebody else's employee.
+        named = None
+        if owner == "person":
+            try:
+                named = int(st.get("owner_employee_id") or 0) or None
+            except (TypeError, ValueError):
+                named = None
+            if named and not db.query(models.DBEmployee).filter(
+                    models.DBEmployee.id == named,
+                    models.DBEmployee.client_id == client.id).first():
+                named = None
+            if not named:
+                # Nobody real was chosen, so it is an HR step. Saying that now
+                # beats a template that silently makes unowned tasks later.
+                owner = "hr"
         db.add(models.DBWorkflowStep(
             client_id=client.id, workflow_id=flow.id, position=i, title=title,
-            owner=owner, due_offset_days=int(st.get("due_offset_days") or 0),
+            owner=owner, owner_employee_id=named,
+            due_offset_days=int(st.get("due_offset_days") or 0),
             notes=str(st.get("notes") or "").strip()[:500]))
 
     log_audit(db, client.id, "workflow_created", "workflow", flow.id, name,
@@ -17960,6 +18159,15 @@ def list_workflow_tasks(request: Request, done: str = "", owner: str = "",
     today = datetime.now().strftime("%Y-%m-%d")
     return [{
         "id": t.id, "title": t.title, "owner": t.owner,
+        # Who it actually landed on. Null is the HR pool, and assigned_how says
+        # whether that was the intention or the fallback.
+        "assignee_id": t.assignee_id,
+        "assignee": names.get(t.assignee_id, "") if t.assignee_id else "",
+        "assigned_how": t.assigned_how or "",
+        "assigned_how_label": ASSIGNED_HOW_LABEL.get(t.assigned_how or "", ""),
+        # The ones that fell back are worth picking out of a list of 300: each
+        # is a workflow that meant to reach somebody and could not.
+        "unrouted": bool(not t.assignee_id and t.owner != "hr"),
         "due_date": t.due_date or "", "notes": t.notes or "",
         "done": bool(t.done), "done_on": t.done_on or "",
         "employee_id": t.employee_id, "employee": names.get(t.employee_id, ""),
@@ -18008,13 +18216,28 @@ def employee_workflow_tasks(emp_id: int, request: Request,
     } for t in rows]
 
 
+# Tasks addressed to this person about themselves.
+#
+# Matched on the resolved assignee, falling back to the old shape for any row
+# written before there was one. The backfill in the schema updates covers those
+# - but those updates are deliberately non-fatal, so a query that assumed they
+# had run would hide somebody's onboarding list on exactly the install where
+# something had already gone wrong.
+def _mine_about_me(emp):
+    return or_(
+        models.DBWorkflowTask.assignee_id == emp.id,
+        and_(models.DBWorkflowTask.assignee_id == None,      # noqa: E711
+               models.DBWorkflowTask.owner == "employee",
+               models.DBWorkflowTask.employee_id == emp.id))
+
+
 @app.get("/api/employee/tasks")
 def my_workflow_tasks(request: Request, db: Session = Depends(get_db)):
     """What the person signed in has been asked to do themselves."""
     emp = current_employee(request, db)
     rows = db.query(models.DBWorkflowTask).filter(
         models.DBWorkflowTask.employee_id == emp.id,
-        models.DBWorkflowTask.owner == "employee",
+        _mine_about_me(emp),
     ).order_by(models.DBWorkflowTask.done,
                models.DBWorkflowTask.due_date).all()
     today = datetime.now().strftime("%Y-%m-%d")
@@ -18028,12 +18251,15 @@ def my_workflow_tasks(request: Request, db: Session = Depends(get_db)):
 @app.post("/api/employee/tasks/{task_id}/done")
 def finish_my_task(task_id: int, request: Request, body: dict = None,
                    db: Session = Depends(get_db)):
-    """Only their own, and only the ones addressed to them."""
+    """Only the ones addressed to them - their own, or their team's."""
     emp = current_employee(request, db)
     task = db.query(models.DBWorkflowTask).filter(
         models.DBWorkflowTask.id == task_id,
-        models.DBWorkflowTask.employee_id == emp.id,
-        models.DBWorkflowTask.owner == "employee",
+        models.DBWorkflowTask.client_id == emp.client_id,
+        or_(models.DBWorkflowTask.assignee_id == emp.id,
+              and_(models.DBWorkflowTask.assignee_id == None,   # noqa: E711
+                     models.DBWorkflowTask.owner == "employee",
+                     models.DBWorkflowTask.employee_id == emp.id)),
     ).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -18042,6 +18268,141 @@ def finish_my_task(task_id: int, request: Request, body: dict = None,
     task.done_by = emp.email or ""
     db.commit()
     return {"id": task.id, "done": task.done}
+
+
+# --- What a manager owes about other people ----------------------------------
+#
+# This is the list that did not exist. A workflow step owned by "manager"
+# produced a task, correctly, and then no query in the application returned
+# it: the portal asked for owner='employee' and HR's list showed everything
+# without saying whose it was. So a joiner checklist aimed at the person's
+# manager was, in practice, a note in HR's pile.
+#
+# Nothing here is about the person signed in. Their own tasks are the other
+# list; this one is what they owe about the people they are responsible for.
+
+@app.get("/api/employee/team-tasks")
+def my_team_tasks(request: Request, db: Session = Depends(get_db)):
+    """Workflow tasks this person owes about somebody else."""
+    emp = current_employee(request, db)
+    rows = db.query(models.DBWorkflowTask).filter(
+        models.DBWorkflowTask.client_id == emp.client_id,
+        models.DBWorkflowTask.assignee_id == emp.id,
+        models.DBWorkflowTask.employee_id != emp.id,
+    ).order_by(models.DBWorkflowTask.done,
+               models.DBWorkflowTask.due_date).limit(300).all()
+
+    names = {}
+    if rows:
+        subjects = {t.employee_id for t in rows}
+        names = {e.id: f"{e.first_name} {e.last_name}".strip()
+                 for e in db.query(models.DBEmployee).filter(
+                     models.DBEmployee.id.in_(subjects)).all()}
+    today = datetime.now().strftime("%Y-%m-%d")
+    return [{
+        "id": t.id, "title": t.title, "notes": t.notes or "",
+        "due_date": t.due_date or "", "done": bool(t.done),
+        "about_id": t.employee_id, "about": names.get(t.employee_id, ""),
+        "workflow": (t.run.workflow_name if t.run else ""),
+        "why": ASSIGNED_HOW_LABEL.get(t.assigned_how or "", ""),
+        "overdue": bool(not t.done and t.due_date and t.due_date < today),
+    } for t in rows]
+
+
+@app.post("/api/employee/team-tasks/{task_id}/done")
+def finish_team_task(task_id: int, request: Request, body: dict = None,
+                     db: Session = Depends(get_db)):
+    """Only tasks worked out to this person, and only about somebody else."""
+    emp = current_employee(request, db)
+    task = db.query(models.DBWorkflowTask).filter(
+        models.DBWorkflowTask.id == task_id,
+        models.DBWorkflowTask.client_id == emp.client_id,
+        models.DBWorkflowTask.assignee_id == emp.id,
+        models.DBWorkflowTask.employee_id != emp.id,
+    ).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task.done = bool((body or {}).get("done", True))
+    task.done_on = datetime.now().strftime("%Y-%m-%d") if task.done else ""
+    task.done_by = emp.email or ""
+    db.commit()
+    return {"id": task.id, "done": task.done}
+
+
+@app.get("/api/employee/my-team")
+def my_team(request: Request, db: Session = Depends(get_db)):
+    """Who reports to the person signed in.
+
+    The hierarchy was only ever read by the org chart, which is HR's screen.
+    Somebody with reports had no way to see them from their own portal.
+    """
+    emp = current_employee(request, db)
+    reports = db.query(models.DBEmployee).filter(
+        models.DBEmployee.reports_to == emp.id,
+        models.DBEmployee.client_id == emp.client_id,
+    ).order_by(models.DBEmployee.first_name).all()
+
+    open_by_person = {}
+    if reports:
+        rows = db.query(models.DBWorkflowTask).filter(
+            models.DBWorkflowTask.assignee_id == emp.id,
+            models.DBWorkflowTask.done == False,            # noqa: E712
+            models.DBWorkflowTask.employee_id.in_([r.id for r in reports]),
+        ).all()
+        for t in rows:
+            open_by_person[t.employee_id] = open_by_person.get(t.employee_id, 0) + 1
+
+    return {
+        "count": len(reports),
+        "team": [{
+            "id": r.id,
+            "name": f"{r.first_name} {r.last_name}".strip(),
+            "job_title": r.job_title or "",
+            "email": r.email or "",
+            "status": r.status or "",
+            # What this manager still owes about them, which is the only
+            # number on this screen they can actually act on.
+            "open_tasks": open_by_person.get(r.id, 0),
+        } for r in reports],
+    }
+
+
+# --- Who heads a department --------------------------------------------------
+#
+# Kept on the department rather than worked out from who has no manager: a
+# department can have several people with no manager set, and "the head" is a
+# decision, not something to infer from missing data.
+
+@app.put("/api/departments/{dept_id}/head")
+def set_department_head(dept_id: int, request: Request, body: dict = None,
+                        db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    dept = db.query(models.DBDepartment).filter(
+        models.DBDepartment.id == dept_id,
+        models.DBDepartment.client_id == client.id).first()
+    if not dept:
+        raise HTTPException(status_code=404, detail="Department not found")
+
+    body = body or {}
+    raw = body.get("head_id")
+    if raw in (None, "", 0, "0"):
+        dept.head_id = None
+    else:
+        try:
+            head_id = int(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Not an employee")
+        head = db.query(models.DBEmployee).filter(
+            models.DBEmployee.id == head_id,
+            models.DBEmployee.client_id == client.id).first()
+        if not head:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        dept.head_id = head.id
+
+    log_audit(db, client.id, "department_head_set", "department", dept.id,
+              dept.name, str(dept.head_id or ""), request)
+    db.commit()
+    return {"id": dept.id, "head_id": dept.head_id}
 
 
 # --- Surveys -----------------------------------------------------------------

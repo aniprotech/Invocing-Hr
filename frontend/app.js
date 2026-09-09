@@ -651,10 +651,19 @@ async function loadWorkflowTasks() {
                 '<div style="flex:1;min-width:200px;">' +
                     '<div style="font-size:0.88rem;">' + esc(t.title) + '</div>' +
                     '<div style="font-size:0.74rem;color:var(--text-secondary);margin-top:2px;">' +
-                        esc(t.employee) + ' &middot; ' + esc(t.owner) +
+                        esc(t.employee) + ' &middot; ' +
+                        // Who actually has it, not which role it was aimed at.
+                        // "manager" on a list of three hundred tells nobody
+                        // whether it is theirs.
+                        esc(t.assignee || 'HR') +
                         (t.due_date ? ' &middot; due ' + esc(t.due_date) : '') +
                         (t.workflow ? ' &middot; ' + esc(t.workflow) : '') +
                     '</div>' +
+                    // A step that meant to reach somebody and could not. It is
+                    // sitting in HR's list looking like HR's job, which is
+                    // exactly how it went unnoticed before.
+                    (t.unrouted ? '<div style="font-size:0.72rem;color:var(--warning-color);margin-top:2px;">' +
+                        esc(t.assigned_how_label || 'nobody was found for this') + '</div>' : '') +
                 '</div>' +
                 (t.overdue ? '<span style="font-size:0.72rem;color:var(--danger-color);">late</span>' : '') +
                 '<button class="btn btn-sm btn-outline" onclick="finishWorkflowTask(' + t.id + ')">Done</button>' +
@@ -744,10 +753,32 @@ function readWorkflowSteps() {
         return {
             title: t ? t.value : st.title,
             owner: o ? o.value : st.owner,
+            owner_employee_id: (function () {
+                var pick = document.getElementById('wf-person-' + i);
+                if (pick && pick.value) return parseInt(pick.value, 10);
+                return st.owner_employee_id || null;
+            })(),
             due_offset_days: d ? (parseInt(d.value, 10) || 0) : st.due_offset_days,
         };
     });
 }
+
+// Who a step lands on. Worked out when the workflow fires rather than
+// written down now, so a checklist keeps naming the right person after people
+// move team or leave.
+var WF_OWNERS = [
+    { key: 'hr', label: 'HR' },
+    { key: 'manager', label: 'Their manager' },
+    { key: 'department_head', label: 'Their dept head' },
+    { key: 'employee', label: 'The employee' },
+    { key: 'person', label: 'A named person' },
+];
+
+function onWorkflowOwnerChange(i) {
+    readWorkflowSteps();
+    renderWorkflowSteps();
+}
+window.onWorkflowOwnerChange = onWorkflowOwnerChange;
 
 function renderWorkflowSteps() {
     document.getElementById('wf-steps').innerHTML = _wfSteps.map(function (st, i) {
@@ -755,10 +786,23 @@ function renderWorkflowSteps() {
             '<input type="text" id="wf-title-' + i + '" class="form-control" ' +
                 'placeholder="What has to happen" maxlength="300" ' +
                 'value="' + esc(st.title) + '" style="flex:1;">' +
-            '<select id="wf-owner-' + i + '" class="form-control" style="max-width:120px;">' +
-                ['hr', 'manager', 'employee'].map(function (o) {
-                    return '<option value="' + o + '"' + (st.owner === o ? ' selected' : '') +
-                        '>' + (o === 'hr' ? 'HR' : o.charAt(0).toUpperCase() + o.slice(1)) + '</option>';
+            '<select id="wf-owner-' + i + '" class="form-control" style="max-width:150px;" ' +
+                'onchange="onWorkflowOwnerChange(' + i + ')">' +
+                WF_OWNERS.map(function (o) {
+                    return '<option value="' + o.key + '"' + (st.owner === o.key ? ' selected' : '') +
+                        '>' + esc(o.label) + '</option>';
+                }).join('') +
+            '</select>' +
+            // Only meaningful for one of the five, so it is only in the way
+            // when it is the one chosen.
+            '<select id="wf-person-' + i + '" class="form-control" style="max-width:150px;' +
+                (st.owner === 'person' ? '' : 'display:none;') + '">' +
+                '<option value="">Choose someone</option>' +
+                allEmployees.map(function (e) {
+                    var name = ((e.first_name || '') + ' ' + (e.last_name || '')).trim() || e.name || '';
+                    return '<option value="' + e.id + '"' +
+                        (String(st.owner_employee_id) === String(e.id) ? ' selected' : '') +
+                        '>' + esc(name) + '</option>';
                 }).join('') +
             '</select>' +
             '<input type="number" id="wf-days-' + i + '" class="form-control" ' +
@@ -5459,6 +5503,7 @@ function openDeptModal(dept) {
     selectedDeptIcon = dept ? (dept.icon || 'building') : 'building';
     renderDeptColorPicker();
     renderDeptIconPicker();
+    renderDeptHeadPicker(dept ? dept.head_id : null);
     document.getElementById('dept-modal').style.display = 'flex';
 }
 window.openDeptModal = openDeptModal;
@@ -5468,6 +5513,18 @@ function closeDeptModal() {
     editingDeptId = null;
 }
 window.closeDeptModal = closeDeptModal;
+
+function renderDeptHeadPicker(headId) {
+    var el = document.getElementById('dept-head');
+    if (!el) return;
+    el.innerHTML = '<option value="">Nobody yet</option>' +
+        allEmployees.map(function (e) {
+            var name = ((e.first_name || '') + ' ' + (e.last_name || '')).trim() || e.name || '';
+            return '<option value="' + e.id + '"' +
+                (String(headId) === String(e.id) ? ' selected' : '') +
+                '>' + esc(name) + '</option>';
+        }).join('');
+}
 
 function renderDeptColorPicker() {
     var el = document.getElementById('dept-color-picker');
@@ -5514,7 +5571,23 @@ async function saveDept() {
         var method = editingDeptId ? 'PUT' : 'POST';
         var res = await fetch(url, { method: method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         var data = await res.json();
-        if (res.ok) { showToast(editingDeptId ? 'Department updated' : 'Department created', 'success'); closeDeptModal(); hrDataChanged('departments'); }
+        if (res.ok) {
+            // Saved separately, because who runs a department is a different
+            // decision from what it is called - and it is the one a workflow
+            // step reads when it looks for "their department head".
+            var head = document.getElementById('dept-head');
+            var id = editingDeptId || (data && data.id);
+            if (head && id) {
+                await fetch('/api/departments/' + id + '/head', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ head_id: head.value ? parseInt(head.value, 10) : null }),
+                });
+            }
+            showToast(editingDeptId ? 'Department updated' : 'Department created', 'success');
+            closeDeptModal();
+            hrDataChanged('departments');
+        }
         else { showToast(data.detail || 'Error', 'error'); }
     } catch (e) { showToast('Failed: ' + e, 'error'); }
 }
@@ -6662,45 +6735,128 @@ function renderAttendance(records) {
 }
 
 // --- View Switcher HR hooks ---
+var _orgData = null;
+var _orgCollapsed = {};      // node id -> true when its reports are folded away
+
 async function loadOrgChart() {
     try {
         var res = await fetch('/api/org-chart');
         if (!res.ok) throw new Error('Failed');
-        var data = await res.json();
-        var container = document.getElementById('orgchart-container');
-        if (!container) return;
-        container.innerHTML = '';
-        if (data.total_employees === 0) {
-            container.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:60px;">No employees to display. Add employees first.</div>';
-            return;
-        }
-        var roots = data.roots || [];
-        var departments = data.departments || {};
-        if (roots.length > 0) {
-            var rootSection = document.createElement('div');
-            rootSection.style.textAlign = 'center';
-            rootSection.style.marginBottom = '40px';
-            rootSection.innerHTML = '<h3 style="font-size:0.85rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;margin-bottom:20px;">Leadership</h3>';
-            var tree = document.createElement('div');
-            tree.className = 'org-tree';
-            roots.forEach(function(r) { tree.appendChild(renderOrgTreeNode(r)); });
-            rootSection.appendChild(tree);
-            container.appendChild(rootSection);
-        }
-        for (var deptName in departments) {
-            var deptSection = document.createElement('div');
-            deptSection.style.textAlign = 'center';
-            deptSection.style.marginBottom = '40px';
-            deptSection.innerHTML = '<h3 style="font-size:0.85rem;color:var(--primary-color);text-transform:uppercase;letter-spacing:1px;margin-bottom:20px;">' + esc(deptName) + '</h3>';
-            var tree = document.createElement('div');
-            tree.className = 'org-tree';
-            departments[deptName].forEach(function(e) { tree.appendChild(renderOrgTreeNode(e)); });
-            deptSection.appendChild(tree);
-            container.appendChild(deptSection);
-        }
+        _orgData = await res.json();
+        drawOrgChart();
     } catch (e) {
         var c = document.getElementById('orgchart-container');
         if (c) c.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:60px;">Failed to load org chart.</div>';
+    }
+}
+
+function drawOrgChart() {
+    var data = _orgData || {};
+    var container = document.getElementById('orgchart-container');
+    if (!container) return;
+    container.innerHTML = '';
+
+    if (!data.total_employees) {
+        container.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:60px;">No employees to display. Add employees first.</div>';
+        return;
+    }
+
+    container.appendChild(orgSummary(data));
+
+    // The tree, once.
+    //
+    // It used to be drawn and then every person was listed again underneath,
+    // grouped by department, because the server sent both. Two pictures of the
+    // same company, the second one flat, is why this screen did not read as a
+    // chart.
+    var tree = document.createElement('div');
+    tree.className = 'org-tree';
+    (data.roots || []).forEach(function (r) { tree.appendChild(renderOrgTreeNode(r)); });
+
+    var scroller = document.createElement('div');
+    scroller.style.cssText = 'overflow-x:auto;padding:8px 4px 24px;';
+    scroller.appendChild(tree);
+    container.appendChild(scroller);
+
+    if ((data.departments || []).length) container.appendChild(orgDepartments(data));
+}
+
+// What the chart cannot show by drawing it: how many people, and how many of
+// them are standing on their own because nobody is recorded above them.
+function orgSummary(data) {
+    var bar = document.createElement('div');
+    bar.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:18px;';
+
+    function pill(text, tone) {
+        var colors = {
+            plain: 'var(--text-secondary)',
+            warn: 'var(--warning-color)',
+            bad: 'var(--danger-color)',
+        };
+        return '<span style="font-size:0.78rem;color:' + (colors[tone] || colors.plain) +
+            ';border:1px solid currentColor;border-radius:999px;padding:3px 10px;">' +
+            esc(text) + '</span>';
+    }
+
+    var bits = [pill(data.total_employees + (data.total_employees === 1 ? ' person' : ' people'), 'plain')];
+    if ((data.departments || []).length) {
+        bits.push(pill(data.departments.length + ' departments', 'plain'));
+    }
+    // Worth saying out loud. Somebody with no manager is a root, so a company
+    // where nobody has reports_to set draws as a row of disconnected boxes -
+    // which looks like a broken chart rather than missing data.
+    if (data.unmanaged > 1) {
+        bits.push(pill(data.unmanaged + ' with no manager set', 'warn'));
+    }
+    if (data.orphaned) {
+        bits.push(pill(data.orphaned + ' report to somebody who has left', 'bad'));
+    }
+
+    var search = '<input id="org-search" class="form-input" placeholder="Find someone" ' +
+        'oninput="filterOrgChart()" style="max-width:220px;margin-left:auto;">';
+    bar.innerHTML = bits.join('') + search;
+    return bar;
+}
+
+function orgDepartments(data) {
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-top:28px;border-top:1px solid var(--border-color);padding-top:16px;';
+    var rows = (data.departments || []).map(function (d) {
+        return '<div style="display:flex;align-items:center;gap:10px;font-size:0.82rem;padding:5px 0;">' +
+            '<span style="width:10px;height:10px;border-radius:3px;flex:none;background:' +
+            esc(d.color || 'var(--primary-color)') + ';"></span>' +
+            '<span style="font-weight:600;">' + esc(d.name) + '</span>' +
+            '<span style="color:var(--text-secondary);">' + d.count +
+            (d.count === 1 ? ' person' : ' people') + '</span>' +
+            (d.head_name
+                ? '<span style="color:var(--text-secondary);">led by ' + esc(d.head_name) + '</span>'
+                : '<span style="color:var(--warning-color);">no head set</span>') +
+            '</div>';
+    }).join('');
+    wrap.innerHTML = '<h3 style="font-size:0.85rem;color:var(--text-secondary);' +
+        'text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;">Departments</h3>' + rows;
+    return wrap;
+}
+
+function toggleOrgBranch(id, ev) {
+    if (ev) ev.stopPropagation();
+    _orgCollapsed[id] = !_orgCollapsed[id];
+    drawOrgChart();
+    var box = document.getElementById('org-search');
+    if (box) filterOrgChart();
+}
+
+// Dimming rather than removing. Pulling non-matches out of the DOM would
+// reshape the tree around whoever is left, so the one thing somebody is
+// looking for would move while they read it.
+function filterOrgChart() {
+    var box = document.getElementById('org-search');
+    var term = (box ? box.value : '').trim().toLowerCase();
+    var nodes = document.querySelectorAll('#orgchart-container .org-node');
+    for (var i = 0; i < nodes.length; i++) {
+        var hit = !term || (nodes[i].textContent || '').toLowerCase().indexOf(term) !== -1;
+        nodes[i].style.opacity = hit ? '' : '0.25';
+        nodes[i].style.outline = (term && hit) ? '2px solid var(--primary-color)' : '';
     }
 }
 
@@ -6714,19 +6870,46 @@ function renderOrgTreeNode(emp, depth) {
         stop.textContent = 'Reporting line too deep - check for a loop';
         return stop;
     }
-    var hasChildren = emp.children && emp.children.length > 0;
+    var kids = emp.children || [];
+    var folded = !!_orgCollapsed[emp.id];
+    var hasChildren = kids.length > 0 && !folded;
+
     var wrapper = document.createElement('div');
     wrapper.className = 'org-branch';
+
     var node = document.createElement('div');
     node.className = 'org-node';
     // Styled by the stylesheet rather than inline. The inline rules used to
     // win over every .org-node declaration, including the phone-sized ones,
     // so on a narrow screen the boxes stayed wide and ran into each other.
     node.setAttribute('onclick', 'viewEmployee(' + emp.id + ')');
-    node.innerHTML = '<div class="org-name" style="font-weight:700;font-size:0.9rem;">' + esc(emp.name) + levelBadge(emp.level) + '</div>' +
+
+    var strip = emp.department_color
+        ? '<div style="height:3px;border-radius:2px;margin:-2px 0 6px;background:' +
+          esc(emp.department_color) + ';"></div>'
+        : '';
+    var reports = '';
+    if (kids.length) {
+        // Direct reports and everyone below are different questions. A head of
+        // department with four managers under them reads as "4" and is
+        // responsible for forty.
+        var label = kids.length + (emp.total_reports > kids.length
+            ? ' / ' + emp.total_reports + ' below' : '');
+        reports = '<button class="org-toggle" onclick="toggleOrgBranch(' + emp.id +
+            ', event)" style="margin-top:6px;font-size:0.7rem;background:none;' +
+            'border:1px solid var(--border-color);border-radius:999px;color:var(--text-secondary);' +
+            'padding:1px 8px;cursor:pointer;font-family:inherit;">' +
+            (folded ? '▸ ' : '▾ ') + esc(label) + '</button>';
+    }
+
+    node.innerHTML = strip +
+        '<div class="org-name" style="font-weight:700;font-size:0.9rem;">' + esc(emp.name) + levelBadge(emp.level) + '</div>' +
         '<div class="org-title" style="font-size:0.78rem;color:var(--text-secondary);margin-top:2px;">' + esc(emp.job_title || '-') + '</div>' +
         (emp.role && emp.role !== 'employee' ? '<div style="font-size:0.7rem;color:var(--warning-color);margin-top:2px;">' + esc(roleLabel(emp.role)) + '</div>' : '') +
-        (emp.department ? '<div class="org-dept" style="font-size:0.72rem;color:var(--primary-color);margin-top:4px;">' + esc(emp.department) + '</div>' : '');
+        (emp.department ? '<div class="org-dept" style="font-size:0.72rem;color:var(--primary-color);margin-top:4px;">' + esc(emp.department) + (emp.heads_department ? ' · head' : '') + '</div>' : '') +
+        (emp.orphaned ? '<div style="font-size:0.7rem;color:var(--danger-color);margin-top:4px;">manager has left</div>' : '') +
+        reports;
+
     wrapper.appendChild(node);
     if (hasChildren) {
         var stem = document.createElement('div');
@@ -6734,7 +6917,7 @@ function renderOrgTreeNode(emp, depth) {
         wrapper.appendChild(stem);
         var childrenRow = document.createElement('div');
         childrenRow.className = 'org-children';
-        emp.children.forEach(function(child) {
+        kids.forEach(function (child) {
             childrenRow.appendChild(renderOrgTreeNode(child, depth + 1));
         });
         wrapper.appendChild(childrenRow);

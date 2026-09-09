@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=147">
+  <link rel="stylesheet" href="tailwind.css?v=148">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,11 +50,11 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=147">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=147">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=147">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=147">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=147">
+    <link rel="stylesheet" href="mobile.css?v=148">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=148">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=148">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=148">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=148">
     <script src="/dialogs.js?v=1"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
@@ -374,6 +374,21 @@
           My tasks
         </h3>
         <div id="myTasks" class="space-y-2"></div>
+      </div>
+
+      <!-- What this person owes about other people.
+           A workflow step owned by "manager" made a task and then no query in
+           the application returned it: this portal asked only for the ones
+           owned by "employee", and there was no manager-facing list anywhere.
+           So a joiner checklist aimed at somebody's manager was, in practice,
+           a note in HR's pile. Hidden until there is something in it, because
+           most people are not managers. -->
+      <div class="bg-white rounded-2xl border border-gray-100 p-5 mt-4" id="teamTasksCard" hidden>
+        <h3 class="font-semibold text-gray-900 mb-4 flex items-center gap-2">
+          <svg class="w-5 h-5 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
+          For my team
+        </h3>
+        <div id="teamTasks" class="space-y-2"></div>
       </div>
     </div>
 
@@ -1077,6 +1092,91 @@
         });
     }
 
+    // --- What this person owes about other people ---------------------------
+
+    async function loadTeamTasks() {
+        var card = document.getElementById('teamTasksCard');
+        var host = document.getElementById('teamTasks');
+        if (!card || !host) return;
+        try {
+            var res = await fetch('/api/employee/team-tasks');
+            if (!res.ok) throw new Error('Request failed: ' + res.status);
+            var rows = await res.json();
+            // Most people are not managers, and an empty card that says
+            // nothing is worse than no card.
+            card.hidden = !rows.length;
+            if (rows.length) renderTeamTasks(rows);
+        } catch (e) {
+            card.hidden = true;
+        }
+    }
+    window.loadTeamTasks = loadTeamTasks;
+
+    function renderTeamTasks(rows) {
+        var host = document.getElementById('teamTasks');
+        host.textContent = '';
+        rows.forEach(function (t) {
+            var row = document.createElement('label');
+            row.className = 'flex items-start gap-3 p-3 rounded-xl border ' +
+                (t.overdue ? 'border-rose-200 bg-rose-50' : 'border-gray-100');
+
+            var box = document.createElement('input');
+            box.type = 'checkbox';
+            box.className = 'mt-0.5 w-4 h-4 rounded';
+            box.checked = !!t.done;
+            box.onchange = function () { setTeamTaskDone(t.id, box.checked); };
+            row.appendChild(box);
+
+            var text = document.createElement('div');
+            text.className = 'flex-1 min-w-0';
+
+            var title = document.createElement('div');
+            title.className = 'text-sm font-medium ' +
+                (t.done ? 'text-gray-400 line-through' : 'text-gray-900');
+            title.textContent = t.title;
+            text.appendChild(title);
+
+            // Whose it is about. Without this the list is a set of orders with
+            // no subject - "collect the laptop" about which of four leavers?
+            var who = document.createElement('div');
+            who.className = 'text-xs text-gray-500 mt-0.5';
+            who.textContent = t.about + (t.workflow ? ' - ' + t.workflow : '');
+            text.appendChild(who);
+
+            if (t.notes) {
+                var notes = document.createElement('div');
+                notes.className = 'text-xs text-gray-500 mt-0.5';
+                notes.textContent = t.notes;
+                text.appendChild(notes);
+            }
+            if (t.due_date) {
+                var due = document.createElement('div');
+                due.className = 'text-xs mt-1 ' +
+                    (t.overdue ? 'text-rose-600 font-semibold' : 'text-gray-400');
+                due.textContent = (t.overdue ? 'Overdue - was due ' : 'Due ') +
+                    _fmtDay(t.due_date);
+                text.appendChild(due);
+            }
+            row.appendChild(text);
+            host.appendChild(row);
+        });
+    }
+
+    async function setTeamTaskDone(id, done) {
+        try {
+            var res = await fetch('/api/employee/team-tasks/' + id + '/done', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ done: done }),
+            });
+            if (!res.ok) throw new Error('Request failed: ' + res.status);
+        } catch (e) {
+            alert('Could not save that. Please try again.');
+        }
+        loadTeamTasks();
+    }
+    window.setTeamTaskDone = setTeamTaskDone;
+
     async function setTaskDone(id, done) {
         try {
             var res = await fetch('/api/employee/tasks/' + id + '/done', {
@@ -1089,6 +1189,7 @@
             alert('Could not save that. Please try again.');
         }
         loadMyTasks();
+        loadTeamTasks();
     }
     window.setTaskDone = setTaskDone;
 
@@ -1284,7 +1385,7 @@
       var btn = document.querySelector('[data-tab="' + tab + '"]');
       if (panel) panel.classList.remove('hidden');
       if (btn) { btn.classList.add('tab-active'); btn.classList.remove('text-gray-500'); }
-      if (tab === 'overview') loadMyTasks();
+      if (tab === 'overview') { loadMyTasks(); loadTeamTasks(); }
       if (tab === 'attendance') loadAttendanceStats();
       if (tab === 'goals') loadGoals();
       if (tab === 'leave') { loadLeave(); loadLeaveBalance(); }
@@ -2743,7 +2844,7 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=147"></script>
-    <script src="/pwa.js?v=147"></script>
+    <script src="/install-hint.js?v=148"></script>
+    <script src="/pwa.js?v=148"></script>
 </body>
 </html>

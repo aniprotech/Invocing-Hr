@@ -500,10 +500,16 @@ class DBDepartment(Base):
     description = Column(String, default="")
     color = Column(String, default="#00f0ff")
     icon = Column(String, default="building")
+    # Who runs it. A workflow step can be aimed at "the head of this person's
+    # department" without naming anybody, so the checklist keeps working after
+    # the post changes hands.
+    head_id = Column(Integer, ForeignKey("employees.id"), nullable=True, index=True)
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     client = relationship("DBClient", back_populates="departments")
-    employees = relationship("DBEmployee", back_populates="department")
+    employees = relationship("DBEmployee", back_populates="department",
+                             foreign_keys="DBEmployee.department_id")
+    head = relationship("DBEmployee", foreign_keys=[head_id])
 
 
 class DBEmployee(Base):
@@ -560,7 +566,8 @@ class DBEmployee(Base):
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     client = relationship("DBClient", back_populates="employees")
-    department = relationship("DBDepartment", back_populates="employees")
+    department = relationship("DBDepartment", back_populates="employees",
+                              foreign_keys=[department_id])
     manager = relationship("DBEmployee", remote_side=[id], backref="direct_reports")
     payslips = relationship("DBPayslip", back_populates="employee")
     onboarding_items = relationship("DBOnboardingItem", back_populates="employee")
@@ -1733,8 +1740,17 @@ class DBWorkflowStep(Base):
 
     position = Column(Integer, default=0)
     title = Column(String, nullable=False)
-    # hr | manager | employee - who the task lands on
+    # Who the task lands on, worked out when the workflow fires rather than
+    # written down now:
+    #   hr              - whoever is running HR, the pool rather than a person
+    #   manager         - this person's own manager, via reports_to
+    #   department_head - the head of the department they are in
+    #   employee        - the person the workflow is about
+    #   person          - one named individual, in owner_employee_id
     owner = Column(String, default="hr")
+    # Only read when owner is "person". Kept nullable so the four role-based
+    # kinds never carry a stale pointer to somebody who has left.
+    owner_employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
     # Days from the trigger. Negative is allowed and is the point: a laptop
     # ordered on somebody's first morning arrives in their second week.
     due_offset_days = Column(Integer, default=0)
@@ -1783,6 +1799,15 @@ class DBWorkflowTask(Base):
 
     title = Column(String, nullable=False)
     owner = Column(String, default="hr")
+    # The person it was worked out to when it fired. Null means the HR pool,
+    # which is also where anything unresolvable lands - a task with nobody on
+    # it is a task nobody does.
+    assignee_id = Column(Integer, ForeignKey("employees.id"), nullable=True, index=True)
+    # Why it landed there: manager | department_head | employee | person | hr
+    # | no_manager | no_department_head | person_gone. The last three are
+    # fallbacks, and saying which one happened is the difference between "HR
+    # owns this" and "this was meant for a manager who does not exist".
+    assigned_how = Column(String, default="")
     due_date = Column(String, default="", index=True)
     notes = Column(String, default="")
 

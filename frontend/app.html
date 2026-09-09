@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=147">
-    <link rel="stylesheet" href="mobile.css?v=147">
+    <link rel="stylesheet" href="styles.css?v=148">
+    <link rel="stylesheet" href="mobile.css?v=148">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,10 +57,10 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=147">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=147">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=147">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=147">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=148">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=148">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=148">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=148">
     <script src="/dialogs.js?v=1"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
@@ -2883,6 +2883,13 @@
                                 <label>Description</label>
                                 <input type="text" id="dept-desc" class="form-control" placeholder="What does this team do?">
                             </div>
+                            <!-- A workflow step aimed at "their department head"
+                                 has nobody to reach without this, and quietly
+                                 becomes HR's job instead. -->
+                            <div class="form-group">
+                                <label>Head of department</label>
+                                <select id="dept-head" class="form-control"></select>
+                            </div>
                             <div class="form-group">
                                 <label>Color</label>
                                 <div id="dept-color-picker" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;"></div>
@@ -3889,7 +3896,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="app.js?v=147"></script>
+    <script src="app.js?v=148"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
@@ -4117,7 +4124,7 @@
             </div>
         </div>
     </div>
-    <script src="/install-hint.js?v=147"></script>
-    <script src="/pwa.js?v=147"></script>
+    <script src="/install-hint.js?v=148"></script>
+    <script src="/pwa.js?v=148"></script>
 </body>
 </html>

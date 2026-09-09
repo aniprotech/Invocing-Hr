@@ -1607,6 +1607,60 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 53: {sys.exc_info()[1]}")
 
+            # 54. Working out who a workflow task belongs to, rather than
+            # writing a role on it and hoping somebody looks. A step aimed at
+            # "manager" used to land on nobody: the employee's own list filters
+            # to owner='employee', and no manager-facing list existed at all.
+            try:
+                conn.execute(text(
+                    "ALTER TABLE departments ADD COLUMN IF NOT EXISTS "
+                    "head_id INTEGER"))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_departments_head_id "
+                    "ON departments (head_id)"))
+                conn.execute(text(
+                    "ALTER TABLE workflow_steps ADD COLUMN IF NOT EXISTS "
+                    "owner_employee_id INTEGER"))
+                conn.execute(text(
+                    "ALTER TABLE workflow_tasks ADD COLUMN IF NOT EXISTS "
+                    "assignee_id INTEGER"))
+                conn.execute(text(
+                    "ALTER TABLE workflow_tasks ADD COLUMN IF NOT EXISTS "
+                    "assigned_how VARCHAR DEFAULT ''"))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_workflow_tasks_assignee_id "
+                    "ON workflow_tasks (assignee_id)"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 54: {sys.exc_info()[1]}")
+
+            # 55. Tasks that already existed were made before anything was
+            # worked out, so they carry no assignee. Filling them in is what
+            # stops the manager list starting empty for everybody who was
+            # already mid-checklist when this shipped.
+            #
+            # Only the two that can be worked out from the row itself:
+            # 'employee' is the person the run is about, and 'manager' is
+            # whoever they report to. Anything with no answer is left null,
+            # which is the HR pool - exactly where it already effectively was.
+            try:
+                conn.execute(text(
+                    "UPDATE workflow_tasks SET assignee_id = employee_id, "
+                    "assigned_how = 'employee' "
+                    "WHERE owner = 'employee' AND assignee_id IS NULL"))
+                conn.execute(text(
+                    "UPDATE workflow_tasks t SET "
+                    "assignee_id = e.reports_to, assigned_how = 'manager' "
+                    "FROM employees e "
+                    "WHERE t.employee_id = e.id AND t.owner = 'manager' "
+                    "AND t.assignee_id IS NULL AND e.reports_to IS NOT NULL"))
+                conn.execute(text(
+                    "UPDATE workflow_tasks SET assigned_how = 'hr' "
+                    "WHERE assigned_how = '' OR assigned_how IS NULL"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 55: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the
