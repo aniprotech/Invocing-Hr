@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=149">
+  <link rel="stylesheet" href="tailwind.css?v=150">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,11 +50,11 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=149">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=149">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=149">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=149">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=149">
+    <link rel="stylesheet" href="mobile.css?v=150">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=150">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=150">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=150">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=150">
     <script src="/dialogs.js?v=1"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
@@ -383,6 +383,21 @@
            So a joiner checklist aimed at somebody's manager was, in practice,
            a note in HR's pile. Hidden until there is something in it, because
            most people are not managers. -->
+      <!-- Leave and attendance corrections waiting on this person.
+           Both could only ever be decided by HR - the endpoints take the
+           business account - so in a company of any size every request
+           funnelled through one desk, and the person who actually knows
+           whether somebody can be spared that week had no say and no view.
+           Hidden until there is something in it, because most people are not
+           managers. -->
+      <div class="bg-white rounded-2xl border border-gray-100 p-5 mt-4" id="approvalsCard" hidden>
+        <h3 class="font-semibold text-gray-900 mb-4 flex items-center gap-2">
+          <svg class="w-5 h-5 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          Waiting on you
+        </h3>
+        <div id="approvals" class="space-y-3"></div>
+      </div>
+
       <div class="bg-white rounded-2xl border border-gray-100 p-5 mt-4" id="teamTasksCard" hidden>
         <h3 class="font-semibold text-gray-900 mb-4 flex items-center gap-2">
           <svg class="w-5 h-5 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
@@ -1092,6 +1107,130 @@
         });
     }
 
+    // --- Leave and attendance corrections waiting on this person -------------
+
+    async function loadApprovals() {
+        var card = document.getElementById('approvalsCard');
+        var host = document.getElementById('approvals');
+        if (!card || !host) return;
+        try {
+            var res = await fetch('/api/employee/approvals');
+            if (!res.ok) throw new Error('Request failed: ' + res.status);
+            var data = await res.json();
+            card.hidden = !data.count;
+            if (data.count) renderApprovals(data);
+        } catch (e) {
+            card.hidden = true;
+        }
+    }
+    window.loadApprovals = loadApprovals;
+
+    function _decideRow(title, subtitle, detail, onYes, onNo) {
+        var row = document.createElement('div');
+        row.className = 'p-3 rounded-xl border border-gray-100';
+
+        var t = document.createElement('div');
+        t.className = 'text-sm font-medium text-gray-900';
+        t.textContent = title;
+        row.appendChild(t);
+
+        var sub = document.createElement('div');
+        sub.className = 'text-xs text-gray-500 mt-0.5';
+        sub.textContent = subtitle;
+        row.appendChild(sub);
+
+        if (detail) {
+            var d = document.createElement('div');
+            d.className = 'text-xs text-gray-400 mt-0.5';
+            d.textContent = detail;
+            row.appendChild(d);
+        }
+
+        var buttons = document.createElement('div');
+        buttons.className = 'flex gap-2 mt-2';
+        var yes = document.createElement('button');
+        yes.className = 'text-xs px-3 py-1 rounded-lg bg-brand-500 text-white';
+        yes.textContent = 'Approve';
+        yes.onclick = onYes;
+        var no = document.createElement('button');
+        no.className = 'text-xs px-3 py-1 rounded-lg border border-gray-200 text-gray-600';
+        no.textContent = 'Decline';
+        no.onclick = onNo;
+        buttons.appendChild(yes);
+        buttons.appendChild(no);
+        row.appendChild(buttons);
+        return row;
+    }
+
+    function renderApprovals(data) {
+        var host = document.getElementById('approvals');
+        host.textContent = '';
+
+        (data.leave || []).forEach(function (l) {
+            // What it would cost them, next to the decision. Approving leave
+            // without knowing what is left is the one people get wrong.
+            var left = (l.leave_type === 'sick' ? l.sick_remaining : l.annual_remaining);
+            var detail = (left === null || left === undefined)
+                ? (l.reason || '')
+                : (left + ' day(s) of ' + l.leave_type + ' leave left after this'
+                   + (l.reason ? ' - ' + l.reason : ''));
+            host.appendChild(_decideRow(
+                l.employee + ' - ' + l.days + ' day(s) ' + l.leave_type + ' leave',
+                l.start_date + ' to ' + l.end_date,
+                detail,
+                function () { decideLeave(l.id, 'approve'); },
+                function () { decideLeave(l.id, 'reject'); }));
+        });
+
+        (data.corrections || []).forEach(function (c) {
+            host.appendChild(_decideRow(
+                c.employee + ' - attendance on ' + (c.date || 'a day'),
+                c.was + '  \u2192  ' + c.asked_for,
+                c.reason || '',
+                function () { decideCorrection(c.id, 'approve'); },
+                function () { decideCorrection(c.id, 'reject'); }));
+        });
+    }
+
+    async function decideLeave(id, action) {
+        try {
+            var res = await fetch('/api/employee/approvals/leave/' + id, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: action }),
+            });
+            if (!res.ok) {
+                // The reason matters here. "Would exceed the entitlement" and
+                // "somebody already decided this" need different things done.
+                var d = await res.json().catch(function () { return {}; });
+                alert(d.detail || 'Could not save that. Please try again.');
+            }
+        } catch (e) {
+            alert('Could not save that. Please try again.');
+        }
+        loadApprovals();
+    }
+    window.decideLeave = decideLeave;
+
+    async function decideCorrection(id, decision) {
+        try {
+            var res = await fetch('/api/employee/approvals/correction/' + id, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ decision: decision }),
+            });
+            if (!res.ok) {
+                var d = await res.json().catch(function () { return {}; });
+                alert(d.detail || 'Could not save that. Please try again.');
+            }
+        } catch (e) {
+            alert('Could not save that. Please try again.');
+        }
+        loadApprovals();
+    }
+    window.decideCorrection = decideCorrection;
+
+
     // --- What this person owes about other people ---------------------------
 
     async function loadTeamTasks() {
@@ -1190,6 +1329,7 @@
         }
         loadMyTasks();
         loadTeamTasks();
+        loadApprovals();
     }
     window.setTaskDone = setTaskDone;
 
@@ -1385,7 +1525,7 @@
       var btn = document.querySelector('[data-tab="' + tab + '"]');
       if (panel) panel.classList.remove('hidden');
       if (btn) { btn.classList.add('tab-active'); btn.classList.remove('text-gray-500'); }
-      if (tab === 'overview') { loadMyTasks(); loadTeamTasks(); }
+      if (tab === 'overview') { loadMyTasks(); loadTeamTasks(); loadApprovals(); }
       if (tab === 'attendance') loadAttendanceStats();
       if (tab === 'goals') loadGoals();
       if (tab === 'leave') { loadLeave(); loadLeaveBalance(); }
@@ -2844,7 +2984,7 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=149"></script>
-    <script src="/pwa.js?v=149"></script>
+    <script src="/install-hint.js?v=150"></script>
+    <script src="/pwa.js?v=150"></script>
 </body>
 </html>

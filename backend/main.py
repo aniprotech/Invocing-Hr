@@ -15981,6 +15981,25 @@ def request_leave(request: Request, body: dict, db: Session = Depends(get_db)):
         message=f"Your {leave_type} leave request for {days:g} day(s) has been submitted.",
         type="info",
     ))
+    # And whoever has to decide it. Only the requester was told, so a request
+    # sat until somebody happened to open the HR screen - which for leave
+    # starting on Monday is the kind of waiting that gets noticed on Monday.
+    #
+    # No manager on file means nobody to tell, and HR sees it on their own
+    # list either way, so there is nothing to fall back to here.
+    if emp.reports_to:
+        manager = db.query(models.DBEmployee).filter(
+            models.DBEmployee.id == emp.reports_to,
+            models.DBEmployee.client_id == emp.client_id).first()
+        if manager:
+            asker = f"{emp.first_name} {emp.last_name}".strip() or "Somebody"
+            db.add(models.DBNotification(
+                client_id=emp.client_id, employee_id=manager.id,
+                title="Leave to approve",
+                message=(f"{asker} has asked for {days:g} day(s) of "
+                         f"{leave_type} leave from {start_date}."),
+                type="info",
+            ))
     db.commit()
     return {"message": "Leave request submitted", "days": days, "balance": leave_balance_for(db, emp)}
 
@@ -16241,21 +16260,23 @@ def get_all_leave_requests(request: Request, db: Session = Depends(get_db)):
     return result
 
 
-@app.post("/api/leave/requests/{leave_id}/action")
-def action_leave_simple(leave_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
-    client = get_client_user(request, db)
-    if not body: body = {}
-    leave = db.query(models.DBLeaveRequest).filter(models.DBLeaveRequest.id == leave_id, models.DBLeaveRequest.client_id == client.id).first()
-    if not leave:
-        raise HTTPException(status_code=404, detail="Leave request not found")
-    action = (body.get("action") or "").strip().lower()
+def decide_leave(db, leave, action, decided_by, request=None):
+    """Approve or reject one leave request, whoever is doing it.
+
+    Written once because there are now two ways in - HR's screen and the
+    manager's portal - and an entitlement rule that applied on one of them
+    would be no rule at all. Whoever the deciding party is, the same days are
+    checked against the same balance.
+    """
     if action not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail="Action must be 'approve' or 'reject'")
     if leave.status != "pending":
-        raise HTTPException(status_code=409, detail=f"This request has already been {leave.status}")
+        raise HTTPException(status_code=409,
+                            detail=f"This request has already been {leave.status}")
 
     if action == "approve":
-        emp = db.query(models.DBEmployee).filter(models.DBEmployee.id == leave.employee_id).first()
+        emp = db.query(models.DBEmployee).filter(
+            models.DBEmployee.id == leave.employee_id).first()
         if emp:
             balance = leave_balance_for(db, emp)
             # Pending days include this request, so compare against taken only.
@@ -16271,15 +16292,33 @@ def action_leave_simple(leave_id: int, request: Request, body: dict = None, db: 
                 )
 
     leave.status = "approved" if action == "approve" else "rejected"
-    leave.approved_by = body.get("approved_by", "HR")
+    # Who actually decided. It used to be the string "HR" whatever happened,
+    # so the record could not answer the one question asked afterwards.
+    leave.approved_by = decided_by
     leave.decided_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     db.add(models.DBNotification(
-        client_id=client.id, employee_id=leave.employee_id,
+        client_id=leave.client_id, employee_id=leave.employee_id,
         title=f"Leave Request {leave.status.title()}",
-        message=f"Your {leave.leave_type} leave request for {leave.start_date} to {leave.end_date} has been {leave.status}.",
+        message=(f"Your {leave.leave_type} leave request for {leave.start_date} "
+                 f"to {leave.end_date} has been {leave.status} by {decided_by}."),
         type="success" if leave.status == "approved" else "warning",
     ))
-    log_audit(db, client.id, f"leave_{leave.status}", "leave", leave.id, f"{leave.leave_type} ({leave.days}d)", f"Employee ID: {leave.employee_id}", request)
+    log_audit(db, leave.client_id, f"leave_{leave.status}", "leave", leave.id,
+              f"{leave.leave_type} ({leave.days}d)",
+              f"Employee ID: {leave.employee_id} - by {decided_by}", request)
+    return leave
+
+
+@app.post("/api/leave/requests/{leave_id}/action")
+def action_leave_simple(leave_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    if not body: body = {}
+    leave = db.query(models.DBLeaveRequest).filter(models.DBLeaveRequest.id == leave_id, models.DBLeaveRequest.client_id == client.id).first()
+    if not leave:
+        raise HTTPException(status_code=404, detail="Leave request not found")
+
+    decide_leave(db, leave, (body.get("action") or "").strip().lower(),
+                 body.get("approved_by") or "HR", request)
     db.commit()
     return {"message": f"Leave {leave.status}", "status": leave.status}
 
@@ -18411,6 +18450,157 @@ def finish_team_task(task_id: int, request: Request, body: dict = None,
     return {"id": task.id, "done": task.done}
 
 
+# --- What a manager has to decide --------------------------------------------
+#
+# Leave and attendance corrections could only ever be decided by HR - the
+# endpoints take get_client_user, which is the business account, and a leave
+# request recorded its approver as the literal string "HR" whatever happened.
+# So in a company of any size every request funnelled through one desk, and
+# the person who actually knows whether somebody can be spared that week had
+# no say and no view.
+#
+# Worse, nobody who could act was ever told. Requesting leave notified the
+# requester - "your request has been submitted" - and no one else, so a
+# request sat until somebody happened to open the HR screen.
+#
+# The decision itself is not reimplemented here. decide_leave and
+# decide_correction are shared with HR's endpoints, because an entitlement
+# rule that applied on one route and not the other would be no rule at all.
+
+def _my_reports(db, emp):
+    """Direct reports only.
+
+    Not the whole tree beneath them. A skip-level manager approving around
+    somebody's actual manager is a decision a company makes deliberately, and
+    HR can already decide anything - so the narrow reading is the safe default
+    rather than a limitation somebody has to work around.
+    """
+    return db.query(models.DBEmployee).filter(
+        models.DBEmployee.reports_to == emp.id,
+        models.DBEmployee.client_id == emp.client_id,
+    ).all()
+
+
+@app.get("/api/employee/approvals")
+def my_approvals(request: Request, db: Session = Depends(get_db)):
+    """Leave and attendance corrections waiting on this person as a manager."""
+    emp = current_employee(request, db)
+    reports = _my_reports(db, emp)
+    if not reports:
+        return {"count": 0, "leave": [], "corrections": []}
+
+    ids = [r.id for r in reports]
+    names = {r.id: f"{r.first_name} {r.last_name}".strip() for r in reports}
+
+    leave = db.query(models.DBLeaveRequest).filter(
+        models.DBLeaveRequest.client_id == emp.client_id,
+        models.DBLeaveRequest.employee_id.in_(ids),
+        models.DBLeaveRequest.status == "pending",
+    ).order_by(models.DBLeaveRequest.start_date).limit(200).all()
+
+    corrections = db.query(models.DBAttendanceCorrection).filter(
+        models.DBAttendanceCorrection.client_id == emp.client_id,
+        models.DBAttendanceCorrection.employee_id.in_(ids),
+        models.DBAttendanceCorrection.status == "pending",
+    ).order_by(models.DBAttendanceCorrection.created_at).limit(200).all()
+
+    days = {}
+    if corrections:
+        for a in db.query(models.DBAttendance).filter(
+                models.DBAttendance.id.in_([c.attendance_id for c in corrections])).all():
+            days[a.id] = a.date
+
+    # How much of their entitlement this would spend, worked out here rather
+    # than left for the manager to hold in their head. Approving leave without
+    # it is the decision people get wrong.
+    balances = {}
+    for r in reports:
+        if any(l.employee_id == r.id for l in leave):
+            try:
+                balances[r.id] = leave_balance_for(db, r)
+            except Exception:      # noqa: BLE001
+                balances[r.id] = None
+
+    return {
+        "count": len(leave) + len(corrections),
+        "leave": [{
+            "id": l.id, "employee_id": l.employee_id,
+            "employee": names.get(l.employee_id, ""),
+            "leave_type": l.leave_type, "days": l.days,
+            "start_date": l.start_date, "end_date": l.end_date,
+            "reason": l.reason or "",
+            "requested_at": l.created_at or "",
+            "annual_remaining": (balances.get(l.employee_id) or {}).get("annual_remaining"),
+            "sick_remaining": (balances.get(l.employee_id) or {}).get("sick_remaining"),
+        } for l in leave],
+        "corrections": [{
+            "id": c.id, "employee_id": c.employee_id,
+            "employee": names.get(c.employee_id, ""),
+            "date": days.get(c.attendance_id, ""),
+            "was": f"{c.old_clock_in or '-'} to {c.old_clock_out or '-'}",
+            "asked_for": f"{c.requested_clock_in or '-'} to {c.requested_clock_out or '-'}",
+            "reason": c.reason or "",
+            "requested_at": c.created_at or "",
+        } for c in corrections],
+    }
+
+
+def _a_report_of_mine(db, emp, employee_id):
+    """The check every decision here rests on.
+
+    Reads the reporting line at the moment of the decision rather than
+    trusting the list the page was drawn from, which may be minutes old and
+    was fetched before somebody changed teams.
+    """
+    if employee_id == emp.id:
+        # Nobody signs off their own leave, whatever the reporting line says.
+        # Checked on the id before the line is read, so a bad row that makes
+        # somebody their own manager cannot be used to walk around it.
+        return None
+    return db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == employee_id,
+        models.DBEmployee.client_id == emp.client_id,
+        models.DBEmployee.reports_to == emp.id,
+    ).first()
+
+
+@app.post("/api/employee/approvals/leave/{leave_id}")
+def decide_my_teams_leave(leave_id: int, request: Request, body: dict = None,
+                          db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    leave = db.query(models.DBLeaveRequest).filter(
+        models.DBLeaveRequest.id == leave_id,
+        models.DBLeaveRequest.client_id == emp.client_id).first()
+    # One answer for "no such request" and "not yours". Telling them apart
+    # would let anybody signed in map who works here by walking the ids.
+    if not leave or not _a_report_of_mine(db, emp, leave.employee_id):
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    who = f"{emp.first_name} {emp.last_name}".strip() or emp.email or "Manager"
+    decide_leave(db, leave, (body or {}).get("action", "").strip().lower(),
+                 who, request)
+    db.commit()
+    return {"message": f"Leave {leave.status}", "status": leave.status}
+
+
+@app.post("/api/employee/approvals/correction/{correction_id}")
+def decide_my_teams_correction(correction_id: int, request: Request,
+                               body: dict = None, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    row = db.query(models.DBAttendanceCorrection).filter(
+        models.DBAttendanceCorrection.id == correction_id,
+        models.DBAttendanceCorrection.client_id == emp.client_id).first()
+    if not row or not _a_report_of_mine(db, emp, row.employee_id):
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    body = body or {}
+    who = f"{emp.first_name} {emp.last_name}".strip() or emp.email or "Manager"
+    decide_correction(db, row, (body.get("decision") or "").strip().lower(),
+                      body.get("note"), who, request)
+    db.commit()
+    return correction_to_dict(row)
+
+
 @app.get("/api/employee/my-team")
 def my_team(request: Request, db: Session = Depends(get_db)):
     """Who reports to the person signed in.
@@ -19986,6 +20176,63 @@ def hr_list_corrections(request: Request, status: str = "pending",
     return [correction_to_dict(c, emps.get(c.employee_id)) for c in rows]
 
 
+def decide_correction(db, row, decision, note, decided_by, request=None):
+    """Approve writes the times across and recomputes the hours; reject leaves
+    the attendance row exactly as it was.
+
+    Shared for the same reason as the leave one: a manager deciding this and
+    HR deciding it have to do the same thing to the record, or the hours on a
+    timesheet would depend on who happened to click.
+    """
+    if decision not in ("approve", "reject"):
+        raise HTTPException(status_code=400,
+                            detail="decision must be approve or reject")
+    if row.status != "pending":
+        raise HTTPException(status_code=409, detail=f"This was already {row.status}.")
+
+    row.status = "approved" if decision == "approve" else "rejected"
+    row.note = str(note or "").strip()[:300]
+    row.decided_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    row.decided_by = decided_by
+
+    # The day is on the attendance row, not on the request, and it is the one
+    # thing that makes the answer mean anything to the person who asked.
+    att = db.query(models.DBAttendance).filter(
+        models.DBAttendance.id == row.attendance_id).first()
+    which_day = (att.date if att else "") or ""
+
+    if decision == "approve":
+        if not att:
+            raise HTTPException(status_code=404, detail="That day is no longer on record")
+        if row.requested_clock_in:
+            att.clock_in = row.requested_clock_in
+        if row.requested_clock_out:
+            att.clock_out = row.requested_clock_out
+        # Recomputed from whatever the row now holds, so the hours always match
+        # the times shown beside them.
+        if att.clock_in and att.clock_out:
+            try:
+                cin = datetime.strptime(att.clock_in, "%H:%M:%S")
+                cout = datetime.strptime(att.clock_out, "%H:%M:%S")
+                att.total_hours = max(0.0, round((cout - cin).total_seconds() / 3600, 2))
+                att.status = "completed"
+            except ValueError:
+                att.total_hours = 0.0
+        log_audit(db, row.client_id, "attendance_corrected", "attendance", att.id,
+                  att.date, f"{att.clock_in} to {att.clock_out} - by {decided_by}",
+                  request)
+
+    db.add(models.DBNotification(
+        client_id=row.client_id, employee_id=row.employee_id,
+        title=f"Attendance change {row.status}",
+        message=(f"Your correction for {which_day} was {row.status} by {decided_by}."
+                 if which_day
+                 else f"Your attendance correction was {row.status} by {decided_by}."),
+        type="success" if row.status == "approved" else "warning",
+    ))
+    return row
+
+
 @app.post("/api/hr/attendance/corrections/{correction_id}/decide")
 def hr_decide_correction(correction_id: int, request: Request, body: dict = None,
                          db: Session = Depends(get_db)):
@@ -20006,33 +20253,8 @@ def hr_decide_correction(correction_id: int, request: Request, body: dict = None
     if row.status != "pending":
         raise HTTPException(status_code=409, detail=f"This was already {row.status}.")
 
-    row.status = "approved" if decision == "approve" else "rejected"
-    row.note = str(body.get("note") or "").strip()[:300]
-    row.decided_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    row.decided_by = client.company_name or client.email or "HR"
-
-    if decision == "approve":
-        att = db.query(models.DBAttendance).filter(
-            models.DBAttendance.id == row.attendance_id).first()
-        if not att:
-            raise HTTPException(status_code=404, detail="That day is no longer on record")
-        if row.requested_clock_in:
-            att.clock_in = row.requested_clock_in
-        if row.requested_clock_out:
-            att.clock_out = row.requested_clock_out
-        # Recomputed from whatever the row now holds, so the hours always match
-        # the times shown beside them.
-        if att.clock_in and att.clock_out:
-            try:
-                cin = datetime.strptime(att.clock_in, "%H:%M:%S")
-                cout = datetime.strptime(att.clock_out, "%H:%M:%S")
-                att.total_hours = max(0.0, round((cout - cin).total_seconds() / 3600, 2))
-                att.status = "completed"
-            except ValueError:
-                att.total_hours = 0.0
-        log_audit(db, client.id, "attendance_corrected", "attendance", att.id,
-                  att.date, f"{att.clock_in} to {att.clock_out}", request)
-
+    decide_correction(db, row, decision, body.get("note"),
+                      client.company_name or client.email or "HR", request)
     db.commit()
     return correction_to_dict(row)
 
