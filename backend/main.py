@@ -18010,29 +18010,19 @@ def list_workflows(request: Request, db: Session = Depends(get_db)):
     return [workflow_to_dict(w) for w in rows]
 
 
-@app.post("/api/workflows")
-def create_workflow(request: Request, body: dict = None,
-                    db: Session = Depends(get_db)):
-    client = get_client_user(request, db)
-    body = body or {}
-    name = str(body.get("name") or "").strip()[:200]
-    if not name:
-        raise HTTPException(status_code=400, detail="Give the workflow a name")
+def write_workflow_steps(db, client, flow, steps):
+    """Replace the step list on a template.
 
-    trigger = str(body.get("trigger") or "employee_joins").strip()
-    if trigger not in WORKFLOW_TRIGGERS:
-        raise HTTPException(status_code=400, detail="That is not a trigger")
-
-    flow = models.DBWorkflow(
-        client_id=client.id, name=name,
-        description=str(body.get("description") or "").strip()[:1000],
-        trigger=trigger,
-        # Off until somebody turns it on and has seen the steps.
-        active=False, created_by=client.email or "HR")
-    db.add(flow)
+    Replaced rather than reconciled. Tasks copy their title and owner at the
+    moment they are made and hold no reference back to a step, so there is
+    nothing pointing at the old rows and nothing to keep alive for them - and
+    an edit that tried to match up "the same step" across a reorder would have
+    to guess, which is how a checklist quietly grows a duplicate.
+    """
+    flow.steps.clear()
     db.flush()
 
-    for i, st in enumerate(body.get("steps") or []):
+    for i, st in enumerate(steps):
         title = str(st.get("title") or "").strip()[:300]
         if not title:
             continue
@@ -18061,6 +18051,31 @@ def create_workflow(request: Request, body: dict = None,
             due_offset_days=int(st.get("due_offset_days") or 0),
             notes=str(st.get("notes") or "").strip()[:500]))
 
+
+@app.post("/api/workflows")
+def create_workflow(request: Request, body: dict = None,
+                    db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    name = str(body.get("name") or "").strip()[:200]
+    if not name:
+        raise HTTPException(status_code=400, detail="Give the workflow a name")
+
+    trigger = str(body.get("trigger") or "employee_joins").strip()
+    if trigger not in WORKFLOW_TRIGGERS:
+        raise HTTPException(status_code=400, detail="That is not a trigger")
+
+    flow = models.DBWorkflow(
+        client_id=client.id, name=name,
+        description=str(body.get("description") or "").strip()[:1000],
+        trigger=trigger,
+        # Off until somebody turns it on and has seen the steps.
+        active=False, created_by=client.email or "HR")
+    db.add(flow)
+    db.flush()
+
+    write_workflow_steps(db, client, flow, body.get("steps") or [])
+
     log_audit(db, client.id, "workflow_created", "workflow", flow.id, name,
               trigger, request)
     db.commit()
@@ -18077,6 +18092,73 @@ def read_workflow(workflow_id: int, request: Request,
         models.DBWorkflow.client_id == client.id).first()
     if not flow:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    return workflow_to_dict(flow, with_steps=True)
+
+
+@app.put("/api/workflows/{workflow_id}")
+def update_workflow(workflow_id: int, request: Request, body: dict = None,
+                    db: Session = Depends(get_db)):
+    """Change a template.
+
+    There was no way to do this at all. A workflow could be created, switched
+    on and off, and deleted - but deleting is refused once it has run for
+    somebody, because the tasks it made are still theirs. So the first
+    workflow anybody wrote was the one they were stuck with: a typo in a step,
+    or a checklist that turned out to need one more line, meant leaving it
+    wrong or turning the whole thing off.
+
+    What this does not do is reach back. Tasks copy their title and owner when
+    they are made and hold no link to the step they came from, so what was
+    asked of somebody last month stays what was asked of them. An edit changes
+    what the next person gets.
+    """
+    client = get_client_user(request, db)
+    flow = db.query(models.DBWorkflow).filter(
+        models.DBWorkflow.id == workflow_id,
+        models.DBWorkflow.client_id == client.id).first()
+    if not flow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    body = body or {}
+    if "name" in body:
+        name = str(body.get("name") or "").strip()[:200]
+        if not name:
+            raise HTTPException(status_code=400, detail="Give the workflow a name")
+        flow.name = name
+    if "description" in body:
+        flow.description = str(body.get("description") or "").strip()[:1000]
+
+    if "trigger" in body:
+        trigger = str(body.get("trigger") or "").strip()
+        if trigger not in WORKFLOW_TRIGGERS:
+            raise HTTPException(status_code=400, detail="That is not a trigger")
+        if trigger != flow.trigger:
+            # A workflow fires once per person, ever - that is what stops a
+            # corrected status producing two sets of tasks. So moving an
+            # already-run workflow to another trigger would leave it silently
+            # dead for everybody it has run for: they would reach the new
+            # trigger and be skipped. Refused rather than allowed to look like
+            # it worked.
+            if db.query(models.DBWorkflowRun).filter(
+                    models.DBWorkflowRun.workflow_id == flow.id).first():
+                raise HTTPException(
+                    status_code=409,
+                    detail="This has already run for somebody, so it cannot be "
+                           "moved to a different trigger - it would never fire "
+                           "again for them. Make a new workflow instead.")
+            flow.trigger = trigger
+
+    if "steps" in body:
+        steps = body.get("steps") or []
+        if not [st for st in steps if str(st.get("title") or "").strip()]:
+            raise HTTPException(status_code=400,
+                                detail="A workflow needs at least one step")
+        write_workflow_steps(db, client, flow, steps)
+
+    log_audit(db, client.id, "workflow_updated", "workflow", flow.id,
+              flow.name, flow.trigger, request)
+    db.commit()
+    db.refresh(flow)
     return workflow_to_dict(flow, with_steps=True)
 
 

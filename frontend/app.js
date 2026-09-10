@@ -615,6 +615,9 @@ function workflowRow(w) {
             (w.active ? 'on' : 'off') + '</span>' +
         '<button class="btn btn-sm btn-outline" onclick="toggleWorkflow(' + w.id + ', ' +
             (w.active ? 'false' : 'true') + ')">' + (w.active ? 'Turn off' : 'Turn on') + '</button>' +
+        // Editing was the one thing that could not be done. Deleting is refused
+        // once it has run, so a typo in a step was permanent.
+        '<button class="btn btn-sm btn-outline" onclick="editWorkflow(' + w.id + ')">Edit</button>' +
         (w.run_count ? '' :
             '<button class="btn btn-sm btn-outline" onclick="removeWorkflow(' + w.id +
             ', &quot;' + esc(jsq(w.name)) + '&quot;)">Delete</button>') +
@@ -713,9 +716,16 @@ window.removeWorkflow = removeWorkflow;
 
 // --- writing one -----------------------------------------------------------
 
+var _wfEditingId = null;
+
 function openWorkflowModal() {
+    _wfEditingId = null;
+    document.getElementById('wf-modal-title').textContent = 'New workflow';
+    document.getElementById('wf-save-btn').textContent = 'Save, switched off';
     document.getElementById('wf-name').value = '';
     document.getElementById('wf-trigger').value = 'employee_joins';
+    document.getElementById('wf-trigger').disabled = false;
+    document.getElementById('wf-trigger-locked').style.display = 'none';
     _wfSteps = [{ title: '', owner: 'hr', due_offset_days: 0 }];
     renderWorkflowSteps();
     setWorkflowError('');
@@ -723,6 +733,39 @@ function openWorkflowModal() {
     document.getElementById('wf-name').focus();
 }
 window.openWorkflowModal = openWorkflowModal;
+
+async function editWorkflow(id) {
+    // Read back rather than taken from the row, because the row carries a
+    // count of steps and not the steps themselves.
+    try {
+        var res = await fetch('/api/workflows/' + id);
+        if (!res.ok) { showToast('Could not open that.', 'error'); return; }
+        var w = await res.json();
+
+        _wfEditingId = w.id;
+        document.getElementById('wf-modal-title').textContent = 'Edit workflow';
+        document.getElementById('wf-save-btn').textContent = 'Save changes';
+        document.getElementById('wf-name').value = w.name || '';
+        document.getElementById('wf-trigger').value = w.trigger || 'employee_joins';
+
+        var hasRun = (w.run_count || 0) > 0;
+        document.getElementById('wf-trigger').disabled = hasRun;
+        document.getElementById('wf-trigger-locked').style.display = hasRun ? 'block' : 'none';
+
+        _wfSteps = (w.steps || []).map(function (st) {
+            return { title: st.title || '', owner: st.owner || 'hr',
+                     owner_employee_id: st.owner_employee_id || null,
+                     due_offset_days: st.due_offset_days || 0,
+                     notes: st.notes || '' };
+        });
+        if (!_wfSteps.length) _wfSteps = [{ title: '', owner: 'hr', due_offset_days: 0 }];
+        renderWorkflowSteps();
+        setWorkflowError('');
+        document.getElementById('workflow-modal').style.display = 'flex';
+        document.getElementById('wf-name').focus();
+    } catch (e) { showToast('Could not open that.', 'error'); }
+}
+window.editWorkflow = editWorkflow;
 
 function closeWorkflowModal() {
     document.getElementById('workflow-modal').style.display = 'none';
@@ -759,6 +802,10 @@ function readWorkflowSteps() {
                 return st.owner_employee_id || null;
             })(),
             due_offset_days: d ? (parseInt(d.value, 10) || 0) : st.due_offset_days,
+            // Carried rather than read: there is no field for it on this form,
+            // and rebuilding the step without it would blank the notes on
+            // every step of a workflow the moment somebody edited its name.
+            notes: st.notes || '',
         };
     });
 }
@@ -832,21 +879,41 @@ async function saveWorkflow() {
     btn.disabled = true;
     setWorkflowError('');
     try {
-        var res = await fetch('/api/workflows', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                name: name,
-                trigger: document.getElementById('wf-trigger').value,
-                steps: steps.map(function (st) {
-                    return { title: st.title.trim(), owner: st.owner,
-                             due_offset_days: st.due_offset_days };
-                }),
-            })
+        var payload = {
+            name: name,
+            steps: steps.map(function (st) {
+                return {
+                    title: st.title.trim(), owner: st.owner,
+                    // This was being dropped, so a step aimed at a named person
+                    // arrived at the server with nobody named and was stored as
+                    // an HR step - the dropdown looked like it worked and did
+                    // nothing.
+                    owner_employee_id: st.owner_employee_id || null,
+                    due_offset_days: st.due_offset_days,
+                    notes: st.notes || '',
+                };
+            }),
+        };
+        // Only sent when it can be changed. A disabled select still has a value,
+        // and sending it back on an already-run workflow would be refused.
+        var trig = document.getElementById('wf-trigger');
+        if (!trig.disabled) payload.trigger = trig.value;
+
+        var res = await fetch(
+            _wfEditingId ? '/api/workflows/' + _wfEditingId : '/api/workflows', {
+            method: _wfEditingId ? 'PUT' : 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
         });
         var d = await res.json();
         if (!res.ok) { setWorkflowError(d.detail || 'That did not save.'); return; }
+        var wasEdit = !!_wfEditingId;
         closeWorkflowModal();
-        showToast('Saved, switched off. Turn it on when you are ready.', 'success');
+        showToast(wasEdit
+            // Said plainly, because the obvious worry on pressing save is
+            // whether it has just rewritten somebody's outstanding list.
+            ? 'Saved. People it has already run for keep what they were asked.'
+            : 'Saved, switched off. Turn it on when you are ready.', 'success');
         loadWorkflows();
     } catch (e) {
         setWorkflowError('That did not save.');
