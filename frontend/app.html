@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=150">
-    <link rel="stylesheet" href="mobile.css?v=150">
+    <link rel="stylesheet" href="styles.css?v=151">
+    <link rel="stylesheet" href="mobile.css?v=151">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,10 +57,10 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=150">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=150">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=150">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=150">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=151">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=151">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=151">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=151">
     <script src="/dialogs.js?v=1"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
@@ -137,6 +137,7 @@
                             <a href="#/calendar" class="nav-item" id="nav-calendar" data-portal="hr">Calendar</a>
                             <a href="#/people" class="nav-item" id="nav-people" data-portal="hr">Employees</a>
                             <a href="#/org-chart" class="nav-item" id="nav-org" data-portal="hr">Org Chart</a>
+                            <a href="#/feed" class="nav-item" id="nav-feed" data-portal="hr">Feed</a>
                             <a href="#/assets" class="nav-item" id="nav-assets" data-portal="hr">Assets</a>
                             <a href="#/surveys" class="nav-item" id="nav-surveys" data-portal="hr">Surveys</a>
                             <a href="#/workflows" class="nav-item" id="nav-workflows" data-portal="hr">Workflows</a>
@@ -3467,6 +3468,23 @@
                     </div>
                 </div>
 
+                <!-- ========== THE COMPANY FEED ========== -->
+                <div id="feed-view" class="view-section dashboard" style="display:none;">
+                    <div class="invoices-header-area">
+                        <div>
+                            <h1>Feed</h1>
+                            <p class="subtitle">What the company is saying to itself</p>
+                        </div>
+                        <!-- On unless somebody turns it off. A feed only HR can
+                             write to is the announcements page again. -->
+                        <label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;color:var(--text-secondary);cursor:pointer;">
+                            <input type="checkbox" id="feed-staff-can-post" onchange="saveFeedSettings()">
+                            Staff can post
+                        </label>
+                    </div>
+                    <div id="feed"></div>
+                </div>
+
                 <!-- ========== RECRUITMENT ========== -->
                 <div id="recruitment-view" class="view-section dashboard" style="display:none;">
                     <div class="invoices-header-area">
@@ -3905,7 +3923,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="app.js?v=150"></script>
+    <script src="feed.js?v=151"></script>
+    <script src="app.js?v=151"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
@@ -4133,7 +4152,7 @@
             </div>
         </div>
     </div>
-    <script src="/install-hint.js?v=150"></script>
-    <script src="/pwa.js?v=150"></script>
+    <script src="/install-hint.js?v=151"></script>
+    <script src="/pwa.js?v=151"></script>
 </body>
 </html>

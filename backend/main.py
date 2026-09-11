@@ -19631,6 +19631,337 @@ def employee_holidays(request: Request, year: int = None,
     return {"year": year, "holidays": out}
 
 
+# ============================================================================
+# THE COMPANY FEED
+#
+# Announcements went out as notifications - one copy per person, gone once
+# dismissed, and only ever from HR to staff. There was nowhere for the company
+# to be a company: no place for a photo of the team at the summer party, no
+# way for anybody but HR to say anything, nothing anybody could react to.
+#
+# One set of endpoints for everybody. The feed is one thing that HR and staff
+# both look at, so it is served once and the viewer is worked out from the
+# session. What differs by who is looking - pinning, deleting other people's
+# posts, posting at all when staff posting is switched off - is a check on a
+# flag, not a second copy of the code.
+# ============================================================================
+
+FEED_PAGE = 20
+FEED_BODY_MAX = 2000
+FEED_COMMENT_MAX = 1000
+# Base64 is a third bigger than the bytes, so this is about 2MB of image.
+FEED_IMAGE_MAX = 3_000_000
+# Never SVG. A logo drawn into a PDF is one thing; an image somebody uploads
+# and everybody else's browser then renders is a place to put a script.
+FEED_IMAGE_RE = re.compile(r"data:image/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=\s]+")
+
+
+def feed_viewer(request: Request, db):
+    """Who is looking, and what they may do.
+
+    Least privilege when both sessions are present: somebody with an employee
+    id in their session is staff, whatever else the cookie carries.
+    """
+    emp_id = request.session.get("employee_id")
+    if emp_id:
+        emp = db.query(models.DBEmployee).filter(models.DBEmployee.id == emp_id).first()
+        if not emp:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        return {"client_id": emp.client_id, "liker": f"emp:{emp.id}",
+                "is_hr": False, "employee_id": emp.id,
+                "name": f"{emp.first_name} {emp.last_name}".strip() or emp.email or "Someone"}
+    client = get_client_user(request, db)
+    return {"client_id": client.id, "liker": "hr", "is_hr": True,
+            "employee_id": None,
+            "name": client.company_name or client.email or "The company"}
+
+
+def feed_staff_can_post(db, client_id) -> bool:
+    """On unless somebody turned it off. A feed only HR can write to is the
+    announcements page again, which is what this exists to not be."""
+    return str(tenant_setting(db, client_id, "feed.staff_can_post", "1")).strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
+def feed_image_or_400(raw):
+    image = (raw or "").strip()
+    if not image:
+        return ""
+    # Matched in full, not by prefix. This string is written into an <img src>
+    # and served back as bytes, so nothing may follow a valid-looking start.
+    if not FEED_IMAGE_RE.fullmatch(image):
+        raise HTTPException(status_code=400,
+                            detail="The picture must be a PNG, JPEG, GIF or WebP")
+    if len(image) > FEED_IMAGE_MAX:
+        raise HTTPException(status_code=413,
+                            detail="That picture is too large - keep it under about 2MB")
+    return image
+
+
+def _feed_post_dict(p, viewer, like_counts, comment_counts, my_likes):
+    return {
+        "id": p.id,
+        "author": p.author_name or "",
+        "author_employee_id": p.author_employee_id,
+        "from_company": p.author_employee_id is None,
+        "body": p.body or "",
+        "has_image": bool(p.image_data),
+        "pinned": bool(p.pinned),
+        "created_at": p.created_at or "",
+        "likes": like_counts.get(p.id, 0),
+        "liked_by_me": p.id in my_likes,
+        "comments": comment_counts.get(p.id, 0),
+        # What this viewer may do to it, worked out here so the page does not
+        # have to know the rules and get them slightly wrong.
+        "can_delete": viewer["is_hr"] or (
+            p.author_employee_id is not None
+            and p.author_employee_id == viewer["employee_id"]),
+        "can_pin": viewer["is_hr"],
+    }
+
+
+def _feed_load(db, viewer, ids_or_rows):
+    """Counts and the viewer's own likes for a page of posts, in three
+    queries rather than three per post."""
+    rows = ids_or_rows
+    ids = [p.id for p in rows]
+    if not ids:
+        return {}, {}, set()
+    like_counts = dict(db.query(models.DBPostLike.post_id, sqlfunc.count(models.DBPostLike.id))
+                       .filter(models.DBPostLike.post_id.in_(ids))
+                       .group_by(models.DBPostLike.post_id).all())
+    comment_counts = dict(db.query(models.DBPostComment.post_id, sqlfunc.count(models.DBPostComment.id))
+                          .filter(models.DBPostComment.post_id.in_(ids))
+                          .group_by(models.DBPostComment.post_id).all())
+    my_likes = {r[0] for r in db.query(models.DBPostLike.post_id).filter(
+        models.DBPostLike.post_id.in_(ids),
+        models.DBPostLike.liker == viewer["liker"]).all()}
+    return like_counts, comment_counts, my_likes
+
+
+def _feed_post(db, viewer, post_id):
+    p = db.query(models.DBPost).filter(
+        models.DBPost.id == post_id,
+        models.DBPost.client_id == viewer["client_id"]).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return p
+
+
+@app.get("/api/feed")
+def read_feed(request: Request, before: int = 0, db: Session = Depends(get_db)):
+    """Pinned first, then newest. Paged by id, because a page number shifts
+    under you every time somebody posts."""
+    viewer = feed_viewer(request, db)
+    q = db.query(models.DBPost).filter(models.DBPost.client_id == viewer["client_id"])
+
+    pinned = []
+    if not before:
+        pinned = q.filter(models.DBPost.pinned == True).order_by(     # noqa: E712
+            models.DBPost.id.desc()).all()
+
+    rest = q.filter(models.DBPost.pinned == False)                    # noqa: E712
+    if before:
+        rest = rest.filter(models.DBPost.id < before)
+    rest = rest.order_by(models.DBPost.id.desc()).limit(FEED_PAGE + 1).all()
+    more = len(rest) > FEED_PAGE
+    rest = rest[:FEED_PAGE]
+
+    rows = pinned + rest
+    like_counts, comment_counts, my_likes = _feed_load(db, viewer, rows)
+    return {
+        "posts": [_feed_post_dict(p, viewer, like_counts, comment_counts, my_likes)
+                  for p in rows],
+        "next_before": rest[-1].id if (more and rest) else 0,
+        "can_post": viewer["is_hr"] or feed_staff_can_post(db, viewer["client_id"]),
+        "is_hr": viewer["is_hr"],
+    }
+
+
+@app.post("/api/feed")
+def write_post(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    viewer = feed_viewer(request, db)
+    body = body or {}
+    if not viewer["is_hr"] and not feed_staff_can_post(db, viewer["client_id"]):
+        raise HTTPException(status_code=403,
+                            detail="Only HR can post here at the moment")
+
+    text = str(body.get("body") or "").strip()[:FEED_BODY_MAX]
+    image = feed_image_or_400(body.get("image_data"))
+    if not text and not image:
+        raise HTTPException(status_code=400, detail="Say something, or add a picture")
+
+    post = models.DBPost(
+        client_id=viewer["client_id"],
+        author_employee_id=viewer["employee_id"],
+        # Kept as it was at the time, so a post from somebody who has since
+        # left still reads correctly.
+        author_name=viewer["name"],
+        body=text, image_data=image,
+        pinned=bool(body.get("pinned")) and viewer["is_hr"])
+    db.add(post)
+    db.commit()
+    db.refresh(post)
+    return _feed_post_dict(post, viewer, {}, {}, set())
+
+
+@app.get("/api/feed/{post_id}/image")
+def read_post_image(post_id: int, request: Request, db: Session = Depends(get_db)):
+    """The bytes, with the type the upload said.
+
+    nosniff comes from the middleware every response passes through, so a
+    browser cannot decide these bytes are really HTML and run them. Not
+    repeated here: one place that sets it is one place to check."""
+    viewer = feed_viewer(request, db)
+    p = _feed_post(db, viewer, post_id)
+    if not p.image_data:
+        raise HTTPException(status_code=404, detail="No picture on this post")
+    head, _, b64 = p.image_data.partition(",")
+    media = head[len("data:"):].split(";")[0] or "application/octet-stream"
+    try:
+        raw = base64.b64decode(b64, validate=False)
+    except Exception:
+        raise HTTPException(status_code=404, detail="No picture on this post")
+    return Response(content=raw, media_type=media, headers={
+        # Private to whoever may see the feed, and cacheable for them: the
+        # bytes on a post never change, only the post around them.
+        "Cache-Control": "private, max-age=86400",
+        "Content-Disposition": "inline",
+    })
+
+
+@app.post("/api/feed/{post_id}/like")
+def toggle_like(post_id: int, request: Request, db: Session = Depends(get_db)):
+    """One person, one like, and the second tap takes it back."""
+    viewer = feed_viewer(request, db)
+    p = _feed_post(db, viewer, post_id)
+    mine = db.query(models.DBPostLike).filter(
+        models.DBPostLike.post_id == p.id,
+        models.DBPostLike.liker == viewer["liker"]).first()
+    if mine:
+        db.delete(mine)
+        liked = False
+    else:
+        db.add(models.DBPostLike(client_id=viewer["client_id"], post_id=p.id,
+                                 liker=viewer["liker"]))
+        liked = True
+    db.commit()
+    count = db.query(models.DBPostLike).filter(models.DBPostLike.post_id == p.id).count()
+    return {"id": p.id, "liked_by_me": liked, "likes": count}
+
+
+@app.post("/api/feed/{post_id}/pin")
+def toggle_pin(post_id: int, request: Request, db: Session = Depends(get_db)):
+    viewer = feed_viewer(request, db)
+    if not viewer["is_hr"]:
+        raise HTTPException(status_code=403, detail="Only HR can pin a post")
+    p = _feed_post(db, viewer, post_id)
+    p.pinned = not bool(p.pinned)
+    db.commit()
+    return {"id": p.id, "pinned": bool(p.pinned)}
+
+
+@app.delete("/api/feed/{post_id}")
+def delete_post(post_id: int, request: Request, db: Session = Depends(get_db)):
+    """Your own, or anybody's if you are HR. The likes and comments go with
+    it - they were about this post and are nothing without it."""
+    viewer = feed_viewer(request, db)
+    p = _feed_post(db, viewer, post_id)
+    own = p.author_employee_id is not None and p.author_employee_id == viewer["employee_id"]
+    if not (viewer["is_hr"] or own):
+        raise HTTPException(status_code=403, detail="That is not your post")
+    log_audit(db, viewer["client_id"], "post_deleted", "post", p.id,
+              (p.body or "")[:80], viewer["name"], request)
+    db.delete(p)
+    db.commit()
+    return {"deleted": post_id}
+
+
+@app.get("/api/feed/{post_id}/comments")
+def read_comments(post_id: int, request: Request, db: Session = Depends(get_db)):
+    viewer = feed_viewer(request, db)
+    p = _feed_post(db, viewer, post_id)
+    rows = db.query(models.DBPostComment).filter(
+        models.DBPostComment.post_id == p.id).order_by(
+            models.DBPostComment.id.asc()).limit(500).all()
+    return [{
+        "id": c.id, "author": c.author_name or "", "body": c.body or "",
+        "created_at": c.created_at or "",
+        "can_delete": viewer["is_hr"] or (
+            c.author_employee_id is not None
+            and c.author_employee_id == viewer["employee_id"]),
+    } for c in rows]
+
+
+@app.post("/api/feed/{post_id}/comments")
+def write_comment(post_id: int, request: Request, body: dict = None,
+                  db: Session = Depends(get_db)):
+    viewer = feed_viewer(request, db)
+    p = _feed_post(db, viewer, post_id)
+    text = str((body or {}).get("body") or "").strip()[:FEED_COMMENT_MAX]
+    if not text:
+        raise HTTPException(status_code=400, detail="Say something")
+    c = models.DBPostComment(
+        client_id=viewer["client_id"], post_id=p.id,
+        author_employee_id=viewer["employee_id"], author_name=viewer["name"],
+        body=text)
+    db.add(c)
+
+    # The author hears about it, unless they are the one commenting - or the
+    # post is the company's, which has nobody in particular to tell.
+    if p.author_employee_id and p.author_employee_id != viewer["employee_id"]:
+        author = db.query(models.DBEmployee).filter(
+            models.DBEmployee.id == p.author_employee_id).first()
+        if author:
+            notify_employee(db, author, f"{viewer['name']} commented on your post",
+                            text[:120], kind="info")
+    db.commit()
+    db.refresh(c)
+    return {"id": c.id, "author": c.author_name, "body": c.body,
+            "created_at": c.created_at, "can_delete": True}
+
+
+@app.delete("/api/feed/{post_id}/comments/{comment_id}")
+def delete_comment(post_id: int, comment_id: int, request: Request,
+                   db: Session = Depends(get_db)):
+    viewer = feed_viewer(request, db)
+    p = _feed_post(db, viewer, post_id)
+    c = db.query(models.DBPostComment).filter(
+        models.DBPostComment.id == comment_id,
+        models.DBPostComment.post_id == p.id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    own = c.author_employee_id is not None and c.author_employee_id == viewer["employee_id"]
+    if not (viewer["is_hr"] or own):
+        raise HTTPException(status_code=403, detail="That is not your comment")
+    db.delete(c)
+    db.commit()
+    return {"deleted": comment_id}
+
+
+@app.get("/api/feed/settings")
+def read_feed_settings(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    return {"staff_can_post": feed_staff_can_post(db, client.id)}
+
+
+@app.put("/api/feed/settings")
+def write_feed_settings(request: Request, body: dict = None,
+                        db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    if "staff_can_post" in body:
+        row = db.query(models.DBSettings).filter(
+            models.DBSettings.client_id == client.id,
+            models.DBSettings.key == "feed.staff_can_post").first()
+        if not row:
+            row = models.DBSettings(client_id=client.id, key="feed.staff_can_post")
+            db.add(row)
+        row.value = "1" if body.get("staff_can_post") else "0"
+        db.commit()
+    return {"staff_can_post": feed_staff_can_post(db, client.id)}
+
+
 @app.get("/api/employee/announcements")
 def employee_announcements(request: Request, db: Session = Depends(get_db)):
     """Everything the company has told this person, in one place.

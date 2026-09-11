@@ -2071,3 +2071,78 @@ class DBAutoCharge(Base):
     failure_reason = Column(String, default="")
     attempted_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     settled_at = Column(String, default="")
+
+
+# ============================================================================
+# THE COMPANY FEED
+#
+# Announcements went out as notifications - one copy per person, gone once
+# dismissed, and only ever from HR to staff. There was nowhere for the company
+# to be a company: no place to put a photo of the team at the summer party, no
+# way for anybody but HR to say anything, and nothing anybody could react to.
+#
+# A post is one thing said once, to everybody here. Who said it is kept as a
+# name at the time, so a post from somebody who has since left still reads
+# correctly. The image lives on the row as a data URL, the same way logos and
+# documents do - there is no object store in this deployment and one image
+# per post is not the kind of volume that needs one.
+# ============================================================================
+
+class DBPost(Base):
+    __tablename__ = "posts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+
+    # Null is the company itself - HR posting as the business, not as a
+    # person. Everybody else is an employee.
+    author_employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True, index=True)
+    author_name = Column(String, default="")
+
+    body = Column(Text, default="")
+    # A data URL, PNG/JPEG/GIF/WebP only. Never SVG: this is served straight
+    # back into other people's browsers, and an SVG can carry a script.
+    image_data = Column(Text, default="")
+
+    # Held at the top of the feed. HR's, for the things that must not scroll
+    # away under photos of somebody's lunch.
+    pinned = Column(Boolean, default=False, index=True)
+
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"), index=True)
+
+    likes = relationship("DBPostLike", back_populates="post", cascade="all, delete-orphan")
+    comments = relationship("DBPostComment", back_populates="post", cascade="all, delete-orphan")
+
+
+class DBPostLike(Base):
+    """One person, one like. The constraint is the feature: without it a
+    double-tap is two likes and the count means nothing."""
+    __tablename__ = "post_likes"
+    __table_args__ = (
+        UniqueConstraint("post_id", "liker", name="uq_post_like"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    post_id = Column(Integer, ForeignKey("posts.id"), nullable=False, index=True)
+    # "emp:<id>" for staff, "hr" for the business account. A string rather
+    # than two nullable columns, so the unique constraint has one thing to
+    # hold onto.
+    liker = Column(String, nullable=False)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    post = relationship("DBPost", back_populates="likes")
+
+
+class DBPostComment(Base):
+    __tablename__ = "post_comments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    post_id = Column(Integer, ForeignKey("posts.id"), nullable=False, index=True)
+    author_employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
+    author_name = Column(String, default="")
+    body = Column(Text, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    post = relationship("DBPost", back_populates="comments")

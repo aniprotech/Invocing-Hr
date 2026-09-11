@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=150">
+  <link rel="stylesheet" href="tailwind.css?v=151">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,11 +50,11 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=150">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=150">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=150">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=150">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=150">
+    <link rel="stylesheet" href="mobile.css?v=151">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=151">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=151">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=151">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=151">
     <script src="/dialogs.js?v=1"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
@@ -113,6 +113,10 @@
         <button onclick="switchTab('overview')" class="tab-btn tab-active px-4 py-2.5 rounded-xl text-sm font-medium whitespace-nowrap transition-all flex items-center gap-2" data-tab="overview">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
           Overview
+        </button>
+        <button onclick="switchTab('feed')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="feed">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z"/></svg>
+          Feed
         </button>
         <button onclick="switchTab('attendance')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="attendance">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
@@ -593,6 +597,16 @@
 
     <!-- A notification once dismissed is gone; this is where it can be read
          again. -->
+    <!-- The company feed. Announcements were one copy per person, gone once
+         dismissed, and only ever from HR to staff. This is one thing said
+         once to everybody, with pictures, and something to react to. -->
+    <div id="tab-feed" class="tab-panel hidden fade-in">
+      <div class="bg-white rounded-2xl border border-gray-100 p-5">
+        <h3 class="font-semibold text-gray-900 mb-4">What's going on</h3>
+        <div id="feed"></div>
+      </div>
+    </div>
+
     <div id="tab-notices" class="tab-panel hidden fade-in">
       <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden">
         <div class="p-5 border-b border-gray-100">
@@ -1538,7 +1552,21 @@
       if (tab === 'calendar') { loadCalendar(); loadHolidays(); }
       if (tab === 'surveys') loadMySurveys();
       if (tab === 'notices') loadNotices();
+      if (tab === 'feed') loadFeed();
     }
+
+    // Mounted once, on first visit, and refreshed on every visit after that.
+    // Mounting twice would attach two click handlers and every like would
+    // count twice.
+    var _feedMounted = false;
+    function loadFeed() {
+      var host = document.getElementById('feed');
+      if (!host || !window.Feed) return;
+      if (_feedMounted) { Feed.reload(host); return; }
+      Feed.mount(host);
+      _feedMounted = true;
+    }
+    window.loadFeed = loadFeed;
 
 
     // --- Surveys -----------------------------------------------------------
@@ -2984,7 +3012,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=150"></script>
-    <script src="/pwa.js?v=150"></script>
+    <script src="/install-hint.js?v=151"></script>
+    <script src="/pwa.js?v=151"></script>
+    <script src="/feed.js?v=151"></script>
 </body>
 </html>

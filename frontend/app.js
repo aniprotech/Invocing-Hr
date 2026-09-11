@@ -338,6 +338,7 @@ var NAV_FOR_VIEW = {
     'payroll-view': 'nav-payroll',
     'payslip-detail-view': 'nav-payroll',
     'orgchart-view': 'nav-org',
+    'feed-view': 'nav-feed',
     'wallet-view': 'nav-wallet',
     'settings-view': 'nav-settings'
 };
@@ -370,6 +371,7 @@ var ROUTE_SLUGS = {
     'departments-view': 'departments',
     'attendance-view': 'attendance',
     'orgchart-view': 'org-chart',
+    'feed-view': 'feed',
     'leave-view': 'leave',
     'goals-view': 'goals',
     'calendar-view': 'calendar',
@@ -6805,6 +6807,46 @@ function renderAttendance(records) {
 var _orgData = null;
 var _orgCollapsed = {};      // node id -> true when its reports are folded away
 
+// --- The company feed ------------------------------------------------------
+// Rendered by feed.js, which the staff portal shares. Mounted once and
+// reloaded after that; mounting twice attaches two click handlers and every
+// like counts twice.
+
+var _feedMounted = false;
+
+async function loadFeedView() {
+    var host = document.getElementById('feed');
+    if (host && window.Feed) {
+        if (_feedMounted) Feed.reload(host);
+        else { Feed.mount(host); _feedMounted = true; }
+    }
+    try {
+        var res = await fetch('/api/feed/settings');
+        if (res.ok) {
+            var s = await res.json();
+            var box = document.getElementById('feed-staff-can-post');
+            if (box) box.checked = !!s.staff_can_post;
+        }
+    } catch (e) { /* the box keeps whatever it showed */ }
+}
+window.loadFeedView = loadFeedView;
+
+async function saveFeedSettings() {
+    var box = document.getElementById('feed-staff-can-post');
+    if (!box) return;
+    try {
+        var res = await fetch('/api/feed/settings', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ staff_can_post: !!box.checked }),
+        });
+        if (!res.ok) { showToast('That did not save.', 'error'); box.checked = !box.checked; return; }
+        showToast(box.checked ? 'Staff can post.' : 'Only HR can post now.', 'success');
+        var host = document.getElementById('feed');
+        if (host && window.Feed) Feed.reload(host);
+    } catch (e) { showToast('That did not save.', 'error'); box.checked = !box.checked; }
+}
+window.saveFeedSettings = saveFeedSettings;
+
 async function loadOrgChart() {
     try {
         var res = await fetch('/api/org-chart');
@@ -7229,6 +7271,7 @@ showView = function(viewId) {
     if (viewId === 'payroll-view') { fetchPayslips(currentPsFilter); loadPayrollAnomalies(); }
     if (viewId === 'attendance-view') { loadAttendanceStats(); loadAttendanceButtons(); loadAttendance(); loadLiveAttendance(); loadAttendanceSettings(); switchAttTab('live'); }
     if (viewId === 'orgchart-view') loadOrgChart();
+    if (viewId === 'feed-view') loadFeedView();
     if (viewId === 'recruitment-view') {
         loadRecAnalytics();
         var jobsTab = document.querySelector('#rec-tabs .tab');
