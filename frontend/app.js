@@ -339,6 +339,7 @@ var NAV_FOR_VIEW = {
     'payslip-detail-view': 'nav-payroll',
     'orgchart-view': 'nav-org',
     'feed-view': 'nav-feed',
+    'expenses-view': 'nav-expenses',
     'wallet-view': 'nav-wallet',
     'settings-view': 'nav-settings'
 };
@@ -372,6 +373,7 @@ var ROUTE_SLUGS = {
     'attendance-view': 'attendance',
     'orgchart-view': 'org-chart',
     'feed-view': 'feed',
+    'expenses-view': 'expenses',
     'leave-view': 'leave',
     'goals-view': 'goals',
     'calendar-view': 'calendar',
@@ -6807,6 +6809,106 @@ function renderAttendance(records) {
 var _orgData = null;
 var _orgCollapsed = {};      // node id -> true when its reports are folded away
 
+// --- Expense claims ----------------------------------------------------------
+// Somebody paid for something out of their own pocket and wants it back.
+// Their manager decides; HR can decide anything and is the only one who can
+// say it has been paid.
+
+function _expMoney(n, cur) {
+    try { return new Intl.NumberFormat(undefined, { style: 'currency', currency: cur || 'GBP' }).format(n); }
+    catch (e) { return (cur || '') + ' ' + Number(n).toFixed(2); }
+}
+
+var EXP_LABEL = { pending: 'Waiting', approved: 'Approved', rejected: 'Declined', paid: 'Paid' };
+var EXP_COLOUR = { pending: 'var(--warning-color)', approved: 'var(--success-color)',
+                   rejected: 'var(--danger-color)', paid: 'var(--text-secondary)' };
+
+async function loadExpensesView() {
+    var host = document.getElementById('exp-rows');
+    var totals = document.getElementById('exp-totals');
+    if (!host) return;
+    var status = (document.getElementById('exp-filter') || {}).value || '';
+    try {
+        var res = await fetch('/api/expenses' + (status ? '?status=' + encodeURIComponent(status) : ''));
+        if (!res.ok) throw new Error('Failed');
+        var data = await res.json();
+        var cur = data.currency;
+
+        function tile(label, value, tone) {
+            return '<div style="flex:1;min-width:150px;background:var(--surface-color);border:1px solid var(--border-color);' +
+                'border-radius:var(--radius-lg);padding:14px 16px;">' +
+                '<div style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);">' + label + '</div>' +
+                '<div style="font-size:1.3rem;font-weight:700;margin-top:4px;color:' + (tone || 'inherit') + ';">' + esc(value) + '</div></div>';
+        }
+        totals.innerHTML =
+            tile('Waiting (' + data.totals.pending_count + ')', _expMoney(data.totals.pending, cur), 'var(--warning-color)') +
+            tile('Approved, not yet paid', _expMoney(data.totals.owed, cur), 'var(--success-color)') +
+            tile('Paid this month', _expMoney(data.totals.paid_this_month, cur));
+
+        if (!data.claims.length) {
+            host.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:40px;">Nothing here.</div>';
+            return;
+        }
+        host.innerHTML = '<div class="widget">' + data.claims.map(function (c) {
+            return '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--border-color);">' +
+                '<div style="flex:1;min-width:220px;">' +
+                    '<div style="font-size:0.9rem;"><strong>' + esc(_expMoney(c.amount, c.currency)) + '</strong> ' +
+                        '<span style="font-size:0.72rem;padding:2px 8px;border-radius:999px;border:1px solid ' + EXP_COLOUR[c.status] + ';color:' + EXP_COLOUR[c.status] + ';margin-left:6px;">' + esc(EXP_LABEL[c.status] || c.status) + '</span></div>' +
+                    '<div style="font-size:0.84rem;margin-top:2px;">' + esc(c.employee) + ' &middot; ' + esc(c.description) + '</div>' +
+                    '<div style="font-size:0.74rem;color:var(--text-secondary);margin-top:2px;">' +
+                        esc(c.category) + ' &middot; ' + esc(c.spent_on) +
+                        (c.decided_by ? ' &middot; ' + (c.status === 'rejected' ? 'declined' : 'approved') + ' by ' + esc(c.decided_by) : '') +
+                        (c.paid_at ? ' &middot; paid ' + esc(c.paid_at.slice(0, 10)) : '') +
+                    '</div>' +
+                    (c.decision_note ? '<div style="font-size:0.76rem;font-style:italic;margin-top:2px;">&ldquo;' + esc(c.decision_note) + '&rdquo;</div>' : '') +
+                '</div>' +
+                (c.has_receipt ? '<a class="btn btn-sm btn-outline" href="/api/expenses/' + c.id + '/receipt" target="_blank" rel="noopener">Receipt</a>' : '') +
+                (c.status === 'pending'
+                    ? '<button class="btn btn-sm btn-outline" onclick="decideExpenseHr(' + c.id + ', \'approve\')">Approve</button>' +
+                      '<button class="btn btn-sm btn-outline" onclick="decideExpenseHr(' + c.id + ', \'reject\')">Decline</button>'
+                    : '') +
+                (c.can_mark_paid ? '<button class="btn btn-sm btn-primary" onclick="markExpensePaid(' + c.id + ')">Mark paid</button>' : '') +
+            '</div>';
+        }).join('') + '</div>';
+    } catch (e) {
+        host.innerHTML = '<div style="text-align:center;color:var(--text-secondary);padding:40px;">Could not load expense claims.</div>';
+    }
+}
+window.loadExpensesView = loadExpensesView;
+
+async function decideExpenseHr(id, action) {
+    var note = '';
+    if (action === 'reject') {
+        // The same way the rest of the app asks for a reason.
+        note = window.prompt('Why not? This is shown to them.');
+        if (note === null) return;
+    }
+    try {
+        var res = await fetch('/api/expenses/' + id + '/decide', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: action, note: note || '' }),
+        });
+        var d = await res.json().catch(function () { return {}; });
+        if (!res.ok) { showToast(d.detail || 'That did not go through.', 'error'); return; }
+        showToast(action === 'approve' ? 'Approved.' : 'Declined.', 'success');
+        loadExpensesView();
+    } catch (e) { showToast('That did not go through.', 'error'); }
+}
+window.decideExpenseHr = decideExpenseHr;
+
+async function markExpensePaid(id) {
+    if (!await uiConfirm('Mark this as paid? It tells them the money has been sent.',
+        { title: 'Mark as paid', confirmText: 'Paid' })) return;
+    try {
+        var res = await fetch('/api/expenses/' + id + '/paid', { method: 'POST' });
+        var d = await res.json().catch(function () { return {}; });
+        if (!res.ok) { showToast(d.detail || 'That did not go through.', 'error'); return; }
+        showToast('Marked as paid.', 'success');
+        loadExpensesView();
+    } catch (e) { showToast('That did not go through.', 'error'); }
+}
+window.markExpensePaid = markExpensePaid;
+
 // --- The company feed ------------------------------------------------------
 // Rendered by feed.js, which the staff portal shares. Mounted once and
 // reloaded after that; mounting twice attaches two click handlers and every
@@ -7272,6 +7374,7 @@ showView = function(viewId) {
     if (viewId === 'attendance-view') { loadAttendanceStats(); loadAttendanceButtons(); loadAttendance(); loadLiveAttendance(); loadAttendanceSettings(); switchAttTab('live'); }
     if (viewId === 'orgchart-view') loadOrgChart();
     if (viewId === 'feed-view') loadFeedView();
+    if (viewId === 'expenses-view') loadExpensesView();
     if (viewId === 'recruitment-view') {
         loadRecAnalytics();
         var jobsTab = document.querySelector('#rec-tabs .tab');

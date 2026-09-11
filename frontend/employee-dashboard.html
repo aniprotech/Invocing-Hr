@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=151">
+  <link rel="stylesheet" href="tailwind.css?v=152">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,11 +50,11 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=151">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=151">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=151">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=151">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=151">
+    <link rel="stylesheet" href="mobile.css?v=152">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=152">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=152">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=152">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=152">
     <script src="/dialogs.js?v=1"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
@@ -129,6 +129,10 @@
         <button onclick="switchTab('leave')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="leave">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
           Leave
+        </button>
+        <button onclick="switchTab('expenses')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="expenses">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2z"/></svg>
+          Expenses
         </button>
         <button onclick="switchTab('payslips')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="payslips">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2z"/></svg>
@@ -600,6 +604,60 @@
     <!-- The company feed. Announcements were one copy per person, gone once
          dismissed, and only ever from HR to staff. This is one thing said
          once to everybody, with pictures, and something to react to. -->
+    <!-- Expense claims. Somebody paid for something out of their own pocket
+         and wants it back. Until this existed it went by email to whoever. -->
+    <div id="tab-expenses" class="tab-panel hidden fade-in">
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div class="bg-white rounded-2xl border border-gray-100 p-5">
+          <h3 class="font-semibold text-gray-900 mb-4">Claim an expense</h3>
+          <form id="expense-form" onsubmit="submitExpense(event)" class="space-y-3">
+            <div>
+              <label class="block text-xs font-medium text-gray-500 mb-1">What was it</label>
+              <select id="exp-category" class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm">
+                <option value="travel">Travel</option>
+                <option value="meals">Meals</option>
+                <option value="accommodation">Accommodation</option>
+                <option value="equipment">Equipment</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-500 mb-1">Amount</label>
+              <input id="exp-amount" type="number" step="0.01" min="0.01" inputmode="decimal" placeholder="0.00"
+                     class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-500 mb-1">When you paid</label>
+              <input id="exp-date" type="date" class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-500 mb-1">What for</label>
+              <input id="exp-desc" type="text" maxlength="500" placeholder="Train to the client"
+                     class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-500 mb-1">Receipt</label>
+              <input id="exp-receipt" type="file" accept="image/png,image/jpeg,image/gif,image/webp"
+                     class="w-full text-sm">
+              <p class="text-xs text-gray-400 mt-1">A photo is fine. PNG, JPEG, GIF or WebP, under 2MB.</p>
+            </div>
+            <div id="exp-error" class="text-xs text-rose-600" hidden></div>
+            <button type="submit" id="exp-submit" class="w-full rounded-xl bg-brand-500 text-white text-sm font-semibold py-2.5">Send the claim</button>
+          </form>
+        </div>
+
+        <div class="lg:col-span-2 bg-white rounded-2xl border border-gray-100 p-5">
+          <div class="flex items-baseline justify-between mb-4">
+            <h3 class="font-semibold text-gray-900">My claims</h3>
+            <!-- What has been agreed and not yet paid. Not what is pending,
+                 which may still be refused. -->
+            <span id="exp-owed" class="text-sm text-gray-500"></span>
+          </div>
+          <div id="exp-list" class="space-y-2"></div>
+        </div>
+      </div>
+    </div>
+
     <div id="tab-feed" class="tab-panel hidden fade-in">
       <div class="bg-white rounded-2xl border border-gray-100 p-5">
         <h3 class="font-semibold text-gray-900 mb-4">What's going on</h3>
@@ -1196,6 +1254,15 @@
                 function () { decideLeave(l.id, 'reject'); }));
         });
 
+        (data.expenses || []).forEach(function (x) {
+            host.appendChild(_decideRow(
+                x.employee + ' - ' + _money(x.amount, x.currency) + ' for ' + x.category,
+                x.description + ' \u00b7 ' + x.spent_on,
+                x.has_receipt ? 'Receipt attached' : 'No receipt',
+                function () { decideExpense(x.id, 'approve'); },
+                function () { decideExpense(x.id, 'reject'); }));
+        });
+
         (data.corrections || []).forEach(function (c) {
             host.appendChild(_decideRow(
                 c.employee + ' - attendance on ' + (c.date || 'a day'),
@@ -1225,6 +1292,26 @@
         loadApprovals();
     }
     window.decideLeave = decideLeave;
+
+    async function decideExpense(id, action) {
+        var note = '';
+        if (action === 'reject') note = prompt('Why not? (shown to them)') || '';
+        try {
+            var res = await fetch('/api/employee/approvals/expense/' + id, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: action, note: note }),
+            });
+            if (!res.ok) {
+                var d = await res.json().catch(function () { return {}; });
+                alert(d.detail || 'Could not save that. Please try again.');
+            }
+        } catch (e) {
+            alert('Could not save that. Please try again.');
+        }
+        loadApprovals();
+    }
+    window.decideExpense = decideExpense;
 
     async function decideCorrection(id, decision) {
         try {
@@ -1553,7 +1640,187 @@
       if (tab === 'surveys') loadMySurveys();
       if (tab === 'notices') loadNotices();
       if (tab === 'feed') loadFeed();
+      if (tab === 'expenses') loadExpenses();
     }
+
+    // --- Expense claims ------------------------------------------------------
+
+    var _expReceipt = '';
+
+    function _money(n, cur) {
+      try { return new Intl.NumberFormat(undefined, { style: 'currency', currency: cur || 'GBP' }).format(n); }
+      catch (e) { return (cur || '') + ' ' + Number(n).toFixed(2); }
+    }
+
+    async function loadExpenses() {
+      var host = document.getElementById('exp-list');
+      if (!host) return;
+      var dt = document.getElementById('exp-date');
+      if (dt && !dt.value) dt.value = new Date().toISOString().slice(0, 10);
+      try {
+        var res = await fetch('/api/employee/expenses');
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        renderExpenses(await res.json());
+      } catch (e) {
+        host.textContent = 'Could not load your claims.';
+      }
+    }
+    window.loadExpenses = loadExpenses;
+
+    var EXP_STATUS = {
+      pending:  ['Waiting',  'bg-amber-50 text-amber-700 border-amber-200'],
+      approved: ['Approved', 'bg-emerald-50 text-emerald-700 border-emerald-200'],
+      rejected: ['Declined', 'bg-rose-50 text-rose-700 border-rose-200'],
+      paid:     ['Paid',     'bg-gray-100 text-gray-600 border-gray-200'],
+    };
+
+    function renderExpenses(data) {
+      var host = document.getElementById('exp-list');
+      var owed = document.getElementById('exp-owed');
+      host.textContent = '';
+      if (owed) owed.textContent = data.owed_minor ? 'Owed to you: ' + _money(data.owed, data.currency) : '';
+
+      if (!data.claims.length) {
+        var none = document.createElement('p');
+        none.className = 'text-sm text-gray-400';
+        none.textContent = 'No claims yet.';
+        host.appendChild(none);
+        return;
+      }
+      data.claims.forEach(function (c) {
+        var row = document.createElement('div');
+        row.className = 'flex items-start gap-3 p-3 rounded-xl border border-gray-100';
+
+        var main = document.createElement('div');
+        main.className = 'flex-1 min-w-0';
+        var top = document.createElement('div');
+        top.className = 'flex items-center gap-2 flex-wrap';
+        var amt = document.createElement('span');
+        amt.className = 'text-sm font-semibold text-gray-900';
+        amt.textContent = _money(c.amount, c.currency);
+        top.appendChild(amt);
+        var st = EXP_STATUS[c.status] || [c.status, ''];
+        var badge = document.createElement('span');
+        badge.className = 'text-xs px-2 py-0.5 rounded-full border ' + st[1];
+        badge.textContent = st[0];
+        top.appendChild(badge);
+        main.appendChild(top);
+
+        var desc = document.createElement('div');
+        desc.className = 'text-sm text-gray-700 mt-0.5';
+        desc.textContent = c.description;
+        main.appendChild(desc);
+
+        var meta = document.createElement('div');
+        meta.className = 'text-xs text-gray-400 mt-0.5';
+        meta.textContent = c.category + ' \u00b7 ' + c.spent_on +
+          (c.decided_by ? ' \u00b7 ' + (c.status === 'rejected' ? 'declined' : 'approved') + ' by ' + c.decided_by : '') +
+          (c.paid_at ? ' \u00b7 paid ' + c.paid_at.slice(0, 10) : '');
+        main.appendChild(meta);
+        // The reason matters most when the answer was no.
+        if (c.decision_note) {
+          var note = document.createElement('div');
+          note.className = 'text-xs text-gray-600 mt-1 italic';
+          note.textContent = '\u201c' + c.decision_note + '\u201d';
+          main.appendChild(note);
+        }
+        row.appendChild(main);
+
+        var side = document.createElement('div');
+        side.className = 'flex flex-col gap-1 items-end';
+        if (c.has_receipt) {
+          var a = document.createElement('a');
+          a.href = '/api/employee/expenses/' + c.id + '/receipt';
+          a.target = '_blank';
+          a.rel = 'noopener';
+          a.className = 'text-xs text-brand-600';
+          a.textContent = 'Receipt';
+          side.appendChild(a);
+        }
+        if (c.can_withdraw) {
+          var w = document.createElement('button');
+          w.type = 'button';
+          w.className = 'text-xs text-gray-500';
+          w.textContent = 'Withdraw';
+          w.onclick = function () { withdrawExpense(c.id); };
+          side.appendChild(w);
+        }
+        row.appendChild(side);
+        host.appendChild(row);
+      });
+    }
+
+    function _expErr(msg) {
+      var box = document.getElementById('exp-error');
+      if (!box) return;
+      box.textContent = msg || '';
+      box.hidden = !msg;
+    }
+
+    document.addEventListener('change', function (ev) {
+      if (!ev.target || ev.target.id !== 'exp-receipt') return;
+      _expReceipt = '';
+      _expErr('');
+      var f = ev.target.files && ev.target.files[0];
+      if (!f) return;
+      // Checked here so they hear now, and again on the server so it holds.
+      if (['image/png', 'image/jpeg', 'image/gif', 'image/webp'].indexOf(f.type) === -1) {
+        _expErr('The receipt has to be a PNG, JPEG, GIF or WebP.'); ev.target.value = ''; return;
+      }
+      if (f.size > 2 * 1024 * 1024) {
+        _expErr('That receipt is too large - keep it under 2MB.'); ev.target.value = ''; return;
+      }
+      var r = new FileReader();
+      r.onload = function () { _expReceipt = String(r.result || ''); };
+      r.readAsDataURL(f);
+    });
+
+    async function submitExpense(e) {
+      e.preventDefault();
+      _expErr('');
+      var btn = document.getElementById('exp-submit');
+      var payload = {
+        category: document.getElementById('exp-category').value,
+        amount: document.getElementById('exp-amount').value,
+        spent_on: document.getElementById('exp-date').value,
+        description: document.getElementById('exp-desc').value.trim(),
+        receipt_data: _expReceipt || '',
+      };
+      if (!payload.amount || Number(payload.amount) <= 0) { _expErr('Enter the amount you paid.'); return; }
+      if (!payload.description) { _expErr('Say what it was for.'); return; }
+      btn.disabled = true;
+      try {
+        var res = await fetch('/api/employee/expenses', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        var d = await res.json().catch(function () { return {}; });
+        if (!res.ok) { _expErr(d.detail || 'That did not send.'); return; }
+        document.getElementById('exp-amount').value = '';
+        document.getElementById('exp-desc').value = '';
+        document.getElementById('exp-receipt').value = '';
+        _expReceipt = '';
+        loadExpenses();
+      } catch (err) {
+        _expErr('That did not send. Please try again.');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+    window.submitExpense = submitExpense;
+
+    async function withdrawExpense(id) {
+      if (!confirm('Withdraw this claim?')) return;
+      try {
+        var res = await fetch('/api/employee/expenses/' + id, { method: 'DELETE' });
+        if (!res.ok) {
+          var d = await res.json().catch(function () { return {}; });
+          alert(d.detail || 'Could not withdraw that.');
+        }
+      } catch (e) { alert('Could not withdraw that.'); }
+      loadExpenses();
+    }
+    window.withdrawExpense = withdrawExpense;
 
     // Mounted once, on first visit, and refreshed on every visit after that.
     // Mounting twice would attach two click handlers and every like would
@@ -3012,8 +3279,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=151"></script>
-    <script src="/pwa.js?v=151"></script>
-    <script src="/feed.js?v=151"></script>
+    <script src="/install-hint.js?v=152"></script>
+    <script src="/pwa.js?v=152"></script>
+    <script src="/feed.js?v=152"></script>
 </body>
 </html>

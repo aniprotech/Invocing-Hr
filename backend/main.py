@@ -18450,6 +18450,294 @@ def finish_team_task(task_id: int, request: Request, body: dict = None,
     return {"id": task.id, "done": task.done}
 
 
+# ============================================================================
+# EXPENSE CLAIMS
+#
+# Somebody paid for something out of their own pocket and wants it back. Until
+# this existed there was no way to say so inside the product, so it went by
+# email to whoever, and got paid or did not.
+#
+# The same shape as leave: the person asks, their manager decides, HR can
+# decide anything and is the only one who can mark it paid. The decision is
+# written once and shared between the two routes in, for the same reason as
+# leave - a rule that held on one and not the other would be no rule.
+# ============================================================================
+
+EXPENSE_CATEGORIES = ("travel", "meals", "accommodation", "equipment", "other")
+EXPENSE_STATUSES = ("pending", "approved", "rejected", "paid")
+
+
+def expense_to_dict(row, names=None, viewer_employee_id=None, is_hr=False):
+    cur = (row.currency or "GBP").upper()
+    return {
+        "id": row.id, "employee_id": row.employee_id,
+        "employee": (names or {}).get(row.employee_id, ""),
+        "category": row.category or "other",
+        "amount": to_major(row.amount_minor or 0, cur), "amount_minor": row.amount_minor or 0,
+        "currency": cur,
+        "spent_on": row.spent_on or "", "description": row.description or "",
+        "has_receipt": bool(row.receipt_data),
+        "status": row.status or "pending",
+        "decided_by": row.decided_by or "", "decided_at": row.decided_at or "",
+        "decision_note": row.decision_note or "",
+        "paid_at": row.paid_at or "", "paid_by": row.paid_by or "",
+        "created_at": row.created_at or "",
+        # A pending claim can be withdrawn by whoever made it. Nothing else
+        # can be - a decision is a record.
+        "can_withdraw": (row.status == "pending" and viewer_employee_id is not None
+                         and row.employee_id == viewer_employee_id),
+        "can_mark_paid": is_hr and row.status == "approved",
+    }
+
+
+def decide_expense(db, row, action, note, decided_by, request=None):
+    """Approve or reject, whoever is doing it."""
+    if action not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="Action must be 'approve' or 'reject'")
+    if row.status != "pending":
+        raise HTTPException(status_code=409,
+                            detail=f"This claim has already been {row.status}")
+    row.status = "approved" if action == "approve" else "rejected"
+    row.decided_by = decided_by
+    row.decided_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    row.decision_note = str(note or "").strip()[:300]
+
+    cur = (row.currency or "GBP").upper()
+    amount = f"{to_major(row.amount_minor or 0, cur):.2f} {cur}"
+    db.add(models.DBNotification(
+        client_id=row.client_id, employee_id=row.employee_id,
+        title=f"Expense claim {row.status}",
+        message=(f"Your {row.category} claim for {amount} was {row.status} by {decided_by}."
+                 + (f" {row.decision_note}" if row.decision_note else "")),
+        type="success" if row.status == "approved" else "warning",
+    ))
+    log_audit(db, row.client_id, f"expense_{row.status}", "expense", row.id,
+              f"{row.category} {amount}", f"Employee ID: {row.employee_id} - by {decided_by}",
+              request)
+    return row
+
+
+# --- the person asking -----------------------------------------------------------
+
+@app.post("/api/employee/expenses")
+def submit_expense(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    body = body or {}
+
+    category = str(body.get("category") or "other").strip().lower()
+    if category not in EXPENSE_CATEGORIES:
+        raise HTTPException(status_code=400,
+                            detail="Category must be one of: " + ", ".join(EXPENSE_CATEGORIES))
+
+    client = db.query(models.DBClient).filter(models.DBClient.id == emp.client_id).first()
+    cur = ((client.currency if client else "") or "GBP").upper()
+    amount_minor = to_minor(body.get("amount"), cur)
+    if amount_minor <= 0:
+        raise HTTPException(status_code=400, detail="Enter the amount you paid")
+    # A million of anything is a typo, not a claim.
+    if amount_minor > 1_000_000 * minor_units(cur):
+        raise HTTPException(status_code=400, detail="That amount does not look right")
+
+    spent_on = str(body.get("spent_on") or "").strip()
+    try:
+        when = datetime.strptime(spent_on, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="When did you pay? (YYYY-MM-DD)")
+    if when > datetime.now().date():
+        raise HTTPException(status_code=400, detail="That date is in the future")
+
+    description = str(body.get("description") or "").strip()[:500]
+    if not description:
+        raise HTTPException(status_code=400, detail="Say what it was for")
+
+    receipt = image_upload_or_400(body.get("receipt_data"), "receipt")
+
+    row = models.DBExpenseClaim(
+        client_id=emp.client_id, employee_id=emp.id,
+        category=category, amount_minor=amount_minor, currency=cur,
+        spent_on=spent_on, description=description, receipt_data=receipt)
+    db.add(row)
+
+    # Whoever decides it hears about it now, or it sits until somebody
+    # happens to look - the same silence leave requests used to have.
+    asker = f"{emp.first_name} {emp.last_name}".strip() or "Somebody"
+    amount_text = f"{to_major(amount_minor, cur):.2f} {cur}"
+    if emp.reports_to:
+        manager = db.query(models.DBEmployee).filter(
+            models.DBEmployee.id == emp.reports_to,
+            models.DBEmployee.client_id == emp.client_id).first()
+        if manager:
+            db.add(models.DBNotification(
+                client_id=emp.client_id, employee_id=manager.id,
+                title="Expense claim to approve",
+                message=f"{asker} has claimed {amount_text} for {category}: {description[:80]}",
+                type="info"))
+    db.commit()
+    db.refresh(row)
+    return expense_to_dict(row, {emp.id: asker}, viewer_employee_id=emp.id)
+
+
+@app.get("/api/employee/expenses")
+def my_expenses(request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    rows = db.query(models.DBExpenseClaim).filter(
+        models.DBExpenseClaim.employee_id == emp.id,
+        models.DBExpenseClaim.client_id == emp.client_id,
+    ).order_by(models.DBExpenseClaim.id.desc()).limit(200).all()
+    name = f"{emp.first_name} {emp.last_name}".strip()
+    # What is still owed to them, which is the number they open this to see.
+    owed = sum((r.amount_minor or 0) for r in rows if r.status == "approved")
+    cur = ((rows[0].currency if rows else "") or "GBP").upper()
+    return {
+        "claims": [expense_to_dict(r, {emp.id: name}, viewer_employee_id=emp.id) for r in rows],
+        "owed": to_major(owed, cur), "owed_minor": owed, "currency": cur,
+        "pending": sum(1 for r in rows if r.status == "pending"),
+    }
+
+
+@app.get("/api/employee/expenses/{claim_id}/receipt")
+def my_receipt(claim_id: int, request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    row = db.query(models.DBExpenseClaim).filter(
+        models.DBExpenseClaim.id == claim_id,
+        models.DBExpenseClaim.client_id == emp.client_id).first()
+    # Their own, or a direct report's - a manager reads the receipt to decide.
+    if not row or not (row.employee_id == emp.id or _a_report_of_mine(db, emp, row.employee_id)):
+        raise HTTPException(status_code=404, detail="Claim not found")
+    if not row.receipt_data:
+        raise HTTPException(status_code=404, detail="No receipt on this claim")
+    return serve_image(row.receipt_data)
+
+
+@app.delete("/api/employee/expenses/{claim_id}")
+def withdraw_expense(claim_id: int, request: Request, db: Session = Depends(get_db)):
+    """Only while nobody has decided it. A decision is a record and stays."""
+    emp = current_employee(request, db)
+    row = db.query(models.DBExpenseClaim).filter(
+        models.DBExpenseClaim.id == claim_id,
+        models.DBExpenseClaim.employee_id == emp.id,
+        models.DBExpenseClaim.client_id == emp.client_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    if row.status != "pending":
+        raise HTTPException(status_code=409,
+                            detail=f"This has already been {row.status} and cannot be withdrawn")
+    db.delete(row)
+    db.commit()
+    return {"withdrawn": claim_id}
+
+
+@app.post("/api/employee/approvals/expense/{claim_id}")
+def decide_my_teams_expense(claim_id: int, request: Request, body: dict = None,
+                            db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    row = db.query(models.DBExpenseClaim).filter(
+        models.DBExpenseClaim.id == claim_id,
+        models.DBExpenseClaim.client_id == emp.client_id).first()
+    if not row or not _a_report_of_mine(db, emp, row.employee_id):
+        raise HTTPException(status_code=404, detail="Claim not found")
+    body = body or {}
+    who = f"{emp.first_name} {emp.last_name}".strip() or emp.email or "Manager"
+    decide_expense(db, row, (body.get("action") or "").strip().lower(),
+                   body.get("note"), who, request)
+    db.commit()
+    return {"id": row.id, "status": row.status}
+
+
+# --- HR ---------------------------------------------------------------------------
+
+@app.get("/api/expenses")
+def list_expenses(request: Request, status: str = "", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    q = db.query(models.DBExpenseClaim).filter(
+        models.DBExpenseClaim.client_id == client.id)
+    if status in EXPENSE_STATUSES:
+        q = q.filter(models.DBExpenseClaim.status == status)
+    rows = q.order_by(models.DBExpenseClaim.id.desc()).limit(500).all()
+    names = {e.id: f"{e.first_name} {e.last_name}".strip()
+             for e in db.query(models.DBEmployee).filter(
+                 models.DBEmployee.client_id == client.id).all()}
+    cur = (client.currency or "GBP").upper()
+
+    # The three numbers a finance person wants before the list: what is
+    # waiting, what has been agreed and not yet paid, what went out this
+    # month. Worked out here so the list and the totals cannot disagree.
+    this_month = datetime.now().strftime("%Y-%m")
+    everything = db.query(models.DBExpenseClaim).filter(
+        models.DBExpenseClaim.client_id == client.id).all()
+    pending = sum((r.amount_minor or 0) for r in everything if r.status == "pending")
+    owed = sum((r.amount_minor or 0) for r in everything if r.status == "approved")
+    paid_month = sum((r.amount_minor or 0) for r in everything
+                     if r.status == "paid" and (r.paid_at or "").startswith(this_month))
+    return {
+        "claims": [expense_to_dict(r, names, is_hr=True) for r in rows],
+        "currency": cur,
+        "totals": {
+            "pending": to_major(pending, cur), "pending_count":
+                sum(1 for r in everything if r.status == "pending"),
+            "owed": to_major(owed, cur),
+            "paid_this_month": to_major(paid_month, cur),
+        },
+    }
+
+
+@app.get("/api/expenses/{claim_id}/receipt")
+def hr_receipt(claim_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = db.query(models.DBExpenseClaim).filter(
+        models.DBExpenseClaim.id == claim_id,
+        models.DBExpenseClaim.client_id == client.id).first()
+    if not row or not row.receipt_data:
+        raise HTTPException(status_code=404, detail="No receipt on this claim")
+    return serve_image(row.receipt_data)
+
+
+@app.post("/api/expenses/{claim_id}/decide")
+def hr_decide_expense(claim_id: int, request: Request, body: dict = None,
+                      db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = db.query(models.DBExpenseClaim).filter(
+        models.DBExpenseClaim.id == claim_id,
+        models.DBExpenseClaim.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    body = body or {}
+    decide_expense(db, row, (body.get("action") or "").strip().lower(),
+                   body.get("note"), client.company_name or client.email or "HR", request)
+    db.commit()
+    return {"id": row.id, "status": row.status}
+
+
+@app.post("/api/expenses/{claim_id}/paid")
+def hr_mark_paid(claim_id: int, request: Request, db: Session = Depends(get_db)):
+    """Approved is "we owe you this". Paid is "and it has left the account".
+    Only HR says the second, because only HR did it."""
+    client = get_client_user(request, db)
+    row = db.query(models.DBExpenseClaim).filter(
+        models.DBExpenseClaim.id == claim_id,
+        models.DBExpenseClaim.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    if row.status != "approved":
+        raise HTTPException(status_code=409,
+                            detail="Only an approved claim can be marked as paid")
+    row.status = "paid"
+    row.paid_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    row.paid_by = client.company_name or client.email or "HR"
+
+    cur = (row.currency or "GBP").upper()
+    db.add(models.DBNotification(
+        client_id=row.client_id, employee_id=row.employee_id,
+        title="Expense claim paid",
+        message=f"Your {row.category} claim for {to_major(row.amount_minor, cur):.2f} {cur} has been paid.",
+        type="success"))
+    log_audit(db, client.id, "expense_paid", "expense", row.id,
+              f"{row.category} {to_major(row.amount_minor, cur):.2f} {cur}",
+              f"Employee ID: {row.employee_id}", request)
+    db.commit()
+    return {"id": row.id, "status": row.status, "paid_at": row.paid_at}
+
+
 # --- What a manager has to decide --------------------------------------------
 #
 # Leave and attendance corrections could only ever be decided by HR - the
@@ -18487,7 +18775,7 @@ def my_approvals(request: Request, db: Session = Depends(get_db)):
     emp = current_employee(request, db)
     reports = _my_reports(db, emp)
     if not reports:
-        return {"count": 0, "leave": [], "corrections": []}
+        return {"count": 0, "leave": [], "corrections": [], "expenses": []}
 
     ids = [r.id for r in reports]
     names = {r.id: f"{r.first_name} {r.last_name}".strip() for r in reports}
@@ -18503,6 +18791,12 @@ def my_approvals(request: Request, db: Session = Depends(get_db)):
         models.DBAttendanceCorrection.employee_id.in_(ids),
         models.DBAttendanceCorrection.status == "pending",
     ).order_by(models.DBAttendanceCorrection.created_at).limit(200).all()
+
+    expenses = db.query(models.DBExpenseClaim).filter(
+        models.DBExpenseClaim.client_id == emp.client_id,
+        models.DBExpenseClaim.employee_id.in_(ids),
+        models.DBExpenseClaim.status == "pending",
+    ).order_by(models.DBExpenseClaim.created_at).limit(200).all()
 
     days = {}
     if corrections:
@@ -18522,7 +18816,8 @@ def my_approvals(request: Request, db: Session = Depends(get_db)):
                 balances[r.id] = None
 
     return {
-        "count": len(leave) + len(corrections),
+        "count": len(leave) + len(corrections) + len(expenses),
+        "expenses": [expense_to_dict(x, names) for x in expenses],
         "leave": [{
             "id": l.id, "employee_id": l.employee_id,
             "employee": names.get(l.employee_id, ""),
@@ -19683,7 +19978,13 @@ def feed_staff_can_post(db, client_id) -> bool:
         not in ("0", "false", "no", "off")
 
 
-def feed_image_or_400(raw):
+def image_upload_or_400(raw, noun="picture"):
+    """A data URL somebody uploaded, or nothing, or a refusal.
+
+    One validator for every picture a person can put into the product and
+    other people's browsers then render - the feed, a receipt on an expense
+    claim. The rules are the same because the risk is the same.
+    """
     image = (raw or "").strip()
     if not image:
         return ""
@@ -19691,11 +19992,30 @@ def feed_image_or_400(raw):
     # and served back as bytes, so nothing may follow a valid-looking start.
     if not FEED_IMAGE_RE.fullmatch(image):
         raise HTTPException(status_code=400,
-                            detail="The picture must be a PNG, JPEG, GIF or WebP")
+                            detail=f"The {noun} must be a PNG, JPEG, GIF or WebP")
     if len(image) > FEED_IMAGE_MAX:
         raise HTTPException(status_code=413,
-                            detail="That picture is too large - keep it under about 2MB")
+                            detail=f"That {noun} is too large - keep it under about 2MB")
     return image
+
+
+def feed_image_or_400(raw):
+    return image_upload_or_400(raw, "picture")
+
+
+def serve_image(data_url):
+    """The bytes out of a stored data URL, with the type it declared. nosniff
+    is added by the middleware every response passes through."""
+    head, _, b64 = (data_url or "").partition(",")
+    media = head[len("data:"):].split(";")[0] or "application/octet-stream"
+    try:
+        raw = base64.b64decode(b64, validate=False)
+    except Exception:
+        raise HTTPException(status_code=404, detail="No picture here")
+    return Response(content=raw, media_type=media, headers={
+        "Cache-Control": "private, max-age=86400",
+        "Content-Disposition": "inline",
+    })
 
 
 def _feed_post_dict(p, viewer, like_counts, comment_counts, my_likes):
@@ -19816,18 +20136,7 @@ def read_post_image(post_id: int, request: Request, db: Session = Depends(get_db
     p = _feed_post(db, viewer, post_id)
     if not p.image_data:
         raise HTTPException(status_code=404, detail="No picture on this post")
-    head, _, b64 = p.image_data.partition(",")
-    media = head[len("data:"):].split(";")[0] or "application/octet-stream"
-    try:
-        raw = base64.b64decode(b64, validate=False)
-    except Exception:
-        raise HTTPException(status_code=404, detail="No picture on this post")
-    return Response(content=raw, media_type=media, headers={
-        # Private to whoever may see the feed, and cacheable for them: the
-        # bytes on a post never change, only the post around them.
-        "Cache-Control": "private, max-age=86400",
-        "Content-Disposition": "inline",
-    })
+    return serve_image(p.image_data)
 
 
 @app.post("/api/feed/{post_id}/like")

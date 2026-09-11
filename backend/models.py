@@ -2146,3 +2146,47 @@ class DBPostComment(Base):
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     post = relationship("DBPost", back_populates="comments")
+
+
+# ============================================================================
+# EXPENSE CLAIMS
+#
+# Somebody paid for something out of their own pocket and wants it back. The
+# train to the client, the sandwich on the way, the cable the office ran out
+# of. Until this existed there was no way to say so inside the product, so it
+# went by email to whoever, and got paid or did not.
+#
+# The amount is kept in minor units - pence, cents - as an integer, the same
+# way the wallet is. A float that says 12.30 is not always 12.30, and a
+# spreadsheet of reimbursements has to add up to the penny.
+# ============================================================================
+
+class DBExpenseClaim(Base):
+    __tablename__ = "expense_claims"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+
+    # travel | meals | accommodation | equipment | other. A fixed list, so
+    # "what did we spend on travel this quarter" is a question with an answer.
+    category = Column(String, default="other", index=True)
+    amount_minor = Column(Integer, default=0)
+    currency = Column(String, default="GBP")
+    spent_on = Column(String, default="", index=True)     # YYYY-MM-DD
+    description = Column(String, default="")
+    # A photo of the receipt, as a data URL - the same shape and the same
+    # rules as a picture on the feed. Never SVG.
+    receipt_data = Column(Text, default="")
+
+    # pending -> approved -> paid, or pending -> rejected. Approved is "yes,
+    # we owe you this"; paid is "and it has left the account". They are
+    # different moments and the person asking cares about both.
+    status = Column(String, default="pending", index=True)
+    decided_by = Column(String, default="")
+    decided_at = Column(String, default="")
+    decision_note = Column(String, default="")
+    paid_at = Column(String, default="")
+    paid_by = Column(String, default="")
+
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"), index=True)

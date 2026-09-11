@@ -94,7 +94,7 @@ def test_somebody_with_no_reports_has_nothing_to_decide(tenant):
     lone = person(tenant)
     sign_in(tenant, lone)
     got = approvals(tenant)
-    assert got == {"count": 0, "leave": [], "corrections": []}
+    assert got == {"count": 0, "leave": [], "corrections": [], "expenses": []}
 
 
 def test_the_list_shows_what_it_would_cost_them(tenant):
