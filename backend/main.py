@@ -1,4 +1,5 @@
 import asyncio
+from collections import Counter
 import calendar
 import hashlib
 import hmac
@@ -377,7 +378,17 @@ async def lifespan(app: FastAPI):
         if task:
             task.cancel()
 
-app = FastAPI(title="Accounting Platform API", lifespan=lifespan)
+# The interactive docs describe every endpoint and every parameter of a
+# multi-tenant product. That is a map, and it was served to anybody at /docs,
+# /redoc and /openapi.json. Off unless somebody asks for them on a machine
+# they control.
+_EXPOSE_DOCS = os.getenv("EXPOSE_API_DOCS", "").strip().lower() in ("1", "true", "yes")
+app = FastAPI(
+    title="Accounting Platform API", lifespan=lifespan,
+    docs_url="/docs" if _EXPOSE_DOCS else None,
+    redoc_url="/redoc" if _EXPOSE_DOCS else None,
+    openapi_url="/openapi.json" if _EXPOSE_DOCS else None,
+)
 
 class AdminAuth(AuthenticationBackend):
     async def login(self, request: Request) -> bool:
@@ -3224,6 +3235,34 @@ def start_delivery(db, client_id, kind, reference, to_email, charge_tx):
 
 
 def send_email_background(to_email: str, subject: str, body: str, from_email: str, html_body: str = None, pdf_b64: str = None, pdf_filename: str = "invoice.pdf", logo_data: str = "", client_id: int = None, cc: str = "", bcc: str = ""):
+    """Send, and - for the platform's own mail - write down what happened.
+
+    A business's invoices and payslips are recorded by deliver_and_record
+    around this. The platform's mail - codes, resets, verifications - was
+    not recorded by anything, so a transport that had been failing for weeks
+    looked, from every screen, like nothing.
+    """
+    ok, why = _send_email_now(to_email, subject, body, from_email, html_body, pdf_b64,
+                              pdf_filename, logo_data, client_id, cc, bcc)
+    if client_id is None:
+        try:
+            with SessionLocal() as own:
+                own.add(models.DBEmailDelivery(
+                    client_id=None, kind="platform",
+                    # What it was, not what it said. A subject can carry a
+                    # code; the record must not.
+                    reference=(subject or "").split(":")[0][:80],
+                    to_email=to_email or "",
+                    status="sent" if ok else "failed",
+                    error="" if ok else (why or "")[:500],
+                    completed_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                own.commit()
+        except Exception as exc:      # noqa: BLE001
+            logger.warning("Could not record a platform send: %s", exc)
+    return ok, why
+
+
+def _send_email_now(to_email: str, subject: str, body: str, from_email: str, html_body: str = None, pdf_b64: str = None, pdf_filename: str = "invoice.pdf", logo_data: str = "", client_id: int = None, cc: str = "", bcc: str = ""):
     pdf_bytes = None
     if pdf_b64:
         try:
@@ -4695,6 +4734,27 @@ def health_check(db: Session = Depends(get_db)):
     if problems:
         body["status"] = "ok_with_warnings"
         body["migration_warnings"] = len(problems)
+
+    # Whether mail can leave at all, and whether it has been. Sign-in codes
+    # and password resets go out through a background task after the request
+    # has already answered 200, so a broken transport is invisible from the
+    # outside - the app says "sent" and nothing arrives. Two numbers say it
+    # here instead: is a transport configured, and how many of the last day's
+    # sends failed. Neither names a person or an address.
+    try:
+        ready, _why = email_delivery_ready(db)
+        body["email"] = "ready" if ready else "not_configured"
+        since = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+        failed = db.query(models.DBEmailDelivery).filter(
+            models.DBEmailDelivery.created_at >= since,
+            models.DBEmailDelivery.status == "failed").count()
+        # Its own field, not a change to "status". Status is what the platform
+        # restarts on and what says the schema is whole; mail failing is a
+        # different fact and has its own number.
+        if failed:
+            body["email_failures_24h"] = failed
+    except Exception:      # noqa: BLE001
+        body["email"] = "unknown"
     return body
 
 @app.get("/api/auth/me")
@@ -4962,6 +5022,37 @@ def platform_setting_raw(db, key: str) -> str:
         models.DBSettings.key == key,
         models.DBSettings.client_id == None).first()      # noqa: E711
     return (row.value if row else "") or ""
+
+
+@app.get("/api/superadmin/email-failures")
+def superadmin_email_failures(request: Request, db: Session = Depends(get_db)):
+    """The platform's own mail that did not go, most recent first.
+
+    This is the screen that did not exist. A sign-in code that never arrived
+    left a line in the server log and nothing anywhere the operator looks.
+    """
+    require_superadmin(request)
+    since = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+    rows = db.query(models.DBEmailDelivery).filter(
+        models.DBEmailDelivery.client_id == None,          # noqa: E711
+        models.DBEmailDelivery.created_at >= since,
+    ).order_by(models.DBEmailDelivery.id.desc()).limit(200).all()
+    failed = [r for r in rows if r.status == "failed"]
+    return {
+        "sent_7d": sum(1 for r in rows if r.status == "sent"),
+        "failed_7d": len(failed),
+        "last_failure": failed[0].created_at if failed else "",
+        # The reasons, grouped, because the same broken transport fails the
+        # same way fifty times and the fix is one thing.
+        "reasons": sorted(
+            ({"reason": k, "count": v} for k, v in
+             Counter((r.error or "")[:160] for r in failed).items()),
+            key=lambda x: -x["count"])[:8],
+        "failures": [{
+            "when": r.created_at, "what": r.reference or "", "to": r.to_email or "",
+            "error": r.error or "",
+        } for r in failed[:50]],
+    }
 
 
 @app.get("/api/superadmin/email-status")
@@ -9392,6 +9483,10 @@ def reset_employee_password(emp_id: int, body: dict, request: Request, db: Sessi
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
     new_pass = body.get("password", "")
+    # The same rule as a business or an operator. This was four characters
+    # with no other check, for the login that sits in front of somebody's
+    # payslips and bank details.
+    validate_password_strength(new_pass)
     if not new_pass or len(new_pass) < 4:
         raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
     emp.password_hash = models.hash_password(new_pass)
@@ -11369,6 +11464,9 @@ def set_employee_password(emp_id: int, request: Request, body: dict = None, db: 
         raise HTTPException(status_code=404, detail="Employee not found")
     if not body or not body.get("password"):
         raise HTTPException(status_code=400, detail="Password required")
+    # Accepted anything at all, a single character included. Same rule as
+    # everybody else now.
+    validate_password_strength(body["password"])
     emp.password_hash = models.hash_password(body["password"])
     db.commit()
     return {"message": "Password set successfully"}

@@ -102,7 +102,10 @@ def test_logout_clears_the_session(client, account):
 def test_health_reports_database_state(client):
     res = client.get("/api/health")
     assert res.status_code == 200
-    assert res.json() == {"status": "ok", "database": "ok"}
+    body = res.json()
+    assert body["status"] == "ok" and body["database"] == "ok", body
+    # Mail readiness rides along; it is a separate fact from the database.
+    assert body["email"] in ("ready", "not_configured", "unknown"), body
 
 
 # --- money helpers ---------------------------------------------------------

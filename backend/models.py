@@ -1878,9 +1878,14 @@ class DBEmailDelivery(Base):
     __tablename__ = "email_deliveries"
 
     id = Column(Integer, primary_key=True, index=True)
-    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
-    kind = Column(String, index=True)              # invoice | payslip
-    reference = Column(String, default="", index=True)   # the invoice or payslip number
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=True, index=True)
+    # Null is the platform's own mail - a sign-in code, a password reset, a
+    # verification. Those went out through a background task after the
+    # request had already answered 200, and were written down nowhere but the
+    # log, so a broken transport was invisible for weeks: the app said "sent"
+    # and nothing arrived, and no screen anywhere could say so.
+    kind = Column(String, index=True)              # invoice | payslip | platform
+    reference = Column(String, default="", index=True)   # the invoice or payslip number, or what the mail was
     to_email = Column(String, default="")
     status = Column(String, default="pending", index=True)   # pending | sent | failed
     error = Column(String, default="")

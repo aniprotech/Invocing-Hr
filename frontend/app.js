@@ -5454,7 +5454,7 @@ window.startOffboarding = startOffboarding;
 async function resetEmpPassword() {
     if (!currentEmployeeId) return;
     var newPass = await uiPrompt('Enter new password for this employee:');
-    if (!newPass || newPass.length < 4) { showToast('Password must be at least 4 characters', 'error'); return; }
+    if (!newPass || newPass.length < 8) { showToast('At least 8 characters, with a capital letter and a number.', 'error'); return; }
     try {
         var res = await fetch('/api/employees/' + currentEmployeeId + '/reset-password', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -5577,7 +5577,7 @@ window.showResetPasswordModal = showResetPasswordModal;
 async function confirmResetPassword() {
     if (!currentEmployeeId) return;
     var pass = document.getElementById('reset-pass-input').value.trim();
-    if (!pass || pass.length < 4) { showToast('Password must be at least 4 characters', 'error'); return; }
+    if (!pass || pass.length < 8) { showToast('At least 8 characters, with a capital letter and a number.', 'error'); return; }
     try {
         var res = await fetch('/api/employees/' + currentEmployeeId + '/reset-password', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -8770,6 +8770,20 @@ function esc(s) {
 // the browser decodes the entity back to a quote, and the parser then sees
 // the backslash that was always meant to be there. Always esc(jsq(value)),
 // in that order.
+// A response, or the reason it was not one.
+//
+// fetch() resolves on a 401 and a 500 exactly as it does on a 200, and the
+// body of those is {"detail": "..."} - so `await (await fetch(x)).json()`
+// followed by .forEach or .toLocaleString threw a TypeError three lines
+// later, with the server's actual reason lost. This throws the reason
+// instead, into whatever catch the caller already has.
+async function fetchJson(url, init) {
+    var res = await fetch(url, init);
+    var data = await res.json().catch(function () { return {}; });
+    if (!res.ok) throw new Error(data.detail || ('Request failed: ' + res.status));
+    return data;
+}
+
 function jsq(s) {
     if (s === null || s === undefined) return '';
     return String(s)
@@ -10862,7 +10876,7 @@ async function loadJobs() {
             link.href = '/jobs.html?c=' + _recBoardClientId;
         } else {
             try {
-                var me = await (await fetch('/api/client/me')).json();
+                var me = await fetchJson('/api/client/me');
                 if (me && me.id) {
                     _recBoardClientId = me.id;
                     link.href = '/jobs.html?c=' + me.id;
@@ -10906,11 +10920,11 @@ async function openJobModal(jobId) {
 
     // Populate the pickers before filling values, or the selects have no options.
     try {
-        var depts = await (await fetch('/api/departments')).json();
+        var depts = await fetchJson('/api/departments');
         var deptSel = document.getElementById('job-department');
         deptSel.innerHTML = '<option value="">None</option>';
         depts.forEach(function (d) { deptSel.insertAdjacentHTML('beforeend', '<option value="' + d.id + '">' + esc(d.name) + '</option>'); });
-        var emps = await (await fetch('/api/employees')).json();
+        var emps = await fetchJson('/api/employees');
         var mgrSel = document.getElementById('job-manager');
         mgrSel.innerHTML = '<option value="">None</option>';
         emps.forEach(function (e) { mgrSel.insertAdjacentHTML('beforeend', '<option value="' + e.id + '">' + esc(e.first_name + ' ' + e.last_name) + '</option>'); });
@@ -11081,7 +11095,7 @@ async function openInterviewModal() {
     var modal = document.getElementById('interview-modal');
     if (!modal) return;
     try {
-        var emps = await (await fetch('/api/employees')).json();
+        var emps = await fetchJson('/api/employees');
         var sel = document.getElementById('iv-interviewer');
         sel.innerHTML = '<option value="">Unassigned</option>';
         emps.forEach(function (e) { sel.insertAdjacentHTML('beforeend', '<option value="' + e.id + '">' + esc(e.first_name + ' ' + e.last_name) + '</option>'); });
@@ -11702,7 +11716,7 @@ async function openRequirementsModal() {
     var modal = document.getElementById('requirements-modal');
     if (!modal) return;
     try {
-        var depts = await (await fetch('/api/departments')).json();
+        var depts = await fetchJson('/api/departments');
         var sel = document.getElementById('req-department');
         sel.innerHTML = '<option value="">Select...</option>';
         depts.forEach(function (d) {
@@ -12567,7 +12581,7 @@ async function finishPayPalReturn() {
     var orderId = params.get('order');
     if (!orderId) {
         try {
-            var orders = await (await fetch('/api/wallet/topups?limit=5')).json();
+            var orders = await fetchJson('/api/wallet/topups?limit=5');
             var pending = (Array.isArray(orders) ? orders : []).filter(function (o) {
                 return o.provider === 'paypal' && o.status === 'pending';
             })[0];

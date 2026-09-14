@@ -367,12 +367,12 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=154">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=154">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=154">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=154">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=154">
-    <script src="/dialogs.js?v=154"></script>
+    <link rel="stylesheet" href="mobile.css?v=155">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=155">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=155">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=155">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=155">
+    <script src="/dialogs.js?v=155"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -781,6 +781,20 @@
     </div>
 
     <script>
+        // A response, or the reason it was not one.
+        //
+        // fetch() resolves on a 401 and a 500 exactly as it does on a 200, and the
+        // body of those is {"detail": "..."} - so `await (await fetch(x)).json()`
+        // followed by .forEach or .toLocaleString threw a TypeError three lines
+        // later, with the server's actual reason lost. This throws the reason
+        // instead, into whatever catch the caller already has.
+        async function fetchJson(url, init) {
+            var res = await fetch(url, init);
+            var data = await res.json().catch(function () { return {}; });
+            if (!res.ok) throw new Error(data.detail || ('Request failed: ' + res.status));
+            return data;
+        }
+
         function esc(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
         var allClients = [];
 
@@ -810,7 +824,7 @@
                 document.getElementById('stat-total').textContent = data.total_clients;
                 document.getElementById('stat-active').textContent = data.active_clients;
                 document.getElementById('stat-invoices').textContent = data.total_invoices;
-                document.getElementById('stat-outstanding').textContent = data.total_outstanding.toLocaleString();
+                document.getElementById('stat-outstanding').textContent = Number(data.total_outstanding || 0).toLocaleString();
             } catch (e) { console.error(e); }
         }
 
@@ -828,7 +842,7 @@
                 // as though they do.
                 var cards = [
                     ['accent', 'Employees', d.hr.employees, d.hr.departments + ' departments', 'clients', 'hr'],
-                    ['success', 'Payslips Issued', d.hr.payslips, 'Payroll paid ' + d.hr.payroll_paid.toLocaleString(), 'clients', 'hr'],
+                    ['success', 'Payslips Issued', d.hr.payslips, 'Payroll paid ' + Number(d.hr.payroll_paid || 0).toLocaleString(), 'clients', 'hr'],
                     ['warning', 'Open Roles', d.recruitment.open_jobs, d.recruitment.applications + ' applications', 'trends', ''],
                     ['accent', 'Active (30d)', d.tenants.active_last_30_days, 'of ' + d.tenants.total + ' tenants', 'clients', 'active']
                 ];
@@ -914,7 +928,7 @@
         // --- Billing ---------------------------------------------------------
         async function loadRevenue() {
             try {
-                var d = await (await fetch('/api/superadmin/revenue')).json();
+                var d = await fetchJson('/api/superadmin/revenue');
                 var top = d.by_action[0] || {};
                 var cards = [
                     ['success', 'Topped Up', d.symbol + d.total_topped_up.toLocaleString(), 'all time'],
@@ -933,7 +947,7 @@
         async function loadGatewayStatus() {
             var host = document.getElementById('gateway-cards');
             try {
-                var d = await (await fetch('/api/superadmin/gateways')).json();
+                var d = await fetchJson('/api/superadmin/gateways');
                 var providers = d.providers || [];
 
                 // The summary line counts only the two that take new money.
@@ -1003,7 +1017,7 @@
             host.style.color = '#94a3b8';
             host.textContent = 'Asking GoCardless...';
             try {
-                var d = await (await fetch('/api/superadmin/gocardless-check')).json();
+                var d = await fetchJson('/api/superadmin/gocardless-check');
                 host.style.color = d.ok ? (d.webhook_secret_set ? '#34d399' : '#fbbf24') : '#f43f5e';
                 host.textContent = d.message || (d.ok ? 'Connected.' : 'Could not connect.');
             } catch (e) {
@@ -1022,7 +1036,7 @@
             host.textContent = 'Asking Razorpay...';
             var d;
             try {
-                d = await (await fetch('/api/superadmin/razorpay-check')).json();
+                d = await fetchJson('/api/superadmin/razorpay-check');
             } catch (e) {
                 host.style.color = '#f43f5e';
                 host.textContent = 'Could not run the check.';
@@ -1057,7 +1071,7 @@
 
             var d;
             try {
-                d = await (await fetch('/api/superadmin/ai-status')).json();
+                d = await fetchJson('/api/superadmin/ai-status');
             } catch (e) {
                 host.style.color = '#f43f5e';
                 host.textContent = 'Could not run the check.';
@@ -1142,7 +1156,7 @@
         async function loadPricing() {
             var host = document.getElementById('pricing-list');
             try {
-                var rows = await (await fetch('/api/superadmin/pricing')).json();
+                var rows = await fetchJson('/api/superadmin/pricing');
                 host.innerHTML = rows.map(function (r) {
                     return '<div style="display:flex;gap:8px;align-items:center;padding:8px 0;' +
                            'border-bottom:1px solid rgba(255, 255, 255, 0.05);flex-wrap:wrap;">' +
@@ -1182,7 +1196,7 @@
         async function loadWallets() {
             var host = document.getElementById('wallets-list');
             try {
-                var rows = await (await fetch('/api/superadmin/wallets')).json();
+                var rows = await fetchJson('/api/superadmin/wallets');
                 if (!rows.length) {
                     host.innerHTML = '<p style="color:#94a3b8;font-size:0.8rem;">No tenants yet.</p>';
                     return;
@@ -2909,6 +2923,6 @@
         <div id="wallet-panel-body"></div>
       </div>
     </div>
-    <script src="/pwa.js?v=154"></script>
+    <script src="/pwa.js?v=155"></script>
 </body>
 </html>

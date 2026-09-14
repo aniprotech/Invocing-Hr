@@ -17,17 +17,37 @@ if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 if not DATABASE_URL:
-    print("WARNING: No DATABASE_URL found in .env, falling back to SQLite")
-    DATABASE_URL = "sqlite:///./invoicing.db"
+    # Falling back to a local SQLite file is right on a laptop and a disaster
+    # anywhere else. On a container platform that file is empty on every
+    # deploy and wiped on every restart, and the app comes up healthy, with
+    # every table present and nothing in any of them - which presents as "all
+    # my data is gone" and is nearly impossible to tell from real loss.
+    #
+    # So it has to be asked for. A missing variable in production stops the
+    # boot with a message that says what is missing, rather than starting an
+    # app that quietly serves an empty database.
+    if os.getenv("ALLOW_SQLITE_FALLBACK", "").strip().lower() in ("1", "true", "yes"):
+        print("WARNING: No DATABASE_URL set - using a local SQLite file (ALLOW_SQLITE_FALLBACK)")
+        DATABASE_URL = "sqlite:///./invoicing.db"
+    else:
+        sys.exit(
+            "DATABASE_URL is not set. Set it to your Postgres connection string.\n"
+            "For local development only, set ALLOW_SQLITE_FALLBACK=true to use "
+            "a throwaway SQLite file instead.")
 
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 else:
+    # Routes are sync, so they run on the framework's forty-thread pool. Two
+    # connections plus three overflow was the ceiling: the sixth concurrent
+    # query waited ten seconds and then errored. Ten plus ten keeps one worker
+    # comfortably inside a small Postgres's connection limit; raise both
+    # together, and keep workers x (pool + overflow) under max_connections.
     engine = create_engine(
         DATABASE_URL,
-        pool_size=2,
-        max_overflow=3,
-        pool_timeout=10,
+        pool_size=int(os.getenv("DB_POOL_SIZE", "10") or 10),
+        max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "10") or 10),
+        pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "10") or 10),
         pool_recycle=1800,
         pool_pre_ping=True
     )
@@ -1660,6 +1680,17 @@ def ensure_columns():
                 conn.commit()
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 55: {sys.exc_info()[1]}")
+
+            # 56. The platform's own mail is recorded alongside the tenants'.
+            # A delivery row needed a business; a sign-in code has none, so
+            # those were never written down and a broken transport could not
+            # be seen from any screen.
+            try:
+                conn.execute(text(
+                    "ALTER TABLE email_deliveries ALTER COLUMN client_id DROP NOT NULL"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 56: {sys.exc_info()[1]}")
 
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
