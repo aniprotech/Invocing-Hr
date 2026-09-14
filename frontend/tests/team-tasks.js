@@ -71,6 +71,10 @@ function boot(opts) {
                 return give(p.endsWith('s') ? [] : {});
             };
             w.alert = m => alerts.push(m);
+            w.uiToast = m => alerts.push(m);
+            w.uiAlert = m => { alerts.push(m); return Promise.resolve(true); };
+            w.uiConfirm = () => Promise.resolve(true);
+            w.uiPrompt = () => Promise.resolve('');
         },
     });
     return { w: dom.window, doc: dom.window.document, sent, alerts };

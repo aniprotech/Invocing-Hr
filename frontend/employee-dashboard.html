@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=153">
+  <link rel="stylesheet" href="tailwind.css?v=154">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,12 +50,12 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=153">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=153">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=153">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=153">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=153">
-    <script src="/dialogs.js?v=1"></script>
+    <link rel="stylesheet" href="mobile.css?v=154">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=154">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=154">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=154">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=154">
+    <script src="/dialogs.js?v=154"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -1284,10 +1284,10 @@
                 // The reason matters here. "Would exceed the entitlement" and
                 // "somebody already decided this" need different things done.
                 var d = await res.json().catch(function () { return {}; });
-                alert(d.detail || 'Could not save that. Please try again.');
+                uiToast(d.detail || 'Could not save that. Please try again.', 'error');
             }
         } catch (e) {
-            alert('Could not save that. Please try again.');
+            uiToast('Could not save that. Please try again.', 'error');
         }
         loadApprovals();
     }
@@ -1295,7 +1295,10 @@
 
     async function decideExpense(id, action) {
         var note = '';
-        if (action === 'reject') note = prompt('Why not? (shown to them)') || '';
+        if (action === 'reject') {
+            note = await uiPrompt('Why not? This is shown to them.', '', { title: 'Decline the claim', confirmText: 'Decline' });
+            if (note === null) return;
+        }
         try {
             var res = await fetch('/api/employee/approvals/expense/' + id, {
                 method: 'POST',
@@ -1304,10 +1307,10 @@
             });
             if (!res.ok) {
                 var d = await res.json().catch(function () { return {}; });
-                alert(d.detail || 'Could not save that. Please try again.');
+                uiToast(d.detail || 'Could not save that. Please try again.', 'error');
             }
         } catch (e) {
-            alert('Could not save that. Please try again.');
+            uiToast('Could not save that. Please try again.', 'error');
         }
         loadApprovals();
     }
@@ -1322,10 +1325,10 @@
             });
             if (!res.ok) {
                 var d = await res.json().catch(function () { return {}; });
-                alert(d.detail || 'Could not save that. Please try again.');
+                uiToast(d.detail || 'Could not save that. Please try again.', 'error');
             }
         } catch (e) {
-            alert('Could not save that. Please try again.');
+            uiToast('Could not save that. Please try again.', 'error');
         }
         loadApprovals();
     }
@@ -1411,7 +1414,7 @@
             });
             if (!res.ok) throw new Error('Request failed: ' + res.status);
         } catch (e) {
-            alert('Could not save that. Please try again.');
+            uiToast('Could not save that. Please try again.', 'error');
         }
         loadTeamTasks();
     }
@@ -1426,7 +1429,7 @@
             });
             if (!res.ok) throw new Error('Request failed: ' + res.status);
         } catch (e) {
-            alert('Could not save that. Please try again.');
+            uiToast('Could not save that. Please try again.', 'error');
         }
         loadMyTasks();
         loadTeamTasks();
@@ -1810,14 +1813,16 @@
     window.submitExpense = submitExpense;
 
     async function withdrawExpense(id) {
-      if (!confirm('Withdraw this claim?')) return;
+      if (!await uiConfirm('Withdraw this claim?', { title: 'Withdraw the claim', confirmText: 'Withdraw' })) return;
       try {
         var res = await fetch('/api/employee/expenses/' + id, { method: 'DELETE' });
         if (!res.ok) {
           var d = await res.json().catch(function () { return {}; });
-          alert(d.detail || 'Could not withdraw that.');
+          uiToast(d.detail || 'Could not withdraw that.', 'error');
+        } else {
+          uiToast('Withdrawn.', 'success');
         }
-      } catch (e) { alert('Could not withdraw that.'); }
+      } catch (e) { uiToast('Could not withdraw that.', 'error'); }
       loadExpenses();
     }
     window.withdrawExpense = withdrawExpense;
@@ -3279,8 +3284,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=153"></script>
-    <script src="/pwa.js?v=153"></script>
-    <script src="/feed.js?v=153"></script>
+    <script src="/install-hint.js?v=154"></script>
+    <script src="/pwa.js?v=154"></script>
+    <script src="/feed.js?v=154"></script>
 </body>
 </html>

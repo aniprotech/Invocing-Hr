@@ -98,6 +98,10 @@ function boot(opts) {
             w.alert = m => alerts.push(m);
             w.confirm = () => true;
             w.prompt = () => (opts.typed === undefined ? 'NEFT-12345' : opts.typed);
+            w.uiToast = m => alerts.push(m);
+            w.uiAlert = m => { alerts.push(m); return Promise.resolve(true); };
+            w.uiConfirm = () => Promise.resolve(true);
+            w.uiPrompt = () => Promise.resolve(opts.typed === undefined ? 'NEFT-12345' : opts.typed);
         },
     });
     const w = dom.window;

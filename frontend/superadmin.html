@@ -367,12 +367,12 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=153">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=153">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=153">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=153">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=153">
-    <script src="/dialogs.js?v=1"></script>
+    <link rel="stylesheet" href="mobile.css?v=154">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=154">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=154">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=154">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=154">
+    <script src="/dialogs.js?v=154"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -1572,7 +1572,7 @@
 
         async function addLandingItem(kind) {
             var title = document.getElementById('new-title-' + kind).value.trim();
-            if (!title) { alert('Give it a title first.'); return; }
+            if (!title) { uiToast('Give it a title first.', 'error'); return; }
             var res = await fetch('/api/superadmin/landing-items', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1583,7 +1583,7 @@
             });
             if (!res.ok) {
                 var out = await res.json().catch(function () { return {}; });
-                alert(out.detail || 'Could not add that.');
+                uiToast(out.detail || 'Could not add that.', 'error');
                 return;
             }
             loadLandingItems();
@@ -1599,7 +1599,7 @@
             });
             if (!res.ok) {
                 var out = await res.json().catch(function () { return {}; });
-                alert(out.detail || 'Could not save that.');
+                uiToast(out.detail || 'Could not save that.', 'error');
                 loadLandingItems();
             }
         }
@@ -1607,9 +1607,10 @@
 
         async function deleteLandingItem(id) {
             // This is live on the public site, and it is gone for good.
-            if (!confirm('Remove this from the front page? It cannot be undone.')) return;
+            if (!await uiConfirm('Remove this from the front page? It cannot be undone.',
+                { title: 'Remove it', confirmText: 'Remove', danger: true })) return;
             var res = await fetch('/api/superadmin/landing-items/' + id, { method: 'DELETE' });
-            if (!res.ok) { alert('Could not remove that.'); return; }
+            if (!res.ok) { uiToast('Could not remove that.', 'error'); return; }
             loadLandingItems();
         }
         window.deleteLandingItem = deleteLandingItem;
@@ -2210,10 +2211,11 @@
                 });
                 var data = await res.json().catch(function () { return {}; });
                 if (!res.ok) throw new Error(data.detail || 'Could not save');
-                alert('Customer payments now land in ' +
-                    (data.mode === 'platform' ? "the platform's account." : "each business's own account."));
+                await uiAlert('Customer payments now land in ' +
+                    (data.mode === 'platform' ? "the platform's account." : "each business's own account."),
+                    { title: 'Saved' });
             } catch (e) {
-                alert(e.message);
+                uiToast(e.message, 'error');
             }
             loadCollectionMode();
         }
@@ -2303,12 +2305,12 @@
         async function markSettlementPaid(row) {
             // The server refuses without a reference, and it is right to: this
             // is the only record that the money actually left.
-            var reference = prompt('Payout reference for ' + row.amount + ' ' +
+            var reference = await uiPrompt('Payout reference for ' + row.amount + ' ' +
                 row.currency + ' to ' + (row.business || 'this business') +
                 '?\n\nThis is the proof it was sent - a bank reference or ' +
-                'transfer id.');
+                'transfer id.', '', { title: 'Record the payout', confirmText: 'Record' });
             if (reference === null) return;
-            if (!reference.trim()) { alert('A reference is required.'); return; }
+            if (!reference.trim()) { uiToast('A reference is required.', 'error'); return; }
 
             try {
                 var res = await fetch('/api/superadmin/settlements/' + row.id + '/paid-out', {
@@ -2318,8 +2320,9 @@
                 });
                 var data = await res.json().catch(function () { return {}; });
                 if (!res.ok) throw new Error(data.detail || 'Could not record that');
+                uiToast('Payout recorded.', 'success');
             } catch (e) {
-                alert(e.message);
+                uiToast(e.message, 'error');
             }
             loadSettlements();
         }
@@ -2542,11 +2545,11 @@
                 if (!res.ok) throw new Error(data.detail || 'Could not run them');
                 var results = data.results || {};
                 var names = Object.keys(results);
-                alert(names.length
+                await uiAlert(names.length
                     ? names.map(function (n) { return n + ': ' + results[n]; }).join('\n')
-                    : 'Nothing was due.');
+                    : 'Nothing was due.', { title: 'Scheduled work' });
             } catch (e) {
-                alert(e.message);
+                uiToast(e.message, 'error');
             }
             loadJobRuns();
         }
@@ -2643,15 +2646,16 @@
         async function disconnectPlatformGmail() {
             // Worth asking: with nothing else set up this stops every code the
             // product sends, which "Disconnect" does not convey on its own.
-            if (!confirm('Disconnect the Google account the platform sends through?\n\n' +
+            if (!await uiConfirm('Disconnect the Google account the platform sends through?\n\n' +
                          'If no mail server is set up, verification codes and ' +
-                         'password resets will stop working for everyone.')) return;
+                         'password resets will stop working for everyone.',
+                         { title: 'Disconnect Google', confirmText: 'Disconnect', danger: true })) return;
             try {
                 var res = await fetch('/api/superadmin/gmail/disconnect', { method: 'POST' });
                 var data = await res.json().catch(function () { return {}; });
-                alert(data.message || 'Disconnected.');
+                uiToast(data.message || 'Disconnected.', 'success');
             } catch (e) {
-                alert('Could not disconnect: ' + e.message);
+                uiToast('Could not disconnect: ' + e.message, 'error');
             }
             loadPlatformEmail();
         }
@@ -2669,7 +2673,7 @@
                 notlinked: 'That connection was not started from this screen.'
             }[said[1]];
             window.location.hash = '#control';
-            if (words) setTimeout(function () { alert(words); }, 50);
+            if (words) setTimeout(function () { uiAlert(words); }, 50);
         })();
 
         async function loadPlatformSettings() {
@@ -2905,6 +2909,6 @@
         <div id="wallet-panel-body"></div>
       </div>
     </div>
-    <script src="/pwa.js?v=153"></script>
+    <script src="/pwa.js?v=154"></script>
 </body>
 </html>

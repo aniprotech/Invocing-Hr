@@ -186,7 +186,10 @@ function boot(overrides) {
         check('somebody who has left is not offered',
             !!scrim && !/Old Hand/.test(scrim.textContent));
 
-        scrim.querySelector('#ui-dialog-input').value = '1';
+        // A picker now, not a numbered list typed back. Ada is employee 7.
+        const pick = scrim.querySelector('select');
+        check('and it is a list to pick from, not a number to type', !!pick && !scrim.querySelector('input[type=text]'));
+        pick.value = '7';
         scrim.querySelector('.ui-dialog-btn.is-go').click();
         await p;
         await wait(60);
@@ -223,9 +226,9 @@ function boot(overrides) {
         check('taking something back asks what condition it is in',
             !!scrim && /condition/i.test(scrim.textContent), scrim && scrim.textContent.slice(0, 80));
         check('and it is pre-filled with the usual answer',
-            !!scrim && scrim.querySelector('#ui-dialog-input').value === 'good');
+            !!scrim && scrim.querySelector('select').value === 'good');
 
-        scrim.querySelector('#ui-dialog-input').value = 'damaged';
+        scrim.querySelector('select').value = 'damaged';
         scrim.querySelector('.ui-dialog-btn.is-go').click();
         await p;
         await wait(60);
@@ -241,24 +244,18 @@ function boot(overrides) {
         await wait(120);
         const p = w.takeAssetBack(2, 'LAP-002');
         await wait(40);
-        let scrim = w.document.querySelector('.ui-dialog-scrim');
-        scrim.querySelector('#ui-dialog-input').value = 'fine';   // not a condition
-        scrim.querySelector('.ui-dialog-btn.is-go').click();
-        // Past the 160ms the closing dialog takes to leave the DOM, or the
-        // outgoing prompt is picked up instead of the complaint.
-        await wait(300);
-
-        // The complaint is itself a dialog, so it has to be dismissed - and
-        // there may briefly be two, so the live one is the last.
-        var all = w.document.querySelectorAll('.ui-dialog-scrim');
-        var complaint = all[all.length - 1];
-        check('a condition that is not one of the four is refused',
-            !!complaint && /good, fair, poor/i.test(complaint.textContent),
-            complaint ? complaint.textContent.slice(0, 60) : 'no complaint shown');
-        if (complaint) complaint.querySelector('.ui-dialog-btn.is-go').click();
+        const scrim = w.document.querySelector('.ui-dialog-scrim');
+        // It used to be a text box, and "fine" had to be refused after the
+        // fact. A picker cannot hold anything but the four, so the wrong
+        // answer is not refused - it cannot be given.
+        const offered = [...scrim.querySelectorAll('select option')].map(o => o.value);
+        check('the condition is one of exactly four, and nothing else can be typed',
+            offered.join(',') === 'good,fair,poor,damaged' && !scrim.querySelector('input[type=text]'),
+            offered.join(','));
+        scrim.querySelector('.ui-dialog-btn.is-cancel').click();
         await p;
         await wait(60);
-        check('and nothing is sent', !sent.some(r => r.url === '/api/assets/2/return'));
+        check('and backing out sends nothing', !sent.some(r => r.url === '/api/assets/2/return'));
     }
 
     // --- adding one ----------------------------------------------------------

@@ -1368,18 +1368,14 @@ async function issueAsset(id, tag) {
         await uiAlert('There is nobody to issue this to yet.');
         return;
     }
-    var names = _assetEmployees.map(function (e, i) {
-        return (i + 1) + '. ' + (e.full_name || (e.first_name + ' ' + e.last_name));
-    }).join('\n');
-    var pick = await uiPrompt('Issue ' + tag + ' to which person?\n\n' + names,
-                              '', { title: 'Issue equipment', confirmText: 'Issue' });
-    if (pick === null) return;
-    var n = parseInt(pick, 10);
-    if (!n || n < 1 || n > _assetEmployees.length) {
-        await uiAlert('Enter the number beside the person.');
-        return;
-    }
-    var emp = _assetEmployees[n - 1];
+    // A list to pick from. This was a numbered list in a text prompt with
+    // "type the number" underneath - a text box being used as a picker.
+    var picked = await uiChoose('Issue ' + tag + ' to:', _assetEmployees.map(function (e) {
+        return { value: e.id, label: e.full_name || (e.first_name + ' ' + e.last_name) };
+    }), { title: 'Issue equipment', confirmText: 'Issue', placeholder: 'Choose a person' });
+    if (picked === null) return;
+    var emp = _assetEmployees.filter(function (e) { return String(e.id) === String(picked); })[0];
+    if (!emp) return;
     try {
         var res = await fetch('/api/assets/' + id + '/assign', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1396,15 +1392,13 @@ window.issueAsset = issueAsset;
 async function takeAssetBack(id, tag) {
     // The condition it comes back in decides whether it can go straight out
     // again, so it is asked rather than assumed.
-    var condition = await uiPrompt(
-        'What condition is ' + tag + ' in?\n\ngood, fair, poor or damaged',
-        'good', { title: 'Take it back', confirmText: 'Take back' });
+    var condition = await uiChoose('What condition is ' + tag + ' in?', [
+        { value: 'good', label: 'Good - can go straight out again' },
+        { value: 'fair', label: 'Fair - usable, showing wear' },
+        { value: 'poor', label: 'Poor - needs looking at' },
+        { value: 'damaged', label: 'Damaged - send for repair' },
+    ], { value: 'good', title: 'Take it back', confirmText: 'Take back' });
     if (condition === null) return;
-    condition = (condition || '').trim().toLowerCase();
-    if (['good', 'fair', 'poor', 'damaged'].indexOf(condition) < 0) {
-        await uiAlert('Say good, fair, poor or damaged.');
-        return;
-    }
     try {
         var res = await fetch('/api/assets/' + id + '/return', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -5991,15 +5985,21 @@ window.deleteOnbItem = deleteOnbItem;
 async function addOnbItemToEmp() {
     var empId = document.getElementById('onb-emp-modal').dataset.empId;
     if (!empId) return;
-    var title = await uiPrompt('Task title:');
-    if (!title) return;
-    var category = await uiPrompt('Category (e.g. Legal, IT, General):') || 'General';
-    var assignee = await uiPrompt('Assigned to:') || '';
-    var dueDate = await uiPrompt('Due date (YYYY-MM-DD, optional):') || '';
+    // One form. This was four prompts in a row, and by the fourth the first
+    // answer could not be seen or corrected.
+    var answers = await uiForm([
+        { name: 'title', label: 'What has to happen', type: 'text', required: true, placeholder: 'Sign the contract' },
+        { name: 'category', label: 'Category', type: 'select', value: 'General',
+          options: ['General', 'Legal', 'IT', 'HR', 'Finance', 'Training'] },
+        { name: 'assigned_to', label: 'Assigned to', type: 'text', placeholder: 'Who does it' },
+        { name: 'due_date', label: 'Due', type: 'date' },
+    ], { title: 'Add a task', confirmText: 'Add' });
+    if (!answers) return;
     try {
         await fetch('/api/employees/' + empId + '/onboarding', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title: title, category: category, assigned_to: assignee, due_date: dueDate })
+            body: JSON.stringify({ title: answers.title, category: answers.category || 'General',
+                                   assigned_to: answers.assigned_to || '', due_date: answers.due_date || '' })
         });
         openOnbEmpDetail(parseInt(empId));
         loadOnboardingHub();
@@ -6061,10 +6061,11 @@ async function loadBulkFromTemplate() {
         if (!res.ok) throw new Error("Request failed: " + res.status);
         var templates = await res.json();
         if (templates.length === 0) { showToast('No templates found. Create one first.', 'error'); return; }
-        var names = templates.map(function(t, i) { return (i + 1) + '. ' + t.name; }).join('\n');
-        var choice = await uiPrompt('Choose template:\n' + names + '\nEnter number:');
-        if (!choice) return;
-        var idx = parseInt(choice) - 1;
+        var choice = await uiChoose('Which template?', templates.map(function (t, i) {
+            return { value: i, label: t.name + ' (' + (t.items || []).length + ' steps)' };
+        }), { title: 'Use a template', confirmText: 'Use it', placeholder: 'Choose a template' });
+        if (choice === null) return;
+        var idx = parseInt(choice, 10);
         if (idx >= 0 && idx < templates.length) {
             onboardingBulkItems = templates[idx].items || [];
             renderBulkItemsPreview();
@@ -6139,10 +6140,15 @@ function closeOnbTemplatesModal() {
 window.closeOnbTemplatesModal = closeOnbTemplatesModal;
 
 async function createNewTemplate() {
-    var name = await uiPrompt('Template name:');
-    if (!name) return;
-    var itemsJson = await uiPrompt('Enter items (one per line, format: Title | Category | Assigned To):');
-    if (!itemsJson) return;
+    var answers = await uiForm([
+        { name: 'name', label: 'Template name', type: 'text', required: true, placeholder: 'New starter' },
+        { name: 'items', label: 'Steps, one per line', type: 'textarea', required: true,
+          placeholder: 'Sign the contract\nOrder a laptop | IT\nBook induction | HR | Dana',
+          hint: 'Optionally add | Category | Who after each step' },
+    ], { title: 'New template', confirmText: 'Create' });
+    if (!answers) return;
+    var name = answers.name;
+    var itemsJson = answers.items;
     var items = itemsJson.split('\n').map(function(line) {
         var parts = line.split('|').map(function(s) { return s.trim(); });
         return { title: parts[0] || '', category: parts[1] || 'General', assigned_to: parts[2] || '' };
@@ -6202,12 +6208,13 @@ window.searchPayslips = searchPayslips;
 async function batchGeneratePayslips() {
     var today = localDate(new Date());
     var firstOfMonth = today.slice(0, 8) + '01';
-    var periodStart = await uiPrompt('Period start date (YYYY-MM-DD):', firstOfMonth);
-    if (!periodStart) return;
-    var periodEnd = await uiPrompt('Period end date (YYYY-MM-DD):', today);
-    if (!periodEnd) return;
-    var payDate = await uiPrompt('Pay date (YYYY-MM-DD):', today);
-    if (!payDate) return;
+    var dates = await uiForm([
+        { name: 'start', label: 'Period start', type: 'date', value: firstOfMonth, required: true },
+        { name: 'end', label: 'Period end', type: 'date', value: today, required: true },
+        { name: 'pay', label: 'Pay date', type: 'date', value: today, required: true },
+    ], { title: 'Run payroll', confirmText: 'Continue' });
+    if (!dates) return;
+    var periodStart = dates.start, periodEnd = dates.end, payDate = dates.pay;
     if (!await uiConfirm('Run payroll for all active employees, ' + periodStart + ' to ' + periodEnd + '?')) return;
     showToast('Running payroll...', 'info');
     try {
@@ -10434,7 +10441,8 @@ async function saveEmailSettings(extra) {
 window.saveEmailSettings = saveEmailSettings;
 
 async function clearEmailPassword() {
-    if (!confirm('Forget the saved mail password? Sending will stop until a new one is entered.')) return;
+    if (!await uiConfirm('Forget the saved mail password? Sending will stop until a new one is entered.',
+        { title: 'Forget the password', confirmText: 'Forget it', danger: true })) return;
     await saveEmailSettings({ clear_password: true });
 }
 window.clearEmailPassword = clearEmailPassword;

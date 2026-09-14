@@ -51,6 +51,12 @@ function boot(opts) {
     w.console.error = () => { };
     w.alert = m => alerts.push(String(m));
     w.confirm = () => opts.confirm !== false;
+    // The page loads dialogs.js before its own code; the harness strips
+    // script tags, so it provides the same four - recorded like alert was.
+    w.uiToast = m => alerts.push(String(m));
+    w.uiAlert = m => { alerts.push(String(m)); return Promise.resolve(true); };
+    w.uiConfirm = () => Promise.resolve(opts.confirm !== false);
+    w.uiPrompt = () => Promise.resolve(opts.promptText === undefined ? 'No receipt' : opts.promptText);
     w.fetch = (url, init) => {
         const p = String(url).split('?')[0];
         const q = String(url).split('?')[1] || '';

@@ -127,6 +127,10 @@ function bootOps(opts) {
             };
             w.alert = m => alerts.push(m);
             w.confirm = () => true;
+            w.uiToast = m => alerts.push(m);
+            w.uiAlert = m => { alerts.push(m); return Promise.resolve(true); };
+            w.uiConfirm = () => Promise.resolve(true);
+            w.uiPrompt = () => Promise.resolve('');
         },
     });
     const w = dom.window;

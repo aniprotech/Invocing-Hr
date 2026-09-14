@@ -85,6 +85,10 @@ function boot(opts) {
     w.eval(fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8'));
     w.document.dispatchEvent(new w.Event('DOMContentLoaded', { bubbles: true }));
     w.confirm = () => true;
+    w.uiToast = () => {};
+    w.uiAlert = () => Promise.resolve(true);
+    w.uiConfirm = () => Promise.resolve(true);
+    w.uiPrompt = () => Promise.resolve('');
     return { w, sent };
 }
 

@@ -173,7 +173,7 @@
 
     function showErr(state, msg) {
         var box = state.el.querySelector('#' + state.id + '-err');
-        if (!box) { if (msg) alert(msg); return; }
+        if (!box) { if (msg) uiToast(msg, 'error'); return; }
         box.textContent = msg || '';
         box.hidden = !msg;
     }
@@ -247,7 +247,7 @@
                 ' <span class="fd-likes">' + r.likes + '</span>';
             var p = state.posts.filter(function (x) { return String(x.id) === id; })[0];
             if (p) { p.likes = r.likes; p.liked_by_me = r.liked_by_me; }
-        }).catch(function (e) { alert(e.message); });
+        }).catch(function (e) { uiToast(e.message, 'error'); });
     }
 
     function toggleComments(state, postEl) {
@@ -259,7 +259,7 @@
                 '<div class="fd-row"><input placeholder="Write a comment" maxlength="1000" data-role="comment-text">' +
                 '<button class="fd-btn" data-act="comment">Send</button></div>';
             box.hidden = false;
-        }).catch(function (e) { alert(e.message); });
+        }).catch(function (e) { uiToast(e.message, 'error'); });
     }
 
     function comment(state, postEl) {
@@ -274,7 +274,7 @@
             input.value = '';
             var count = postEl.querySelector('.fd-ccount');
             if (count) count.textContent = String((parseInt(count.textContent, 10) || 0) + 1);
-        }).catch(function (e) { alert(e.message); });
+        }).catch(function (e) { uiToast(e.message, 'error'); });
     }
 
     function deleteComment(state, postEl, commentEl) {
@@ -284,16 +284,19 @@
             commentEl.remove();
             var count = postEl.querySelector('.fd-ccount');
             if (count) count.textContent = String(Math.max(0, (parseInt(count.textContent, 10) || 1) - 1));
-        }).catch(function (e) { alert(e.message); });
+        }).catch(function (e) { uiToast(e.message, 'error'); });
     }
 
     function remove(state, postEl) {
-        if (!confirm('Delete this post? Its likes and comments go with it.')) return Promise.resolve();
         var id = postEl.getAttribute('data-id');
-        return api('DELETE', '/api/feed/' + id).then(function () {
-            state.posts = state.posts.filter(function (x) { return String(x.id) !== id; });
-            render(state);
-        }).catch(function (e) { alert(e.message); });
+        return uiConfirm('Delete this post? Its likes and comments go with it.',
+            { title: 'Delete the post', confirmText: 'Delete', danger: true }).then(function (yes) {
+            if (!yes) return;
+            return api('DELETE', '/api/feed/' + id).then(function () {
+                state.posts = state.posts.filter(function (x) { return String(x.id) !== id; });
+                render(state);
+            });
+        }).catch(function (e) { uiToast(e.message, 'error'); });
     }
 
     function pin(state, postEl) {
@@ -302,7 +305,7 @@
         // top and the order is the server's to decide.
         return api('POST', '/api/feed/' + id + '/pin').then(function () {
             return load(state, 0);
-        }).catch(function (e) { alert(e.message); });
+        }).catch(function (e) { uiToast(e.message, 'error'); });
     }
 
     // ---- wiring ---------------------------------------------------------------------

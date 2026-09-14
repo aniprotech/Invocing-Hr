@@ -67,6 +67,10 @@ function boot(status, hash) {
             };
             w.alert = m => alerts.push(m);
             w.confirm = () => true;
+            w.uiToast = m => alerts.push(m);
+            w.uiAlert = m => { alerts.push(m); return Promise.resolve(true); };
+            w.uiConfirm = () => Promise.resolve(true);
+            w.uiPrompt = () => Promise.resolve('');
         },
     });
     const w = dom.window;
@@ -133,7 +137,8 @@ const body = w => w.document.getElementById('platform-email-body');
         const { w, alerts } = boot(WORKING);
         await w.loadPlatformEmail();
         let asked = null;
-        w.confirm = m => { asked = m; return false; };
+        // Our own dialog now, not the browser's - so it is the promise that says no.
+        w.uiConfirm = m => { asked = m; return Promise.resolve(false); };
         await w.disconnectPlatformGmail();
         check('disconnecting asks first', !!asked);
         check('and says what it will break, which the word does not',
