@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=158">
-    <link rel="stylesheet" href="mobile.css?v=158">
+    <link rel="stylesheet" href="styles.css?v=159">
+    <link rel="stylesheet" href="mobile.css?v=159">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,11 +57,11 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=158">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=158">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=158">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=158">
-    <script src="/dialogs.js?v=158"></script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=159">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=159">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=159">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=159">
+    <script src="/dialogs.js?v=159"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -130,26 +130,45 @@
                             <a href="#/wallet" class="nav-item" id="nav-wallet" data-portal="shared">Wallet</a>
                         </div>
                     </div>
-                    <div class="nav-group" data-nav-group="People">
+                    <!-- People is a mega menu: nineteen views in one column ran off
+                         the bottom of a laptop screen. Four short columns, each
+                         with a heading, an icon and a line saying what the view
+                         is for. The ids and hrefs are what the router and the
+                         active state are keyed on, so those are unchanged. -->
+                    <div class="nav-group nav-group--mega" data-nav-group="People">
                         <button type="button" class="nav-item nav-group-toggle" aria-expanded="false">People</button>
-                        <div class="nav-group-menu">
-                            <a href="#/hr" class="nav-item" id="nav-hr-dashboard" data-portal="hr">HR dashboard</a>
-                            <a href="#/calendar" class="nav-item" id="nav-calendar" data-portal="hr">Calendar</a>
-                            <a href="#/people" class="nav-item" id="nav-people" data-portal="hr">Employees</a>
-                            <a href="#/org-chart" class="nav-item" id="nav-org" data-portal="hr">Org Chart</a>
-                            <a href="#/feed" class="nav-item" id="nav-feed" data-portal="hr">Feed</a>
-                            <a href="#/expenses" class="nav-item" id="nav-expenses" data-portal="hr">Expenses</a>
-                            <a href="#/assets" class="nav-item" id="nav-assets" data-portal="hr">Assets</a>
-                            <a href="#/surveys" class="nav-item" id="nav-surveys" data-portal="hr">Surveys</a>
-                            <a href="#/workflows" class="nav-item" id="nav-workflows" data-portal="hr">Workflows</a>
-                            <a href="#/leave" class="nav-item" id="nav-leave" data-portal="hr">Leave</a>
-                            <a href="#/goals" class="nav-item" id="nav-goals" data-portal="hr">Goals</a>
-                            <a href="#/reviews" class="nav-item" id="nav-reviews" data-portal="hr">Reviews</a>
-                            <a href="#/training" class="nav-item" id="nav-training" data-portal="hr">Training</a>
-                            <a href="#/people-analytics" class="nav-item" id="nav-people-analytics" data-portal="hr">Analytics</a>
-                            <a href="#/staff-requests" class="nav-item" id="nav-staff-requests" data-portal="hr">Requests</a>
-                            <a href="#/payroll" class="nav-item" id="nav-payroll" data-portal="hr">Payroll</a>
-                            <a href="/employee-login.html" target="_blank" class="nav-item" data-portal="hr" style="color:var(--primary-light);">&#128100; Employee Portal</a>
+                        <div class="nav-group-menu mega-menu">
+                            <div class="mega-col">
+                                <div class="mega-heading">Your people</div>
+                                <a href="#/hr" class="nav-item mega-item" id="nav-hr-dashboard" data-portal="hr"><span class="mega-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"/></svg></span><span class="mega-text"><span class="mega-label">HR dashboard</span><span class="mega-desc">What is waiting on you today</span></span></a>
+                                <a href="#/people" class="nav-item mega-item" id="nav-people" data-portal="hr"><span class="mega-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg></span><span class="mega-text"><span class="mega-label">Employees</span><span class="mega-desc">Everybody, and their profiles</span></span></a>
+                                <a href="#/org-chart" class="nav-item mega-item" id="nav-org" data-portal="hr"><span class="mega-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2"/></svg></span><span class="mega-text"><span class="mega-label">Org chart</span><span class="mega-desc">Who reports to whom</span></span></a>
+                                <a href="#/calendar" class="nav-item mega-item" id="nav-calendar" data-portal="hr"><span class="mega-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg></span><span class="mega-text"><span class="mega-label">Calendar</span><span class="mega-desc">Who is out, and when</span></span></a>
+                                <a href="#/feed" class="nav-item mega-item" id="nav-feed" data-portal="hr"><span class="mega-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg></span><span class="mega-text"><span class="mega-label">Feed</span><span class="mega-desc">Posts and pictures for everyone</span></span></a>
+                            </div>
+                            <div class="mega-col">
+                                <div class="mega-heading">Time and pay</div>
+                                <a href="#/leave" class="nav-item mega-item" id="nav-leave" data-portal="hr"><span class="mega-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg></span><span class="mega-text"><span class="mega-label">Leave</span><span class="mega-desc">Requests, balances, who is off</span></span></a>
+                                <a href="#/payroll" class="nav-item mega-item" id="nav-payroll" data-portal="hr"><span class="mega-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"/></svg></span><span class="mega-text"><span class="mega-label">Payroll</span><span class="mega-desc">Payslips and pay runs</span></span></a>
+                                <a href="#/expenses" class="nav-item mega-item" id="nav-expenses" data-portal="hr"><span class="mega-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2z"/></svg></span><span class="mega-text"><span class="mega-label">Expenses</span><span class="mega-desc">Claims to approve and pay</span></span></a>
+                                <a href="#/staff-requests" class="nav-item mega-item" id="nav-staff-requests" data-portal="hr"><span class="mega-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/></svg></span><span class="mega-text"><span class="mega-label">Requests</span><span class="mega-desc">Questions and bank changes</span></span></a>
+                            </div>
+                            <div class="mega-col">
+                                <div class="mega-heading">Growth</div>
+                                <a href="#/goals" class="nav-item mega-item" id="nav-goals" data-portal="hr"><span class="mega-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2zm9-13.5V9"/></svg></span><span class="mega-text"><span class="mega-label">Goals</span><span class="mega-desc">What people are working towards</span></span></a>
+                                <a href="#/reviews" class="nav-item mega-item" id="nav-reviews" data-portal="hr"><span class="mega-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/></svg></span><span class="mega-text"><span class="mega-label">Reviews</span><span class="mega-desc">How everybody is doing</span></span></a>
+                                <a href="#/training" class="nav-item mega-item" id="nav-training" data-portal="hr"><span class="mega-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 14l9-5-9-5-9 5 9 5zm0 0l6.16-3.422a12.083 12.083 0 01.665 6.479A11.952 11.952 0 0012 20.055a11.952 11.952 0 00-6.824-2.998 12.078 12.078 0 01.665-6.479L12 14z"/></svg></span><span class="mega-text"><span class="mega-label">Training</span><span class="mega-desc">Certifications and expiries</span></span></a>
+                                <a href="#/people-analytics" class="nav-item mega-item" id="nav-people-analytics" data-portal="hr"><span class="mega-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg></span><span class="mega-text"><span class="mega-label">Analytics</span><span class="mega-desc">Headcount, turnover, tenure</span></span></a>
+                            </div>
+                            <div class="mega-col">
+                                <div class="mega-heading">Running things</div>
+                                <a href="#/workflows" class="nav-item mega-item" id="nav-workflows" data-portal="hr"><span class="mega-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg></span><span class="mega-text"><span class="mega-label">Workflows</span><span class="mega-desc">When somebody joins or leaves</span></span></a>
+                                <a href="#/surveys" class="nav-item mega-item" id="nav-surveys" data-portal="hr"><span class="mega-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg></span><span class="mega-text"><span class="mega-label">Surveys</span><span class="mega-desc">Ask everybody at once</span></span></a>
+                                <a href="#/assets" class="nav-item mega-item" id="nav-assets" data-portal="hr"><span class="mega-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg></span><span class="mega-text"><span class="mega-label">Assets</span><span class="mega-desc">Laptops, phones, who has them</span></span></a>
+                            </div>
+                            <div class="mega-footer">
+                                <a href="/employee-login.html" target="_blank" rel="noopener" class="nav-item mega-item mega-item--portal" data-portal="hr"><span class="mega-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg></span><span class="mega-text"><span class="mega-label">Employee portal</span><span class="mega-desc">What your staff see - opens in a new tab</span></span></a>
+                            </div>
                         </div>
                     </div>
                     <div class="nav-group" data-nav-group="Hiring">
@@ -4158,8 +4177,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="feed.js?v=158"></script>
-    <script src="app.js?v=158"></script>
+    <script src="feed.js?v=159"></script>
+    <script src="app.js?v=159"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
@@ -4387,7 +4406,7 @@
             </div>
         </div>
     </div>
-    <script src="/install-hint.js?v=158"></script>
-    <script src="/pwa.js?v=158"></script>
+    <script src="/install-hint.js?v=159"></script>
+    <script src="/pwa.js?v=159"></script>
 </body>
 </html>

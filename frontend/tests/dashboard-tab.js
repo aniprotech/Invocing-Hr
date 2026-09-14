@@ -101,9 +101,12 @@ function boot(page, board, modules) {
             check(`${label} goes to ${route}`,
                 !!link && link.getAttribute('href') === route,
                 link && link.getAttribute('href'));
+            // A mega-menu item carries a one-line description beside its
+            // label; the label is the part that has to say what it is.
+            const labelOf = el => (el.querySelector('.mega-label') || el).textContent.trim();
             check(`${label} is labelled "${label}"`,
-                !!link && link.textContent.trim() === label,
-                link && link.textContent.trim());
+                !!link && labelOf(link) === label,
+                link && labelOf(link));
         }
 
         // Two entries both reading "Dashboard" is what merging the portals

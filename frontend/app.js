@@ -14650,12 +14650,33 @@ function wireNavGroupToggles() {
             if (!wasOpen) {
                 wrap.classList.add('open');
                 toggle.setAttribute('aria-expanded', 'true');
+                placeNavMenu(wrap);
             }
         });
     });
     syncNavGroupState();
 }
 window.wireNavGroupToggles = wireNavGroupToggles;
+
+// A wide menu is centred on its heading and then pushed back inside the
+// window, so the People menu opened near the right edge does not hang off it.
+function placeNavMenu(wrap) {
+    var menu = wrap.querySelector('.nav-group-menu');
+    if (!menu || !menu.classList.contains('mega-menu')) return;
+    if (window.innerWidth <= 1024) { menu.style.left = ''; return; }
+    menu.style.left = '0px';
+    var box = menu.getBoundingClientRect();
+    var anchor = wrap.getBoundingClientRect();
+    if (!box.width) return;
+    var margin = 16;
+    var left = (anchor.width - box.width) / 2;
+    var absLeft = anchor.left + left;
+    if (absLeft < margin) left += margin - absLeft;
+    var absRight = anchor.left + left + box.width;
+    if (absRight > window.innerWidth - margin) left -= absRight - (window.innerWidth - margin);
+    menu.style.left = Math.round(left) + 'px';
+}
+window.placeNavMenu = placeNavMenu;
 
 function closeNavGroups() {
     document.querySelectorAll('.nav-group.open').forEach(function (g) {
