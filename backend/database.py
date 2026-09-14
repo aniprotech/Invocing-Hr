@@ -1692,6 +1692,25 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 56: {sys.exc_info()[1]}")
 
+            # 57. Probation and a date of birth on the employee. Probation
+            # had no home at all: a new hire's trial period ended when
+            # somebody remembered, which is to say it did not end.
+            try:
+                for ddl in (
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_end VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_status VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_note VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_decided_by VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_decided_at VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_reminder_stage INTEGER DEFAULT 0",
+                    "CREATE INDEX IF NOT EXISTS ix_employees_probation_status ON employees (probation_status)",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 57: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

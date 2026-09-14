@@ -559,6 +559,17 @@ class DBEmployee(Base):
 
     start_date = Column(String, default="")
     end_date = Column(String, default="")
+    # A day and a month to colleagues, never an age. Set by HR.
+    date_of_birth = Column(String, default="")
+    # on_probation | extended | confirmed | ended, or "" for not tracked.
+    # The end date is set when they are added; the reminder stage is what
+    # stops the manager being told the same thing every morning.
+    probation_end = Column(String, default="", index=True)
+    probation_status = Column(String, default="", index=True)
+    probation_note = Column(String, default="")
+    probation_decided_by = Column(String, default="")
+    probation_decided_at = Column(String, default="")
+    probation_reminder_stage = Column(Integer, default=0)
     status = Column(String, default="active", index=True)
     onboarding_complete = Column(Boolean, default=False)
     offboarding_complete = Column(Boolean, default=False)

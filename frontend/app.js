@@ -1651,6 +1651,17 @@ async function loadHrDashboard() {
                 (d.employee ? ' for ' + esc(d.employee) : '') +
                 ' expires ' + esc(d.expires_on)));
         });
+        (c.probations || []).forEach(function (p) {
+            rows.push(hrDashLine('<strong style="color:var(--warning-color);">' + esc(p.name) + '</strong>\u2019s probation ' +
+                (p.days_left < 0 ? 'ended ' + esc(p.ends_on) + ' with no decision' :
+                 p.days_left === 0 ? 'ends today' : 'ends ' + esc(p.ends_on)) +
+                ' <a href="#" onclick="viewEmployee(' + p.employee_id + ');return false;" style="font-size:0.8rem;">Decide</a>'));
+        });
+        (c.celebrations || []).forEach(function (x) {
+            rows.push(hrDashLine((x.kind === 'birthday' ? '\uD83C\uDF82 ' : '\uD83C\uDF89 ') + esc(x.name) +
+                (x.kind === 'birthday' ? '\u2019s birthday' : ': ' + x.years + ' year' + (x.years === 1 ? '' : 's') + ' here') +
+                ' ' + (x.in_days === 0 ? 'today' : x.in_days === 1 ? 'tomorrow' : 'on ' + esc(x.on))));
+        });
         upHost.innerHTML = rows.length ? rows.join('')
             : hrDashLine('Nothing in the next two weeks.', true);
     }
@@ -5120,7 +5131,8 @@ async function viewEmployee(empId) {
         document.getElementById('emp-detail-status').className = 'status-pill status-' + (emp.status || '').toLowerCase().replace(/\s+/g, '-');
         document.getElementById('emp-detail-eid').textContent = emp.employee_id || '-';
         document.getElementById('emp-detail-email').textContent = emp.email || '-';
-        var roMap = { 'phone': emp.phone, 'title': emp.job_title, 'dept': emp.department_name, 'mgr': emp.manager_name, 'type': (emp.employment_type || '').replace('_', ' '), 'payfreq': emp.pay_frequency || '-', 'salary': emp.salary ? formatCurrency(emp.salary) : '-', 'start': emp.start_date || '-', 'level': emp.level || '-', 'role': roleLabel(emp.role), 'taxrate': emp.tax_rate ? emp.tax_rate + '%' : '-', 'emergency': emp.emergency_contact ? emp.emergency_contact + (emp.emergency_phone ? ' (' + emp.emergency_phone + ')' : '') : '-' };
+        renderProbationLine(emp);
+        var roMap = { 'dob': emp.date_of_birth, 'phone': emp.phone, 'title': emp.job_title, 'dept': emp.department_name, 'mgr': emp.manager_name, 'type': (emp.employment_type || '').replace('_', ' '), 'payfreq': emp.pay_frequency || '-', 'salary': emp.salary ? formatCurrency(emp.salary) : '-', 'start': emp.start_date || '-', 'level': emp.level || '-', 'role': roleLabel(emp.role), 'taxrate': emp.tax_rate ? emp.tax_rate + '%' : '-', 'emergency': emp.emergency_contact ? emp.emergency_contact + (emp.emergency_phone ? ' (' + emp.emergency_phone + ')' : '') : '-' };
         Object.keys(roMap).forEach(function(k) {
             var roEl = document.getElementById('emp-detail-' + k + '-ro');
             if (roEl) roEl.textContent = roMap[k] || '-';
@@ -5301,6 +5313,9 @@ async function submitNewEmployee() {
         salary: parseFloat(document.getElementById('emp-salary').value) || 0,
         tax_rate: parseFloat(document.getElementById('emp-tax-rate').value) || 0,
         start_date: document.getElementById('emp-start-date').value,
+        date_of_birth: (document.getElementById('emp-dob') || {}).value || '',
+        probation_months: (document.getElementById('emp-probation-months') || {}).value === '' ? null
+            : parseInt(document.getElementById('emp-probation-months').value, 10),
         emergency_contact: document.getElementById('emp-emergency-contact').value,
         emergency_phone: document.getElementById('emp-emergency-phone').value,
     };
@@ -5487,9 +5502,9 @@ function toggleEmpEdit() {
     if (saveBtn) saveBtn.style.display = 'inline-flex';
     if (cancelBtn) cancelBtn.style.display = 'inline-flex';
     _empEditOriginal = {};
-    var fields = ['phone', 'title', 'dept', 'mgr', 'level', 'role', 'type', 'payfreq', 'salary', 'start', 'taxrate', 'emergency'];
-    var inputIds = ['emp-detail-phone', 'emp-detail-title', 'emp-detail-dept', 'emp-detail-mgr', 'emp-detail-level', 'emp-detail-role', 'emp-detail-type', 'emp-detail-payfreq', 'emp-detail-salary', 'emp-detail-start', 'emp-detail-taxrate', 'emp-detail-emergency'];
-    var roIds = ['emp-detail-phone-ro', 'emp-detail-title-ro', 'emp-detail-dept-ro', 'emp-detail-mgr-ro', 'emp-detail-level-ro', 'emp-detail-role-ro', 'emp-detail-type-ro', 'emp-detail-payfreq-ro', 'emp-detail-salary-ro', 'emp-detail-start-ro', 'emp-detail-taxrate-ro', 'emp-detail-emergency-ro'];
+    var fields = ['phone', 'title', 'dept', 'mgr', 'level', 'role', 'type', 'payfreq', 'salary', 'start', 'dob', 'taxrate', 'emergency'];
+    var inputIds = ['emp-detail-phone', 'emp-detail-title', 'emp-detail-dept', 'emp-detail-mgr', 'emp-detail-level', 'emp-detail-role', 'emp-detail-type', 'emp-detail-payfreq', 'emp-detail-salary', 'emp-detail-start', 'emp-detail-dob', 'emp-detail-taxrate', 'emp-detail-emergency'];
+    var roIds = ['emp-detail-phone-ro', 'emp-detail-title-ro', 'emp-detail-dept-ro', 'emp-detail-mgr-ro', 'emp-detail-level-ro', 'emp-detail-role-ro', 'emp-detail-type-ro', 'emp-detail-payfreq-ro', 'emp-detail-salary-ro', 'emp-detail-start-ro', 'emp-detail-dob-ro', 'emp-detail-taxrate-ro', 'emp-detail-emergency-ro'];
     fields.forEach(function(f, i) {
         var input = document.getElementById(inputIds[i]);
         var ro = document.getElementById(roIds[i]);
@@ -5540,6 +5555,7 @@ async function saveEmpEdit() {
         pay_frequency: document.getElementById('emp-detail-payfreq').value,
         salary: parseFloat(document.getElementById('emp-detail-salary').value) || 0,
         start_date: document.getElementById('emp-detail-start').value,
+        date_of_birth: (document.getElementById('emp-detail-dob') || {}).value || '',
         tax_rate: parseFloat(document.getElementById('emp-detail-taxrate').value) || 0,
         emergency_contact: document.getElementById('emp-detail-emergency').value,
         level: (document.getElementById('emp-detail-level') || {}).value || '',
@@ -7496,7 +7512,7 @@ showView = function(viewId) {
     if (viewId === 'surveys-view' && typeof loadSurveys === 'function') loadSurveys();
     if (viewId === 'workflows-view' && typeof loadWorkflows === 'function') loadWorkflows();
     if (viewId === 'departments-view') fetchDepartments();
-    if (viewId === 'onboarding-hub-view') { loadOnboardingHub(); loadDocumentQueue(); loadExpiringDocuments(); loadOnboardingPipeline(); }
+    if (viewId === 'onboarding-hub-view') { loadOnboardingHub(); loadDocumentQueue(); loadExpiringDocuments(); loadOnboardingPipeline(); loadProbations(); }
     if (viewId === 'payroll-view') { fetchPayslips(currentPsFilter); loadPayrollAnomalies(); }
     if (viewId === 'attendance-view') { loadAttendanceStats(); loadAttendanceButtons(); loadAttendance(); loadLiveAttendance(); loadAttendanceSettings(); switchAttTab('live'); }
     if (viewId === 'orgchart-view') loadOrgChart();
@@ -11368,7 +11384,7 @@ var HR_VIEW_LOADERS = {
     'employees-view':      function () { fetchEmployees(currentEmpFilter); },
     'departments-view':    function () { fetchDepartments(); },
     'orgchart-view':       function () { loadOrgChart(); },
-    'onboarding-hub-view': function () { loadOnboardingHub(); loadDocumentQueue(); loadExpiringDocuments(); loadOnboardingPipeline(); },
+    'onboarding-hub-view': function () { loadOnboardingHub(); loadDocumentQueue(); loadExpiringDocuments(); loadOnboardingPipeline(); loadProbations(); },
     'payroll-view':        function () { fetchPayslips(currentPsFilter); },
     'leave-view':          function () { loadLeaveView(); },
     'goals-view':          function () { loadGoalsView(); },
@@ -15841,3 +15857,107 @@ async function loadEmployeeCheckIns(empId) {
     } catch (e) { host.innerHTML = '<p style="color:var(--danger-text);font-size:0.85rem;">' + esc(e.message) + '</p>'; }
 }
 window.loadEmployeeCheckIns = loadEmployeeCheckIns;
+
+// ===========================================================================
+// Probation
+// ===========================================================================
+// A trial period with a date. The profile says where it stands; the
+// onboarding hub lists everybody still on one, due first; the decision is
+// one form with three outcomes.
+
+var PROBATION_WORDS = { on_probation: 'On probation', extended: 'Extended', confirmed: 'Passed', ended: 'Ended' };
+
+function probationWords(p) {
+    if (!p || !p.status) return '';
+    if (p.status === 'confirmed') return 'Passed' + (p.decided_at ? ' ' + p.decided_at.slice(0, 10) : '');
+    if (p.status === 'ended') return 'Ended' + (p.decided_at ? ' ' + p.decided_at.slice(0, 10) : '');
+    if (p.days_left == null) return PROBATION_WORDS[p.status] || p.status;
+    if (p.days_left < 0) return 'Ended ' + p.end + ' - no decision yet';
+    if (p.days_left === 0) return 'Ends today';
+    return (p.status === 'extended' ? 'Extended, ends ' : 'Until ') + p.end + ' (' + p.days_left + ' day' + (p.days_left === 1 ? '' : 's') + ')';
+}
+
+function renderProbationLine(emp) {
+    var el = document.getElementById('emp-detail-probation');
+    var btn = document.getElementById('emp-probation-btn');
+    if (!el) return;
+    var p = emp.probation || {};
+    var open = p.status === 'on_probation' || p.status === 'extended';
+    el.textContent = probationWords(p) || 'Not tracked';
+    el.style.color = open && p.due ? 'var(--warning-color)' : '';
+    if (btn) { btn.style.display = ''; btn.textContent = open ? 'Decide' : 'Put on probation'; }
+}
+
+async function decideProbation(empId) {
+    if (!empId) return;
+    var emp = _currentEmployee || {};
+    var p = emp.probation || {};
+    var open = p.status === 'on_probation' || p.status === 'extended';
+    var out;
+    if (!open) {
+        out = await uiForm([
+            { name: 'months', label: 'How long', type: 'select', value: '3', options: [
+                { value: '1', label: '1 month' }, { value: '2', label: '2 months' }, { value: '3', label: '3 months' },
+                { value: '6', label: '6 months' }, { value: '12', label: '12 months' } ] },
+            { name: 'note', label: 'Note', type: 'textarea' },
+        ], { title: 'Put on probation', confirmText: 'Start', message: 'Counted from their start date.' });
+        if (!out) return;
+        out.decision = 'start'; out.months = parseInt(out.months, 10);
+    } else {
+        out = await uiForm([
+            { name: 'decision', label: 'Decision', type: 'select', value: 'confirm', options: [
+                { value: 'confirm', label: 'Confirm - they have passed' },
+                { value: 'extend', label: 'Extend - give it longer' },
+                { value: 'end', label: 'End it' } ] },
+            { name: 'until', label: 'If extending: new end date', type: 'date', value: '' },
+            { name: 'note', label: 'Note - goes on their record', type: 'textarea', placeholder: 'Required when ending it' },
+        ], { title: 'Probation: ' + (emp.full_name || ''), confirmText: 'Save',
+             message: 'Currently ' + (probationWords(p) || '').toLowerCase() + '. They are told what you decide.' });
+        if (!out) return;
+    }
+    try {
+        await fetchJson('/api/employees/' + empId + '/probation', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(out) });
+        showToast('Saved', 'success');
+        if (typeof viewEmployee === 'function' && currentEmployeeId === empId) viewEmployee(empId);
+        if (document.getElementById('probations-list')) loadProbations();
+        if (typeof loadHRStats === 'function') loadHRStats();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.decideProbation = decideProbation;
+
+async function loadProbations() {
+    var host = document.getElementById('probations-list');
+    var sum = document.getElementById('probations-summary');
+    if (!host) return;
+    try {
+        var d = await fetchJson('/api/probations');
+        sum.textContent = d.probations.length
+            ? d.due + ' to decide \u00b7 ' + d.probations.length + ' on probation \u00b7 default ' + d.default_months + ' month' + (d.default_months === 1 ? '' : 's')
+            : 'Nobody on probation';
+        if (!d.probations.length) {
+            host.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem;">New hires go on probation for ' + d.default_months +
+                ' month' + (d.default_months === 1 ? '' : 's') + ' unless told otherwise. Change the default under Settings.</p>';
+            return;
+        }
+        host.innerHTML = d.probations.map(function (p) {
+            var tone = p.overdue ? 'var(--danger-color)' : p.due ? 'var(--warning-color)' : 'var(--text-secondary)';
+            return '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--border-color);">' +
+                '<div style="flex:1;min-width:200px;"><a href="#" onclick="viewEmployee(' + p.employee_id + ');return false;" style="font-weight:600;">' + esc(p.employee_name) + '</a>' +
+                    (p.job_title ? ' <span style="color:var(--text-secondary);font-size:0.8rem;">' + esc(p.job_title) + '</span>' : '') +
+                    '<div style="font-size:0.78rem;color:' + tone + ';">' + esc(probationWords(p)) +
+                    (p.manager_name ? ' <span style="color:var(--text-secondary);">\u00b7 reports to ' + esc(p.manager_name) + '</span>' : '') + '</div></div>' +
+                '<button class="btn btn-sm ' + (p.due ? 'btn-primary' : 'btn-outline') + '" onclick="decideProbationFor(' + p.employee_id + ')">Decide</button>' +
+            '</div>';
+        }).join('');
+    } catch (e) { host.innerHTML = '<p style="color:var(--danger-text);font-size:0.85rem;">' + esc(e.message) + '</p>'; }
+}
+window.loadProbations = loadProbations;
+
+async function decideProbationFor(empId) {
+    // From the list rather than the profile: fetch the person first so the
+    // form can say where things stand.
+    try { _currentEmployee = await fetchJson('/api/employees/' + empId); } catch (e) { _currentEmployee = { probation: { status: 'on_probation' } }; }
+    return decideProbation(empId);
+}
+window.decideProbationFor = decideProbationFor;

@@ -8484,6 +8484,11 @@ class EmployeeCreate(BaseModel):
     start_date: Optional[str] = ""
     employee_id: Optional[str] = ""
     password: Optional[str] = ""
+    date_of_birth: Optional[str] = ""
+    # An explicit end date wins; otherwise this many months after they
+    # start (the tenant's default when absent); zero means no probation.
+    probation_end: Optional[str] = ""
+    probation_months: Optional[int] = None
 
 class PayslipCreate(BaseModel):
     employee_id: int
@@ -9282,7 +9287,9 @@ def create_employee(request: Request, body: EmployeeCreate, db: Session = Depend
         emergency_contact=body.emergency_contact, emergency_phone=body.emergency_phone,
         start_date=body.start_date, status="onboarding",
         password_hash=models.hash_password(body.password) if body.password else "",
+        date_of_birth=_clean_ymd(body.date_of_birth, "Date of birth"),
     )
+    start_probation(db, emp, body.probation_end, body.probation_months)
     db.add(emp)
     db.flush()
 
@@ -9396,6 +9403,8 @@ def get_employee(emp_id: int, request: Request, db: Session = Depends(get_db)):
         "email": emp.email, "phone": emp.phone, "address": emp.address,
         "department_id": emp.department_id, "department_name": dept_name,
         "reports_to": emp.reports_to, "manager_name": manager_name,
+        "date_of_birth": emp.date_of_birth or "",
+        "probation": probation_to_dict(emp),
         "job_title": emp.job_title, "role": emp.role, "level": emp.level or "",
         "employment_type": emp.employment_type, "pay_frequency": emp.pay_frequency,
         "salary": emp.salary, "hourly_rate": emp.hourly_rate,
@@ -9478,6 +9487,15 @@ def update_employee(emp_id: int, request: Request, body: dict = None, db: Sessio
         body["role"] = validate_role(body["role"])
     if "reports_to" in body:
         body["reports_to"] = validate_manager(db, client.id, emp.id, body["reports_to"])
+    if "date_of_birth" in body:
+        body["date_of_birth"] = _clean_ymd(body.get("date_of_birth"), "Date of birth")
+    if "probation_end" in body:
+        body["probation_end"] = _clean_ymd(body.get("probation_end"), "Probation end")
+        # A date typed onto somebody not on probation puts them on it.
+        if body["probation_end"] and emp.probation_status not in ("on_probation", "extended"):
+            body["probation_status"] = "on_probation"
+        if body["probation_end"] != (emp.probation_end or ""):
+            body["probation_reminder_stage"] = 0
     # What the job looked like before, so a change to it can be written down.
     before = {f: getattr(emp, f, None) for f in TRACKED_JOB_FIELDS}
     for key, val in body.items():
@@ -10822,6 +10840,8 @@ def get_hr_dashboard(request: Request, db: Session = Depends(get_db)):
         models.DBCertification.client_id == cid).all() if c.employee_id in current_ids]
     certs_lapsing = sum(1 for c in certs if certification_status(c)[0] != "valid")
     certs_unverified = sum(1 for c in certs if not c.verified_by)
+    probations_due = sum(1 for e in emps().all() if employee_is_current(e)
+                         and probation_to_dict(e)["due"])
 
     waiting = [
         {"key": "leave", "label": "Leave requests to decide", "count": pending_leave,
@@ -10843,6 +10863,8 @@ def get_hr_dashboard(request: Request, db: Session = Depends(get_db)):
          "count": certs_lapsing, "view": "training-view"},
         {"key": "verify", "label": "Certifications to verify", "count": certs_unverified,
          "view": "training-view"},
+        {"key": "probations", "label": "Probations to decide", "count": probations_due,
+         "view": "onboarding-hub-view"},
     ]
 
     # --- what lands soon -----------------------------------------------------
@@ -10880,6 +10902,13 @@ def get_hr_dashboard(request: Request, db: Session = Depends(get_db)):
             {"name": d.name, "expires_on": d.expires_on,
              "employee": name_of(all_emp[d.employee_id]) if d.employee_id in all_emp else ""}
             for d in expiring],
+        "probations": [
+            {"name": name_of(e), "ends_on": e.probation_end, "employee_id": e.id,
+             "days_left": probation_to_dict(e)["days_left"]}
+            for e in sorted((x for x in all_emp.values() if employee_is_current(x)
+                             and probation_to_dict(x)["due"]),
+                            key=lambda x: x.probation_end or "")[:5]],
+        "celebrations": celebrations(db, cid, 14, names={i: name_of(e) for i, e in all_emp.items()})[:6],
     }
 
     return {
@@ -16475,6 +16504,7 @@ def get_employee_profile(request: Request, db: Session = Depends(get_db)):
         "manager": f"{manager.first_name} {manager.last_name}" if manager else "",
         "start_date": emp.start_date,
         "work_location": emp.work_location,
+        "probation": probation_to_dict(emp),
         "emergency_contact": emp.emergency_contact,
         "emergency_phone": emp.emergency_phone,
         "employee_id_code": emp.employee_id,
@@ -24543,11 +24573,12 @@ TRACKED_JOB_FIELDS = {
     "employment_type": "type_change",
 }
 CHANGE_KINDS = ("promotion", "transfer", "pay_change", "title_change", "manager_change",
-                "level_change", "type_change", "note")
+                "level_change", "type_change", "probation", "note")
 CHANGE_LABELS = {
     "promotion": "Promotion", "transfer": "Moved department", "pay_change": "Pay change",
     "title_change": "New title", "manager_change": "New manager", "level_change": "Level change",
-    "type_change": "Employment type", "note": "Note", "joined": "Joined", "left": "Left",
+    "type_change": "Employment type", "probation": "Probation", "note": "Note",
+    "joined": "Joined", "left": "Left",
 }
 
 
@@ -24761,6 +24792,18 @@ def hr_analytics(request: Request, db: Session = Depends(get_db)):
     for t in tenures:
         bands["under_1" if t < 1 else "1_to_2" if t < 2 else "2_to_5" if t < 5 else "over_5"] += 1
 
+    # --- age, for those with a date on file ---------------------------------
+    age_bands = {"under_25": 0, "25_34": 0, "35_44": 0, "45_54": 0, "55_plus": 0, "unknown": 0}
+    for e in current:
+        dob = _parse_date(e.date_of_birth)
+        if not dob:
+            age_bands["unknown"] += 1
+            continue
+        age = (today - dob).days / 365.25
+        age_bands["under_25" if age < 25 else "25_34" if age < 35 else "35_44" if age < 45
+                  else "45_54" if age < 55 else "55_plus"] += 1
+    on_probation = sum(1 for e in current if e.probation_status in ("on_probation", "extended"))
+
     # --- who is where -------------------------------------------------------
     depts = {d.id: d.name for d in db.query(models.DBDepartment).filter(
         models.DBDepartment.client_id == cid).all()}
@@ -24852,6 +24895,8 @@ def hr_analytics(request: Request, db: Session = Depends(get_db)):
             "by_month": months,
             "average_tenure_years": round(sum(tenures) / len(tenures), 1) if tenures else 0.0,
             "tenure_bands": bands,
+            "age_bands": age_bands,
+            "on_probation": on_probation,
             "by_department": [{"name": k, "count": v} for k, v in by_dept.most_common()],
             "by_type": [{"name": k, "count": v} for k, v in by_type.most_common()],
         },
@@ -25154,6 +25199,243 @@ def hr_employee_check_ins(emp_id: int, request: Request, db: Session = Depends(g
     ).order_by(models.DBCheckIn.scheduled_for.desc()).limit(50).all()
     names = _employee_names(db, client.id)
     return {"check_ins": [check_in_to_dict(c, names) for c in rows]}
+
+
+# ============================================================================
+# Probation
+# ============================================================================
+# A new hire is on probation until a date, and somebody has to decide before
+# it: confirm them, give it longer, or end it. The date is set when they are
+# added - the tenant's default months after they start, unless a date is
+# given - and the manager is told a fortnight before and on the day. The
+# dashboard counts what is due, because a probation that quietly passes
+# its date is a decision the company made without noticing.
+
+PROBATION_STATES = ("on_probation", "confirmed", "extended", "ended")
+PROBATION_WARN_DAYS = 14
+
+
+def probation_default_months(db, client_id):
+    try:
+        return max(0, min(int(tenant_setting(db, client_id, "probation_months", 3)), 24))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _add_months(d, months):
+    m = d.month - 1 + months
+    y = d.year + m // 12
+    m = m % 12 + 1
+    day = min(d.day, calendar.monthrange(y, m)[1])
+    return date(y, m, day)
+
+
+def start_probation(db, emp, explicit_end="", months=None):
+    """Set the end date on a new hire. An explicit date wins; otherwise the
+    tenant's default months after the start date; zero months means none."""
+    end = _clean_ymd(explicit_end, "Probation end")
+    if not end:
+        if months is None:
+            months = probation_default_months(db, emp.client_id)
+        started = _parse_date(emp.start_date) or date.today()
+        if months and months > 0:
+            end = _add_months(started, int(months)).isoformat()
+    emp.probation_end = end
+    emp.probation_status = "on_probation" if end else ""
+    emp.probation_reminder_stage = 0
+
+
+def probation_to_dict(emp, today=None):
+    today = today or date.today()
+    end = _parse_date(emp.probation_end)
+    days = (end - today).days if end else None
+    open_ = emp.probation_status in ("on_probation", "extended")
+    return {
+        "status": emp.probation_status or "",
+        "end": emp.probation_end or "",
+        "days_left": days if open_ else None,
+        "due": bool(open_ and days is not None and days <= PROBATION_WARN_DAYS),
+        "overdue": bool(open_ and days is not None and days < 0),
+        "note": emp.probation_note or "",
+        "decided_by": emp.probation_decided_by or "",
+        "decided_at": emp.probation_decided_at or "",
+    }
+
+
+@app.get("/api/probations")
+def list_probations(request: Request, db: Session = Depends(get_db)):
+    """Everybody still on probation, soonest first, with who decides."""
+    client = get_client_user(request, db)
+    names = _employee_names(db, client.id)
+    rows = [e for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client.id).all()
+        if employee_is_current(e) and e.probation_status in ("on_probation", "extended")]
+    rows.sort(key=lambda e: e.probation_end or "9999")
+    out = []
+    for e in rows:
+        d = probation_to_dict(e)
+        d.update({"employee_id": e.id, "employee_name": names.get(e.id, ""),
+                  "start_date": e.start_date or "", "job_title": e.job_title or "",
+                  "manager_name": names.get(e.reports_to, "") if e.reports_to else ""})
+        out.append(d)
+    return {"probations": out, "due": sum(1 for d in out if d["due"]),
+            "overdue": sum(1 for d in out if d["overdue"]),
+            "default_months": probation_default_months(db, client.id),
+            "warn_days": PROBATION_WARN_DAYS}
+
+
+@app.post("/api/employees/{emp_id}/probation")
+def decide_probation(emp_id: int, request: Request, body: dict = None,
+                     db: Session = Depends(get_db)):
+    """confirm, extend (to a later date), or end. Written to their history,
+    and the person is told - somebody waiting to hear whether they have
+    passed should not find out by the date going past."""
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    body = body or {}
+    decision = str(body.get("decision") or "").strip().lower()
+    note = str(body.get("note") or "").strip()[:2000]
+    by = _hr_name(client)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if decision == "start":
+        # Put somebody on probation who was not, or set a date by hand.
+        start_probation(db, emp, body.get("until"), body.get("months"))
+        if not emp.probation_end:
+            raise HTTPException(status_code=400, detail="Give an end date or a number of months")
+        emp.probation_note = note
+        label, told = f"On probation until {emp.probation_end}", ""
+    elif decision == "confirm":
+        if emp.probation_status not in ("on_probation", "extended"):
+            raise HTTPException(status_code=409, detail="They are not on probation")
+        emp.probation_status = "confirmed"
+        label, told = "Probation passed", "You have passed your probation. Congratulations."
+    elif decision == "extend":
+        if emp.probation_status not in ("on_probation", "extended"):
+            raise HTTPException(status_code=409, detail="They are not on probation")
+        until = _clean_ymd(body.get("until"), "New end date")
+        if not until or until <= (emp.probation_end or ""):
+            raise HTTPException(status_code=400, detail="Pick a date after the current end")
+        emp.probation_end = until
+        emp.probation_status = "extended"
+        emp.probation_reminder_stage = 0
+        label, told = f"Probation extended to {until}", f"Your probation has been extended to {until}."
+    elif decision == "end":
+        if emp.probation_status not in ("on_probation", "extended"):
+            raise HTTPException(status_code=409, detail="They are not on probation")
+        if not note:
+            raise HTTPException(status_code=400, detail="Say why - this goes on their record")
+        emp.probation_status = "ended"
+        label, told = "Probation ended", ""
+    else:
+        raise HTTPException(status_code=400, detail="Decision must be confirm, extend, end or start")
+    emp.probation_note = note
+    emp.probation_decided_by = by
+    emp.probation_decided_at = now
+    db.add(models.DBEmploymentChange(
+        client_id=client.id, employee_id=emp.id, effective_on=now[:10], kind="probation",
+        field="probation", old_value="", new_value=label[:200], note=note[:1000], recorded_by=by))
+    if told:
+        notify_employee(db, emp, label, told + (f" {note}" if note else ""), "info", "profile", by)
+    log_audit(db, client.id, "probation_" + decision, "employee", emp.id,
+              f"{emp.first_name} {emp.last_name}", label, request)
+    db.commit()
+    return probation_to_dict(emp)
+
+
+@scheduled_job("probation_reminders")
+def job_probation_reminders(db, now):
+    """A fortnight out and on the day: the manager is told, once each. HR
+    sees the count on the dashboard every morning without being told."""
+    today = now.date()
+    told = 0
+    rows = [e for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.probation_status.in_(("on_probation", "extended"))).all()
+        if employee_is_current(e)]
+    for e in rows:
+        end = _parse_date(e.probation_end)
+        if not end:
+            continue
+        days = (end - today).days
+        due = 2 if days <= 0 else 1 if days <= PROBATION_WARN_DAYS else 0
+        if due <= (e.probation_reminder_stage or 0):
+            continue
+        e.probation_reminder_stage = due
+        if not e.reports_to:
+            continue
+        mgr = db.query(models.DBEmployee).filter(models.DBEmployee.id == e.reports_to).first()
+        if not mgr or not employee_is_current(mgr):
+            continue
+        who = f"{e.first_name} {e.last_name}".strip()
+        if due == 2:
+            title, msg = f"{who}'s probation ends today", "HR needs your view: confirm, extend, or end it."
+        else:
+            title, msg = f"{who}'s probation ends in {days} days", \
+                f"It ends on {e.probation_end}. Tell HR whether to confirm, extend or end it."
+        notify_employee(db, mgr, title, msg, "warning", "team", "HR")
+        told += 1
+    db.commit()
+    return f"{told} told"
+
+
+# ============================================================================
+# Celebrations
+# ============================================================================
+# Birthdays and work anniversaries in the next while. Birthdays are a day
+# and a month to colleagues - never a year - and only for people who have
+# a date on file.
+
+def _next_occurrence(month, day, today):
+    """The next date with this month and day, today included. A 29 February
+    falls on 28 February in other years."""
+    for year in (today.year, today.year + 1):
+        try:
+            d = date(year, month, day)
+        except ValueError:
+            d = date(year, month, 28)
+        if d >= today:
+            return d
+    return None
+
+
+def celebrations(db, client_id, days=30, today=None, names=None):
+    today = today or date.today()
+    names = names or _employee_names(db, client_id)
+    people = [e for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client_id).all() if employee_is_current(e)]
+    out = []
+    for e in people:
+        dob = _parse_date(e.date_of_birth)
+        if dob:
+            when = _next_occurrence(dob.month, dob.day, today)
+            if when and (when - today).days <= days:
+                out.append({"kind": "birthday", "employee_id": e.id, "name": names.get(e.id, ""),
+                            "on": when.isoformat(), "in_days": (when - today).days, "years": None})
+        started = _parse_date(e.start_date)
+        if started and started < today:
+            when = _next_occurrence(started.month, started.day, today)
+            if when and (when - today).days <= days:
+                years = when.year - started.year
+                if years >= 1:
+                    out.append({"kind": "anniversary", "employee_id": e.id, "name": names.get(e.id, ""),
+                                "on": when.isoformat(), "in_days": (when - today).days, "years": years})
+    out.sort(key=lambda c: (c["on"], c["name"]))
+    return out
+
+
+@app.get("/api/hr/celebrations")
+def hr_celebrations(request: Request, days: int = 30, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    return {"celebrations": celebrations(db, client.id, max(1, min(days, 366)))}
+
+
+@app.get("/api/employee/celebrations")
+def my_team_celebrations(request: Request, days: int = 30, db: Session = Depends(get_db)):
+    """Colleagues' birthdays and anniversaries, for the portal."""
+    emp = current_employee(request, db)
+    return {"celebrations": celebrations(db, emp.client_id, max(1, min(days, 366)))}
 
 
 # Serve frontend

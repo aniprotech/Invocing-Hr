@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=159">
-    <link rel="stylesheet" href="mobile.css?v=159">
+    <link rel="stylesheet" href="styles.css?v=160">
+    <link rel="stylesheet" href="mobile.css?v=160">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,11 +57,11 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=159">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=159">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=159">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=159">
-    <script src="/dialogs.js?v=159"></script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=160">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=160">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=160">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=160">
+    <script src="/dialogs.js?v=160"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -2084,6 +2084,8 @@
                                         <div><span style="color:var(--text-secondary);">Pay Frequency:</span> <select id="emp-detail-payfreq" class="form-control" style="display:none;padding:4px 8px;font-size:0.85rem;" data-field="pay_frequency"><option value="monthly">Monthly</option><option value="weekly">Weekly</option><option value="biweekly">Bi-Weekly</option></select><span id="emp-detail-payfreq-ro">-</span></div>
                                         <div><span style="color:var(--text-secondary);">Salary:</span> <input type="number" id="emp-detail-salary" class="form-control" style="display:none;padding:4px 8px;font-size:0.85rem;" data-field="salary" step="0.01"><span id="emp-detail-salary-ro">-</span></div>
                                         <div><span style="color:var(--text-secondary);">Start Date:</span> <input type="date" id="emp-detail-start" class="form-control" style="display:none;padding:4px 8px;font-size:0.85rem;" data-field="start_date"><span id="emp-detail-start-ro">-</span></div>
+                                        <div><span style="color:var(--text-secondary);">Date of birth:</span> <input type="date" id="emp-detail-dob" class="form-control" style="display:none;padding:4px 8px;font-size:0.85rem;" data-field="date_of_birth"><span id="emp-detail-dob-ro">-</span></div>
+                                        <div><span style="color:var(--text-secondary);">Probation:</span> <span id="emp-detail-probation">-</span> <button type="button" class="btn btn-sm btn-outline" id="emp-probation-btn" onclick="decideProbation(currentEmployeeId)" style="margin-left:6px;display:none;">Decide</button></div>
                                         <div><span style="color:var(--text-secondary);">Tax Rate:</span> <input type="number" id="emp-detail-taxrate" class="form-control" style="display:none;padding:4px 8px;font-size:0.85rem;" data-field="tax_rate" step="0.01"><span id="emp-detail-taxrate-ro">-</span></div>
                                         <div><span style="color:var(--text-secondary);">Emergency Contact:</span> <input type="text" id="emp-detail-emergency" class="form-control" style="display:none;padding:4px 8px;font-size:0.85rem;" data-field="emergency_contact"><span id="emp-detail-emergency-ro">-</span></div>
                                     </div>
@@ -2964,6 +2966,15 @@
 
 
                     <!-- Documents that have lapsed or are about to -->
+                    <!-- Trial periods with a date. Somebody has to decide before it:
+                         confirm, extend, or end. The ones due are first. -->
+                    <div class="glass-widget mb-24" id="probations-widget">
+                        <div class="widget-header">
+                            <h3>Probations</h3>
+                            <span id="probations-summary" style="font-size:0.85rem;color:var(--text-secondary);"></span>
+                        </div>
+                        <div class="widget-content" id="probations-list"></div>
+                    </div>
                     <div class="glass-widget mb-24" id="expiring-docs-widget">
                         <div class="widget-header">
                             <h3>Expiring Documents</h3>
@@ -4045,6 +4056,15 @@
                         <div class="form-group"><label>Salary</label><input type="number" id="emp-salary" class="form-control" step="0.01" value="0"></div>
                         <div class="form-group"><label>Tax Rate (%)</label><input type="number" id="emp-tax-rate" class="form-control" step="0.01" value="0"></div>
                         <div class="form-group"><label>Start Date</label><input type="date" id="emp-start-date" class="form-control"></div>
+                        <div class="form-group"><label>Date of birth</label><input type="date" id="emp-dob" class="form-control"></div>
+                        <div class="form-group"><label>Probation</label>
+                            <select id="emp-probation-months" class="form-control">
+                                <option value="">Company default</option>
+                                <option value="0">None</option>
+                                <option value="1">1 month</option><option value="2">2 months</option><option value="3">3 months</option>
+                                <option value="6">6 months</option><option value="12">12 months</option>
+                            </select>
+                        </div>
                         <div class="form-group"><label>Emergency Contact</label><input type="text" id="emp-emergency-contact" class="form-control" placeholder="Contact name"></div>
                         <div class="form-group"><label>Emergency Phone</label><input type="tel" id="emp-emergency-phone" class="form-control" placeholder="Contact phone"></div>
                     </div>
@@ -4177,8 +4197,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="feed.js?v=159"></script>
-    <script src="app.js?v=159"></script>
+    <script src="feed.js?v=160"></script>
+    <script src="app.js?v=160"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
@@ -4406,7 +4426,7 @@
             </div>
         </div>
     </div>
-    <script src="/install-hint.js?v=159"></script>
-    <script src="/pwa.js?v=159"></script>
+    <script src="/install-hint.js?v=160"></script>
+    <script src="/pwa.js?v=160"></script>
 </body>
 </html>

@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=159">
+  <link rel="stylesheet" href="tailwind.css?v=160">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,12 +50,12 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=159">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=159">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=159">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=159">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=159">
-    <script src="/dialogs.js?v=159"></script>
+    <link rel="stylesheet" href="mobile.css?v=160">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=160">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=160">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=160">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=160">
+    <script src="/dialogs.js?v=160"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -414,6 +414,12 @@
         <div id="approvals" class="space-y-3"></div>
       </div>
 
+      <!-- Birthdays and work anniversaries in the next fortnight. A day and
+           a month, never an age. -->
+      <div class="bg-white rounded-2xl border border-gray-100 p-5 mt-4" id="celebrationsCard" hidden>
+        <h3 class="font-semibold text-gray-900 mb-3">Coming up</h3>
+        <div id="celebrations" class="space-y-2"></div>
+      </div>
       <div class="bg-white rounded-2xl border border-gray-100 p-5 mt-4" id="teamTasksCard" hidden>
         <h3 class="font-semibold text-gray-900 mb-4 flex items-center gap-2">
           <svg class="w-5 h-5 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
@@ -1745,7 +1751,7 @@
       var btn = document.querySelector('[data-tab="' + tab + '"]');
       if (panel) panel.classList.remove('hidden');
       if (btn) { btn.classList.add('tab-active'); btn.classList.remove('text-gray-500'); }
-      if (tab === 'overview') { loadMyTasks(); loadTeamTasks(); loadApprovals(); }
+      if (tab === 'overview') { loadMyTasks(); loadTeamTasks(); loadApprovals(); loadCelebrations(); }
       if (tab === 'attendance') loadAttendanceStats();
       if (tab === 'goals') loadGoals();
       if (tab === 'leave') { loadLeave(); loadLeaveBalance(); }
@@ -1763,6 +1769,33 @@
       if (tab === 'feed') loadFeed();
       if (tab === 'expenses') loadExpenses();
     }
+
+    // --- Celebrations ------------------------------------------------------------
+
+    async function loadCelebrations() {
+      var card = document.getElementById('celebrationsCard');
+      var host = document.getElementById('celebrations');
+      if (!card || !host) return;
+      try {
+        var res = await fetch('/api/employee/celebrations?days=14');
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        var rows = (await res.json()).celebrations || [];
+        host.textContent = '';
+        card.hidden = !rows.length;
+        rows.forEach(function (c) {
+          var row = document.createElement('div');
+          row.className = 'flex items-center gap-3 text-sm';
+          var icon = document.createElement('span'); icon.textContent = c.kind === 'birthday' ? '\uD83C\uDF82' : '\uD83C\uDF89'; row.appendChild(icon);
+          var text = document.createElement('span'); text.className = 'flex-1 text-gray-900';
+          text.textContent = c.kind === 'birthday' ? c.name + '\u2019s birthday' : c.name + ' \u00b7 ' + c.years + ' year' + (c.years === 1 ? '' : 's') + ' here';
+          row.appendChild(text);
+          var when = document.createElement('span'); when.className = 'text-xs text-gray-500';
+          when.textContent = c.in_days === 0 ? 'Today' : c.in_days === 1 ? 'Tomorrow' : c.on; row.appendChild(when);
+          host.appendChild(row);
+        });
+      } catch (e) { card.hidden = true; }
+    }
+    window.loadCelebrations = loadCelebrations;
 
     // --- One-to-ones ------------------------------------------------------------
 
@@ -4030,6 +4063,10 @@
           { label: 'Work Location', value: p.work_location || 'Office', icon: 'M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z' },
           { label: 'Employment Type', value: (p.employment_type||'').replace('_',' '), icon: 'M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z' },
           { label: 'Emergency Contact', value: p.emergency_contact || 'Not set', icon: 'M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z' },
+          { label: 'Probation', value: (function (q) { if (!q || !q.status) return null;
+              if (q.status === 'confirmed') return 'Passed'; if (q.status === 'ended') return 'Ended';
+              return (q.status === 'extended' ? 'Extended to ' : 'Until ') + q.end; })(p.probation),
+            icon: 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z' },
         ];
         // The form starts from what is on file, so saving does not blank a field
         // somebody did not mean to touch. The account number is the exception:
@@ -4048,6 +4085,7 @@
 
         var grid = document.getElementById('profileDetails');
         grid.innerHTML = '';
+        details = details.filter(function (d) { return d.value !== null; });
         details.forEach(function(d) {
           grid.innerHTML += '<div class="flex items-start gap-3 p-3 rounded-xl bg-gray-50"><div class="w-8 h-8 rounded-lg bg-white flex items-center justify-center flex-shrink-0 shadow-sm"><svg class="w-4 h-4 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="' + d.icon + '"/></svg></div><div><div class="text-[11px] text-gray-400 uppercase tracking-wider font-medium">' + esc(d.label) + '</div><div class="text-sm font-medium text-gray-900 mt-0.5">' + esc(d.value || '-') + '</div></div></div>';
         });
@@ -4110,8 +4148,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=159"></script>
-    <script src="/pwa.js?v=159"></script>
-    <script src="/feed.js?v=159"></script>
+    <script src="/install-hint.js?v=160"></script>
+    <script src="/pwa.js?v=160"></script>
+    <script src="/feed.js?v=160"></script>
 </body>
 </html>
