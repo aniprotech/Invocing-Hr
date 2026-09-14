@@ -96,7 +96,7 @@ const bodyOf = e => { try { return JSON.parse(e.body); } catch (x) { return {}; 
     {
         const src = fs.readFileSync(path.join(ROOT, 'employee-dashboard.html'), 'utf8');
         check('there is a Reviews tab', /data-tab="reviews"/.test(src) && /id="tab-reviews"/.test(src));
-        check('  switching to it loads the lists', /tab === 'reviews'\)\s*loadMyReviews\(\)/.test(src));
+        check('  switching to it loads the lists', /tab === 'reviews'\)\s*\{?\s*loadMyReviews\(\)/.test(src));
         check('the profile tab loads certifications and history', /loadMyCerts\(\); loadMyHistory\(\)/.test(src));
     }
 

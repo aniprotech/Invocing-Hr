@@ -1711,6 +1711,14 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 57: {sys.exc_info()[1]}")
 
+            # 58. A view of potential on the manager's half of a review, so
+            # performance against potential can be drawn.
+            try:
+                conn.execute(text("ALTER TABLE reviews ADD COLUMN IF NOT EXISTS potential INTEGER"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 58: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

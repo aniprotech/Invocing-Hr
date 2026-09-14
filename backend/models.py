@@ -2257,6 +2257,9 @@ class DBReview(Base):
 
     manager_answers = Column(Text, default="[]")
     manager_rating = Column(Integer, nullable=True)  # 1..5, the one that counts
+    # 1 best where they are, 2 could grow, 3 could go a long way. With the
+    # rating it places the person on the talent grid.
+    potential = Column(Integer, nullable=True)
     manager_summary = Column(Text, default="")
     manager_by = Column(String, default="")          # name, for the record
     manager_submitted_at = Column(String, default="")
@@ -2344,4 +2347,27 @@ class DBCheckIn(Base):
     private_note = Column(Text, default="")     # the manager's alone
     completed_at = Column(String, default="")
     created_by = Column(Integer, nullable=True) # employee id
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+# ---- Peer feedback ---------------------------------------------------------------
+# Asked of a colleague about one review: strengths, what to work on, a
+# rating - or declined. The reviewer reads it with names, the person reads
+# it afterwards without them.
+
+class DBPeerFeedback(Base):
+    __tablename__ = "peer_feedback"
+    __table_args__ = (UniqueConstraint("review_id", "peer_id", name="uq_peer_once_per_review"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    review_id = Column(Integer, ForeignKey("reviews.id"), nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)  # the subject
+    peer_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+    requested_by = Column(Integer, nullable=True)      # employee id, or None for HR
+    status = Column(String, default="requested", index=True)   # requested | submitted | declined
+    strengths = Column(Text, default="")
+    improvements = Column(Text, default="")
+    rating = Column(Integer, nullable=True)
+    submitted_at = Column(String, default="")
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))

@@ -15131,6 +15131,7 @@ var REVIEW_STATUS = {
     complete:         ['Complete',              'var(--success-color)'],
 };
 var CYCLE_STATUS = { draft: 'Draft', open: 'Open', closed: 'Closed' };
+var POTENTIAL_WORDS = { 1: 'Best where they are', 2: 'Could grow', 3: 'Could go a long way' };
 
 var _cycles = [];
 var _cycleQuestions = [];
@@ -15228,6 +15229,7 @@ async function viewCycle(id) {
                 '<td>' + _pill(st[0], st[1]) + '</td>' +
                 '<td>' + _stars(r.self_rating) + '</td>' +
                 '<td>' + _stars(r.manager_rating) + '</td>' +
+                '<td style="font-size:0.8rem;color:var(--text-secondary);">' + (r.potential ? esc(POTENTIAL_WORDS[r.potential] || r.potential) : '-') + '</td>' +
             '</tr>';
         }).join('');
         host.innerHTML = '<div class="widget">' +
@@ -15236,16 +15238,54 @@ async function viewCycle(id) {
                     (s.rated ? 'Average ' + s.average + ' across ' + s.rated + ' rated' : 'Nobody rated yet') + '</span></div>' +
             (s.rated ? '<div style="padding:12px 0 16px;display:grid;gap:6px;">' + bars + '</div>' : '') +
             (rows ? '<div style="overflow-x:auto;"><table class="data-table"><thead><tr>' +
-                '<th>Person</th><th>Reviewer</th><th>Status</th><th>Their rating</th><th>Rating</th></tr></thead>' +
+                '<th>Person</th><th>Reviewer</th><th>Status</th><th>Their rating</th><th>Rating</th><th>Potential</th></tr></thead>' +
                 '<tbody>' + rows + '</tbody></table></div>' :
                 '<p style="color:var(--text-secondary);font-size:0.85rem;padding:12px 0;">' +
                     (c.status === 'draft' ? 'Nothing written yet - open the cycle and everybody is asked.' : 'Nobody in this cycle.') + '</p>') +
-        '</div>';
+        '</div>' + (c.status !== 'draft' ? '<div id="talent-grid" style="margin-top:24px;"></div>' : '');
+        if (c.status !== 'draft') loadTalentGrid(c.id);
     } catch (e) {
         host.innerHTML = '<div class="widget" style="padding:20px;color:var(--danger-text);">' + esc(e.message) + '</div>';
     }
 }
 window.viewCycle = viewCycle;
+
+// Performance against potential, nine boxes. Rows are performance, high at
+// the top; columns are potential, growing to the right. The unplaced are
+// counted beside it so the grid never passes for the whole company.
+async function loadTalentGrid(cycleId) {
+    var host = document.getElementById('talent-grid');
+    if (!host) return;
+    try {
+        var g = await fetchJson('/api/talent-grid?cycle_id=' + cycleId);
+        if (!g.cycle) { host.innerHTML = ''; return; }
+        var TONE = { '3,3': 'rgba(52,211,153,0.18)', '3,2': 'rgba(52,211,153,0.12)', '2,3': 'rgba(52,211,153,0.12)',
+                     '3,1': 'rgba(56,189,248,0.10)', '2,2': 'rgba(56,189,248,0.10)', '1,3': 'rgba(251,191,36,0.12)',
+                     '2,1': 'rgba(255,255,255,0.05)', '1,2': 'rgba(251,191,36,0.12)', '1,1': 'rgba(244,63,94,0.14)' };
+        var cells = g.boxes.map(function (b) {
+            return '<div style="background:' + TONE[b.performance + ',' + b.potential] + ';border-radius:10px;padding:10px;min-height:96px;">' +
+                '<div style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-secondary);">' + esc(b.label) + '</div>' +
+                (b.people.length ? b.people.map(function (p) {
+                    return '<a href="#" onclick="viewEmployee(' + p.employee_id + ');return false;" style="display:block;font-size:0.85rem;margin-top:4px;">' + esc(p.name) + '</a>';
+                }).join('') : '<div style="font-size:0.8rem;color:var(--text-secondary);margin-top:6px;">-</div>') +
+            '</div>';
+        });
+        // Boxes arrive performance 3 to 1, potential 1 to 3: three rows of three.
+        var rows = [['High', 0], ['Solid', 3], ['Low', 6]].map(function (row) {
+            return '<div style="font-size:0.72rem;color:var(--text-secondary);display:flex;align-items:center;justify-content:center;text-align:center;padding:0 4px;">' + row[0] + '<br>performance</div>' +
+                cells.slice(row[1], row[1] + 3).join('');
+        }).join('');
+        host.innerHTML = '<div class="widget"><div class="widget-header"><h3>Talent grid</h3>' +
+            '<span style="font-size:0.8rem;color:var(--text-secondary);">' + g.placed + ' placed' +
+            (g.unplaced ? ' · ' + g.unplaced + ' rated with no view of potential' : '') +
+            (g.pending ? ' · ' + g.pending + ' not yet reviewed' : '') + '</span></div>' +
+            '<div style="display:grid;grid-template-columns:72px repeat(3, minmax(0,1fr));gap:8px;align-items:stretch;">' +
+                '<div></div>' + [1, 2, 3].map(function (k) { return '<div style="font-size:0.75rem;color:var(--text-secondary);text-align:center;">' + esc(POTENTIAL_WORDS[k]) + '</div>'; }).join('') +
+                rows +
+            '</div></div>';
+    } catch (e) { host.innerHTML = ''; }
+}
+window.loadTalentGrid = loadTalentGrid;
 
 async function startCycle(id) {
     var c = _cycles.filter(function (x) { return x.id === id; })[0] || {};
@@ -15395,8 +15435,68 @@ function _answersHtml(questions, half, who) {
         '<div style="font-size:0.8rem;color:var(--text-secondary);">Overall</div><div>' + _stars(half.rating) +
         (half.rating ? ' <span style="font-size:0.82rem;">' + esc(RATING_WORDS[half.rating] || '') + '</span>' : '') + '</div>' +
         (half.comment || half.summary ? '<div style="font-size:0.88rem;white-space:pre-wrap;margin-top:6px;">' + esc(half.comment || half.summary) + '</div>' : '') +
+        (half.potential ? '<div style="font-size:0.8rem;color:var(--text-secondary);margin-top:6px;">Potential: ' + esc(POTENTIAL_WORDS[half.potential] || half.potential) + '</div>' : '') +
     '</div>';
 }
+
+// What colleagues said, with names for HR and the reviewer; and a picker
+// to ask more of them while the cycle is open.
+function _peerHtml(r, canAsk) {
+    var fb = r.peer_feedback || { asked: 0, submitted: 0, declined: 0, items: [] };
+    var items = (fb.items || []).map(function (f) {
+        if (f.status && f.status !== 'submitted') {
+            return '<div style="font-size:0.8rem;color:var(--text-secondary);padding:6px 0;border-top:1px dashed var(--border-color);">' +
+                esc(f.peer_name || 'A colleague') + ' - ' + (f.status === 'declined' ? 'declined' : 'not answered yet') + '</div>';
+        }
+        return '<div style="padding:8px 0;border-top:1px dashed var(--border-color);">' +
+            '<div style="font-size:0.8rem;color:var(--text-secondary);">' + (f.peer_name ? esc(f.peer_name) : 'A colleague') + (f.rating ? ' \u00b7 ' + _stars(f.rating) : '') + '</div>' +
+            (f.strengths ? '<div style="font-size:0.85rem;"><span style="color:var(--text-secondary);">Strengths:</span> ' + esc(f.strengths) + '</div>' : '') +
+            (f.improvements ? '<div style="font-size:0.85rem;"><span style="color:var(--text-secondary);">To work on:</span> ' + esc(f.improvements) + '</div>' : '') +
+        '</div>';
+    }).join('');
+    return '<div style="margin-top:16px;"><h4 style="margin:0 0 4px;font-size:0.9rem;">What colleagues say' +
+        (fb.asked ? ' <span style="font-weight:400;color:var(--text-secondary);font-size:0.8rem;">' + fb.submitted + ' of ' + fb.asked + ' answered' + (fb.average ? ' \u00b7 average ' + fb.average : '') + '</span>' : '') + '</h4>' +
+        (items || '<p style="color:var(--text-secondary);font-size:0.85rem;margin:4px 0;">Nobody asked yet.</p>') +
+        (canAsk ? '<div id="rr-peers" style="margin-top:8px;"><button class="btn btn-sm btn-outline" onclick="showPeerPicker()">Ask colleagues</button></div>' : '') +
+    '</div>';
+}
+
+async function showPeerPicker() {
+    var host = document.getElementById('rr-peers');
+    if (!host || !_readingReview) return;
+    var people = [];
+    try {
+        var res = await fetchJson('/api/employees');
+        people = (Array.isArray(res) ? res : res.employees || []).filter(function (e) {
+            return e.id !== _readingReview.employee_id && e.id !== _readingReview.reviewer_id &&
+                !/terminated|left|inactive/.test(String(e.status || '').toLowerCase());
+        });
+    } catch (e) { /* the list below says */ }
+    var asked = {};
+    ((_readingReview.peer_feedback || {}).items || []).forEach(function (f) { if (f.peer_id) asked[f.peer_id] = true; });
+    host.innerHTML = '<div style="max-height:180px;overflow:auto;border:1px solid var(--border-color);border-radius:8px;padding:8px;">' +
+        people.map(function (e) {
+            var name = e.full_name || ((e.first_name || '') + ' ' + (e.last_name || '')).trim();
+            return '<label style="display:flex;gap:8px;align-items:center;font-size:0.85rem;padding:3px 0;' + (asked[e.id] ? 'opacity:0.5;' : '') + '">' +
+                '<input type="checkbox" class="rr-peer" value="' + e.id + '"' + (asked[e.id] ? ' disabled checked' : '') + '> ' + esc(name) +
+                (e.job_title ? ' <span style="color:var(--text-secondary);">' + esc(e.job_title) + '</span>' : '') + '</label>';
+        }).join('') + '</div>' +
+        '<div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-sm btn-primary" onclick="askPeers()">Ask them</button>' +
+        '<span style="font-size:0.75rem;color:var(--text-secondary);align-self:center;">Up to six. They are told, and answer from their portal.</span></div>';
+}
+window.showPeerPicker = showPeerPicker;
+
+async function askPeers() {
+    var ids = [...document.querySelectorAll('.rr-peer:checked:not(:disabled)')].map(function (b) { return Number(b.value); });
+    if (!ids.length) { showToast('Tick at least one colleague', 'error'); return; }
+    try {
+        var out = await fetchJson('/api/reviews/' + _readingReview.id + '/peers', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ peer_ids: ids }) });
+        showToast(out.asked + ' colleague' + (out.asked === 1 ? '' : 's') + ' asked', 'success');
+        readReview(_readingReview.id);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.askPeers = askPeers;
 
 function _formHtml(questions, half, prefix) {
     half = half || { answers: [] };
@@ -15410,6 +15510,9 @@ function _formHtml(questions, half, prefix) {
     }).join('') +
     '<div class="form-group"><label>Overall rating</label><select class="form-control" id="' + prefix + '-overall"><option value="">Choose 1 to 5</option>' +
         [1, 2, 3, 4, 5].map(function (k) { return '<option value="' + k + '"' + (half.rating === k ? ' selected' : '') + '>' + k + ' - ' + esc(RATING_WORDS[k]) + '</option>'; }).join('') + '</select></div>' +
+    '<div class="form-group"><label>Potential <span style="color:var(--text-secondary);font-weight:400;">- yours and HR\u2019s to see, not theirs</span></label>' +
+        '<select class="form-control" id="' + prefix + '-potential"><option value="">Not said</option>' +
+        [1, 2, 3].map(function (k) { return '<option value="' + k + '"' + (half.potential === k ? ' selected' : '') + '>' + k + ' - ' + esc(POTENTIAL_WORDS[k]) + '</option>'; }).join('') + '</select></div>' +
     '<div class="form-group"><label>Summary - the part they read first</label><textarea class="form-control" id="' + prefix + '-summary" rows="4">' + esc(half.summary || '') + '</textarea></div>';
 }
 
@@ -15418,8 +15521,10 @@ function _readForm(questions, prefix) {
         var el = document.querySelector('.' + prefix + '-' + (q.kind === 'rating' ? 'rating' : 'text') + '[data-i="' + i + '"]');
         return q.kind === 'rating' ? { rating: el && el.value ? Number(el.value) : null } : { text: el ? el.value : '' };
     });
+    var pot = document.getElementById(prefix + '-potential');
     return { answers: answers,
              rating: document.getElementById(prefix + '-overall').value ? Number(document.getElementById(prefix + '-overall').value) : null,
+             potential: pot && pot.value ? Number(pot.value) : null,
              summary: document.getElementById(prefix + '-summary').value };
 }
 
@@ -15445,6 +15550,7 @@ async function readReview(id) {
                 '<div><h4 style="margin:0 0 8px;font-size:0.9rem;">' + (r.reviewer_how === 'hr' ? 'Your half' : 'Reviewer’s half') + '</h4>' +
                     (canWrite ? _formHtml(r.questions, r.manager, 'rr') : _answersHtml(r.questions, r.manager, r.reviewer_name)) + '</div>' +
             '</div>' +
+            _peerHtml(r, canWrite) +
             '<div id="rr-error" style="display:none;color:var(--danger-text);font-size:0.85rem;margin-top:10px;"></div>';
         document.getElementById('rr-footer').innerHTML =
             '<button class="btn btn-outline" onclick="closeReviewModal()">Close</button>' +

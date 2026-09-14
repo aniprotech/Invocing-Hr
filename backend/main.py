@@ -9547,9 +9547,11 @@ def delete_employee(emp_id: int, request: Request, db: Session = Depends(get_db)
         models.DBEmployeeGoal, models.DBLeaveRequest, models.DBDocument,
         models.DBNotification, models.DBOvertimeLog,
         models.DBReview, models.DBCertification, models.DBEmploymentChange, models.DBCheckIn,
+        models.DBPeerFeedback,
     ):
         db.query(model).filter(model.employee_id == emp_id).delete(synchronize_session=False)
     db.query(models.DBCheckIn).filter(models.DBCheckIn.manager_id == emp_id).delete(synchronize_session=False)
+    db.query(models.DBPeerFeedback).filter(models.DBPeerFeedback.peer_id == emp_id).delete(synchronize_session=False)
     # Reviews they were going to write go back to the HR pool.
     db.query(models.DBReview).filter(models.DBReview.reviewer_id == emp_id).update(
         {"reviewer_id": None, "reviewer_how": "hr"}, synchronize_session=False)
@@ -23882,8 +23884,10 @@ def review_to_dict(db, r, cycle, viewer, names):
         d["manager"] = {"answers": _json_list(r.manager_answers), "rating": r.manager_rating,
                         "rating_label": RATING_LABELS.get(r.manager_rating or 0, ""),
                         "summary": r.manager_summary or "", "by": r.manager_by,
-                        "submitted_at": r.manager_submitted_at}
+                        "submitted_at": r.manager_submitted_at,
+                        "potential": r.potential if viewer in ("hr", "reviewer") else None}
     d["goals"] = _goals_for(db, r.employee_id)
+    d["peer_feedback"] = peer_feedback_for(db, r, viewer, names)
     return d
 
 
@@ -24106,6 +24110,7 @@ def get_review_cycle(cycle_id: int, request: Request, db: Session = Depends(get_
             "reviewer_how": r.reviewer_how, "status": r.status,
             "self_rating": r.self_rating, "manager_rating": r.manager_rating,
             "rating_label": RATING_LABELS.get(r.manager_rating or 0, ""),
+            "potential": r.potential,
             "self_submitted_at": r.self_submitted_at,
             "manager_submitted_at": r.manager_submitted_at,
         })
@@ -24142,6 +24147,8 @@ def write_manager_half(db, r, cycle, body, by_name):
     answers = clean_answers(body.get("answers"), questions)
     r.manager_answers = json.dumps(answers)
     r.manager_rating = clean_rating(body.get("rating"), required=not draft)
+    if "potential" in body:
+        r.potential = clean_potential(body.get("potential"))
     r.manager_summary = str(body.get("summary") or "").strip()[:6000]
     r.manager_by = by_name[:120]
     if draft:
@@ -24211,10 +24218,17 @@ def my_reviews(request: Request, db: Session = Depends(get_db)):
             d["rating_label"] = RATING_LABELS.get(r.manager_rating or 0, "")
         return d
 
+    open_cycle_ids = {cid for cid, c in cycles.items() if c.status == "open"}
+    asked_of_me = db.query(models.DBPeerFeedback).filter(
+        models.DBPeerFeedback.client_id == emp.client_id, models.DBPeerFeedback.peer_id == emp.id,
+        models.DBPeerFeedback.status == "requested").all()
+    review_cycle = {r.id: r.cycle_id for r in db.query(models.DBReview).filter(
+        models.DBReview.id.in_([f.review_id for f in asked_of_me])).all()} if asked_of_me else {}
     return {
         "mine": [b for b in (brief(r, "subject") for r in mine) if b],
         "to_write": [b for b in (brief(r, "reviewer") for r in to_write)
                      if b and b["cycle_status"] == "open"],
+        "feedback_open": sum(1 for f in asked_of_me if review_cycle.get(f.review_id) in open_cycle_ids),
         "rating_labels": RATING_LABELS,
     }
 
@@ -25436,6 +25450,259 @@ def my_team_celebrations(request: Request, days: int = 30, db: Session = Depends
     """Colleagues' birthdays and anniversaries, for the portal."""
     emp = current_employee(request, db)
     return {"celebrations": celebrations(db, emp.client_id, max(1, min(days, 366)))}
+
+
+# ============================================================================
+# Peer feedback and the talent grid
+# ============================================================================
+# A reviewer, or HR, asks a few colleagues what it is like to work with
+# somebody. Each answers three things - strengths, what to work on, a
+# rating - or declines. The reviewer reads it with names; the person reads
+# it afterwards without them. The manager's half also carries a view of
+# potential, and performance against potential is the grid HR looks at
+# when asking who is next.
+
+PEER_LIMIT = 6
+POTENTIAL_WORDS = {1: "Best where they are", 2: "Could grow", 3: "Could go a long way"}
+GRID_LABELS = {
+    (3, 3): "Future leaders", (3, 2): "High performers", (3, 1): "Experts in place",
+    (2, 3): "Growing fast", (2, 2): "Core team", (2, 1): "Steady",
+    (1, 3): "Wrong seat?", (1, 2): "Needs support", (1, 1): "At risk",
+}
+
+
+def clean_potential(value):
+    if value in (None, ""):
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Potential is 1, 2 or 3")
+    if n not in (1, 2, 3):
+        raise HTTPException(status_code=400, detail="Potential is 1, 2 or 3")
+    return n
+
+
+def performance_band(rating):
+    """Five stars into three rows: 1-2 low, 3 middle, 4-5 high."""
+    if not rating:
+        return None
+    return 1 if rating <= 2 else 2 if rating == 3 else 3
+
+
+def feedback_to_dict(f, names, with_names=True):
+    d = {"id": f.id, "review_id": f.review_id, "status": f.status,
+         "strengths": f.strengths or "", "improvements": f.improvements or "",
+         "rating": f.rating, "submitted_at": f.submitted_at, "created_at": f.created_at}
+    if with_names:
+        d["peer_id"] = f.peer_id
+        d["peer_name"] = names.get(f.peer_id, "")
+    return d
+
+
+def peer_feedback_for(db, r, viewer, names):
+    """The submitted feedback on a review, as one kind of reader sees it.
+    HR and the reviewer see who said what; the subject sees the words with
+    no names and in no particular order, and only once the review is done."""
+    rows = db.query(models.DBPeerFeedback).filter(models.DBPeerFeedback.review_id == r.id).all()
+    asked = len(rows)
+    done = [f for f in rows if f.status == "submitted"]
+    if viewer in ("hr", "reviewer"):
+        items = [feedback_to_dict(f, names, True) for f in rows]
+    elif r.status == "complete":
+        items = [feedback_to_dict(f, names, False) for f in done]
+        items.sort(key=lambda d: d["strengths"])          # not by who, not by when
+        for d in items:
+            d.pop("id", None); d.pop("submitted_at", None); d.pop("created_at", None)
+    else:
+        items = []
+    rated = [f.rating for f in done if f.rating]
+    return {"asked": asked, "submitted": len(done),
+            "declined": sum(1 for f in rows if f.status == "declined"),
+            "average": round(sum(rated) / len(rated), 2) if rated else None,
+            "items": items}
+
+
+def ask_peers(db, r, cycle, peer_ids, asked_by_name, asked_by_id=None):
+    """Write a request per new peer. A peer is a current colleague who is
+    neither the subject nor the reviewer; anybody already asked is skipped."""
+    if cycle.status != "open":
+        raise HTTPException(status_code=409, detail="This review cycle is not open")
+    if r.status == "complete":
+        raise HTTPException(status_code=409, detail="This review is already complete")
+    try:
+        wanted = [int(x) for x in (peer_ids or [])]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Peers are employee ids")
+    wanted = [x for x in dict.fromkeys(wanted) if x not in (r.employee_id, r.reviewer_id)]
+    if not wanted:
+        raise HTTPException(status_code=400, detail="Pick at least one colleague")
+    already = {f.peer_id for f in db.query(models.DBPeerFeedback).filter(
+        models.DBPeerFeedback.review_id == r.id).all()}
+    if len(already | set(wanted)) > PEER_LIMIT:
+        raise HTTPException(status_code=400, detail=f"Keep it to {PEER_LIMIT} colleagues")
+    people = {e.id: e for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == r.client_id, models.DBEmployee.id.in_(wanted)).all()}
+    subject = db.query(models.DBEmployee).filter(models.DBEmployee.id == r.employee_id).first()
+    who = f"{subject.first_name} {subject.last_name}".strip() if subject else "a colleague"
+    added = 0
+    for pid in wanted:
+        peer = people.get(pid)
+        if not peer or not employee_is_current(peer) or pid in already:
+            continue
+        db.add(models.DBPeerFeedback(client_id=r.client_id, review_id=r.id, employee_id=r.employee_id,
+                                     peer_id=pid, requested_by=asked_by_id))
+        notify_employee(db, peer, f"Feedback on {who}",
+                        f"{asked_by_name} would like your view of working with {who} for {cycle.name}"
+                        + (f", by {cycle.due_on}" if cycle.due_on else "") + ". Open Reviews in your portal.",
+                        "info", "reviews", asked_by_name)
+        added += 1
+    return added
+
+
+@app.post("/api/employee/reviews/{review_id}/peers")
+def reviewer_asks_peers(review_id: int, request: Request, body: dict = None,
+                        db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    r, c, role = _review_i_can_see(db, emp, review_id)
+    if role != "reviewer":
+        raise HTTPException(status_code=403, detail="Only the reviewer asks for feedback")
+    added = ask_peers(db, r, c, (body or {}).get("peer_ids"), f"{emp.first_name} {emp.last_name}".strip(), emp.id)
+    db.commit()
+    return {"asked": added}
+
+
+@app.post("/api/reviews/{review_id}/peers")
+def hr_asks_peers(review_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    r = db.query(models.DBReview).filter(
+        models.DBReview.id == review_id, models.DBReview.client_id == client.id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Review not found")
+    c = _cycle_or_404(db, client.id, r.cycle_id)
+    added = ask_peers(db, r, c, (body or {}).get("peer_ids"), _hr_name(client), None)
+    db.commit()
+    return {"asked": added}
+
+
+@app.get("/api/employee/colleagues")
+def my_colleagues(request: Request, db: Session = Depends(get_db)):
+    """Everybody still here, by name: the directory a person picks
+    colleagues from. Never a leaver, never themselves."""
+    emp = current_employee(request, db)
+    depts = {d.id: d.name for d in db.query(models.DBDepartment).filter(
+        models.DBDepartment.client_id == emp.client_id).all()}
+    rows = [e for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == emp.client_id).all()
+        if employee_is_current(e) and e.id != emp.id]
+    rows.sort(key=lambda e: (e.first_name or "", e.last_name or ""))
+    return {"colleagues": [{"id": e.id, "name": f"{e.first_name} {e.last_name}".strip(),
+                            "job_title": e.job_title or "", "department": depts.get(e.department_id, "")}
+                           for e in rows]}
+
+
+@app.get("/api/employee/feedback-requests")
+def my_feedback_requests(request: Request, db: Session = Depends(get_db)):
+    """What colleagues have asked me to say about them - open ones first."""
+    emp = current_employee(request, db)
+    names = _employee_names(db, emp.client_id)
+    rows = db.query(models.DBPeerFeedback).filter(
+        models.DBPeerFeedback.client_id == emp.client_id,
+        models.DBPeerFeedback.peer_id == emp.id).order_by(models.DBPeerFeedback.id.desc()).all()
+    cycles = {c.id: c for c in db.query(models.DBReviewCycle).filter(
+        models.DBReviewCycle.client_id == emp.client_id).all()}
+    reviews = {r.id: r for r in db.query(models.DBReview).filter(
+        models.DBReview.id.in_([f.review_id for f in rows])).all()} if rows else {}
+    out = []
+    for f in rows:
+        r = reviews.get(f.review_id)
+        c = cycles.get(r.cycle_id) if r else None
+        if not r or not c:
+            continue
+        out.append({"id": f.id, "status": f.status, "employee_id": f.employee_id,
+                    "employee_name": names.get(f.employee_id, ""), "cycle_name": c.name,
+                    "due_on": c.due_on, "cycle_open": c.status == "open",
+                    "strengths": f.strengths or "", "improvements": f.improvements or "", "rating": f.rating})
+    out.sort(key=lambda d: (d["status"] != "requested", -d["id"]))
+    return {"requests": out, "open": sum(1 for d in out if d["status"] == "requested" and d["cycle_open"])}
+
+
+@app.post("/api/employee/feedback-requests/{feedback_id}")
+def answer_feedback_request(feedback_id: int, request: Request, body: dict = None,
+                            db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    f = db.query(models.DBPeerFeedback).filter(
+        models.DBPeerFeedback.id == feedback_id, models.DBPeerFeedback.client_id == emp.client_id,
+        models.DBPeerFeedback.peer_id == emp.id).first()
+    if not f:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if f.status != "requested":
+        raise HTTPException(status_code=409, detail="You have already answered this")
+    r = db.query(models.DBReview).filter(models.DBReview.id == f.review_id).first()
+    c = _cycle_or_404(db, emp.client_id, r.cycle_id) if r else None
+    if not c or c.status != "open":
+        raise HTTPException(status_code=409, detail="This review cycle is not open")
+    body = body or {}
+    if body.get("decline"):
+        f.status = "declined"
+        db.commit()
+        return {"status": f.status}
+    strengths = str(body.get("strengths") or "").strip()[:4000]
+    improvements = str(body.get("improvements") or "").strip()[:4000]
+    if not strengths and not improvements:
+        raise HTTPException(status_code=400, detail="Say something, or decline")
+    f.strengths, f.improvements = strengths, improvements
+    f.rating = clean_rating(body.get("rating"))
+    f.status = "submitted"
+    f.submitted_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if r.reviewer_id:
+        reviewer = db.query(models.DBEmployee).filter(models.DBEmployee.id == r.reviewer_id).first()
+        subject = db.query(models.DBEmployee).filter(models.DBEmployee.id == r.employee_id).first()
+        if reviewer and subject:
+            notify_employee(db, reviewer, f"Feedback in on {subject.first_name} {subject.last_name}".strip(),
+                            f"A colleague has written about them for {c.name}.", "info", "reviews",
+                            f"{emp.first_name} {emp.last_name}".strip())
+    db.commit()
+    return {"status": f.status}
+
+
+@app.get("/api/talent-grid")
+def talent_grid(request: Request, cycle_id: int = 0, db: Session = Depends(get_db)):
+    """Performance against potential for one cycle: nine boxes with the
+    people in them. Only complete reviews with both marks are placed; the
+    rest are counted so the grid does not pass for the whole company."""
+    client = get_client_user(request, db)
+    q = db.query(models.DBReviewCycle).filter(
+        models.DBReviewCycle.client_id == client.id, models.DBReviewCycle.status != "draft")
+    c = q.filter(models.DBReviewCycle.id == cycle_id).first() if cycle_id else \
+        q.order_by(models.DBReviewCycle.id.desc()).first()
+    if not c:
+        return {"cycle": None, "boxes": [], "unplaced": 0, "pending": 0}
+    names = _employee_names(db, client.id)
+    rows = db.query(models.DBReview).filter(models.DBReview.cycle_id == c.id).all()
+    boxes = {}
+    for perf in (3, 2, 1):
+        for pot in (1, 2, 3):
+            boxes[(perf, pot)] = []
+    unplaced = pending = 0
+    for r in rows:
+        if r.status != "complete":
+            pending += 1
+            continue
+        perf = performance_band(r.manager_rating)
+        if not perf or not r.potential:
+            unplaced += 1
+            continue
+        boxes[(perf, r.potential)].append({"employee_id": r.employee_id, "name": names.get(r.employee_id, ""),
+                                           "rating": r.manager_rating, "potential": r.potential})
+    return {
+        "cycle": {"id": c.id, "name": c.name, "status": c.status},
+        "boxes": [{"performance": perf, "potential": pot, "label": GRID_LABELS[(perf, pot)],
+                   "people": sorted(people, key=lambda p: p["name"])}
+                  for (perf, pot), people in boxes.items()],
+        "unplaced": unplaced, "pending": pending, "placed": sum(len(v) for v in boxes.values()),
+        "potential_words": POTENTIAL_WORDS,
+    }
 
 
 # Serve frontend

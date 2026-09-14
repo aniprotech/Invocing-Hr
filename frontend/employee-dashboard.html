@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=160">
+  <link rel="stylesheet" href="tailwind.css?v=161">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,12 +50,12 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=160">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=160">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=160">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=160">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=160">
-    <script src="/dialogs.js?v=160"></script>
+    <link rel="stylesheet" href="mobile.css?v=161">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=161">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=161">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=161">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=161">
+    <script src="/dialogs.js?v=161"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -507,6 +507,14 @@
          people who report to you. The second is empty for most people. -->
     <div id="tab-reviews" class="tab-panel hidden fade-in">
       <div id="rv-detail" class="hidden mb-4"></div>
+      <!-- Colleagues have asked what it is like to work with somebody.
+           Three things, or decline. The reviewer reads it with your name;
+           the person reads it later without it. -->
+      <div class="bg-white rounded-2xl border border-gray-100 p-5 mb-4" id="fb-card" hidden>
+        <h3 class="font-semibold text-gray-900 mb-1">Feedback asked of you</h3>
+        <p class="text-xs text-gray-500 mb-4">Their reviewer sees your name. They read it afterwards without it.</p>
+        <div id="fb-list" class="space-y-3"></div>
+      </div>
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4" id="rv-lists">
         <div class="bg-white rounded-2xl border border-gray-100 p-5">
           <h3 class="font-semibold text-gray-900 mb-1">About you</h3>
@@ -1758,7 +1766,7 @@
       if (tab === 'documents') { loadDocuments(); loadDocumentRequests(); }
       if (tab === 'team') loadTeamPresence();
       if (tab === 'profile') { loadProfileTab(); loadMyChanges(); loadMyAssets(); loadMyCerts(); loadMyHistory(); }
-      if (tab === 'reviews') loadMyReviews();
+      if (tab === 'reviews') { loadMyReviews(); loadFeedbackRequests(); }
       if (tab === 'checkins') loadCheckIns();
       if (tab === 'requests') loadStaffRequests();
       if (tab === 'payslips') loadPayslips();
@@ -2223,6 +2231,16 @@
       var ob = document.createElement('option'); ob.value = ''; ob.textContent = 'Choose 1 to 5'; os.appendChild(ob);
       [1, 2, 3, 4, 5].forEach(function (k) { var o = document.createElement('option'); o.value = k; o.textContent = k + ' - ' + RV_WORDS[k]; if (half.rating === k) o.selected = true; os.appendChild(o); });
       ow.appendChild(os); form.appendChild(ow);
+      if (role === 'reviewer') {
+        var pw = document.createElement('div');
+        var pl = document.createElement('label'); pl.className = 'block text-xs font-medium text-gray-500 mb-1'; pl.textContent = 'Potential - yours and HR\u2019s to see, not theirs'; pw.appendChild(pl);
+        var ps = document.createElement('select'); ps.id = 'rv-potential'; ps.className = 'w-full px-3 py-2 rounded-lg border border-gray-200 text-sm';
+        var pb = document.createElement('option'); pb.value = ''; pb.textContent = 'Not said'; ps.appendChild(pb);
+        [[1, 'Best where they are'], [2, 'Could grow'], [3, 'Could go a long way']].forEach(function (pair) {
+          var o = document.createElement('option'); o.value = pair[0]; o.textContent = pair[0] + ' - ' + pair[1]; if (half.potential === pair[0]) o.selected = true; ps.appendChild(o);
+        });
+        pw.appendChild(ps); form.appendChild(pw);
+      }
       var cw = document.createElement('div');
       var cl = document.createElement('label'); cl.className = 'block text-xs font-medium text-gray-500 mb-1';
       cl.textContent = role === 'subject' ? 'Anything else' : 'Summary - the part they read first'; cw.appendChild(cl);
@@ -2239,6 +2257,8 @@
       var body = { answers: answers,
                    rating: document.getElementById('rv-overall').value ? Number(document.getElementById('rv-overall').value) : null };
       body[role === 'subject' ? 'comment' : 'summary'] = document.getElementById('rv-words').value;
+      var pot = document.getElementById('rv-potential');
+      if (pot) body.potential = pot.value ? Number(pot.value) : null;
       return body;
     }
 
@@ -2300,6 +2320,7 @@
         grid.appendChild(left); grid.appendChild(right);
         card.appendChild(grid);
 
+        card.appendChild(_peerSection(r, r.my_role === 'reviewer' && open && r.status !== 'complete'));
         var err = document.createElement('p'); err.id = 'rv-error'; err.className = 'hidden text-sm text-rose-600 mt-3'; card.appendChild(err);
         if (iWrite) {
           var actions = document.createElement('div'); actions.className = 'flex gap-2 mt-4';
@@ -2316,6 +2337,113 @@
       }
     }
     window.openReview = openReview;
+
+    function _peerSection(r, canAsk) {
+      var fb = r.peer_feedback || { asked: 0, submitted: 0, items: [] };
+      var box = document.createElement('div'); box.className = 'mt-5 pt-4 border-t border-gray-100';
+      var h = document.createElement('h4'); h.className = 'text-sm font-semibold text-gray-900 mb-1';
+      h.textContent = 'What colleagues say' + (fb.asked ? ' \u00b7 ' + fb.submitted + ' of ' + fb.asked + ' answered' : ''); box.appendChild(h);
+      if (!fb.items.length) {
+        var none = document.createElement('p'); none.className = 'text-sm text-gray-400';
+        none.textContent = r.my_role === 'subject' ? (fb.submitted ? 'You read it once your review is complete.' : 'Nobody has been asked.') : 'Nobody asked yet.';
+        box.appendChild(none);
+      }
+      fb.items.forEach(function (f) {
+        var item = document.createElement('div'); item.className = 'py-2 border-t border-dashed border-gray-100 text-sm';
+        var who = document.createElement('div'); who.className = 'text-xs text-gray-500';
+        who.textContent = (f.peer_name || 'A colleague') + (f.status && f.status !== 'submitted' ? ' - ' + (f.status === 'declined' ? 'declined' : 'not answered yet') : '') +
+                          (f.rating ? ' \u00b7 ' + '\u2605'.repeat(f.rating) : '');
+        item.appendChild(who);
+        if (f.strengths) { var a = document.createElement('div'); a.textContent = 'Strengths: ' + f.strengths; item.appendChild(a); }
+        if (f.improvements) { var b = document.createElement('div'); b.textContent = 'To work on: ' + f.improvements; item.appendChild(b); }
+        box.appendChild(item);
+      });
+      if (canAsk) {
+        var pick = document.createElement('div'); pick.id = 'rv-peer-pick'; pick.className = 'mt-2';
+        var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'text-sm text-brand-600 hover:underline';
+        btn.textContent = 'Ask colleagues'; btn.addEventListener('click', function () { showPeerPicker(r.id, pick); }); pick.appendChild(btn);
+        box.appendChild(pick);
+      }
+      return box;
+    }
+
+    async function showPeerPicker(reviewId, host) {
+      host.textContent = '';
+      var people = [];
+      try { var res = await fetch('/api/employee/colleagues'); people = (await res.json()).colleagues || []; } catch (e) { people = []; }
+      var asked = {}; ((_rvOpen && _rvOpen.peer_feedback) ? _rvOpen.peer_feedback.items : []).forEach(function (f) { if (f.peer_id) asked[f.peer_id] = true; });
+      var list = document.createElement('div'); list.className = 'max-h-40 overflow-auto rounded-lg border border-gray-200 p-2 space-y-1';
+      people.filter(function (e) { return e.id !== _rvOpen.employee_id; }).forEach(function (e) {
+        var lab = document.createElement('label'); lab.className = 'flex items-center gap-2 text-sm' + (asked[e.id] ? ' opacity-50' : '');
+        var box = document.createElement('input'); box.type = 'checkbox'; box.value = e.id; box.className = 'rv-peer'; if (asked[e.id]) { box.checked = true; box.disabled = true; }
+        lab.appendChild(box);
+        var t = document.createElement('span'); t.textContent = e.name + (e.job_title ? ' \u00b7 ' + e.job_title : ''); lab.appendChild(t);
+        list.appendChild(lab);
+      });
+      host.appendChild(list);
+      var row = document.createElement('div'); row.className = 'flex items-center gap-2 mt-2';
+      var go = document.createElement('button'); go.type = 'button'; go.className = 'px-3 py-1.5 rounded-lg bg-brand-600 text-white text-sm'; go.textContent = 'Ask them';
+      go.addEventListener('click', async function () {
+        var ids = [...host.querySelectorAll('.rv-peer:checked:not(:disabled)')].map(function (b) { return Number(b.value); });
+        if (!ids.length) { uiToast('Tick at least one colleague', 'error'); return; }
+        try {
+          var res = await fetch('/api/employee/reviews/' + reviewId + '/peers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ peer_ids: ids }) });
+          var d = await res.json().catch(function () { return {}; });
+          if (!res.ok) { uiToast(d.detail || 'Could not ask.', 'error'); return; }
+          uiToast(d.asked + ' colleague' + (d.asked === 1 ? '' : 's') + ' asked', 'success');
+          openReview(reviewId);
+        } catch (e) { uiToast('Could not ask.', 'error'); }
+      });
+      row.appendChild(go);
+      var hint = document.createElement('span'); hint.className = 'text-xs text-gray-500'; hint.textContent = 'Up to six. They are told.'; row.appendChild(hint);
+      host.appendChild(row);
+    }
+
+    // --- feedback asked of me --------------------------------------------------------
+
+    async function loadFeedbackRequests() {
+      var card = document.getElementById('fb-card'), host = document.getElementById('fb-list');
+      if (!card || !host) return;
+      try {
+        var res = await fetch('/api/employee/feedback-requests');
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        var rows = (await res.json()).requests.filter(function (r) { return r.status === 'requested' && r.cycle_open; });
+        host.textContent = '';
+        card.hidden = !rows.length;
+        rows.forEach(function (q) {
+          var box = document.createElement('div'); box.className = 'p-3 rounded-xl border border-gray-100';
+          var head = document.createElement('div'); head.className = 'text-sm font-medium text-gray-900 mb-2';
+          head.textContent = q.employee_name + ' \u00b7 ' + q.cycle_name + (q.due_on ? ' \u00b7 by ' + q.due_on : ''); box.appendChild(head);
+          var st = document.createElement('textarea'); st.rows = 2; st.className = 'w-full px-3 py-2 rounded-lg border border-gray-200 text-sm mb-2 fb-strengths'; st.placeholder = 'What they do well'; box.appendChild(st);
+          var im = document.createElement('textarea'); im.rows = 2; im.className = 'w-full px-3 py-2 rounded-lg border border-gray-200 text-sm mb-2 fb-improvements'; im.placeholder = 'What they could work on'; box.appendChild(im);
+          var row = document.createElement('div'); row.className = 'flex items-center gap-2 flex-wrap';
+          var sel = document.createElement('select'); sel.className = 'px-3 py-1.5 rounded-lg border border-gray-200 text-sm fb-rating';
+          var b0 = document.createElement('option'); b0.value = ''; b0.textContent = 'Rating (optional)'; sel.appendChild(b0);
+          [1, 2, 3, 4, 5].forEach(function (k) { var o = document.createElement('option'); o.value = k; o.textContent = k + ' - ' + RV_WORDS[k]; sel.appendChild(o); });
+          row.appendChild(sel);
+          var send = document.createElement('button'); send.type = 'button'; send.className = 'px-3 py-1.5 rounded-lg bg-brand-600 text-white text-sm'; send.textContent = 'Send';
+          send.addEventListener('click', function () { answerFeedback(q.id, { strengths: st.value, improvements: im.value, rating: sel.value ? Number(sel.value) : null }); });
+          row.appendChild(send);
+          var dec = document.createElement('button'); dec.type = 'button'; dec.className = 'px-3 py-1.5 rounded-lg text-sm text-gray-500 hover:text-rose-600'; dec.textContent = 'Decline';
+          dec.addEventListener('click', function () { answerFeedback(q.id, { decline: true }); });
+          row.appendChild(dec);
+          box.appendChild(row);
+          host.appendChild(box);
+        });
+      } catch (e) { card.hidden = true; }
+    }
+    window.loadFeedbackRequests = loadFeedbackRequests;
+
+    async function answerFeedback(id, body) {
+      try {
+        var res = await fetch('/api/employee/feedback-requests/' + id, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        var d = await res.json().catch(function () { return {}; });
+        if (!res.ok) { uiToast(d.detail || 'Could not send that.', 'error'); return; }
+        uiToast(body.decline ? 'Declined' : 'Sent - thank you', 'success');
+        loadFeedbackRequests();
+      } catch (e) { uiToast('Could not send that.', 'error'); }
+    }
+    window.answerFeedback = answerFeedback;
 
     function closeReview() {
       _rvOpen = null;
@@ -4148,8 +4276,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=160"></script>
-    <script src="/pwa.js?v=160"></script>
-    <script src="/feed.js?v=160"></script>
+    <script src="/install-hint.js?v=161"></script>
+    <script src="/pwa.js?v=161"></script>
+    <script src="/feed.js?v=161"></script>
 </body>
 </html>
