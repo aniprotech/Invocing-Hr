@@ -5143,6 +5143,7 @@ async function viewEmployee(empId) {
         loadOffboarding(emp);
         loadEmployeeCerts(emp.id);
         loadEmployeeHistory(emp.id);
+        loadEmployeeCheckIns(emp.id);
 
         // Onboarding
         var items = emp.onboarding_items || [];
@@ -15778,9 +15779,44 @@ async function loadAnalyticsView() {
             block('Certifications', [['Valid', c.valid], ['Expiring soon', c.expiring, c.expiring ? 'var(--warning-color)' : ''], ['Lapsed', c.expired, c.expired ? 'var(--danger-color)' : ''], ['To verify', c.unverified]]) +
             block('Goals', [['Open', g.total - g.completed], ['Completed', g.completed], ['Overdue', g.overdue, g.overdue ? 'var(--danger-color)' : ''], ['Average progress', g.average_progress_pct != null ? g.average_progress_pct + '%' : '-']]) +
             block('Moves, last 12 months', [['Promotions', m.promotions], ['Pay changes', m.pay_changes], ['Department moves', m.transfers], ['Manager changes', m.manager_changes]]) +
-            block('Leave this year', [['Days taken', a.leave.days_taken], ['Per person', a.leave.per_person], ['Types', Object.keys(a.leave.by_type).length]]);
+            block('Leave this year', [['Days taken', a.leave.days_taken], ['Per person', a.leave.per_person], ['Types', Object.keys(a.leave.by_type).length]]) +
+            (a.check_ins ? block('One-to-ones, last ' + a.check_ins.window_days + ' days', [
+                ['Reporting lines', a.check_ins.pairs], ['Met recently', a.check_ins.recent],
+                ['Gone quiet', a.check_ins.quiet, a.check_ins.quiet ? 'var(--warning-color)' : '']]) : '');
     } catch (e) {
         tiles.innerHTML = '<div class="widget" style="padding:20px;color:var(--danger-text);">' + esc(e.message) + '</div>';
     }
 }
 window.loadAnalyticsView = loadAnalyticsView;
+
+// ===========================================================================
+// One-to-ones, as HR sees them
+// ===========================================================================
+// The dates and the shared notes. The manager's private note is not sent
+// to HR, so there is nothing here that could show it.
+
+async function loadEmployeeCheckIns(empId) {
+    var host = document.getElementById('emp-checkins-list');
+    var last = document.getElementById('emp-checkins-last');
+    if (!host || !empId) return;
+    try {
+        var data = await fetchJson('/api/employees/' + empId + '/check-ins');
+        var held = data.check_ins.filter(function (c) { return c.status === 'done'; });
+        last.textContent = held.length ? 'Last held ' + held[0].scheduled_for : '';
+        if (!data.check_ins.length) {
+            host.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem;">None held yet.</p>';
+            return;
+        }
+        host.innerHTML = data.check_ins.slice(0, 8).map(function (c) {
+            var open = c.actions.filter(function (a) { return !a.done; }).length;
+            return '<div style="padding:8px 0;border-bottom:1px solid var(--border-color);">' +
+                '<div style="display:flex;justify-content:space-between;gap:8px;font-size:0.85rem;">' +
+                    '<span>' + esc(c.scheduled_for) + ' with ' + esc(c.manager_name) + '</span>' +
+                    _pill(c.status === 'done' ? 'Held' : 'Planned', c.status === 'done' ? 'var(--success-color)' : 'var(--primary-color)') + '</div>' +
+                (c.notes ? '<div style="font-size:0.8rem;color:var(--text-secondary);white-space:pre-wrap;margin-top:4px;">' + esc(c.notes.slice(0, 400)) + (c.notes.length > 400 ? '…' : '') + '</div>' : '') +
+                (open ? '<div style="font-size:0.75rem;color:var(--warning-color);margin-top:2px;">' + open + ' open action' + (open === 1 ? '' : 's') + '</div>' : '') +
+            '</div>';
+        }).join('');
+    } catch (e) { host.innerHTML = '<p style="color:var(--danger-text);font-size:0.85rem;">' + esc(e.message) + '</p>'; }
+}
+window.loadEmployeeCheckIns = loadEmployeeCheckIns;

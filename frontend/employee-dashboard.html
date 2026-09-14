@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=157">
+  <link rel="stylesheet" href="tailwind.css?v=158">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,12 +50,12 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=157">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=157">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=157">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=157">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=157">
-    <script src="/dialogs.js?v=157"></script>
+    <link rel="stylesheet" href="mobile.css?v=158">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=158">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=158">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=158">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=158">
+    <script src="/dialogs.js?v=158"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -129,6 +129,10 @@
         <button onclick="switchTab('reviews')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="reviews">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/></svg>
           Reviews
+        </button>
+        <button onclick="switchTab('checkins')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="checkins">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+          1:1s
         </button>
         <button onclick="switchTab('leave')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="leave">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
@@ -451,6 +455,45 @@
     <!-- Tab: Goals -->
     <div id="tab-goals" class="tab-panel hidden fade-in">
       <div class="grid gap-4" id="goalsGrid"></div>
+    </div>
+
+    <!-- Tab: One-to-ones
+         With your manager, and with each of your reports. Either side books
+         it and adds talking points; the notes are shared; actions carry
+         over until ticked; a manager's private note stays theirs. -->
+    <div id="tab-checkins" class="tab-panel hidden fade-in">
+      <div id="ci-detail" class="hidden mb-4"></div>
+      <div class="bg-white rounded-2xl border border-gray-100 p-5 mb-4">
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <h3 class="font-semibold text-gray-900">Book a one-to-one</h3>
+            <p class="text-xs text-gray-500" id="ci-open-actions"></p>
+          </div>
+          <form id="ci-book-form" onsubmit="bookCheckIn(event)" class="flex items-end gap-2 flex-wrap">
+            <div>
+              <label class="block text-xs font-medium text-gray-500 mb-1">With</label>
+              <select id="ci-with" class="px-3 py-2 rounded-lg border border-gray-200 text-sm"></select>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-500 mb-1">On</label>
+              <input id="ci-date" type="date" required class="px-3 py-2 rounded-lg border border-gray-200 text-sm">
+            </div>
+            <button type="submit" class="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium" id="ci-book-btn">Book</button>
+          </form>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="bg-white rounded-2xl border border-gray-100 p-5" id="ci-up-card">
+          <h3 class="font-semibold text-gray-900 mb-1">With your manager</h3>
+          <p class="text-xs text-gray-500 mb-4">Add what you want to talk about before you meet.</p>
+          <div id="ci-up" class="space-y-2"></div>
+        </div>
+        <div class="bg-white rounded-2xl border border-gray-100 p-5" id="ci-down-card">
+          <h3 class="font-semibold text-gray-900 mb-1">With your reports</h3>
+          <p class="text-xs text-gray-500 mb-4">Write it up afterwards; they are told, and the actions follow them.</p>
+          <div id="ci-down" class="space-y-2"></div>
+        </div>
+      </div>
     </div>
 
     <!-- Tab: Reviews
@@ -1710,6 +1753,7 @@
       if (tab === 'team') loadTeamPresence();
       if (tab === 'profile') { loadProfileTab(); loadMyChanges(); loadMyAssets(); loadMyCerts(); loadMyHistory(); }
       if (tab === 'reviews') loadMyReviews();
+      if (tab === 'checkins') loadCheckIns();
       if (tab === 'requests') loadStaffRequests();
       if (tab === 'payslips') loadPayslips();
       if (tab === 'assistant') startAssistant();
@@ -1719,6 +1763,275 @@
       if (tab === 'feed') loadFeed();
       if (tab === 'expenses') loadExpenses();
     }
+
+    // --- One-to-ones ------------------------------------------------------------
+
+    var _ciOpen = null;
+    var _ciLists = null;
+
+    async function loadCheckIns() {
+      var up = document.getElementById('ci-up');
+      if (!up) return;
+      try {
+        var res = await fetch('/api/employee/check-ins');
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        _ciLists = await res.json();
+        renderCheckIns(_ciLists);
+      } catch (e) {
+        up.textContent = 'Could not load your one-to-ones.';
+      }
+    }
+    window.loadCheckIns = loadCheckIns;
+
+    function _ciRow(c, asManager) {
+      var row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'w-full text-left flex items-center gap-3 p-3 rounded-xl border border-gray-100 hover:bg-gray-50';
+      row.addEventListener('click', function () { openCheckIn(c.id); });
+      var text = document.createElement('div'); text.className = 'flex-1 min-w-0';
+      var name = document.createElement('div'); name.className = 'text-sm font-medium text-gray-900';
+      name.textContent = (asManager ? c.employee_name : c.manager_name) + ' \u00b7 ' + c.scheduled_for; text.appendChild(name);
+      var meta = document.createElement('div'); meta.className = 'text-xs text-gray-500';
+      var open = c.actions.filter(function (a) { return !a.done; }).length;
+      meta.textContent = [c.talking_points.length + ' talking point' + (c.talking_points.length === 1 ? '' : 's'),
+                          open ? open + ' open action' + (open === 1 ? '' : 's') : ''].filter(Boolean).join(' \u00b7 ');
+      text.appendChild(meta);
+      row.appendChild(text);
+      row.appendChild(_rvPill(c.status === 'done' ? ['Held', 'bg-emerald-50 text-emerald-700 border-emerald-200']
+                                                   : ['Planned', 'bg-sky-50 text-sky-700 border-sky-200']));
+      return row;
+    }
+
+    function renderCheckIns(data) {
+      var up = document.getElementById('ci-up'), down = document.getElementById('ci-down');
+      up.textContent = ''; down.textContent = '';
+      var opens = document.getElementById('ci-open-actions');
+      opens.textContent = data.open_actions_on_me
+        ? data.open_actions_on_me + ' action' + (data.open_actions_on_me === 1 ? '' : 's') + ' on you from earlier meetings.'
+        : '';
+      var sel = document.getElementById('ci-with');
+      sel.textContent = '';
+      if (data.manager) { var o = document.createElement('option'); o.value = ''; o.textContent = data.manager.name + ' (your manager)'; sel.appendChild(o); }
+      data.reports.forEach(function (r) { var o = document.createElement('option'); o.value = r.id; o.textContent = r.name; sel.appendChild(o); });
+      var nobody = !data.manager && !data.reports.length;
+      document.getElementById('ci-book-form').classList.toggle('hidden', nobody);
+      if (nobody) opens.textContent = 'Nobody to meet: no manager is recorded for you and nobody reports to you.';
+      var dt = document.getElementById('ci-date');
+      if (dt && !dt.value) dt.value = new Date().toISOString().slice(0, 10);
+      if (!data.with_my_manager.length) {
+        var p = document.createElement('p'); p.className = 'text-sm text-gray-400';
+        p.textContent = data.manager ? 'None yet. Book one above.' : 'No manager is recorded for you.'; up.appendChild(p);
+      }
+      data.with_my_manager.forEach(function (c) { up.appendChild(_ciRow(c, false)); });
+      document.getElementById('ci-down-card').classList.toggle('hidden', !data.reports.length && !data.with_my_reports.length);
+      if (!data.with_my_reports.length) {
+        var q = document.createElement('p'); q.className = 'text-sm text-gray-400'; q.textContent = 'None yet.'; down.appendChild(q);
+      }
+      data.with_my_reports.forEach(function (c) { down.appendChild(_ciRow(c, true)); });
+    }
+
+    async function bookCheckIn(ev) {
+      if (ev) ev.preventDefault();
+      var btn = document.getElementById('ci-book-btn');
+      btn.disabled = true;
+      try {
+        var withId = document.getElementById('ci-with').value;
+        var res = await fetch('/api/employee/check-ins', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scheduled_for: document.getElementById('ci-date').value, employee_id: withId ? Number(withId) : null }) });
+        var d = await res.json().catch(function () { return {}; });
+        if (!res.ok) { uiToast(d.detail || 'Could not book that.', 'error'); return; }
+        uiToast('Booked - they have been told', 'success');
+        await loadCheckIns();
+        openCheckIn(d.id);
+      } catch (e) {
+        uiToast('Could not book that.', 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+    window.bookCheckIn = bookCheckIn;
+
+    function _ciItemList(host, items, key, c, editable, label) {
+      host.textContent = '';
+      items.forEach(function (it, i) {
+        var row = document.createElement('label');
+        row.className = 'flex items-start gap-2 text-sm py-1';
+        var box = document.createElement('input'); box.type = 'checkbox'; box.checked = !!it.done; box.className = 'mt-1';
+        box.disabled = !editable;
+        box.addEventListener('change', function () { it.done = box.checked; });
+        row.appendChild(box);
+        var text = document.createElement('span'); text.className = it.done ? 'line-through text-gray-400 flex-1' : 'text-gray-900 flex-1';
+        text.textContent = it.text; row.appendChild(text);
+        var who = document.createElement('span'); who.className = 'text-xs text-gray-400';
+        var id = it[key];
+        who.textContent = id === c.manager_id ? c.manager_name : id === c.employee_id ? c.employee_name : '';
+        row.appendChild(who);
+        if (editable) {
+          var del = document.createElement('button'); del.type = 'button'; del.className = 'text-xs text-gray-400 hover:text-rose-600';
+          del.textContent = '\u00d7'; del.setAttribute('aria-label', 'Remove');
+          del.addEventListener('click', function (e) { e.preventDefault(); items.splice(i, 1); _ciItemList(host, items, key, c, editable, label); });
+          row.appendChild(del);
+        }
+        host.appendChild(row);
+      });
+      if (editable) {
+        var add = document.createElement('form'); add.className = 'flex gap-2 mt-2';
+        var inp = document.createElement('input'); inp.className = 'flex-1 px-3 py-1.5 rounded-lg border border-gray-200 text-sm';
+        inp.placeholder = label; inp.maxLength = 500; add.appendChild(inp);
+        var ownerSel = null;
+        if (key === 'owner') {
+          ownerSel = document.createElement('select'); ownerSel.className = 'px-2 py-1.5 rounded-lg border border-gray-200 text-sm';
+          [[c.employee_id, c.employee_name], [c.manager_id, c.manager_name]].forEach(function (pair) {
+            var o = document.createElement('option'); o.value = pair[0]; o.textContent = pair[1]; ownerSel.appendChild(o);
+          });
+          add.appendChild(ownerSel);
+        }
+        var go = document.createElement('button'); go.type = 'submit'; go.className = 'px-3 py-1.5 rounded-lg border border-gray-200 text-sm'; go.textContent = 'Add';
+        add.appendChild(go);
+        add.addEventListener('submit', function (e) {
+          e.preventDefault();
+          if (!inp.value.trim()) return;
+          var item = { text: inp.value.trim(), done: false };
+          item[key] = ownerSel ? Number(ownerSel.value) : (empData && empData.id) || null;
+          items.push(item);
+          _ciItemList(host, items, key, c, editable, label);
+        });
+        host.appendChild(add);
+      }
+    }
+
+    async function openCheckIn(id) {
+      var host = document.getElementById('ci-detail');
+      try {
+        var res = await fetch('/api/employee/check-ins/' + id);
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        var c = await res.json();
+        _ciOpen = c;
+        host.textContent = '';
+        host.classList.remove('hidden');
+        var card = document.createElement('div'); card.className = 'bg-white rounded-2xl border border-gray-100 p-5';
+        var head = document.createElement('div'); head.className = 'flex items-start justify-between gap-3 mb-4';
+        var hl = document.createElement('div');
+        var title = document.createElement('h3'); title.className = 'font-semibold text-gray-900';
+        title.textContent = (c.my_role === 'manager' ? c.employee_name : c.manager_name) + ' \u00b7 ' + c.scheduled_for; hl.appendChild(title);
+        var sub = document.createElement('p'); sub.className = 'text-xs text-gray-500';
+        sub.textContent = c.status === 'done' ? 'Held' + (c.completed_at ? ', written up ' + c.completed_at.slice(0, 10) : '') : 'Planned'; hl.appendChild(sub);
+        head.appendChild(hl);
+        var close = document.createElement('button'); close.type = 'button'; close.className = 'text-sm text-gray-500 hover:text-gray-900';
+        close.textContent = 'Close'; close.addEventListener('click', closeCheckIn); head.appendChild(close);
+        card.appendChild(head);
+
+        var editable = c.status !== 'done';
+        var grid = document.createElement('div'); grid.className = 'grid grid-cols-1 lg:grid-cols-2 gap-5';
+        var left = document.createElement('div');
+        var h1 = document.createElement('h4'); h1.className = 'text-sm font-semibold text-gray-900 mb-1'; h1.textContent = 'To talk about'; left.appendChild(h1);
+        var tp = document.createElement('div'); tp.id = 'ci-points'; left.appendChild(tp);
+        _ciItemList(tp, c.talking_points, 'by', c, editable, 'Something to raise');
+        if (c.carried_actions && c.carried_actions.length) {
+          var h2 = document.createElement('h4'); h2.className = 'text-sm font-semibold text-gray-900 mt-4 mb-1'; h2.textContent = 'Still open from last time'; left.appendChild(h2);
+          c.carried_actions.forEach(function (a) {
+            var row = document.createElement('label'); row.className = 'flex items-start gap-2 text-sm py-1';
+            var box = document.createElement('input'); box.type = 'checkbox'; box.className = 'mt-1';
+            box.addEventListener('change', async function () {
+              box.disabled = true;
+              try { await fetch('/api/employee/check-ins/' + c.id + '/actions/' + a.check_in_id + '/' + a.index + '/done', { method: 'POST' }); }
+              catch (e) { /* the next open shows the truth */ }
+              row.querySelector('span').className = 'line-through text-gray-400 flex-1';
+            });
+            row.appendChild(box);
+            var t = document.createElement('span'); t.className = 'text-gray-900 flex-1'; t.textContent = a.text; row.appendChild(t);
+            var w = document.createElement('span'); w.className = 'text-xs text-gray-400';
+            w.textContent = (a.owner === c.manager_id ? c.manager_name : c.employee_name) + ' \u00b7 ' + a.from_date; row.appendChild(w);
+            left.appendChild(row);
+          });
+        }
+        var h3 = document.createElement('h4'); h3.className = 'text-sm font-semibold text-gray-900 mt-4 mb-1'; h3.textContent = 'Actions'; left.appendChild(h3);
+        var ac = document.createElement('div'); ac.id = 'ci-actions'; left.appendChild(ac);
+        _ciItemList(ac, c.actions, 'owner', c, editable, 'What was agreed');
+
+        var right = document.createElement('div');
+        var h4 = document.createElement('h4'); h4.className = 'text-sm font-semibold text-gray-900 mb-1'; h4.textContent = 'Notes'; right.appendChild(h4);
+        var notes = document.createElement('textarea'); notes.id = 'ci-notes'; notes.rows = 8; notes.readOnly = !editable;
+        notes.className = 'w-full px-3 py-2 rounded-lg border border-gray-200 text-sm'; notes.value = c.notes || '';
+        notes.placeholder = 'What was said. Both of you can read this.'; right.appendChild(notes);
+        if (c.my_role === 'manager') {
+          var h5 = document.createElement('h4'); h5.className = 'text-sm font-semibold text-gray-900 mt-4 mb-1'; h5.textContent = 'Your private note'; right.appendChild(h5);
+          var pn = document.createElement('textarea'); pn.id = 'ci-private'; pn.rows = 4;
+          pn.className = 'w-full px-3 py-2 rounded-lg border border-amber-200 bg-amber-50 text-sm'; pn.value = c.private_note || '';
+          pn.placeholder = 'Only you can read this. Not them, not HR.'; right.appendChild(pn);
+        }
+        grid.appendChild(left); grid.appendChild(right);
+        card.appendChild(grid);
+
+        var err = document.createElement('p'); err.id = 'ci-error'; err.className = 'hidden text-sm text-rose-600 mt-3'; card.appendChild(err);
+        var actions = document.createElement('div'); actions.className = 'flex gap-2 mt-4 flex-wrap';
+        if (editable) {
+          var save = document.createElement('button'); save.type = 'button'; save.className = 'px-4 py-2 rounded-lg border border-gray-200 text-sm';
+          save.textContent = 'Save'; save.addEventListener('click', function () { saveCheckIn(false); }); actions.appendChild(save);
+          var held = document.createElement('button'); held.type = 'button'; held.className = 'px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium';
+          held.textContent = 'Mark as held'; held.addEventListener('click', function () { saveCheckIn(true); }); actions.appendChild(held);
+          var cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'px-4 py-2 rounded-lg text-sm text-gray-500 hover:text-rose-600';
+          cancel.textContent = 'Cancel it'; cancel.addEventListener('click', cancelCheckIn); actions.appendChild(cancel);
+        } else if (c.my_role === 'manager') {
+          var savePn = document.createElement('button'); savePn.type = 'button'; savePn.className = 'px-4 py-2 rounded-lg border border-gray-200 text-sm';
+          savePn.textContent = 'Save private note'; savePn.addEventListener('click', function () { saveCheckIn(false); }); actions.appendChild(savePn);
+        }
+        card.appendChild(actions);
+        host.appendChild(card);
+        host.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (e) {
+        uiToast('Could not open that.', 'error');
+      }
+    }
+    window.openCheckIn = openCheckIn;
+
+    function closeCheckIn() {
+      _ciOpen = null;
+      var host = document.getElementById('ci-detail');
+      host.textContent = ''; host.classList.add('hidden');
+    }
+    window.closeCheckIn = closeCheckIn;
+
+    function _ciBody() {
+      var c = _ciOpen;
+      var body = { talking_points: c.talking_points, actions: c.actions,
+                   notes: document.getElementById('ci-notes').value };
+      var pn = document.getElementById('ci-private');
+      if (pn) body.private_note = pn.value;
+      return body;
+    }
+
+    async function saveCheckIn(held) {
+      if (!_ciOpen) return;
+      var err = document.getElementById('ci-error');
+      err.classList.add('hidden');
+      try {
+        var res = await fetch('/api/employee/check-ins/' + _ciOpen.id + (held ? '/complete' : ''), {
+          method: held ? 'POST' : 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(_ciBody()) });
+        var d = await res.json().catch(function () { return {}; });
+        if (!res.ok) { err.textContent = d.detail || 'Could not save that.'; err.classList.remove('hidden'); return; }
+        uiToast(held ? 'Written up - they have been told' : 'Saved', 'success');
+        await loadCheckIns();
+        if (held) openCheckIn(_ciOpen.id);
+      } catch (e) {
+        err.textContent = 'Could not save that.'; err.classList.remove('hidden');
+      }
+    }
+    window.saveCheckIn = saveCheckIn;
+
+    async function cancelCheckIn() {
+      if (!_ciOpen) return;
+      if (!await uiConfirm('Cancel this one-to-one?', { title: 'Cancel', confirmText: 'Cancel it', danger: true })) return;
+      try {
+        var res = await fetch('/api/employee/check-ins/' + _ciOpen.id, { method: 'DELETE' });
+        var d = await res.json().catch(function () { return {}; });
+        if (!res.ok) { uiToast(d.detail || 'Could not cancel that.', 'error'); return; }
+        closeCheckIn();
+        loadCheckIns();
+      } catch (e) { uiToast('Could not cancel that.', 'error'); }
+    }
+    window.cancelCheckIn = cancelCheckIn;
 
     // --- Reviews ---------------------------------------------------------------
     // About you: write your half, then read the reviewer's once it is done.
@@ -3797,8 +4110,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=157"></script>
-    <script src="/pwa.js?v=157"></script>
-    <script src="/feed.js?v=157"></script>
+    <script src="/install-hint.js?v=158"></script>
+    <script src="/pwa.js?v=158"></script>
+    <script src="/feed.js?v=158"></script>
 </body>
 </html>

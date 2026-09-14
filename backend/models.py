@@ -2308,3 +2308,29 @@ class DBEmploymentChange(Base):
     note = Column(String, default="")
     recorded_by = Column(String, default="")
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+# ---- One-to-ones ---------------------------------------------------------------
+# A manager and one of their reports, on a date. Either side adds talking
+# points beforehand; the notes are shared; the actions carry over until they
+# are done; the manager keeps a private note the report never sees.
+
+class DBCheckIn(Base):
+    __tablename__ = "check_ins"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    manager_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+    scheduled_for = Column(String, default="", index=True)     # YYYY-MM-DD
+    # planned -> done. A skipped one is deleted; there is nothing to keep.
+    status = Column(String, default="planned", index=True)
+    # JSON lists. A talking point: {"text", "by": employee id, "done": bool}.
+    # An action: {"text", "owner": employee id, "done": bool}.
+    talking_points = Column(Text, default="[]")
+    actions = Column(Text, default="[]")
+    notes = Column(Text, default="")            # what both of them keep
+    private_note = Column(Text, default="")     # the manager's alone
+    completed_at = Column(String, default="")
+    created_by = Column(Integer, nullable=True) # employee id
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))

@@ -9528,9 +9528,10 @@ def delete_employee(emp_id: int, request: Request, db: Session = Depends(get_db)
         models.DBOnboardingItem, models.DBPayslip, models.DBAttendance,
         models.DBEmployeeGoal, models.DBLeaveRequest, models.DBDocument,
         models.DBNotification, models.DBOvertimeLog,
-        models.DBReview, models.DBCertification, models.DBEmploymentChange,
+        models.DBReview, models.DBCertification, models.DBEmploymentChange, models.DBCheckIn,
     ):
         db.query(model).filter(model.employee_id == emp_id).delete(synchronize_session=False)
+    db.query(models.DBCheckIn).filter(models.DBCheckIn.manager_id == emp_id).delete(synchronize_session=False)
     # Reviews they were going to write go back to the HR pool.
     db.query(models.DBReview).filter(models.DBReview.reviewer_id == emp_id).update(
         {"reviewer_id": None, "reviewer_how": "hr"}, synchronize_session=False)
@@ -24839,8 +24840,12 @@ def hr_analytics(request: Request, db: Session = Depends(get_db)):
     hiring_block = {"open_roles": len(open_reqs),
                     "openings": sum((r.openings or 1) for r in open_reqs)}
 
+    coverage = check_in_coverage(db, cid)
+    coverage.pop("rows", None)
+
     return {
         "as_of": today.strftime("%Y-%m-%d"),
+        "check_ins": coverage,
         "headcount": {
             "now": len(current), "joiners_12m": joiners_12m, "leavers_12m": leavers_12m,
             "turnover_pct": turnover, "average_headcount_12m": round(avg_headcount, 1),
@@ -24858,6 +24863,297 @@ def hr_analytics(request: Request, db: Session = Depends(get_db)):
         "hiring": hiring_block,
     }
 
+
+
+# ============================================================================
+# One-to-ones
+# ============================================================================
+# A manager and one of their reports, on a date. Either side schedules it
+# and adds talking points; the notes are shared; the actions carry over to
+# the next one until they are ticked; the manager keeps a private note the
+# report never receives. HR sees who is having them and who is not.
+
+def _clean_items(raw, key, people, default_owner):
+    """A JSON-able list of {text, <key>: employee id, done}. Text is trimmed,
+    blanks dropped, the owner must be one of the two people in the room."""
+    raw = raw if isinstance(raw, list) else []
+    out = []
+    for item in raw[:50]:
+        if isinstance(item, str):
+            item = {"text": item}
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()[:500]
+        if not text:
+            continue
+        owner = item.get(key)
+        try:
+            owner = int(owner)
+        except (TypeError, ValueError):
+            owner = default_owner
+        if owner not in people:
+            owner = default_owner
+        out.append({"text": text, key: owner, "done": bool(item.get("done"))})
+    return out
+
+
+def check_in_to_dict(c, names, viewer_id=None, carried=None):
+    d = {
+        "id": c.id, "manager_id": c.manager_id, "employee_id": c.employee_id,
+        "manager_name": names.get(c.manager_id, ""), "employee_name": names.get(c.employee_id, ""),
+        "scheduled_for": c.scheduled_for, "status": c.status,
+        "talking_points": _json_list(c.talking_points), "actions": _json_list(c.actions),
+        "notes": c.notes or "", "completed_at": c.completed_at, "created_at": c.created_at,
+        "my_role": "manager" if viewer_id == c.manager_id else "employee" if viewer_id == c.employee_id else "hr",
+    }
+    # The private note goes to the manager and to nobody else - not the
+    # report, and not HR either; a note HR could read is not private.
+    if viewer_id == c.manager_id:
+        d["private_note"] = c.private_note or ""
+    if carried is not None:
+        d["carried_actions"] = carried
+    return d
+
+
+def _open_actions_before(db, c):
+    """Actions still open from earlier one-to-ones between the same two
+    people, each tagged with where it came from."""
+    earlier = db.query(models.DBCheckIn).filter(
+        models.DBCheckIn.client_id == c.client_id,
+        models.DBCheckIn.manager_id == c.manager_id,
+        models.DBCheckIn.employee_id == c.employee_id,
+        models.DBCheckIn.status == "done",
+        models.DBCheckIn.id != c.id).order_by(models.DBCheckIn.scheduled_for.desc()).limit(12).all()
+    out = []
+    for prev in earlier:
+        for i, a in enumerate(_json_list(prev.actions)):
+            if not a.get("done"):
+                out.append(dict(a, check_in_id=prev.id, index=i, from_date=prev.scheduled_for))
+    return out
+
+
+def _check_in_i_am_in(db, emp, check_in_id):
+    c = db.query(models.DBCheckIn).filter(
+        models.DBCheckIn.id == check_in_id,
+        models.DBCheckIn.client_id == emp.client_id).first()
+    if not c or emp.id not in (c.manager_id, c.employee_id):
+        raise HTTPException(status_code=404, detail="One-to-one not found")
+    return c
+
+
+@app.get("/api/employee/check-ins")
+def my_check_ins(request: Request, db: Session = Depends(get_db)):
+    """Two lists: with my manager, and with each of my reports. Plus the
+    actions on me that are still open, which is the number to lead with."""
+    emp = current_employee(request, db)
+    names = _employee_names(db, emp.client_id)
+    rows = db.query(models.DBCheckIn).filter(
+        models.DBCheckIn.client_id == emp.client_id,
+        (models.DBCheckIn.manager_id == emp.id) | (models.DBCheckIn.employee_id == emp.id),
+    ).order_by(models.DBCheckIn.scheduled_for.desc(), models.DBCheckIn.id.desc()).limit(300).all()
+    up = [check_in_to_dict(c, names, emp.id) for c in rows if c.employee_id == emp.id]
+    down = [check_in_to_dict(c, names, emp.id) for c in rows if c.manager_id == emp.id]
+    on_me = sum(1 for c in rows if c.status == "done"
+                for a in _json_list(c.actions) if a.get("owner") == emp.id and not a.get("done"))
+    reports = [{"id": r.id, "name": names.get(r.id, "")} for r in _my_reports(db, emp)
+               if employee_is_current(r)]
+    manager = None
+    if emp.reports_to:
+        m = db.query(models.DBEmployee).filter(models.DBEmployee.id == emp.reports_to,
+                                               models.DBEmployee.client_id == emp.client_id).first()
+        if m and employee_is_current(m):
+            manager = {"id": m.id, "name": names.get(m.id, "")}
+    return {"with_my_manager": up, "with_my_reports": down, "open_actions_on_me": on_me,
+            "manager": manager, "reports": reports}
+
+
+@app.post("/api/employee/check-ins")
+def schedule_check_in(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """A report books one with their manager; a manager books one with a
+    report. Nobody books one with anybody else."""
+    emp = current_employee(request, db)
+    body = body or {}
+    when = _clean_ymd(body.get("scheduled_for"), "Date")
+    if not when:
+        raise HTTPException(status_code=400, detail="Pick a date")
+    other_id = body.get("employee_id")
+    if other_id in (None, "", emp.id):
+        # With my manager.
+        if not emp.reports_to:
+            raise HTTPException(status_code=400, detail="You have no manager recorded, so there is nobody to meet")
+        manager = db.query(models.DBEmployee).filter(models.DBEmployee.id == emp.reports_to,
+                                                     models.DBEmployee.client_id == emp.client_id).first()
+        if not manager or not employee_is_current(manager):
+            raise HTTPException(status_code=400, detail="Your manager is no longer here")
+        manager_id, employee_id, other = manager.id, emp.id, manager
+    else:
+        try:
+            other_id = int(other_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=404, detail="Employee not found")
+        report = _a_report_of_mine(db, emp, other_id)
+        if not report or not employee_is_current(report):
+            raise HTTPException(status_code=404, detail="Not one of your reports")
+        manager_id, employee_id, other = emp.id, report.id, report
+    people = {manager_id, employee_id}
+    c = models.DBCheckIn(
+        client_id=emp.client_id, manager_id=manager_id, employee_id=employee_id,
+        scheduled_for=when, created_by=emp.id,
+        talking_points=json.dumps(_clean_items(body.get("talking_points"), "by", people, emp.id)))
+    db.add(c)
+    db.flush()
+    me = f"{emp.first_name} {emp.last_name}".strip()
+    notify_employee(db, other, f"One-to-one on {when}", f"{me} has put a one-to-one in for {when}. "
+                    "Add what you want to talk about.", "info", "check-ins", me)
+    db.commit()
+    return check_in_to_dict(c, _employee_names(db, emp.client_id), emp.id,
+                            _open_actions_before(db, c))
+
+
+@app.get("/api/employee/check-ins/{check_in_id}")
+def get_check_in(check_in_id: int, request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    c = _check_in_i_am_in(db, emp, check_in_id)
+    return check_in_to_dict(c, _employee_names(db, emp.client_id), emp.id, _open_actions_before(db, c))
+
+
+@app.put("/api/employee/check-ins/{check_in_id}")
+def update_check_in(check_in_id: int, request: Request, body: dict = None,
+                    db: Session = Depends(get_db)):
+    """Both of them can change the date, the talking points, the notes and
+    the actions. Only the manager can touch the private note - and a report
+    sending one is ignored rather than refused, because they cannot see it
+    to know it exists."""
+    emp = current_employee(request, db)
+    c = _check_in_i_am_in(db, emp, check_in_id)
+    body = body or {}
+    people = {c.manager_id, c.employee_id}
+    if "scheduled_for" in body:
+        when = _clean_ymd(body.get("scheduled_for"), "Date")
+        if not when:
+            raise HTTPException(status_code=400, detail="Pick a date")
+        c.scheduled_for = when
+    if "talking_points" in body:
+        c.talking_points = json.dumps(_clean_items(body.get("talking_points"), "by", people, emp.id))
+    if "actions" in body:
+        c.actions = json.dumps(_clean_items(body.get("actions"), "owner", people, c.employee_id))
+    if "notes" in body:
+        c.notes = str(body.get("notes") or "").strip()[:20000]
+    if "private_note" in body and emp.id == c.manager_id:
+        c.private_note = str(body.get("private_note") or "").strip()[:20000]
+    db.commit()
+    return check_in_to_dict(c, _employee_names(db, emp.client_id), emp.id, _open_actions_before(db, c))
+
+
+@app.post("/api/employee/check-ins/{check_in_id}/actions/{source_id}/{index}/done")
+def tick_carried_action(check_in_id: int, source_id: int, index: int, request: Request,
+                        db: Session = Depends(get_db)):
+    """Tick an action that was carried over from an earlier one-to-one. It
+    lives on the row it was written on, so that is where it is ticked."""
+    emp = current_employee(request, db)
+    c = _check_in_i_am_in(db, emp, check_in_id)
+    src = db.query(models.DBCheckIn).filter(
+        models.DBCheckIn.id == source_id, models.DBCheckIn.client_id == emp.client_id,
+        models.DBCheckIn.manager_id == c.manager_id, models.DBCheckIn.employee_id == c.employee_id).first()
+    if not src:
+        raise HTTPException(status_code=404, detail="Action not found")
+    actions = _json_list(src.actions)
+    if not 0 <= index < len(actions):
+        raise HTTPException(status_code=404, detail="Action not found")
+    actions[index]["done"] = True
+    src.actions = json.dumps(actions)
+    db.commit()
+    return {"done": True, "carried_actions": _open_actions_before(db, c)}
+
+
+@app.post("/api/employee/check-ins/{check_in_id}/complete")
+def complete_check_in(check_in_id: int, request: Request, body: dict = None,
+                      db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    c = _check_in_i_am_in(db, emp, check_in_id)
+    if c.status == "done":
+        raise HTTPException(status_code=409, detail="Already marked as held")
+    update_check_in(check_in_id, request, body or {}, db)
+    c.status = "done"
+    c.completed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    other = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == (c.employee_id if emp.id == c.manager_id else c.manager_id)).first()
+    open_actions = [a for a in _json_list(c.actions) if not a.get("done")]
+    if other:
+        me = f"{emp.first_name} {emp.last_name}".strip()
+        mine = sum(1 for a in open_actions if a.get("owner") == other.id)
+        notify_employee(db, other, f"One-to-one notes from {c.scheduled_for}",
+                        f"{me} has written up your one-to-one." +
+                        (f" {mine} action{'s' if mine != 1 else ''} for you." if mine else ""),
+                        "info", "check-ins", me)
+    db.commit()
+    return check_in_to_dict(c, _employee_names(db, emp.client_id), emp.id, _open_actions_before(db, c))
+
+
+@app.delete("/api/employee/check-ins/{check_in_id}")
+def cancel_check_in(check_in_id: int, request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    c = _check_in_i_am_in(db, emp, check_in_id)
+    if c.status == "done":
+        raise HTTPException(status_code=409, detail="One that was held is kept")
+    db.delete(c)
+    db.commit()
+    return {"deleted": True}
+
+
+# --- HR's view: who is having them ---------------------------------------------
+
+def check_in_coverage(db, client_id, days=30):
+    """For every current person with a manager: when they last met, and
+    whether that is within the window. The number HR wants is how many
+    reporting lines have gone quiet."""
+    everyone = {e.id: e for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client_id).all()}
+    pairs = [(e.reports_to, e.id) for e in everyone.values()
+             if employee_is_current(e) and e.reports_to in everyone
+             and employee_is_current(everyone[e.reports_to])]
+    held = db.query(models.DBCheckIn).filter(
+        models.DBCheckIn.client_id == client_id, models.DBCheckIn.status == "done").all()
+    last = {}
+    for c in held:
+        key = (c.manager_id, c.employee_id)
+        if c.scheduled_for > last.get(key, ""):
+            last[key] = c.scheduled_for
+    since = (date.today() - timedelta(days=days)).isoformat()
+    rows = []
+    for m_id, e_id in pairs:
+        when = last.get((m_id, e_id), "")
+        rows.append({"manager_id": m_id, "employee_id": e_id, "last_held": when,
+                     "recent": bool(when and when >= since)})
+    return {"pairs": len(rows), "recent": sum(1 for r in rows if r["recent"]),
+            "quiet": sum(1 for r in rows if not r["recent"]), "window_days": days, "rows": rows}
+
+
+@app.get("/api/check-ins/coverage")
+def hr_check_in_coverage(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    cov = check_in_coverage(db, client.id)
+    names = _employee_names(db, client.id)
+    for r in cov["rows"]:
+        r["manager_name"] = names.get(r["manager_id"], "")
+        r["employee_name"] = names.get(r["employee_id"], "")
+    cov["rows"].sort(key=lambda r: (r["recent"], r["last_held"] or ""))
+    return cov
+
+
+@app.get("/api/employees/{emp_id}/check-ins")
+def hr_employee_check_ins(emp_id: int, request: Request, db: Session = Depends(get_db)):
+    """The dates and the shared notes. Never the manager's private note."""
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    rows = db.query(models.DBCheckIn).filter(
+        models.DBCheckIn.client_id == client.id, models.DBCheckIn.employee_id == emp.id,
+    ).order_by(models.DBCheckIn.scheduled_for.desc()).limit(50).all()
+    names = _employee_names(db, client.id)
+    return {"check_ins": [check_in_to_dict(c, names) for c in rows]}
 
 
 # Serve frontend
