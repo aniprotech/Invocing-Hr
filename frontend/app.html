@@ -207,182 +207,6 @@
                     </div>
                 </div>
 
-                <!-- Setting a first password and changing an existing one are
-                     the same form with one field hidden, because they are the
-                     same act - the difference is only whether there is
-                     something to prove first. -->
-
-    <!-- Adding a thing, and issuing it. Two acts, one form, because an asset
-         that is never issued to anybody is a row nobody needed. -->
-
-    <!-- The anonymity choice is made here and never again: people
-         answer on the strength of what they were told. -->
-
-    <!-- A workflow is saved switched off. Nobody wants it running before they
-         have read the steps back. -->
-    <div id="workflow-modal" class="modal-overlay" style="display:none;">
-        <div class="modal" style="max-width:600px;">
-            <div class="modal-header">
-                <h3 id="wf-modal-title">New workflow</h3>
-                <button class="btn-icon" onclick="closeWorkflowModal()" aria-label="Close">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label>Name</label>
-                    <input type="text" id="wf-name" class="form-control" placeholder="New starter" maxlength="200">
-                </div>
-                <div class="form-group">
-                    <label>When it runs</label>
-                    <select id="wf-trigger" class="form-control">
-                        <option value="employee_joins">When somebody joins</option>
-                        <option value="employee_leaves">When somebody leaves</option>
-                    </select>
-                    <!-- A workflow fires once per person, ever. Moving one that
-                         has already run would leave it permanently dead for
-                         everybody it ran for, so the server refuses and the
-                         field is closed rather than letting somebody try. -->
-                    <small id="wf-trigger-locked" style="display:none;color:var(--text-secondary);font-size:0.75rem;">
-                        This has already run for somebody, so when it runs cannot
-                        change - it would never fire for them again. Make a new
-                        workflow instead.
-                    </small>
-                </div>
-                <div class="form-group">
-                    <label>Steps</label>
-                    <div id="wf-steps"></div>
-                    <button class="btn btn-sm btn-outline" onclick="addWorkflowStep()" style="margin-top:8px;">+ Add step</button>
-                    <small style="display:block;color:var(--text-secondary);font-size:0.75rem;margin-top:8px;">
-                        Days can be negative - a laptop ordered three days before
-                        somebody starts is there on their first morning.
-                    </small>
-                </div>
-                <div id="wf-error" style="display:none;color:var(--danger-text);font-size:0.85rem;"></div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-outline" onclick="closeWorkflowModal()">Cancel</button>
-                <button class="btn btn-primary" id="wf-save-btn" onclick="saveWorkflow()">Save, switched off</button>
-            </div>
-        </div>
-    </div>
-    <div id="survey-modal" class="modal-overlay" style="display:none;">
-        <div class="modal" style="max-width:560px;">
-            <div class="modal-header">
-                <h3>New survey</h3>
-                <button class="btn-icon" onclick="closeSurveyModal()" aria-label="Close">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label>Title</label>
-                    <input type="text" id="survey-title" class="form-control" placeholder="How are things?" maxlength="200">
-                </div>
-                <div class="form-group">
-                    <label>What it is for</label>
-                    <textarea id="survey-desc" class="form-control" rows="2" maxlength="1000"
-                              placeholder="Shown to everybody you ask."></textarea>
-                </div>
-
-                <div class="form-group" style="padding:12px;border-radius:8px;background:rgba(14,165,233,0.08);">
-                    <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer;">
-                        <input type="checkbox" id="survey-anon" checked style="margin-top:3px;">
-                        <span>
-                            <strong>Anonymous</strong>
-                            <span id="survey-anon-note" style="display:block;font-size:0.78rem;color:var(--text-secondary);margin-top:2px;">
-                                Answers are stored without a name and cannot be traced back.
-                                You will still see who has and has not replied.
-                            </span>
-                        </span>
-                    </label>
-                </div>
-
-                <div class="form-group">
-                    <label>Questions</label>
-                    <div id="survey-questions"></div>
-                    <button class="btn btn-sm btn-outline" onclick="addSurveyQuestion()" style="margin-top:8px;">+ Add question</button>
-                </div>
-                <div id="survey-error" style="display:none;color:var(--danger-text);font-size:0.85rem;"></div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-outline" onclick="closeSurveyModal()">Cancel</button>
-                <button class="btn btn-primary" id="survey-save-btn" onclick="saveSurvey()">Save as draft</button>
-            </div>
-        </div>
-    </div>
-    <div id="asset-modal" class="modal-overlay" style="display:none;">
-        <div class="modal" style="max-width:460px;">
-            <div class="modal-header">
-                <h3 id="asset-modal-title">Add asset</h3>
-                <button class="btn-icon" onclick="closeAssetModal()" aria-label="Close">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label>Tag</label>
-                    <input type="text" id="asset-tag" class="form-control" placeholder="LAP-014" maxlength="60">
-                    <small style="color:var(--text-secondary);font-size:0.75rem;">How somebody identifies it in their hands.</small>
-                </div>
-                <div class="form-group">
-                    <label>What it is</label>
-                    <input type="text" id="asset-name" class="form-control" placeholder="MacBook Air 13" maxlength="200">
-                </div>
-                <div class="form-group">
-                    <label>Category</label>
-                    <select id="asset-category" class="form-control">
-                        <option value="laptop">Laptop</option>
-                        <option value="phone">Phone</option>
-                        <option value="monitor">Monitor</option>
-                        <option value="peripheral">Peripheral</option>
-                        <option value="furniture">Furniture</option>
-                        <option value="vehicle">Vehicle</option>
-                        <option value="access_card">Access card</option>
-                        <option value="other">Other</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Serial number</label>
-                    <input type="text" id="asset-serial" class="form-control" maxlength="120">
-                </div>
-                <div class="form-group">
-                    <label>What it cost</label>
-                    <input type="number" step="0.01" min="0" id="asset-cost" class="form-control" value="0">
-                </div>
-                <div id="asset-error" style="display:none;color:var(--danger-text);font-size:0.85rem;"></div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-outline" onclick="closeAssetModal()">Cancel</button>
-                <button class="btn btn-primary" id="asset-save-btn" onclick="saveAsset()">Save</button>
-            </div>
-        </div>
-    </div>
-                <div id="password-modal" class="modal-overlay" style="display:none;">
-                    <div class="modal" style="max-width:420px;">
-                        <div class="modal-header">
-                            <h3 id="password-modal-title">Password</h3>
-                            <button class="btn-icon" onclick="closePasswordModal()" aria-label="Close">&times;</button>
-                        </div>
-                        <div class="modal-body">
-                            <p id="password-modal-intro" class="subtitle" style="margin:0 0 16px;"></p>
-                            <div class="form-group" id="password-current-group">
-                                <label>Current password</label>
-                                <input type="password" id="pw-current" class="form-control" autocomplete="current-password">
-                            </div>
-                            <div class="form-group">
-                                <label>New password</label>
-                                <input type="password" id="pw-new" class="form-control" autocomplete="new-password">
-                                <small style="color:var(--text-secondary);font-size:0.75rem;">
-                                    At least 8 characters, with one capital letter and one number.
-                                </small>
-                            </div>
-                            <div class="form-group">
-                                <label>New password again</label>
-                                <input type="password" id="pw-confirm" class="form-control" autocomplete="new-password">
-                            </div>
-                            <div id="password-modal-error" style="display:none;color:var(--danger-text);font-size:0.85rem;"></div>
-                        </div>
-                        <div class="modal-footer">
-                            <button class="btn btn-outline" onclick="closePasswordModal()">Cancel</button>
-                            <button class="btn btn-primary" id="pw-save-btn" onclick="savePassword()">Save</button>
-                        </div>
-                    </div>
-                </div>
                 <!-- To the login page, not straight at Google. This only appears
                      when we could not tell who is signed in, which happens on a
                      dropped request to somebody who is signed in perfectly well -
@@ -3796,6 +3620,189 @@
 
             </div>
         </main>
+    </div>
+
+    <!-- Dialogs live out here, at the top level, and must stay here.
+         The header blurs what is behind it (backdrop-filter), and a
+         blurred or transformed element becomes the box that a
+         position:fixed descendant is measured against. Four of these
+         used to sit inside the header, so their overlays filled a
+         63px strip and the dialog hung off the top of the screen. -->
+    <!-- Setting a first password and changing an existing one are
+         the same form with one field hidden, because they are the
+         same act - the difference is only whether there is
+         something to prove first. -->
+
+    <!-- Adding a thing, and issuing it. Two acts, one form, because an asset
+         that is never issued to anybody is a row nobody needed. -->
+
+    <!-- The anonymity choice is made here and never again: people
+         answer on the strength of what they were told. -->
+
+    <!-- A workflow is saved switched off. Nobody wants it running before they
+         have read the steps back. -->
+    <div id="workflow-modal" class="modal-overlay" style="display:none;">
+        <div class="modal" style="max-width:600px;">
+            <div class="modal-header">
+                <h3 id="wf-modal-title">New workflow</h3>
+                <button class="btn-icon" onclick="closeWorkflowModal()" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Name</label>
+                    <input type="text" id="wf-name" class="form-control" placeholder="New starter" maxlength="200">
+                </div>
+                <div class="form-group">
+                    <label>When it runs</label>
+                    <select id="wf-trigger" class="form-control">
+                        <option value="employee_joins">When somebody joins</option>
+                        <option value="employee_leaves">When somebody leaves</option>
+                    </select>
+                    <!-- A workflow fires once per person, ever. Moving one that
+                         has already run would leave it permanently dead for
+                         everybody it ran for, so the server refuses and the
+                         field is closed rather than letting somebody try. -->
+                    <small id="wf-trigger-locked" style="display:none;color:var(--text-secondary);font-size:0.75rem;">
+                        This has already run for somebody, so when it runs cannot
+                        change - it would never fire for them again. Make a new
+                        workflow instead.
+                    </small>
+                </div>
+                <div class="form-group">
+                    <label>Steps</label>
+                    <div id="wf-steps"></div>
+                    <button class="btn btn-sm btn-outline" onclick="addWorkflowStep()" style="margin-top:8px;">+ Add step</button>
+                    <small style="display:block;color:var(--text-secondary);font-size:0.75rem;margin-top:8px;">
+                        Days can be negative - a laptop ordered three days before
+                        somebody starts is there on their first morning.
+                    </small>
+                </div>
+                <div id="wf-error" style="display:none;color:var(--danger-text);font-size:0.85rem;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeWorkflowModal()">Cancel</button>
+                <button class="btn btn-primary" id="wf-save-btn" onclick="saveWorkflow()">Save, switched off</button>
+            </div>
+        </div>
+    </div>
+    <div id="survey-modal" class="modal-overlay" style="display:none;">
+        <div class="modal" style="max-width:560px;">
+            <div class="modal-header">
+                <h3>New survey</h3>
+                <button class="btn-icon" onclick="closeSurveyModal()" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Title</label>
+                    <input type="text" id="survey-title" class="form-control" placeholder="How are things?" maxlength="200">
+                </div>
+                <div class="form-group">
+                    <label>What it is for</label>
+                    <textarea id="survey-desc" class="form-control" rows="2" maxlength="1000"
+                              placeholder="Shown to everybody you ask."></textarea>
+                </div>
+
+                <div class="form-group" style="padding:12px;border-radius:8px;background:rgba(14,165,233,0.08);">
+                    <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer;">
+                        <input type="checkbox" id="survey-anon" checked style="margin-top:3px;">
+                        <span>
+                            <strong>Anonymous</strong>
+                            <span id="survey-anon-note" style="display:block;font-size:0.78rem;color:var(--text-secondary);margin-top:2px;">
+                                Answers are stored without a name and cannot be traced back.
+                                You will still see who has and has not replied.
+                            </span>
+                        </span>
+                    </label>
+                </div>
+
+                <div class="form-group">
+                    <label>Questions</label>
+                    <div id="survey-questions"></div>
+                    <button class="btn btn-sm btn-outline" onclick="addSurveyQuestion()" style="margin-top:8px;">+ Add question</button>
+                </div>
+                <div id="survey-error" style="display:none;color:var(--danger-text);font-size:0.85rem;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeSurveyModal()">Cancel</button>
+                <button class="btn btn-primary" id="survey-save-btn" onclick="saveSurvey()">Save as draft</button>
+            </div>
+        </div>
+    </div>
+    <div id="asset-modal" class="modal-overlay" style="display:none;">
+        <div class="modal" style="max-width:460px;">
+            <div class="modal-header">
+                <h3 id="asset-modal-title">Add asset</h3>
+                <button class="btn-icon" onclick="closeAssetModal()" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Tag</label>
+                    <input type="text" id="asset-tag" class="form-control" placeholder="LAP-014" maxlength="60">
+                    <small style="color:var(--text-secondary);font-size:0.75rem;">How somebody identifies it in their hands.</small>
+                </div>
+                <div class="form-group">
+                    <label>What it is</label>
+                    <input type="text" id="asset-name" class="form-control" placeholder="MacBook Air 13" maxlength="200">
+                </div>
+                <div class="form-group">
+                    <label>Category</label>
+                    <select id="asset-category" class="form-control">
+                        <option value="laptop">Laptop</option>
+                        <option value="phone">Phone</option>
+                        <option value="monitor">Monitor</option>
+                        <option value="peripheral">Peripheral</option>
+                        <option value="furniture">Furniture</option>
+                        <option value="vehicle">Vehicle</option>
+                        <option value="access_card">Access card</option>
+                        <option value="other">Other</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Serial number</label>
+                    <input type="text" id="asset-serial" class="form-control" maxlength="120">
+                </div>
+                <div class="form-group">
+                    <label>What it cost</label>
+                    <input type="number" step="0.01" min="0" id="asset-cost" class="form-control" value="0">
+                </div>
+                <div id="asset-error" style="display:none;color:var(--danger-text);font-size:0.85rem;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeAssetModal()">Cancel</button>
+                <button class="btn btn-primary" id="asset-save-btn" onclick="saveAsset()">Save</button>
+            </div>
+        </div>
+    </div>
+    <div id="password-modal" class="modal-overlay" style="display:none;">
+        <div class="modal" style="max-width:420px;">
+            <div class="modal-header">
+                <h3 id="password-modal-title">Password</h3>
+                <button class="btn-icon" onclick="closePasswordModal()" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="password-modal-intro" class="subtitle" style="margin:0 0 16px;"></p>
+                <div class="form-group" id="password-current-group">
+                    <label>Current password</label>
+                    <input type="password" id="pw-current" class="form-control" autocomplete="current-password">
+                </div>
+                <div class="form-group">
+                    <label>New password</label>
+                    <input type="password" id="pw-new" class="form-control" autocomplete="new-password">
+                    <small style="color:var(--text-secondary);font-size:0.75rem;">
+                        At least 8 characters, with one capital letter and one number.
+                    </small>
+                </div>
+                <div class="form-group">
+                    <label>New password again</label>
+                    <input type="password" id="pw-confirm" class="form-control" autocomplete="new-password">
+                </div>
+                <div id="password-modal-error" style="display:none;color:var(--danger-text);font-size:0.85rem;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closePasswordModal()">Cancel</button>
+                <button class="btn btn-primary" id="pw-save-btn" onclick="savePassword()">Save</button>
+            </div>
+        </div>
     </div>
 
     <!-- ========== ADD EMPLOYEE MODAL ========== -->
