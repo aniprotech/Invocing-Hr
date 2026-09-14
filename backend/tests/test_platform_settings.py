@@ -79,10 +79,19 @@ def test_a_tenant_cannot_change_the_platform(tenant):
 
 def test_no_secret_is_offered(operator):
     """A value that can be read out of a web page leaks with the page. Keys
-    and the session secret stay in the environment."""
-    keys = " ".join(get_all(operator)).lower()
-    for secret in ("secret", "api_key", "token", "password", "database"):
-        assert secret not in keys, f"{secret} is exposed in the settings"
+    and the session secret stay in the environment.
+
+    A setting may be *named* like a secret only if it is one - kind "secret",
+    which is stored and never sent back. The SMTP password is the case: it
+    had nowhere to go that the product ever told the operator about, so it
+    is on the screen now, and the screen says whether one is set and nothing
+    else. The check is on what comes back, not on the name."""
+    rows = get_all(operator)
+    for key, row in rows.items():
+        name = key.lower()
+        if any(w in name for w in ("secret", "api_key", "token", "password", "database")):
+            assert row["kind"] == "secret", f"{key} is named like a secret but is not one"
+            assert row["value"] == "", f"{key} sends its value back"
 
 
 # --- what wins --------------------------------------------------------------

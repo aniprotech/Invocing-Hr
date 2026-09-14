@@ -27,8 +27,12 @@ def _clean(monkeypatch):
     monkeypatch.delenv("FROM_EMAIL", raising=False)
     def clear():
         with main.SessionLocal() as db:
+            # These tests are about the Gmail transport, and the transport is
+            # a platform setting other tests change. Pinned here, or a test
+            # that ran earlier and chose smtp decides what these mean.
             db.query(models.DBSettings).filter(
-                models.DBSettings.key == "GOOGLE_SENDER_EMAIL",
+                models.DBSettings.key.in_(("GOOGLE_SENDER_EMAIL", "email.transport",
+                                           "email.from_address", "email.smtp_user")),
                 models.DBSettings.client_id == None).delete(  # noqa: E711
                     synchronize_session=False)
             db.commit()

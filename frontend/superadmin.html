@@ -367,12 +367,12 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=155">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=155">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=155">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=155">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=155">
-    <script src="/dialogs.js?v=155"></script>
+    <link rel="stylesheet" href="mobile.css?v=156">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=156">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=156">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=156">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=156">
+    <script src="/dialogs.js?v=156"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -2733,6 +2733,14 @@
                 return '<textarea ' + common + ' rows="4" class="form-control setting-input" ' +
                        'style="width:100%;">' + esc(s.value) + '</textarea>';
             }
+            if (s.kind === 'secret') {
+                // Never filled in. The server does not send the value, and an
+                // empty box on save means "keep what is there".
+                return '<input type="password" ' + common + ' class="form-control setting-input" ' +
+                       'autocomplete="new-password" value="" placeholder="' +
+                       (s.is_set ? 'Saved - type here to replace it' : 'Not set') +
+                       '" style="width:100%;min-width:260px;max-width:460px;">';
+            }
             var type = s.kind === 'number' ? 'number' : 'text';
             var bounds = (s.min !== null && s.min !== undefined ? ' min="' + s.min + '"' : '') +
                          (s.max !== null && s.max !== undefined ? ' max="' + s.max + '"' : '');
@@ -2743,6 +2751,66 @@
             return '<input type="' + type + '"' + bounds + ' ' + common +
                    ' class="form-control setting-input" value="' + esc(s.value) + '" style="' + width + '">';
         }
+
+        // The only way to know a mail server works is to use it. One message
+        // to the operator's own address, and the exact answer the server gave
+        // - "535 Username and Password not accepted" fixes things that "it is
+        // not working" cannot.
+        function emailTestPanel() {
+            return '<div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(255, 255, 255, 0.08);">' +
+                '<div style="font-size:0.78rem;color:#94a3b8;max-width:70ch;line-height:1.5;">' +
+                    '<strong style="color:#e2e8f0;">Using a Gmail address:</strong> set the server to ' +
+                    '<code>smtp.gmail.com</code>, port <code>587</code>, the username to your full Gmail ' +
+                    'address, and the password to an <strong>App Password</strong> - not your normal one. ' +
+                    'Google makes those at <em>Google Account &rarr; Security &rarr; 2-Step Verification ' +
+                    '&rarr; App passwords</em>; 2-Step has to be on first. Then choose <code>smtp</code> ' +
+                    'above, save, and press the button.' +
+                '</div>' +
+                '<div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap;">' +
+                    '<button class="action-btn" id="email-test-btn" onclick="sendTestEmail()">Send me a test email</button>' +
+                    '<span id="email-test-result" style="font-size:0.82rem;"></span>' +
+                '</div>' +
+            '</div>';
+        }
+
+        async function sendTestEmail() {
+            var btn = document.getElementById('email-test-btn');
+            var out = document.getElementById('email-test-result');
+            if (!btn || !out) return;
+            // Unsaved changes on the screen are not what would be used, and
+            // the usual mistake is testing a password that was never saved.
+            var dirty = [...document.querySelectorAll('.setting-input')].some(function (el) {
+                if (el.type === 'password') return !!el.value;
+                var row = _settings.filter(function (s) { return s.key === el.getAttribute('data-key'); })[0];
+                return row && String(el.value) !== String(row.value);
+            });
+            if (dirty) {
+                out.style.color = '#fbbf24';
+                out.textContent = 'Save your changes first - the test uses what is saved.';
+                return;
+            }
+            btn.disabled = true;
+            out.style.color = '#94a3b8';
+            out.textContent = 'Sending\u2026';
+            try {
+                var res = await fetch('/api/superadmin/send-test-email', { method: 'POST' });
+                var d = await res.json().catch(function () { return {}; });
+                if (!res.ok) throw new Error(d.detail || 'Could not send');
+                if (d.sent) {
+                    out.style.color = '#34d399';
+                    out.textContent = 'Sent to ' + d.to + ' through ' + d.transport + '. Check your inbox - and the spam folder.';
+                } else {
+                    out.style.color = '#f43f5e';
+                    out.textContent = 'Not sent: ' + (d.reason || 'no reason given');
+                }
+            } catch (e) {
+                out.style.color = '#f43f5e';
+                out.textContent = e.message;
+            } finally {
+                btn.disabled = false;
+            }
+        }
+        window.sendTestEmail = sendTestEmail;
 
         function renderPlatformSettings(groups) {
             var host = document.getElementById('platform-settings-body');
@@ -2773,6 +2841,7 @@
                             '<div style="min-width:200px;flex:1;">' + settingField(s) + '</div>' +
                         '</div>';
                     }).join('') +
+                    (g === 'Email' ? emailTestPanel() : '') +
                 '</div>';
             }).join('') +
             '<div style="display:flex;gap:10px;align-items:center;padding:4px 0 20px;">' +
@@ -2923,6 +2992,6 @@
         <div id="wallet-panel-body"></div>
       </div>
     </div>
-    <script src="/pwa.js?v=155"></script>
+    <script src="/pwa.js?v=156"></script>
 </body>
 </html>

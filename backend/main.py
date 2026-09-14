@@ -3024,15 +3024,32 @@ def client_smtp_config(row):
     }
 
 
-def smtp_config():
-    """Where SMTP sends from. The password is a secret, so it lives in the
-    environment with the other secrets and never in the settings screen."""
+def smtp_config(db=None):
+    """Where SMTP sends from: the settings screen, then the environment.
+
+    It was environment-only, on the principle that a password is a secret
+    and secrets are not kept in a screen. The consequence was that nothing
+    in the product could tell the operator where the password went, and the
+    screen that chose "smtp" pointed at variables they had never seen. The
+    password is stored, never echoed back, and the screen says whether one
+    is set - which is the same standing the tenants' own SMTP screen has had
+    all along.
+    """
+    def read(key):
+        if db is not None:
+            return platform_setting(db, key)
+        with SessionLocal() as own:
+            return platform_setting(own, key)
+    try:
+        port = int(str(read("email.smtp_port") or "587").strip() or 587)
+    except ValueError:
+        port = 587
     return {
-        "host": (os.getenv("SMTP_HOST", "") or "").strip(),
-        "port": int(os.getenv("SMTP_PORT", "587") or 587),
-        "user": (os.getenv("SMTP_USER", "") or "").strip(),
-        "password": os.getenv("SMTP_PASSWORD", "") or "",
-        "starttls": (os.getenv("SMTP_STARTTLS", "true") or "true").lower()
+        "host": (read("email.smtp_host") or "").strip(),
+        "port": port,
+        "user": (read("email.smtp_user") or "").strip(),
+        "password": read("email.smtp_password") or "",
+        "starttls": str(read("email.smtp_starttls") or "true").lower()
                     not in ("0", "false", "no", "off"),
     }
 
@@ -3074,16 +3091,31 @@ def platform_from_address(db=None) -> str:
     operator set deliberately, then the old constant as a last resort for a
     deployment that has neither.
     """
-    connected = ""
+    def pick(own):
+        chosen = (platform_setting(own, "email.from_address") or "").strip()
+        connected = (platform_setting_raw(own, "GOOGLE_SENDER_EMAIL") or "").strip()
+        if email_transport(own) == "smtp":
+            # The account that authenticates is the account Gmail sends as,
+            # whatever the header says. An address the operator chose
+            # deliberately wins; otherwise the SMTP login itself; and a
+            # Google account somebody connected earlier is still a real
+            # address of theirs, so it beats the old constant.
+            user = (platform_setting(own, "email.smtp_user") or "").strip()
+            return chosen or user or connected
+        return connected or chosen
+
     try:
         if db is not None:
-            connected = platform_setting_raw(db, "GOOGLE_SENDER_EMAIL")
+            found = pick(db)
         else:
             with SessionLocal() as own:
-                connected = platform_setting_raw(own, "GOOGLE_SENDER_EMAIL")
-    except Exception:                                  # noqa: BLE001
-        connected = ""
-    return ((connected or "").strip()
+                found = pick(own)
+    except Exception as exc:                           # noqa: BLE001
+        # Said, not swallowed: a failure here means mail goes out claiming
+        # the wrong domain, which is the thing this function exists to stop.
+        logger.warning("Could not work out the platform's from address: %s", exc)
+        found = ""
+    return ((found or "").strip()
             or os.getenv("FROM_EMAIL", "").strip()
             or "hello@keyroutes.co")
 
@@ -5022,6 +5054,32 @@ def platform_setting_raw(db, key: str) -> str:
         models.DBSettings.key == key,
         models.DBSettings.client_id == None).first()      # noqa: E711
     return (row.value if row else "") or ""
+
+
+@app.post("/api/superadmin/send-test-email")
+def superadmin_send_test_email(request: Request, db: Session = Depends(get_db)):
+    """Send one message to the operator's own address, now, and say exactly
+    what happened. The only way to know a transport works is to use it."""
+    sa_id = require_superadmin(request)
+    ip = request.client.host if request.client else "unknown"
+    if rate_limiter.is_rate_limited(f"sa_test_mail:{ip}", max_requests=5, window=300):
+        raise HTTPException(status_code=429, detail="Too many test emails. Wait a few minutes.")
+    sa = db.query(models.DBSuperAdmin).filter(models.DBSuperAdmin.id == sa_id).first()
+    if not sa or not sa.email:
+        raise HTTPException(status_code=400, detail="Your operator account has no email address to send to")
+
+    ready, missing = email_delivery_ready(db)
+    if not ready:
+        return {"sent": False, "to": sa.email, "transport": email_transport(db),
+                "reason": missing}
+
+    ok, why = send_email_background(
+        sa.email, "Test email from your platform",
+        "If you are reading this, the platform can send email.\n\n"
+        f"Transport: {email_transport(db)}\nSent: {datetime.now():%Y-%m-%d %H:%M:%S}",
+        platform_from_address(db))
+    return {"sent": bool(ok), "to": sa.email, "transport": email_transport(db),
+            "reason": "" if ok else (why or "The send failed and the transport gave no reason")}
 
 
 @app.get("/api/superadmin/email-failures")
@@ -22261,7 +22319,7 @@ class Setting:
         self.key = key
         self.label = label
         self.group = group
-        self.kind = kind            # text | colour | number | choice | bool | longtext
+        self.kind = kind            # text | colour | number | choice | bool | longtext | secret
         self.default = default
         self.env = env              # the variable this used to live in
         self.help = help
@@ -22295,6 +22353,11 @@ class Setting:
             if raw not in self.choices:
                 raise ValueError("must be one of: " + ", ".join(self.choices))
             return raw
+
+        if self.kind == "secret":
+            # A password. Anything goes in; nothing comes back out - the list
+            # endpoint masks it, and an empty value on save means "leave it".
+            return raw[:400]
 
         if self.kind == "colour":
             # Anything else would be injected straight into a stylesheet.
@@ -22464,10 +22527,30 @@ PLATFORM_SETTINGS = [
     # --- Email --------------------------------------------------------------
     Setting("email.transport", "Send email through", "Email", "choice", "gmail",
             choices=["gmail", "smtp"],
-            help="gmail uses the connected Google account. smtp uses your own "
-                 "mail server - set SMTP_HOST, SMTP_PORT, SMTP_USER and "
-                 "SMTP_PASSWORD in the environment, because a mail password is "
-                 "a secret and secrets are not kept in this screen."),
+            help="gmail sends through the connected Google account. smtp sends "
+                 "through the mail server below - a Gmail address with an app "
+                 "password works, and is the simplest way to get sign-in codes "
+                 "and password resets going out reliably."),
+    # These lived only in the environment, which meant the operator had to
+    # know Railway's variables page existed and what to put there. Nothing in
+    # the product said so, and "there is nowhere to type my Gmail password"
+    # is how it was reported. Still read from the environment when nothing
+    # is set here, so an install that was configured that way keeps working.
+    Setting("email.smtp_host", "SMTP server", "Email", "text", "", env="SMTP_HOST",
+            help="For Gmail: smtp.gmail.com"),
+    Setting("email.smtp_port", "SMTP port", "Email", "number", "587", env="SMTP_PORT",
+            minimum=1, maximum=65535, help="587 for Gmail and almost everything else."),
+    Setting("email.smtp_user", "SMTP username", "Email", "text", "", env="SMTP_USER",
+            help="For Gmail: your full address, e.g. you@gmail.com"),
+    Setting("email.smtp_password", "SMTP password", "Email", "secret", "", env="SMTP_PASSWORD",
+            help="For Gmail this must be an App Password, not your normal one: "
+                 "Google Account > Security > 2-Step Verification > App passwords. "
+                 "Sixteen letters, spaces do not matter. Leave empty to keep the one saved."),
+    Setting("email.smtp_starttls", "Use STARTTLS", "Email", "bool", "true", env="SMTP_STARTTLS",
+            help="On for port 587. Off only for a server that does not support it."),
+    Setting("email.from_address", "Send as", "Email", "text", "", env="FROM_EMAIL",
+            help="The address mail appears to come from. For Gmail this has to be "
+                 "the same account, or Google rewrites it."),
 
     Setting("landing.invoice_cta_title", "Invoicing pitch: heading", "Landing", "text",
             "Ready to streamline your invoicing?"),
@@ -22657,10 +22740,12 @@ def list_platform_settings(request: Request, db: Session = Depends(get_db)):
             "kind": spec.kind, "help": spec.help, "choices": spec.choices,
             "min": spec.minimum, "max": spec.maximum,
             "default": spec.default,
-            "value": platform_setting(db, spec.key),
+            # A secret is never sent back. The page shows whether one is set.
+            "value": "" if spec.kind == "secret" else platform_setting(db, spec.key),
             # Whether this has actually been set here, so the page can show
             # what is inherited rather than chosen.
-            "is_set": bool(stored.strip()),
+            "is_set": bool(stored.strip()) or (
+                spec.kind == "secret" and bool(spec.env) and bool(os.getenv(spec.env, "").strip())),
             "from_env": bool(not stored.strip() and spec.env
                              and os.getenv(spec.env, "").strip()),
             "env": spec.env or "",
@@ -22683,6 +22768,13 @@ def update_platform_settings(request: Request, body: dict = None,
     if unknown:
         raise HTTPException(status_code=404,
                             detail="No such setting: " + ", ".join(sorted(unknown)))
+
+    # A password field left empty means "keep the one that is there", or
+    # saving any other change on the screen would wipe it every time.
+    changes = {k: v for k, v in changes.items()
+               if not (SETTINGS_BY_KEY[k].kind == "secret" and not str(v or "").strip())}
+    if not changes:
+        return {"changed": {}}
 
     # Validate the lot first, so one bad colour cannot leave half a theme.
     for key, value in changes.items():

@@ -198,12 +198,23 @@ def test_a_server_that_refuses_is_reported_not_swallowed(via_smtp, monkeypatch):
 # --- the secret stays a secret ---------------------------------------------------
 def test_the_mail_password_is_not_in_the_settings_screen(via_smtp, superadmin):
     """A value that can be read out of a web page is a value that leaks with
-    the page. The variable is named in the help text on purpose - telling an
-    operator where to put the password is not the same as showing it."""
+    the page. The password is stored now - there was nowhere else an operator
+    could put it that the product ever told them about - but it is never
+    sent back: the screen says whether one is set, and that is all.
+
+    The host and username are not secrets. Every mail client shows them and
+    so does the tenants' own SMTP screen; keeping them off this one was what
+    left the operator with no idea where their Gmail was supposed to go."""
+    body = superadmin.get("/api/superadmin/platform-settings").json()
     raw = superadmin.get("/api/superadmin/platform-settings").text
     assert "hunter2" not in raw
-    assert "postbox" not in raw
-    assert "mail.example.test" not in raw
+    pw = next(r for r in body["settings"] if r["key"] == "email.smtp_password")
+    assert pw["kind"] == "secret"
+    assert pw["value"] == ""
+    assert pw["is_set"] is True, "it should say one is set, without saying what"
+    # And the parts that are not secret are on the screen, which is the point.
+    host = next(r for r in body["settings"] if r["key"] == "email.smtp_host")
+    assert host["value"] == "mail.example.test"
 
 
 def test_the_choice_itself_is_in_the_settings_screen(superadmin):
