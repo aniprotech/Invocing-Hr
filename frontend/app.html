@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=156">
-    <link rel="stylesheet" href="mobile.css?v=156">
+    <link rel="stylesheet" href="styles.css?v=157">
+    <link rel="stylesheet" href="mobile.css?v=157">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,11 +57,11 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=156">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=156">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=156">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=156">
-    <script src="/dialogs.js?v=156"></script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=157">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=157">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=157">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=157">
+    <script src="/dialogs.js?v=157"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -144,6 +144,9 @@
                             <a href="#/workflows" class="nav-item" id="nav-workflows" data-portal="hr">Workflows</a>
                             <a href="#/leave" class="nav-item" id="nav-leave" data-portal="hr">Leave</a>
                             <a href="#/goals" class="nav-item" id="nav-goals" data-portal="hr">Goals</a>
+                            <a href="#/reviews" class="nav-item" id="nav-reviews" data-portal="hr">Reviews</a>
+                            <a href="#/training" class="nav-item" id="nav-training" data-portal="hr">Training</a>
+                            <a href="#/people-analytics" class="nav-item" id="nav-people-analytics" data-portal="hr">Analytics</a>
                             <a href="#/staff-requests" class="nav-item" id="nav-staff-requests" data-portal="hr">Requests</a>
                             <a href="#/payroll" class="nav-item" id="nav-payroll" data-portal="hr">Payroll</a>
                             <a href="/employee-login.html" target="_blank" class="nav-item" data-portal="hr" style="color:var(--primary-light);">&#128100; Employee Portal</a>
@@ -1854,6 +1857,86 @@
                     <div id="workflow-list" style="margin-top:24px;"></div>
                 </div>
 
+                <!-- ========== REVIEWS ==========
+                     A cycle is a period and a set of questions. Opening it
+                     writes a review per person; they answer first, then
+                     whoever they report to, and HR reads it all. -->
+                <div id="reviews-view" class="view-section dashboard" style="display: none;">
+                    <div class="invoices-header-area">
+                        <div>
+                            <h1>Reviews</h1>
+                            <p class="subtitle">How everybody is doing, written down</p>
+                        </div>
+                        <div class="invoices-actions">
+                            <button class="btn btn-primary" onclick="openCycleModal()">+ New cycle</button>
+                        </div>
+                    </div>
+                    <div id="review-cycles"></div>
+                    <div id="review-cycle-detail" style="margin-top:24px;"></div>
+                </div>
+
+                <!-- ========== TRAINING & CERTIFICATIONS ========== -->
+                <div id="training-view" class="view-section dashboard" style="display: none;">
+                    <div class="invoices-header-area">
+                        <div>
+                            <h1>Training &amp; certifications</h1>
+                            <p class="subtitle">What people are qualified to do, and when that runs out</p>
+                        </div>
+                        <div class="invoices-actions">
+                            <button class="btn btn-primary" onclick="addCertification()">+ Add certification</button>
+                        </div>
+                    </div>
+                    <div class="grid-4 mb-24" id="training-tiles"></div>
+                    <div class="invoices-tabs" id="training-tabs">
+                        <button class="tab active" onclick="switchTrainingTab('', this)">All</button>
+                        <button class="tab" onclick="switchTrainingTab('expiring', this)">Expiring soon</button>
+                        <button class="tab" onclick="switchTrainingTab('expired', this)">Lapsed</button>
+                        <button class="tab" onclick="switchTrainingTab('unverified', this)">To verify</button>
+                    </div>
+                    <div id="training-list"></div>
+                </div>
+
+                <!-- ========== PEOPLE ANALYTICS ==========
+                     Worked out from rows that already exist, so it is right
+                     the day it is switched on. One axis per chart, always. -->
+                <div id="analytics-view" class="view-section dashboard" style="display: none;">
+                    <div class="invoices-header-area">
+                        <div>
+                            <h1>People analytics</h1>
+                            <p class="subtitle" id="pa-asof">Headcount, turnover, tenure and how the year is going</p>
+                        </div>
+                    </div>
+                    <div class="grid-4 mb-24" id="pa-tiles"></div>
+                    <div class="grid-2 gap-16" id="pa-charts">
+                        <div class="widget" style="padding:20px;">
+                            <div class="widget-header"><h3>Headcount, last twelve months</h3></div>
+                            <div style="position:relative;height:220px;"><canvas id="pa-headcount"></canvas></div>
+                        </div>
+                        <div class="widget" style="padding:20px;">
+                            <div class="widget-header"><h3>Joiners and leavers</h3><span id="pa-flow-legend" style="font-size:0.78rem;color:var(--text-secondary);"></span></div>
+                            <div style="position:relative;height:220px;"><canvas id="pa-flow"></canvas></div>
+                        </div>
+                        <div class="widget" style="padding:20px;">
+                            <div class="widget-header"><h3>By department</h3></div>
+                            <div style="position:relative;height:220px;"><canvas id="pa-dept"></canvas></div>
+                        </div>
+                        <div class="widget" style="padding:20px;">
+                            <div class="widget-header"><h3>How long people have been here</h3></div>
+                            <div style="position:relative;height:220px;"><canvas id="pa-tenure"></canvas></div>
+                        </div>
+                        <div class="widget" style="padding:20px;">
+                            <div class="widget-header"><h3 id="pa-ratings-title">Review ratings</h3></div>
+                            <div style="position:relative;height:220px;"><canvas id="pa-ratings"></canvas></div>
+                            <p id="pa-ratings-note" style="font-size:0.8rem;color:var(--text-secondary);margin:10px 0 0;"></p>
+                        </div>
+                        <div class="widget" style="padding:20px;">
+                            <div class="widget-header"><h3>Leave taken this year, by type</h3></div>
+                            <div style="position:relative;height:220px;"><canvas id="pa-leave"></canvas></div>
+                        </div>
+                    </div>
+                    <div class="grid-4 gap-16" style="margin-top:16px;" id="pa-blocks"></div>
+                </div>
+
                 <div id="staff-requests-view" class="view-section dashboard" style="display:none;">
                     <div class="invoices-header-area">
                         <div>
@@ -2043,6 +2126,28 @@
                                 </div>
                                 <div class="widget-content" id="emp-goals-list">
                                     <p style="color:var(--text-secondary);font-size:0.85rem;">No goals assigned yet.</p>
+                                </div>
+                            </div>
+                            <!-- What they are qualified to do, and when that runs out. -->
+                            <div class="glass-widget" style="margin-top:24px;">
+                                <div class="widget-header">
+                                    <h3>Certifications</h3>
+                                    <button class="btn btn-outline btn-sm" onclick="addCertification(currentEmployeeId)">+ Add</button>
+                                </div>
+                                <div class="widget-content" id="emp-certs-list">
+                                    <p style="color:var(--text-secondary);font-size:0.85rem;">None recorded.</p>
+                                </div>
+                            </div>
+                            <!-- What changed about the job and when. Written by the
+                                 same update that changes a field, so it is never
+                                 forgotten; HR adds the rest by hand. -->
+                            <div class="glass-widget" style="margin-top:24px;">
+                                <div class="widget-header">
+                                    <h3>Job history</h3>
+                                    <button class="btn btn-outline btn-sm" onclick="addHistoryEntry(currentEmployeeId)">+ Add</button>
+                                </div>
+                                <div class="widget-content" id="emp-history-list">
+                                    <p style="color:var(--text-secondary);font-size:0.85rem;">Nothing yet.</p>
                                 </div>
                             </div>
                             <!-- Leave, wired to the same records as the Leave tab -->
@@ -3641,6 +3746,59 @@
 
     <!-- A workflow is saved switched off. Nobody wants it running before they
          have read the steps back. -->
+    <!-- A review cycle: the period, the questions, who it is for. The
+         questions are fixed once it opens, because answers are stored by
+         position against them. -->
+    <div id="review-cycle-modal" class="modal-overlay" style="display:none;">
+        <div class="modal" style="max-width:640px;">
+            <div class="modal-header">
+                <h3 id="rc-modal-title">New review cycle</h3>
+                <button class="btn-icon" onclick="closeCycleModal()" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Name</label>
+                    <input type="text" id="rc-name" class="form-control" placeholder="H1 2026" maxlength="200">
+                </div>
+                <div class="grid-3 gap-16">
+                    <div class="form-group"><label>Period from</label><input type="date" id="rc-start" class="form-control"></div>
+                    <div class="form-group"><label>Period to</label><input type="date" id="rc-end" class="form-control"></div>
+                    <div class="form-group"><label>Answers due by</label><input type="date" id="rc-due" class="form-control"></div>
+                </div>
+                <div class="form-group">
+                    <label>Who</label>
+                    <select id="rc-dept" class="form-control"><option value="">Everybody</option></select>
+                </div>
+                <div class="form-group">
+                    <label>Questions</label>
+                    <div id="rc-questions"></div>
+                    <button class="btn btn-sm btn-outline" onclick="addCycleQuestion()" style="margin-top:8px;" id="rc-add-q">+ Add question</button>
+                    <small style="display:block;color:var(--text-secondary);font-size:0.75rem;margin-top:8px;" id="rc-q-note">
+                        A rating question is answered 1 to 5; a text question in words.
+                        Both halves answer the same questions.
+                    </small>
+                </div>
+                <div id="rc-error" style="display:none;color:var(--danger-text);font-size:0.85rem;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeCycleModal()">Cancel</button>
+                <button class="btn btn-primary" id="rc-save-btn" onclick="saveCycle()">Save as draft</button>
+            </div>
+        </div>
+    </div>
+    <!-- One review, both halves, and a form for the half HR writes. -->
+    <div id="review-read-modal" class="modal-overlay" style="display:none;">
+        <div class="modal" style="max-width:720px;">
+            <div class="modal-header">
+                <h3 id="rr-title">Review</h3>
+                <button class="btn-icon" onclick="closeReviewModal()" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body" id="rr-body"></div>
+            <div class="modal-footer" id="rr-footer">
+                <button class="btn btn-outline" onclick="closeReviewModal()">Close</button>
+            </div>
+        </div>
+    </div>
     <div id="workflow-modal" class="modal-overlay" style="display:none;">
         <div class="modal" style="max-width:600px;">
             <div class="modal-header">
@@ -3989,8 +4147,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="feed.js?v=156"></script>
-    <script src="app.js?v=156"></script>
+    <script src="feed.js?v=157"></script>
+    <script src="app.js?v=157"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
@@ -4218,7 +4376,7 @@
             </div>
         </div>
     </div>
-    <script src="/install-hint.js?v=156"></script>
-    <script src="/pwa.js?v=156"></script>
+    <script src="/install-hint.js?v=157"></script>
+    <script src="/pwa.js?v=157"></script>
 </body>
 </html>

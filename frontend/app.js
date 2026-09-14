@@ -340,6 +340,9 @@ var NAV_FOR_VIEW = {
     'orgchart-view': 'nav-org',
     'feed-view': 'nav-feed',
     'expenses-view': 'nav-expenses',
+    'reviews-view': 'nav-reviews',
+    'training-view': 'nav-training',
+    'analytics-view': 'nav-people-analytics',
     'wallet-view': 'nav-wallet',
     'settings-view': 'nav-settings'
 };
@@ -374,6 +377,9 @@ var ROUTE_SLUGS = {
     'orgchart-view': 'org-chart',
     'feed-view': 'feed',
     'expenses-view': 'expenses',
+    'reviews-view': 'reviews',
+    'training-view': 'training',
+    'analytics-view': 'people-analytics',
     'leave-view': 'leave',
     'goals-view': 'goals',
     'calendar-view': 'calendar',
@@ -5135,6 +5141,8 @@ async function viewEmployee(empId) {
         var offboardBtn = document.getElementById('emp-offboard-btn');
         if (offboardBtn) offboardBtn.style.display = (emp.status === 'active' || emp.status === 'onboarding') ? 'inline-flex' : 'none';
         loadOffboarding(emp);
+        loadEmployeeCerts(emp.id);
+        loadEmployeeHistory(emp.id);
 
         // Onboarding
         var items = emp.onboarding_items || [];
@@ -7493,6 +7501,9 @@ showView = function(viewId) {
     if (viewId === 'orgchart-view') loadOrgChart();
     if (viewId === 'feed-view') loadFeedView();
     if (viewId === 'expenses-view') loadExpensesView();
+    if (viewId === 'reviews-view') loadReviewsView();
+    if (viewId === 'training-view') loadTrainingView();
+    if (viewId === 'analytics-view') loadAnalyticsView();
     if (viewId === 'recruitment-view') {
         loadRecAnalytics();
         var jobsTab = document.querySelector('#rec-tabs .tab');
@@ -11362,7 +11373,10 @@ var HR_VIEW_LOADERS = {
     'goals-view':          function () { loadGoalsView(); },
     'calendar-view':       function () { loadCalendarView(); },
     'attendance-view':     function () { loadAttendanceStats(); loadAttendance(); },
-    'recruitment-view':    function () { loadRecAnalytics(); }
+    'recruitment-view':    function () { loadRecAnalytics(); },
+    'reviews-view':        function () { loadReviewsView(); },
+    'training-view':       function () { loadTrainingView(); },
+    'analytics-view':      function () { loadAnalyticsView(); }
 };
 
 function currentViewId() {
@@ -15062,3 +15076,711 @@ function placeDropdown(el) {
     }
 }
 window.placeDropdown = placeDropdown;
+
+
+// ===========================================================================
+// Performance reviews
+// ===========================================================================
+// A cycle is a period and a set of questions. Opening it writes a review per
+// person; they answer first, then whoever they report to, and HR reads all
+// of it - and writes the manager half for anybody with nobody above them.
+
+var RATING_WORDS = { 1: 'Needs improvement', 2: 'Developing', 3: 'Meets expectations',
+                     4: 'Exceeds expectations', 5: 'Outstanding' };
+var REVIEW_STATUS = {
+    awaiting_self:    ['Waiting on them',       'var(--warning-color)'],
+    awaiting_manager: ['Waiting on reviewer',   'var(--primary-color)'],
+    complete:         ['Complete',              'var(--success-color)'],
+};
+var CYCLE_STATUS = { draft: 'Draft', open: 'Open', closed: 'Closed' };
+
+var _cycles = [];
+var _cycleQuestions = [];
+var _cycleEditingId = null;
+var _openCycleId = null;
+
+function _pill(text, colour) {
+    return '<span style="font-size:0.72rem;padding:2px 8px;border-radius:999px;border:1px solid ' + colour +
+        ';color:' + colour + ';white-space:nowrap;">' + esc(text) + '</span>';
+}
+
+function _stars(n) {
+    if (!n) return '<span style="color:var(--text-secondary);">-</span>';
+    var out = '';
+    for (var i = 1; i <= 5; i++) {
+        out += '<span style="color:' + (i <= n ? 'var(--warning-color)' : 'rgba(255,255,255,0.15)') + ';">&#9733;</span>';
+    }
+    return '<span title="' + esc(RATING_WORDS[n] || '') + '" style="letter-spacing:1px;">' + out + '</span>';
+}
+
+async function loadReviewsView() {
+    var host = document.getElementById('review-cycles');
+    if (!host) return;
+    try {
+        var data = await fetchJson('/api/review-cycles');
+        _cycles = data.cycles || [];
+        if (!_cycles.length) {
+            host.innerHTML = '<div class="widget" style="padding:40px;text-align:center;color:var(--text-secondary);">' +
+                'No review cycle yet. Make one, open it, and everybody is asked to write their half.</div>';
+            document.getElementById('review-cycle-detail').innerHTML = '';
+            return;
+        }
+        host.innerHTML = '<div class="widget">' + _cycles.map(cycleRow).join('') + '</div>';
+        // Keep whatever was open, open.
+        if (_openCycleId && _cycles.some(function (c) { return c.id === _openCycleId; })) viewCycle(_openCycleId);
+        else if (_cycles.some(function (c) { return c.status === 'open'; })) {
+            viewCycle(_cycles.filter(function (c) { return c.status === 'open'; })[0].id);
+        } else document.getElementById('review-cycle-detail').innerHTML = '';
+    } catch (e) {
+        host.innerHTML = '<div class="widget" style="padding:20px;color:var(--danger-text);">' + esc(e.message) + '</div>';
+    }
+}
+window.loadReviewsView = loadReviewsView;
+
+function cycleRow(c) {
+    var n = c.counts || {};
+    var done = n.complete || 0, total = n.total || 0;
+    var pct = total ? Math.round(100 * done / total) : 0;
+    var tone = c.status === 'open' ? 'var(--success-color)' : c.status === 'closed' ? 'var(--text-secondary)' : 'var(--warning-color)';
+    return '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:12px 0;border-bottom:1px solid var(--border-color);">' +
+        '<div style="flex:1;min-width:220px;">' +
+            '<div style="font-weight:600;font-size:0.92rem;">' + esc(c.name) + ' ' + _pill(CYCLE_STATUS[c.status] || c.status, tone) +
+                (c.department_name ? ' <span style="font-size:0.75rem;color:var(--text-secondary);">' + esc(c.department_name) + ' only</span>' : '') + '</div>' +
+            '<div style="font-size:0.75rem;color:var(--text-secondary);margin-top:2px;">' +
+                (c.period_start || c.period_end ? esc((c.period_start || '?') + ' to ' + (c.period_end || '?')) : 'No period set') +
+                (c.due_on ? ' &middot; due ' + esc(c.due_on) : '') +
+                ' &middot; ' + c.questions.length + ' question' + (c.questions.length === 1 ? '' : 's') + '</div>' +
+        '</div>' +
+        (total ? '<div style="min-width:160px;">' +
+            '<div style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:4px;">' + done + ' of ' + total + ' complete</div>' +
+            '<div style="height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden;">' +
+                '<div style="height:100%;width:' + pct + '%;background:var(--success-color);"></div></div></div>' : '') +
+        '<button class="btn btn-sm btn-outline" onclick="viewCycle(' + c.id + ')">' + (total ? 'Open' : 'Details') + '</button>' +
+        (c.status === 'draft' ? '<button class="btn btn-sm btn-outline" onclick="openCycleModal(' + c.id + ')">Edit</button>' +
+            '<button class="btn btn-sm btn-primary" onclick="startCycle(' + c.id + ')">Open it</button>' +
+            '<button class="btn btn-sm btn-outline" onclick="deleteCycle(' + c.id + ')">Delete</button>' : '') +
+        (c.status === 'open' ? '<button class="btn btn-sm btn-outline" onclick="openCycleModal(' + c.id + ')">Rename</button>' +
+            '<button class="btn btn-sm btn-outline" onclick="endCycle(' + c.id + ')">Close it</button>' : '') +
+    '</div>';
+}
+
+async function viewCycle(id) {
+    var host = document.getElementById('review-cycle-detail');
+    if (!host) return;
+    _openCycleId = id;
+    try {
+        var d = await fetchJson('/api/review-cycles/' + id);
+        var c = d.cycle, s = d.summary;
+        var dist = s.distribution || {};
+        var maxN = Math.max.apply(null, [1].concat([1, 2, 3, 4, 5].map(function (k) { return dist[k] || 0; })));
+        var bars = [1, 2, 3, 4, 5].map(function (k) {
+            var n = dist[k] || 0;
+            return '<div style="display:flex;align-items:center;gap:8px;font-size:0.78rem;">' +
+                '<span style="width:150px;color:var(--text-secondary);">' + k + ' &middot; ' + esc(RATING_WORDS[k]) + '</span>' +
+                '<div style="flex:1;height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;">' +
+                    '<div style="height:100%;width:' + Math.round(100 * n / maxN) + '%;background:var(--primary-color);border-radius:4px;"></div></div>' +
+                '<span style="width:24px;text-align:right;">' + n + '</span></div>';
+        }).join('');
+        var rows = (d.reviews || []).map(function (r) {
+            var st = REVIEW_STATUS[r.status] || [r.status, 'var(--text-secondary)'];
+            return '<tr style="cursor:pointer;" onclick="readReview(' + r.id + ')">' +
+                '<td>' + esc(r.employee_name) + '</td>' +
+                '<td style="color:var(--text-secondary);">' + esc(r.reviewer_name) +
+                    (r.reviewer_how === 'hr' ? ' <span style="font-size:0.7rem;">(you)</span>' : '') + '</td>' +
+                '<td>' + _pill(st[0], st[1]) + '</td>' +
+                '<td>' + _stars(r.self_rating) + '</td>' +
+                '<td>' + _stars(r.manager_rating) + '</td>' +
+            '</tr>';
+        }).join('');
+        host.innerHTML = '<div class="widget">' +
+            '<div class="widget-header"><h3>' + esc(c.name) + '</h3>' +
+                '<span style="font-size:0.8rem;color:var(--text-secondary);">' +
+                    (s.rated ? 'Average ' + s.average + ' across ' + s.rated + ' rated' : 'Nobody rated yet') + '</span></div>' +
+            (s.rated ? '<div style="padding:12px 0 16px;display:grid;gap:6px;">' + bars + '</div>' : '') +
+            (rows ? '<div style="overflow-x:auto;"><table class="data-table"><thead><tr>' +
+                '<th>Person</th><th>Reviewer</th><th>Status</th><th>Their rating</th><th>Rating</th></tr></thead>' +
+                '<tbody>' + rows + '</tbody></table></div>' :
+                '<p style="color:var(--text-secondary);font-size:0.85rem;padding:12px 0;">' +
+                    (c.status === 'draft' ? 'Nothing written yet - open the cycle and everybody is asked.' : 'Nobody in this cycle.') + '</p>') +
+        '</div>';
+    } catch (e) {
+        host.innerHTML = '<div class="widget" style="padding:20px;color:var(--danger-text);">' + esc(e.message) + '</div>';
+    }
+}
+window.viewCycle = viewCycle;
+
+async function startCycle(id) {
+    var c = _cycles.filter(function (x) { return x.id === id; })[0] || {};
+    if (!await uiConfirm('Open "' + (c.name || 'this cycle') + '"? Everybody it covers is told to write their self-assessment, ' +
+        'and each manager is told how many reviews they have. The questions cannot change afterwards.',
+        { title: 'Open the cycle', confirmText: 'Open it' })) return;
+    try {
+        var out = await fetchJson('/api/review-cycles/' + id + '/open', { method: 'POST' });
+        showToast(out.opened + ' review' + (out.opened === 1 ? '' : 's') + ' opened' +
+            (out.hr_pool ? ' - ' + out.hr_pool + ' for you to write' : ''), 'success');
+        _openCycleId = id;
+        loadReviewsView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.startCycle = startCycle;
+
+async function endCycle(id) {
+    if (!await uiConfirm('Close this cycle? Nothing more can be written, and what is there is kept.',
+        { title: 'Close the cycle', confirmText: 'Close it' })) return;
+    try {
+        await fetchJson('/api/review-cycles/' + id + '/close', { method: 'POST' });
+        showToast('Closed', 'success');
+        loadReviewsView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.endCycle = endCycle;
+
+async function deleteCycle(id) {
+    if (!await uiConfirm('Delete this draft?', { title: 'Delete cycle', confirmText: 'Delete', danger: true })) return;
+    try {
+        await fetchJson('/api/review-cycles/' + id, { method: 'DELETE' });
+        showToast('Deleted', 'success');
+        if (_openCycleId === id) _openCycleId = null;
+        loadReviewsView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.deleteCycle = deleteCycle;
+
+// --- the cycle form ----------------------------------------------------------
+
+async function openCycleModal(id) {
+    var c = id ? _cycles.filter(function (x) { return x.id === id; })[0] : null;
+    _cycleEditingId = c ? c.id : null;
+    document.getElementById('rc-modal-title').textContent = c ? (c.status === 'open' ? 'Rename cycle' : 'Edit cycle') : 'New review cycle';
+    document.getElementById('rc-save-btn').textContent = c ? 'Save changes' : 'Save as draft';
+    document.getElementById('rc-name').value = c ? c.name : '';
+    document.getElementById('rc-start').value = c ? c.period_start : '';
+    document.getElementById('rc-end').value = c ? c.period_end : '';
+    document.getElementById('rc-due').value = c ? c.due_on : '';
+    var sel = document.getElementById('rc-dept');
+    sel.innerHTML = '<option value="">Everybody</option>';
+    try {
+        var depts = await fetchJson('/api/departments');
+        (Array.isArray(depts) ? depts : depts.departments || []).forEach(function (d) {
+            var o = document.createElement('option'); o.value = d.id; o.textContent = d.name; sel.appendChild(o);
+        });
+    } catch (e) { /* everybody it is */ }
+    sel.value = c && c.department_id ? String(c.department_id) : '';
+    // Open cycles keep their questions and audience; the form says so.
+    var locked = !!(c && c.status !== 'draft');
+    sel.disabled = locked;
+    document.getElementById('rc-add-q').style.display = locked ? 'none' : '';
+    document.getElementById('rc-q-note').textContent = locked
+        ? 'People have answered these, so they cannot change. Make a new cycle for new questions.'
+        : 'A rating question is answered 1 to 5; a text question in words. Both halves answer the same questions.';
+    if (c) _cycleQuestions = c.questions.map(function (q) { return { text: q.text, kind: q.kind }; });
+    else {
+        try { _cycleQuestions = (await fetchJson('/api/review-cycles')).default_questions; }
+        catch (e) { _cycleQuestions = [{ text: '', kind: 'text' }]; }
+    }
+    renderCycleQuestions(locked);
+    document.getElementById('rc-error').style.display = 'none';
+    document.getElementById('review-cycle-modal').style.display = 'flex';
+    document.getElementById('rc-name').focus();
+}
+window.openCycleModal = openCycleModal;
+
+function closeCycleModal() { document.getElementById('review-cycle-modal').style.display = 'none'; }
+window.closeCycleModal = closeCycleModal;
+
+function renderCycleQuestions(locked) {
+    var host = document.getElementById('rc-questions');
+    host.innerHTML = _cycleQuestions.map(function (q, i) {
+        return '<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;" data-q="' + i + '">' +
+            '<input type="text" class="form-control rc-q-text" placeholder="What has to be answered" maxlength="500" value="' + esc(q.text) + '"' + (locked ? ' disabled' : '') + ' style="flex:1;">' +
+            '<select class="form-control rc-q-kind" style="width:120px;"' + (locked ? ' disabled' : '') + '>' +
+                '<option value="text"' + (q.kind === 'text' ? ' selected' : '') + '>Words</option>' +
+                '<option value="rating"' + (q.kind === 'rating' ? ' selected' : '') + '>1 to 5</option></select>' +
+            (locked ? '' : '<button class="btn-icon" onclick="removeCycleQuestion(' + i + ')" aria-label="Remove question" style="font-size:1.1rem;">&times;</button>') +
+        '</div>';
+    }).join('');
+}
+
+function readCycleQuestions() {
+    _cycleQuestions = [...document.querySelectorAll('#rc-questions [data-q]')].map(function (row) {
+        return { text: row.querySelector('.rc-q-text').value, kind: row.querySelector('.rc-q-kind').value };
+    });
+}
+
+function addCycleQuestion() { readCycleQuestions(); _cycleQuestions.push({ text: '', kind: 'text' }); renderCycleQuestions(false); }
+window.addCycleQuestion = addCycleQuestion;
+
+function removeCycleQuestion(i) { readCycleQuestions(); _cycleQuestions.splice(i, 1); renderCycleQuestions(false); }
+window.removeCycleQuestion = removeCycleQuestion;
+
+async function saveCycle() {
+    var err = document.getElementById('rc-error');
+    err.style.display = 'none';
+    readCycleQuestions();
+    var body = {
+        name: document.getElementById('rc-name').value.trim(),
+        period_start: document.getElementById('rc-start').value,
+        period_end: document.getElementById('rc-end').value,
+        due_on: document.getElementById('rc-due').value,
+        department_id: document.getElementById('rc-dept').value || null,
+    };
+    var editing = _cycleEditingId ? _cycles.filter(function (x) { return x.id === _cycleEditingId; })[0] : null;
+    if (!editing || editing.status === 'draft') {
+        body.questions = _cycleQuestions.filter(function (q) { return q.text.trim(); });
+        if (!body.questions.length) { err.textContent = 'Write at least one question.'; err.style.display = 'block'; return; }
+    }
+    try {
+        await fetchJson(_cycleEditingId ? '/api/review-cycles/' + _cycleEditingId : '/api/review-cycles', {
+            method: _cycleEditingId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body) });
+        closeCycleModal();
+        showToast(_cycleEditingId ? 'Saved' : 'Saved as a draft - open it when you are ready', 'success');
+        loadReviewsView();
+    } catch (e) { err.textContent = e.message; err.style.display = 'block'; }
+}
+window.saveCycle = saveCycle;
+
+// --- reading one, and writing the HR half ---------------------------------------
+
+var _readingReview = null;
+
+function _answersHtml(questions, half, who) {
+    if (!half) return '<p style="color:var(--text-secondary);font-size:0.85rem;">' + esc(who) + ' has not written this yet.</p>';
+    return questions.map(function (q, i) {
+        var a = (half.answers || [])[i] || {};
+        return '<div style="margin-bottom:10px;"><div style="font-size:0.8rem;color:var(--text-secondary);">' + esc(q.text) + '</div>' +
+            (q.kind === 'rating' ? '<div>' + _stars(a.rating) + (a.text ? ' <span style="font-size:0.85rem;">' + esc(a.text) + '</span>' : '') + '</div>'
+                : '<div style="font-size:0.88rem;white-space:pre-wrap;">' + (a.text ? esc(a.text) : '<span style="color:var(--text-secondary);">-</span>') + '</div>') +
+        '</div>';
+    }).join('') +
+    '<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border-color);">' +
+        '<div style="font-size:0.8rem;color:var(--text-secondary);">Overall</div><div>' + _stars(half.rating) +
+        (half.rating ? ' <span style="font-size:0.82rem;">' + esc(RATING_WORDS[half.rating] || '') + '</span>' : '') + '</div>' +
+        (half.comment || half.summary ? '<div style="font-size:0.88rem;white-space:pre-wrap;margin-top:6px;">' + esc(half.comment || half.summary) + '</div>' : '') +
+    '</div>';
+}
+
+function _formHtml(questions, half, prefix) {
+    half = half || { answers: [] };
+    return questions.map(function (q, i) {
+        var a = (half.answers || [])[i] || {};
+        return '<div class="form-group"><label>' + esc(q.text) + '</label>' +
+            (q.kind === 'rating' ? '<select class="form-control ' + prefix + '-rating" data-i="' + i + '"><option value="">Choose 1 to 5</option>' +
+                [1, 2, 3, 4, 5].map(function (k) { return '<option value="' + k + '"' + (a.rating === k ? ' selected' : '') + '>' + k + ' - ' + esc(RATING_WORDS[k]) + '</option>'; }).join('') + '</select>'
+                : '<textarea class="form-control ' + prefix + '-text" data-i="' + i + '" rows="3">' + esc(a.text || '') + '</textarea>') +
+        '</div>';
+    }).join('') +
+    '<div class="form-group"><label>Overall rating</label><select class="form-control" id="' + prefix + '-overall"><option value="">Choose 1 to 5</option>' +
+        [1, 2, 3, 4, 5].map(function (k) { return '<option value="' + k + '"' + (half.rating === k ? ' selected' : '') + '>' + k + ' - ' + esc(RATING_WORDS[k]) + '</option>'; }).join('') + '</select></div>' +
+    '<div class="form-group"><label>Summary - the part they read first</label><textarea class="form-control" id="' + prefix + '-summary" rows="4">' + esc(half.summary || '') + '</textarea></div>';
+}
+
+function _readForm(questions, prefix) {
+    var answers = questions.map(function (q, i) {
+        var el = document.querySelector('.' + prefix + '-' + (q.kind === 'rating' ? 'rating' : 'text') + '[data-i="' + i + '"]');
+        return q.kind === 'rating' ? { rating: el && el.value ? Number(el.value) : null } : { text: el ? el.value : '' };
+    });
+    return { answers: answers,
+             rating: document.getElementById(prefix + '-overall').value ? Number(document.getElementById(prefix + '-overall').value) : null,
+             summary: document.getElementById(prefix + '-summary').value };
+}
+
+async function readReview(id) {
+    try {
+        var r = await fetchJson('/api/reviews/' + id);
+        _readingReview = r;
+        document.getElementById('rr-title').textContent = r.employee_name + ' - ' + r.cycle_name;
+        var st = REVIEW_STATUS[r.status] || [r.status, ''];
+        var goals = (r.goals || []).length ? '<div style="margin-bottom:16px;"><div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:4px;">Goals over the period</div>' +
+            r.goals.map(function (g) {
+                return '<div style="font-size:0.85rem;display:flex;justify-content:space-between;gap:8px;">' +
+                    '<span>' + esc(g.title) + '</span><span style="color:var(--text-secondary);">' +
+                    (g.progress_pct != null ? g.progress_pct + '%' : esc(g.status)) + '</span></div>';
+            }).join('') + '</div>' : '';
+        var canWrite = r.cycle_status === 'open' && r.status !== 'complete';
+        document.getElementById('rr-body').innerHTML =
+            '<div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">' + _pill(st[0], st[1]) +
+                '<span style="font-size:0.8rem;color:var(--text-secondary);">Reviewer: ' + esc(r.reviewer_name) + (r.due_on ? ' &middot; due ' + esc(r.due_on) : '') + '</span></div>' +
+            goals +
+            '<div class="grid-2 gap-16">' +
+                '<div><h4 style="margin:0 0 8px;font-size:0.9rem;">Their half</h4>' + _answersHtml(r.questions, r.self, r.employee_name) + '</div>' +
+                '<div><h4 style="margin:0 0 8px;font-size:0.9rem;">' + (r.reviewer_how === 'hr' ? 'Your half' : 'Reviewer’s half') + '</h4>' +
+                    (canWrite ? _formHtml(r.questions, r.manager, 'rr') : _answersHtml(r.questions, r.manager, r.reviewer_name)) + '</div>' +
+            '</div>' +
+            '<div id="rr-error" style="display:none;color:var(--danger-text);font-size:0.85rem;margin-top:10px;"></div>';
+        document.getElementById('rr-footer').innerHTML =
+            '<button class="btn btn-outline" onclick="closeReviewModal()">Close</button>' +
+            (canWrite ? '<button class="btn btn-outline" onclick="hrWriteReview(true)">Save draft</button>' +
+                        '<button class="btn btn-primary" onclick="hrWriteReview(false)">Submit review</button>' : '');
+        document.getElementById('review-read-modal').style.display = 'flex';
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.readReview = readReview;
+
+function closeReviewModal() { document.getElementById('review-read-modal').style.display = 'none'; }
+window.closeReviewModal = closeReviewModal;
+
+async function hrWriteReview(draft) {
+    if (!_readingReview) return;
+    var body = _readForm(_readingReview.questions, 'rr');
+    body.draft = !!draft;
+    var err = document.getElementById('rr-error');
+    try {
+        await fetchJson('/api/reviews/' + _readingReview.id + '/manager', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        closeReviewModal();
+        showToast(draft ? 'Draft saved' : 'Review submitted - they have been told', 'success');
+        loadReviewsView();
+    } catch (e) { err.textContent = e.message; err.style.display = 'block'; }
+}
+window.hrWriteReview = hrWriteReview;
+
+// ===========================================================================
+// Training and certifications
+// ===========================================================================
+
+var CERT_STATUS = {
+    valid:    ['Valid',    'var(--success-color)'],
+    expiring: ['Expiring', 'var(--warning-color)'],
+    expired:  ['Lapsed',   'var(--danger-color)'],
+};
+var _trainingFilter = '';
+
+function certWhen(c) {
+    if (!c.expires_on) return 'No expiry';
+    if (c.status === 'expired') return 'Lapsed ' + c.expires_on + ' (' + Math.abs(c.days_left) + ' day' + (Math.abs(c.days_left) === 1 ? '' : 's') + ' ago)';
+    if (c.days_left === 0) return 'Expires today';
+    return 'Expires ' + c.expires_on + ' (' + c.days_left + ' day' + (c.days_left === 1 ? '' : 's') + ')';
+}
+
+function switchTrainingTab(filter, btn) {
+    _trainingFilter = filter;
+    document.querySelectorAll('#training-tabs .tab').forEach(function (t) { t.classList.remove('active'); });
+    if (btn) btn.classList.add('active');
+    loadTrainingView();
+}
+window.switchTrainingTab = switchTrainingTab;
+
+async function loadTrainingView() {
+    var host = document.getElementById('training-list');
+    var tiles = document.getElementById('training-tiles');
+    if (!host) return;
+    try {
+        var data = await fetchJson('/api/certifications' + (_trainingFilter ? '?status=' + encodeURIComponent(_trainingFilter) : ''));
+        var n = data.counts;
+        function tile(label, value, tone) {
+            return '<div class="stat-card"><span class="stat-label">' + label + '</span>' +
+                '<span class="stat-value"' + (tone ? ' style="color:' + tone + ';"' : '') + '>' + value + '</span></div>';
+        }
+        tiles.innerHTML = tile('Valid', n.valid, 'var(--success-color)') +
+            tile('Expiring within ' + data.warn_days + ' days', n.expiring, n.expiring ? 'var(--warning-color)' : '') +
+            tile('Lapsed', n.expired, n.expired ? 'var(--danger-color)' : '') +
+            tile('Waiting to be verified', n.unverified, n.unverified ? 'var(--warning-color)' : '');
+        if (!data.certifications.length) {
+            host.innerHTML = '<div class="widget" style="padding:40px;text-align:center;color:var(--text-secondary);">' +
+                (_trainingFilter ? 'Nothing in this list.' : 'No certifications recorded. Add one from here or from somebody’s profile; people can add their own from the portal.') + '</div>';
+            return;
+        }
+        host.innerHTML = '<div class="widget" style="overflow-x:auto;"><table class="data-table"><thead><tr>' +
+            '<th>Person</th><th>Certification</th><th>Issued by</th><th>Status</th><th>Verified</th><th></th></tr></thead><tbody>' +
+            data.certifications.map(function (c) {
+                var st = CERT_STATUS[c.status] || [c.status, ''];
+                return '<tr>' +
+                    '<td><a href="#" onclick="viewEmployee(' + c.employee_id + ');return false;">' + esc(c.employee_name) + '</a></td>' +
+                    '<td><div>' + esc(c.name) + '</div><div style="font-size:0.75rem;color:var(--text-secondary);">' +
+                        esc(certWhen(c)) + (c.reference ? ' &middot; ' + esc(c.reference) : '') + '</div></td>' +
+                    '<td style="color:var(--text-secondary);">' + esc(c.issuer || '-') + '</td>' +
+                    '<td>' + _pill(st[0], st[1]) + '</td>' +
+                    '<td>' + (c.verified ? '<span style="color:var(--success-color);font-size:0.8rem;">Yes</span>' :
+                        '<button class="btn btn-sm btn-primary" onclick="verifyCertification(' + c.id + ')">Verify</button>') + '</td>' +
+                    '<td style="white-space:nowrap;">' +
+                        (c.has_document ? '<a class="btn btn-sm btn-outline" href="/api/certifications/' + c.id + '/document" target="_blank" rel="noopener">View</a> ' : '') +
+                        '<button class="btn btn-sm btn-outline" onclick="editCertification(' + c.id + ')">Edit</button> ' +
+                        '<button class="btn btn-sm btn-outline" onclick="deleteCertification(' + c.id + ')">Delete</button></td>' +
+                '</tr>';
+            }).join('') + '</tbody></table></div>';
+        _certRows = data.certifications;
+    } catch (e) {
+        host.innerHTML = '<div class="widget" style="padding:20px;color:var(--danger-text);">' + esc(e.message) + '</div>';
+    }
+}
+window.loadTrainingView = loadTrainingView;
+var _certRows = [];
+
+function _certFields(c) {
+    c = c || {};
+    return [
+        { name: 'name', label: 'Certification', value: c.name || '', placeholder: 'Forklift licence', required: true },
+        { name: 'issuer', label: 'Issued by', value: c.issuer || '', placeholder: 'RTITB' },
+        { name: 'issued_on', label: 'Issued on', type: 'date', value: c.issued_on || '' },
+        { name: 'expires_on', label: 'Expires on', type: 'date', value: c.expires_on || '', hint: 'Leave empty if it never expires' },
+        { name: 'reference', label: 'Certificate number', value: c.reference || '' },
+        { name: 'notes', label: 'Notes', type: 'textarea', value: c.notes || '' },
+    ];
+}
+
+async function addCertification(employeeId) {
+    var fields = _certFields();
+    if (!employeeId) {
+        var people = [];
+        try {
+            var res = await fetchJson('/api/employees');
+            people = (Array.isArray(res) ? res : res.employees || []).map(function (e) {
+                return { value: e.id, label: e.full_name || ((e.first_name || '') + ' ' + (e.last_name || '')).trim() };
+            });
+        } catch (e) { /* the form still opens; the save will say */ }
+        if (!people.length) { showToast('Add somebody first', 'error'); return; }
+        fields.unshift({ name: 'employee_id', label: 'Who', type: 'select', options: people, required: true });
+    }
+    var out = await uiForm(fields, { title: 'Add a certification', confirmText: 'Add' });
+    if (!out) return;
+    var who = employeeId || out.employee_id;
+    delete out.employee_id;
+    try {
+        await fetchJson('/api/employees/' + who + '/certifications', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(out) });
+        showToast('Added', 'success');
+        if (employeeId) loadEmployeeCerts(employeeId); else loadTrainingView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.addCertification = addCertification;
+
+async function editCertification(id, employeeId) {
+    var c = _certRows.filter(function (x) { return x.id === id; })[0];
+    if (!c) return;
+    var out = await uiForm(_certFields(c), { title: 'Edit certification', confirmText: 'Save' });
+    if (!out) return;
+    try {
+        await fetchJson('/api/certifications/' + id, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(out) });
+        showToast('Saved', 'success');
+        if (employeeId) loadEmployeeCerts(employeeId); else loadTrainingView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.editCertification = editCertification;
+
+async function verifyCertification(id, employeeId) {
+    try {
+        await fetchJson('/api/certifications/' + id, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ verified: true }) });
+        showToast('Verified', 'success');
+        if (employeeId) loadEmployeeCerts(employeeId); else loadTrainingView();
+        if (typeof loadHRStats === 'function') loadHRStats();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.verifyCertification = verifyCertification;
+
+async function deleteCertification(id, employeeId) {
+    if (!await uiConfirm('Remove this certification?', { title: 'Remove', confirmText: 'Remove', danger: true })) return;
+    try {
+        await fetchJson('/api/certifications/' + id, { method: 'DELETE' });
+        showToast('Removed', 'success');
+        if (employeeId) loadEmployeeCerts(employeeId); else loadTrainingView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.deleteCertification = deleteCertification;
+
+// --- on the profile -------------------------------------------------------------
+
+async function loadEmployeeCerts(empId) {
+    var host = document.getElementById('emp-certs-list');
+    if (!host || !empId) return;
+    try {
+        var data = await fetchJson('/api/employees/' + empId + '/certifications');
+        _certRows = data.certifications;
+        if (!data.certifications.length) {
+            host.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem;">None recorded.</p>';
+            return;
+        }
+        host.innerHTML = data.certifications.map(function (c) {
+            var st = CERT_STATUS[c.status] || [c.status, ''];
+            return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--border-color);">' +
+                '<div style="flex:1;min-width:160px;"><div style="font-size:0.88rem;">' + esc(c.name) +
+                    (c.issuer ? ' <span style="color:var(--text-secondary);font-size:0.78rem;">' + esc(c.issuer) + '</span>' : '') + '</div>' +
+                    '<div style="font-size:0.75rem;color:var(--text-secondary);">' + esc(certWhen(c)) +
+                    (c.verified ? '' : ' &middot; <span style="color:var(--warning-color);">added by them, not yet verified</span>') + '</div></div>' +
+                _pill(st[0], st[1]) +
+                (c.verified ? '' : '<button class="btn btn-sm btn-primary" onclick="verifyCertification(' + c.id + ',' + empId + ')">Verify</button>') +
+                (c.has_document ? '<a class="btn btn-sm btn-outline" href="/api/certifications/' + c.id + '/document" target="_blank" rel="noopener">View</a>' : '') +
+                '<button class="btn btn-sm btn-outline" onclick="editCertification(' + c.id + ',' + empId + ')">Edit</button>' +
+                '<button class="btn btn-sm btn-outline" onclick="deleteCertification(' + c.id + ',' + empId + ')">Remove</button>' +
+            '</div>';
+        }).join('');
+    } catch (e) { host.innerHTML = '<p style="color:var(--danger-text);font-size:0.85rem;">' + esc(e.message) + '</p>'; }
+}
+window.loadEmployeeCerts = loadEmployeeCerts;
+
+// ===========================================================================
+// Job history
+// ===========================================================================
+
+var HISTORY_TONE = { joined: 'var(--success-color)', left: 'var(--danger-color)', promotion: 'var(--warning-color)',
+                     pay_change: 'var(--primary-color)' };
+
+function historyLine(h) {
+    if (h.kind === 'joined') return 'Joined' + (h.new_value ? ' as ' + h.new_value : '');
+    if (h.kind === 'left') return 'Left';
+    if (h.old_value && h.new_value) return h.old_value + ' → ' + h.new_value;
+    if (h.new_value) return h.new_value;
+    return h.note || '';
+}
+
+async function loadEmployeeHistory(empId) {
+    var host = document.getElementById('emp-history-list');
+    if (!host || !empId) return;
+    try {
+        var data = await fetchJson('/api/employees/' + empId + '/history');
+        if (!data.history.length) {
+            host.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem;">Nothing yet.</p>';
+            return;
+        }
+        host.innerHTML = '<div style="border-left:2px solid var(--border-color);margin-left:6px;">' +
+            data.history.map(function (h) {
+                var tone = HISTORY_TONE[h.kind] || 'var(--text-secondary)';
+                return '<div style="position:relative;padding:0 0 14px 16px;">' +
+                    '<span style="position:absolute;left:-6px;top:5px;width:10px;height:10px;border-radius:50%;background:' + tone + ';"></span>' +
+                    '<div style="font-size:0.75rem;color:var(--text-secondary);">' + esc(h.effective_on || '') + ' &middot; ' + esc(h.label) + '</div>' +
+                    '<div style="font-size:0.88rem;">' + esc(historyLine(h)) + '</div>' +
+                    (h.note && (h.old_value || h.new_value) ? '<div style="font-size:0.8rem;color:var(--text-secondary);">' + esc(h.note) + '</div>' : '') +
+                    (h.id ? '<button class="btn-icon" onclick="deleteHistoryEntry(' + h.id + ',' + empId + ')" aria-label="Remove" style="position:absolute;right:0;top:0;font-size:0.9rem;opacity:0.6;">&times;</button>' : '') +
+                '</div>';
+            }).join('') + '</div>';
+    } catch (e) { host.innerHTML = '<p style="color:var(--danger-text);font-size:0.85rem;">' + esc(e.message) + '</p>'; }
+}
+window.loadEmployeeHistory = loadEmployeeHistory;
+
+async function addHistoryEntry(empId) {
+    if (!empId) return;
+    var out = await uiForm([
+        { name: 'kind', label: 'What', type: 'select', value: 'promotion', options: [
+            { value: 'promotion', label: 'Promotion' }, { value: 'note', label: 'Note for the record' },
+            { value: 'transfer', label: 'Moved department' }, { value: 'title_change', label: 'New title' },
+            { value: 'pay_change', label: 'Pay change' } ] },
+        { name: 'effective_on', label: 'Effective from', type: 'date', value: new Date().toISOString().slice(0, 10) },
+        { name: 'new_value', label: 'To', placeholder: 'Team lead' },
+        { name: 'note', label: 'Note', type: 'textarea', placeholder: 'Why, or anything worth remembering' },
+    ], { title: 'Add to their history', confirmText: 'Add',
+         message: 'Changes made through the profile form are written here on their own; this is for the rest.' });
+    if (!out) return;
+    try {
+        await fetchJson('/api/employees/' + empId + '/history', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(out) });
+        showToast('Added', 'success');
+        loadEmployeeHistory(empId);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.addHistoryEntry = addHistoryEntry;
+
+async function deleteHistoryEntry(id, empId) {
+    if (!await uiConfirm('Remove this entry from their history?', { title: 'Remove', confirmText: 'Remove', danger: true })) return;
+    try {
+        await fetchJson('/api/employment-changes/' + id, { method: 'DELETE' });
+        loadEmployeeHistory(empId);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.deleteHistoryEntry = deleteHistoryEntry;
+
+// ===========================================================================
+// People analytics
+// ===========================================================================
+// One axis per chart. One hue for a single series; the joiners/leavers pair
+// is the one categorical pair - sky and amber from the product's own family,
+// checked for colour-vision separation against the card surface (deutan
+// dE 24.6, normal 28.4). Text stays in text colours - a mark beside it
+// carries identity.
+
+var PA_HUE = '#0ea5e9';
+var PA_PAIR = { joiners: '#0284c7', leavers: '#b45309' };
+var _paCharts = {};
+
+function _paChart(id, config) {
+    var el = document.getElementById(id);
+    if (!el || typeof Chart === 'undefined') return;
+    if (_paCharts[id]) { try { _paCharts[id].destroy(); } catch (e) { /* gone already */ } }
+    config.options = config.options || {};
+    config.options.responsive = true;
+    config.options.maintainAspectRatio = false;
+    config.options.plugins = Object.assign({ legend: { display: false } }, config.options.plugins || {});
+    var axes = config.options.scales || {};
+    Object.keys(axes).forEach(function (k) {
+        axes[k].grid = Object.assign({ color: 'rgba(255,255,255,0.06)' }, axes[k].grid || {});
+        axes[k].ticks = Object.assign({ color: '#94a3b8', precision: 0 }, axes[k].ticks || {});
+    });
+    _paCharts[id] = new Chart(el, config);
+}
+
+async function loadAnalyticsView() {
+    var tiles = document.getElementById('pa-tiles');
+    if (!tiles) return;
+    try {
+        var a = await fetchJson('/api/hr/analytics');
+        var h = a.headcount;
+        document.getElementById('pa-asof').textContent = 'As of ' + a.as_of + ' · ' + h.now + ' people';
+        function tile(label, value, sub) {
+            return '<div class="stat-card"><span class="stat-label">' + label + '</span><span class="stat-value">' + value + '</span>' +
+                (sub ? '<span style="font-size:0.75rem;color:var(--text-secondary);">' + sub + '</span>' : '') + '</div>';
+        }
+        tiles.innerHTML =
+            tile('Headcount', h.now, h.joiners_12m + ' joined, ' + h.leavers_12m + ' left this year') +
+            tile('Turnover, 12 months', h.turnover_pct + '%', 'leavers over average headcount of ' + h.average_headcount_12m) +
+            tile('Average tenure', h.average_tenure_years + ' yrs', h.tenure_bands.over_5 + ' here over five years') +
+            tile('Open roles', a.hiring.open_roles, a.hiring.openings + ' opening' + (a.hiring.openings === 1 ? '' : 's'));
+
+        var labels = h.by_month.map(function (m) { return m.label; });
+        _paChart('pa-headcount', { type: 'line', data: { labels: labels, datasets: [{
+            data: h.by_month.map(function (m) { return m.headcount; }), borderColor: PA_HUE, borderWidth: 2,
+            pointRadius: 4, pointBackgroundColor: PA_HUE, pointBorderColor: '#1b2436', pointBorderWidth: 2,
+            fill: true, backgroundColor: 'rgba(14,165,233,0.12)', tension: 0.25 }] },
+            options: { scales: { y: { beginAtZero: true }, x: {} }, plugins: { tooltip: { mode: 'index', intersect: false } } } });
+
+        document.getElementById('pa-flow-legend').innerHTML =
+            '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + PA_PAIR.joiners + ';margin-right:4px;"></span>Joiners ' +
+            '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + PA_PAIR.leavers + ';margin:0 4px 0 12px;"></span>Leavers';
+        _paChart('pa-flow', { type: 'bar', data: { labels: labels, datasets: [
+            { label: 'Joiners', data: h.by_month.map(function (m) { return m.joiners; }), backgroundColor: PA_PAIR.joiners, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 18 },
+            { label: 'Leavers', data: h.by_month.map(function (m) { return m.leavers; }), backgroundColor: PA_PAIR.leavers, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 18 } ] },
+            options: { scales: { y: { beginAtZero: true }, x: {} }, plugins: { legend: { display: false } } } });
+
+        _paChart('pa-dept', { type: 'bar', data: { labels: h.by_department.map(function (d) { return d.name; }), datasets: [{
+            data: h.by_department.map(function (d) { return d.count; }), backgroundColor: PA_HUE, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 18 }] },
+            options: { indexAxis: 'y', scales: { x: { beginAtZero: true }, y: {} } } });
+
+        var tb = h.tenure_bands;
+        _paChart('pa-tenure', { type: 'bar', data: { labels: ['Under a year', '1 to 2 years', '2 to 5 years', 'Over 5 years'], datasets: [{
+            data: [tb.under_1, tb['1_to_2'], tb['2_to_5'], tb.over_5], backgroundColor: PA_HUE, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 28 }] },
+            options: { scales: { y: { beginAtZero: true }, x: {} } } });
+
+        var r = a.reviews;
+        document.getElementById('pa-ratings-title').textContent = r ? 'Review ratings · ' + r.cycle_name : 'Review ratings';
+        document.getElementById('pa-ratings-note').textContent = r
+            ? r.complete + ' of ' + r.total + ' complete' + (r.average ? ' · average ' + r.average : '') +
+              (r.awaiting_self ? ' · ' + r.awaiting_self + ' still to write their half' : '')
+            : 'No review cycle has been opened yet.';
+        document.getElementById('pa-ratings-note').textContent += ' · 1 needs improvement, 5 outstanding';
+        // The axis carries the number; the words are in the tooltip and the
+        // note, so five long labels do not fight for the width.
+        _paChart('pa-ratings', { type: 'bar', data: { labels: ['1', '2', '3', '4', '5'], datasets: [{
+            data: [1, 2, 3, 4, 5].map(function (k) { return r ? (r.distribution[k] || 0) : 0; }), backgroundColor: PA_HUE, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 28 }] },
+            options: { scales: { y: { beginAtZero: true }, x: {} },
+                       plugins: { tooltip: { callbacks: { title: function (items) { return items[0].label + ' - ' + RATING_WORDS[items[0].label]; } } } } } });
+
+        var lt = Object.keys(a.leave.by_type);
+        _paChart('pa-leave', { type: 'bar', data: { labels: lt.length ? lt : ['None taken'], datasets: [{
+            data: lt.length ? lt.map(function (k) { return a.leave.by_type[k]; }) : [0], backgroundColor: PA_HUE, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 28 }] },
+            options: { indexAxis: 'y', scales: { x: { beginAtZero: true, title: { display: true, text: 'days', color: '#94a3b8' } }, y: {} } } });
+
+        var c = a.certifications, g = a.goals, m = a.moves_12m;
+        function block(title, rows) {
+            return '<div class="widget" style="padding:16px;"><div style="font-size:0.8rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);margin-bottom:8px;">' + title + '</div>' +
+                rows.map(function (rw) { return '<div style="display:flex;justify-content:space-between;font-size:0.85rem;padding:3px 0;"><span style="color:var(--text-secondary);">' + rw[0] + '</span><span' + (rw[2] ? ' style="color:' + rw[2] + ';"' : '') + '>' + rw[1] + '</span></div>'; }).join('') + '</div>';
+        }
+        document.getElementById('pa-blocks').innerHTML =
+            block('Certifications', [['Valid', c.valid], ['Expiring soon', c.expiring, c.expiring ? 'var(--warning-color)' : ''], ['Lapsed', c.expired, c.expired ? 'var(--danger-color)' : ''], ['To verify', c.unverified]]) +
+            block('Goals', [['Open', g.total - g.completed], ['Completed', g.completed], ['Overdue', g.overdue, g.overdue ? 'var(--danger-color)' : ''], ['Average progress', g.average_progress_pct != null ? g.average_progress_pct + '%' : '-']]) +
+            block('Moves, last 12 months', [['Promotions', m.promotions], ['Pay changes', m.pay_changes], ['Department moves', m.transfers], ['Manager changes', m.manager_changes]]) +
+            block('Leave this year', [['Days taken', a.leave.days_taken], ['Per person', a.leave.per_person], ['Types', Object.keys(a.leave.by_type).length]]);
+    } catch (e) {
+        tiles.innerHTML = '<div class="widget" style="padding:20px;color:var(--danger-text);">' + esc(e.message) + '</div>';
+    }
+}
+window.loadAnalyticsView = loadAnalyticsView;

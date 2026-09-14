@@ -2195,3 +2195,116 @@ class DBExpenseClaim(Base):
     paid_by = Column(String, default="")
 
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"), index=True)
+
+
+# ---- Performance reviews -------------------------------------------------
+# A cycle is HR's decision to review everybody (or one department) over a
+# period, with one set of questions. Opening it writes a review per person;
+# the person answers first, then whoever they report to, and HR reads all.
+
+class DBReviewCycle(Base):
+    __tablename__ = "review_cycles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    name = Column(String, default="")
+    period_start = Column(String, default="")      # YYYY-MM-DD, what the review is about
+    period_end = Column(String, default="")
+    due_on = Column(String, default="")            # when both halves should be in
+    # JSON list of {"text": "...", "kind": "rating" | "text"}. Fixed once the
+    # cycle opens: a question added afterwards is one half the answers lack.
+    questions = Column(Text, default="[]")
+    # None is everybody. A department id narrows it to that department.
+    department_id = Column(Integer, nullable=True)
+    # draft -> open -> closed. Draft can be edited and deleted; open takes
+    # answers; closed takes none and is kept for the record.
+    status = Column(String, default="draft", index=True)
+    opened_at = Column(String, default="")
+    closed_at = Column(String, default="")
+    created_by = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBReview(Base):
+    __tablename__ = "reviews"
+    __table_args__ = (UniqueConstraint("cycle_id", "employee_id", name="uq_review_per_person"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    cycle_id = Column(Integer, ForeignKey("review_cycles.id"), nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+    # Who writes the other half. Their manager, else the head of their
+    # department, else nobody - which means HR. Null is a decision, not a gap.
+    reviewer_id = Column(Integer, ForeignKey("employees.id"), nullable=True, index=True)
+    reviewer_how = Column(String, default="hr")     # manager | department_head | hr
+
+    # JSON lists aligned with the cycle's questions: {"rating": n|null, "text": ""}
+    self_answers = Column(Text, default="[]")
+    self_rating = Column(Integer, nullable=True)   # 1..5, their own overall
+    self_comment = Column(Text, default="")
+    self_submitted_at = Column(String, default="")
+
+    manager_answers = Column(Text, default="[]")
+    manager_rating = Column(Integer, nullable=True)  # 1..5, the one that counts
+    manager_summary = Column(Text, default="")
+    manager_by = Column(String, default="")          # name, for the record
+    manager_submitted_at = Column(String, default="")
+
+    # awaiting_self -> awaiting_manager -> complete. The manager may finish
+    # without the self half: a person who never answers cannot stall their
+    # own review forever.
+    status = Column(String, default="awaiting_self", index=True)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+# ---- Certifications and training -------------------------------------------
+# A qualification with a date it stops being one. The date is the point:
+# a forklift licence that lapsed last month is a compliance problem today.
+
+class DBCertification(Base):
+    __tablename__ = "certifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+    name = Column(String, default="")
+    issuer = Column(String, default="")
+    issued_on = Column(String, default="")
+    expires_on = Column(String, default="", index=True)   # "" never expires
+    reference = Column(String, default="")               # certificate number
+    notes = Column(String, default="")
+    # A picture of the certificate, as a data URL. Same rules as a receipt.
+    document_data = Column(Text, default="")
+    # Who put it here. Something an employee added is theirs to say and HR's
+    # to confirm; verified_by is empty until HR has looked at it.
+    added_by = Column(String, default="hr")               # hr | employee
+    verified_by = Column(String, default="")
+    verified_at = Column(String, default="")
+    # 0 nothing sent, 1 "a month left", 2 "a week left", 3 "expired". The
+    # daily job raises it, so nobody is told the same thing twice.
+    reminder_stage = Column(Integer, default=0)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+# ---- Employment history ------------------------------------------------------
+# What changed about somebody's job and when: a new title, a move between
+# departments, a pay change, a new manager. Written by the employee update
+# route whenever one of those fields changes, and by HR by hand for the
+# things a form does not capture ("promoted to lead, effective March").
+
+class DBEmploymentChange(Base):
+    __tablename__ = "employment_changes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+    effective_on = Column(String, default="", index=True)  # YYYY-MM-DD
+    # promotion | transfer | pay_change | title_change | manager_change |
+    # level_change | type_change | note
+    kind = Column(String, default="note", index=True)
+    field = Column(String, default="")                     # the column, when automatic
+    old_value = Column(String, default="")
+    new_value = Column(String, default="")
+    note = Column(String, default="")
+    recorded_by = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))

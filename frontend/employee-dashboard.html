@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=156">
+  <link rel="stylesheet" href="tailwind.css?v=157">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,12 +50,12 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=156">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=156">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=156">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=156">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=156">
-    <script src="/dialogs.js?v=156"></script>
+    <link rel="stylesheet" href="mobile.css?v=157">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=157">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=157">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=157">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=157">
+    <script src="/dialogs.js?v=157"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -125,6 +125,10 @@
         <button onclick="switchTab('goals')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="goals">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
           Goals
+        </button>
+        <button onclick="switchTab('reviews')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="reviews">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/></svg>
+          Reviews
         </button>
         <button onclick="switchTab('leave')" class="tab-btn px-4 py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 whitespace-nowrap transition-all flex items-center gap-2" data-tab="leave">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
@@ -449,6 +453,25 @@
       <div class="grid gap-4" id="goalsGrid"></div>
     </div>
 
+    <!-- Tab: Reviews
+         Two lists: reviews about you, and reviews you write about the
+         people who report to you. The second is empty for most people. -->
+    <div id="tab-reviews" class="tab-panel hidden fade-in">
+      <div id="rv-detail" class="hidden mb-4"></div>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4" id="rv-lists">
+        <div class="bg-white rounded-2xl border border-gray-100 p-5">
+          <h3 class="font-semibold text-gray-900 mb-1">About you</h3>
+          <p class="text-xs text-gray-500 mb-4">Write your half first; your reviewer writes theirs; then you read it.</p>
+          <div id="rv-mine" class="space-y-2"></div>
+        </div>
+        <div class="bg-white rounded-2xl border border-gray-100 p-5" id="rv-to-write-card">
+          <h3 class="font-semibold text-gray-900 mb-1">You review</h3>
+          <p class="text-xs text-gray-500 mb-4">The people who report to you. Their half appears once they have sent it.</p>
+          <div id="rv-to-write" class="space-y-2"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- Tab: Leave -->
     <div id="tab-leave" class="tab-panel hidden fade-in">
       <!-- Days remaining, before the history of days used. Nobody plans a
@@ -744,6 +767,55 @@
           <div class="mt-6" id="myAssetsCard">
             <h3 class="font-semibold text-gray-900 mb-3">Equipment you have</h3>
             <div id="myAssets" class="space-y-2"></div>
+          </div>
+
+          <!-- What you are qualified to do. Add your own; HR confirms it.
+               You are told a month, a week and a day before one runs out. -->
+          <div class="mt-6" id="myCertsCard">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="font-semibold text-gray-900">Certifications and training</h3>
+              <button type="button" onclick="toggleCertForm()" class="text-sm text-brand-600 hover:underline" id="cert-toggle">+ Add one</button>
+            </div>
+            <form id="cert-form" onsubmit="submitMyCert(event)" class="hidden space-y-3 p-4 rounded-xl border border-gray-100 bg-gray-50 mb-3">
+              <div class="grid sm:grid-cols-2 gap-3">
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">What it is</label>
+                  <input id="cert-name" required maxlength="200" placeholder="First aid at work" class="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Issued by</label>
+                  <input id="cert-issuer" maxlength="200" placeholder="St John Ambulance" class="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Issued on</label>
+                  <input id="cert-issued" type="date" class="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Expires on <span class="text-gray-400">(leave empty if never)</span></label>
+                  <input id="cert-expires" type="date" class="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Certificate number</label>
+                  <input id="cert-ref" maxlength="200" class="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-500 mb-1">Photo of it <span class="text-gray-400">(optional)</span></label>
+                  <input id="cert-photo" type="file" accept="image/png,image/jpeg,image/gif,image/webp" class="w-full text-sm">
+                </div>
+              </div>
+              <div class="flex gap-2">
+                <button type="submit" class="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium" id="cert-submit">Add</button>
+                <button type="button" onclick="toggleCertForm()" class="px-4 py-2 rounded-lg border border-gray-200 text-sm">Cancel</button>
+              </div>
+            </form>
+            <div id="myCerts" class="space-y-2"></div>
+          </div>
+
+          <!-- What changed about your job and when: titles, moves, pay,
+               managers. Written the moment HR changes any of them. -->
+          <div class="mt-6" id="myHistoryCard">
+            <h3 class="font-semibold text-gray-900 mb-3">Your job history</h3>
+            <div id="myHistory" class="space-y-2"></div>
           </div>
         </div>
       </div>
@@ -1636,7 +1708,8 @@
       if (tab === 'leave') { loadLeave(); loadLeaveBalance(); }
       if (tab === 'documents') { loadDocuments(); loadDocumentRequests(); }
       if (tab === 'team') loadTeamPresence();
-      if (tab === 'profile') { loadProfileTab(); loadMyChanges(); loadMyAssets(); }
+      if (tab === 'profile') { loadProfileTab(); loadMyChanges(); loadMyAssets(); loadMyCerts(); loadMyHistory(); }
+      if (tab === 'reviews') loadMyReviews();
       if (tab === 'requests') loadStaffRequests();
       if (tab === 'payslips') loadPayslips();
       if (tab === 'assistant') startAssistant();
@@ -1645,6 +1718,442 @@
       if (tab === 'notices') loadNotices();
       if (tab === 'feed') loadFeed();
       if (tab === 'expenses') loadExpenses();
+    }
+
+    // --- Reviews ---------------------------------------------------------------
+    // About you: write your half, then read the reviewer's once it is done.
+    // You review: the people who report to you, once their half is in.
+
+    var RV_WORDS = { 1: 'Needs improvement', 2: 'Developing', 3: 'Meets expectations',
+                     4: 'Exceeds expectations', 5: 'Outstanding' };
+    var RV_STATUS = {
+      awaiting_self:    ['Your half to write',  'bg-amber-50 text-amber-700 border-amber-200'],
+      awaiting_manager: ['Waiting on reviewer', 'bg-sky-50 text-sky-700 border-sky-200'],
+      complete:         ['Ready to read',       'bg-emerald-50 text-emerald-700 border-emerald-200'],
+    };
+    var RV_STATUS_FOR_REVIEWER = {
+      awaiting_self:    ['They are still writing', 'bg-gray-100 text-gray-600 border-gray-200'],
+      awaiting_manager: ['Your half to write',     'bg-amber-50 text-amber-700 border-amber-200'],
+      complete:         ['Done',                   'bg-emerald-50 text-emerald-700 border-emerald-200'],
+    };
+    var _rvOpen = null;
+
+    async function loadMyReviews() {
+      var mine = document.getElementById('rv-mine');
+      var todo = document.getElementById('rv-to-write');
+      if (!mine) return;
+      try {
+        var res = await fetch('/api/employee/reviews');
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        renderReviewLists(await res.json());
+      } catch (e) {
+        mine.textContent = 'Could not load your reviews.';
+        if (todo) todo.textContent = '';
+      }
+    }
+    window.loadMyReviews = loadMyReviews;
+
+    function _rvPill(pair) {
+      var el = document.createElement('span');
+      el.className = 'text-xs px-2 py-0.5 rounded-full border ' + pair[1];
+      el.textContent = pair[0];
+      return el;
+    }
+
+    function _rvRow(r, asReviewer) {
+      var row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'w-full text-left flex items-center gap-3 p-3 rounded-xl border border-gray-100 hover:bg-gray-50';
+      row.addEventListener('click', function () { openReview(r.id); });
+      var text = document.createElement('div');
+      text.className = 'flex-1 min-w-0';
+      var name = document.createElement('div');
+      name.className = 'text-sm font-medium text-gray-900';
+      name.textContent = asReviewer ? r.employee_name : r.cycle_name;
+      text.appendChild(name);
+      var meta = document.createElement('div');
+      meta.className = 'text-xs text-gray-500';
+      meta.textContent = [asReviewer ? r.cycle_name : 'Reviewer: ' + r.reviewer_name,
+                          r.due_on ? 'due ' + r.due_on : '',
+                          r.cycle_status === 'closed' ? 'closed' : ''].filter(Boolean).join(' \u00b7 ');
+      text.appendChild(meta);
+      row.appendChild(text);
+      if (!asReviewer && r.status === 'complete' && r.manager_rating) {
+        var stars = document.createElement('span');
+        stars.className = 'text-amber-500 text-sm tracking-wider';
+        stars.textContent = '\u2605'.repeat(r.manager_rating) + '\u2606'.repeat(5 - r.manager_rating);
+        stars.title = r.rating_label || '';
+        row.appendChild(stars);
+      }
+      row.appendChild(_rvPill((asReviewer ? RV_STATUS_FOR_REVIEWER : RV_STATUS)[r.status] || [r.status, 'bg-gray-100 text-gray-600 border-gray-200']));
+      return row;
+    }
+
+    function renderReviewLists(data) {
+      var mine = document.getElementById('rv-mine');
+      var todo = document.getElementById('rv-to-write');
+      var card = document.getElementById('rv-to-write-card');
+      mine.textContent = ''; todo.textContent = '';
+      if (!data.mine.length) {
+        var none = document.createElement('p');
+        none.className = 'text-sm text-gray-400';
+        none.textContent = 'No review yet. When HR opens a cycle it appears here.';
+        mine.appendChild(none);
+      }
+      data.mine.forEach(function (r) { mine.appendChild(_rvRow(r, false)); });
+      // Most people review nobody; the card stays out of their way.
+      card.classList.toggle('hidden', !data.to_write.length);
+      data.to_write.forEach(function (r) { todo.appendChild(_rvRow(r, true)); });
+    }
+
+    function _rvAnswers(questions, half, who) {
+      var box = document.createElement('div');
+      if (!half) {
+        var p = document.createElement('p');
+        p.className = 'text-sm text-gray-400';
+        p.textContent = who + ' has not written this yet.';
+        box.appendChild(p);
+        return box;
+      }
+      questions.forEach(function (q, i) {
+        var a = (half.answers || [])[i] || {};
+        var item = document.createElement('div');
+        item.className = 'mb-3';
+        var lab = document.createElement('div');
+        lab.className = 'text-xs text-gray-500';
+        lab.textContent = q.text;
+        item.appendChild(lab);
+        var val = document.createElement('div');
+        val.className = 'text-sm text-gray-900 whitespace-pre-wrap';
+        if (q.kind === 'rating') {
+          val.className = 'text-sm text-amber-500 tracking-wider';
+          val.textContent = a.rating ? '\u2605'.repeat(a.rating) + '\u2606'.repeat(5 - a.rating) + '  ' : '-';
+          if (a.rating) { var w = document.createElement('span'); w.className = 'text-gray-600 tracking-normal'; w.textContent = RV_WORDS[a.rating]; val.appendChild(w); }
+        } else {
+          val.textContent = a.text || '-';
+        }
+        item.appendChild(val);
+        box.appendChild(item);
+      });
+      var overall = document.createElement('div');
+      overall.className = 'mt-3 pt-3 border-t border-dashed border-gray-200';
+      var ol = document.createElement('div'); ol.className = 'text-xs text-gray-500'; ol.textContent = 'Overall'; overall.appendChild(ol);
+      var ov = document.createElement('div'); ov.className = 'text-sm font-medium text-gray-900';
+      ov.textContent = half.rating ? half.rating + ' - ' + RV_WORDS[half.rating] : '-'; overall.appendChild(ov);
+      var words = half.summary || half.comment;
+      if (words) { var wp = document.createElement('p'); wp.className = 'text-sm text-gray-700 whitespace-pre-wrap mt-1'; wp.textContent = words; overall.appendChild(wp); }
+      box.appendChild(overall);
+      return box;
+    }
+
+    function _rvForm(questions, half, role) {
+      half = half || { answers: [] };
+      var form = document.createElement('div');
+      form.className = 'space-y-3';
+      questions.forEach(function (q, i) {
+        var a = (half.answers || [])[i] || {};
+        var wrap = document.createElement('div');
+        var lab = document.createElement('label'); lab.className = 'block text-xs font-medium text-gray-500 mb-1'; lab.textContent = q.text; wrap.appendChild(lab);
+        var ctl;
+        if (q.kind === 'rating') {
+          ctl = document.createElement('select');
+          ctl.className = 'w-full px-3 py-2 rounded-lg border border-gray-200 text-sm rv-rating';
+          var blank = document.createElement('option'); blank.value = ''; blank.textContent = 'Choose 1 to 5'; ctl.appendChild(blank);
+          [1, 2, 3, 4, 5].forEach(function (k) {
+            var o = document.createElement('option'); o.value = k; o.textContent = k + ' - ' + RV_WORDS[k]; if (a.rating === k) o.selected = true; ctl.appendChild(o);
+          });
+        } else {
+          ctl = document.createElement('textarea');
+          ctl.className = 'w-full px-3 py-2 rounded-lg border border-gray-200 text-sm rv-text';
+          ctl.rows = 3; ctl.value = a.text || '';
+        }
+        ctl.setAttribute('data-i', i);
+        wrap.appendChild(ctl);
+        form.appendChild(wrap);
+      });
+      var ow = document.createElement('div');
+      var ol = document.createElement('label'); ol.className = 'block text-xs font-medium text-gray-500 mb-1'; ol.textContent = 'Overall rating'; ow.appendChild(ol);
+      var os = document.createElement('select'); os.id = 'rv-overall'; os.className = 'w-full px-3 py-2 rounded-lg border border-gray-200 text-sm';
+      var ob = document.createElement('option'); ob.value = ''; ob.textContent = 'Choose 1 to 5'; os.appendChild(ob);
+      [1, 2, 3, 4, 5].forEach(function (k) { var o = document.createElement('option'); o.value = k; o.textContent = k + ' - ' + RV_WORDS[k]; if (half.rating === k) o.selected = true; os.appendChild(o); });
+      ow.appendChild(os); form.appendChild(ow);
+      var cw = document.createElement('div');
+      var cl = document.createElement('label'); cl.className = 'block text-xs font-medium text-gray-500 mb-1';
+      cl.textContent = role === 'subject' ? 'Anything else' : 'Summary - the part they read first'; cw.appendChild(cl);
+      var ct = document.createElement('textarea'); ct.id = 'rv-words'; ct.rows = 4; ct.className = 'w-full px-3 py-2 rounded-lg border border-gray-200 text-sm';
+      ct.value = (role === 'subject' ? half.comment : half.summary) || ''; cw.appendChild(ct); form.appendChild(cw);
+      return form;
+    }
+
+    function _rvReadForm(questions, role) {
+      var answers = questions.map(function (q, i) {
+        var el = document.querySelector('#rv-detail .rv-' + (q.kind === 'rating' ? 'rating' : 'text') + '[data-i="' + i + '"]');
+        return q.kind === 'rating' ? { rating: el && el.value ? Number(el.value) : null } : { text: el ? el.value : '' };
+      });
+      var body = { answers: answers,
+                   rating: document.getElementById('rv-overall').value ? Number(document.getElementById('rv-overall').value) : null };
+      body[role === 'subject' ? 'comment' : 'summary'] = document.getElementById('rv-words').value;
+      return body;
+    }
+
+    async function openReview(id) {
+      var host = document.getElementById('rv-detail');
+      try {
+        var res = await fetch('/api/employee/reviews/' + id);
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        var r = await res.json();
+        _rvOpen = r;
+        host.textContent = '';
+        host.classList.remove('hidden');
+        var card = document.createElement('div');
+        card.className = 'bg-white rounded-2xl border border-gray-100 p-5';
+        var head = document.createElement('div');
+        head.className = 'flex items-start justify-between gap-3 mb-3';
+        var hl = document.createElement('div');
+        var title = document.createElement('h3'); title.className = 'font-semibold text-gray-900';
+        title.textContent = r.my_role === 'subject' ? r.cycle_name : r.employee_name + ' \u00b7 ' + r.cycle_name; hl.appendChild(title);
+        var sub = document.createElement('p'); sub.className = 'text-xs text-gray-500';
+        sub.textContent = [r.period_start && r.period_end ? r.period_start + ' to ' + r.period_end : '',
+                           r.my_role === 'subject' ? 'Reviewer: ' + r.reviewer_name : '',
+                           r.due_on ? 'due ' + r.due_on : ''].filter(Boolean).join(' \u00b7 ');
+        hl.appendChild(sub);
+        head.appendChild(hl);
+        var close = document.createElement('button'); close.type = 'button'; close.className = 'text-sm text-gray-500 hover:text-gray-900';
+        close.textContent = 'Close'; close.addEventListener('click', closeReview); head.appendChild(close);
+        card.appendChild(head);
+
+        if (r.goals && r.goals.length && r.my_role === 'reviewer') {
+          var gl = document.createElement('div'); gl.className = 'mb-4 p-3 rounded-xl bg-gray-50 text-sm';
+          var gt = document.createElement('div'); gt.className = 'text-xs text-gray-500 mb-1'; gt.textContent = 'Their goals over the period'; gl.appendChild(gt);
+          r.goals.forEach(function (g) {
+            var line = document.createElement('div'); line.className = 'flex justify-between gap-2';
+            var a = document.createElement('span'); a.textContent = g.title; line.appendChild(a);
+            var b = document.createElement('span'); b.className = 'text-gray-500'; b.textContent = g.progress_pct != null ? g.progress_pct + '%' : g.status; line.appendChild(b);
+            gl.appendChild(line);
+          });
+          card.appendChild(gl);
+        }
+
+        var open = r.cycle_status === 'open';
+        var iWrite = (r.my_role === 'subject' && r.status === 'awaiting_self' && open) ||
+                     (r.my_role === 'reviewer' && r.status !== 'complete' && open);
+        var grid = document.createElement('div');
+        grid.className = 'grid grid-cols-1 lg:grid-cols-2 gap-5';
+        var left = document.createElement('div');
+        var lt = document.createElement('h4'); lt.className = 'text-sm font-semibold text-gray-900 mb-2';
+        lt.textContent = r.my_role === 'subject' ? 'Your half' : 'Their half'; left.appendChild(lt);
+        if (r.my_role === 'subject') left.appendChild(iWrite ? _rvForm(r.questions, r.self, 'subject') : _rvAnswers(r.questions, r.self, 'You'));
+        else left.appendChild(_rvAnswers(r.questions, r.self, r.employee_name));
+        var right = document.createElement('div');
+        var rt = document.createElement('h4'); rt.className = 'text-sm font-semibold text-gray-900 mb-2';
+        rt.textContent = r.my_role === 'subject' ? 'Your reviewer\u2019s half' : 'Your half'; right.appendChild(rt);
+        if (r.my_role === 'reviewer') right.appendChild(iWrite ? _rvForm(r.questions, r.manager, 'reviewer') : _rvAnswers(r.questions, r.manager, 'You'));
+        else if (r.manager) right.appendChild(_rvAnswers(r.questions, r.manager, r.reviewer_name));
+        else { var wait = document.createElement('p'); wait.className = 'text-sm text-gray-400';
+               wait.textContent = r.status === 'awaiting_self' ? 'Written after yours.' : 'Not written yet. You will be told when it is.'; right.appendChild(wait); }
+        grid.appendChild(left); grid.appendChild(right);
+        card.appendChild(grid);
+
+        var err = document.createElement('p'); err.id = 'rv-error'; err.className = 'hidden text-sm text-rose-600 mt-3'; card.appendChild(err);
+        if (iWrite) {
+          var actions = document.createElement('div'); actions.className = 'flex gap-2 mt-4';
+          var draft = document.createElement('button'); draft.type = 'button'; draft.className = 'px-4 py-2 rounded-lg border border-gray-200 text-sm';
+          draft.textContent = 'Save draft'; draft.addEventListener('click', function () { submitReview(true); }); actions.appendChild(draft);
+          var send = document.createElement('button'); send.type = 'button'; send.className = 'px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium';
+          send.textContent = r.my_role === 'subject' ? 'Send to my reviewer' : 'Submit review'; send.addEventListener('click', function () { submitReview(false); }); actions.appendChild(send);
+          card.appendChild(actions);
+        }
+        host.appendChild(card);
+        host.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (e) {
+        uiToast('Could not open that review.', 'error');
+      }
+    }
+    window.openReview = openReview;
+
+    function closeReview() {
+      _rvOpen = null;
+      var host = document.getElementById('rv-detail');
+      host.textContent = '';
+      host.classList.add('hidden');
+    }
+    window.closeReview = closeReview;
+
+    async function submitReview(draft) {
+      if (!_rvOpen) return;
+      var role = _rvOpen.my_role;
+      var body = _rvReadForm(_rvOpen.questions, role);
+      body.draft = !!draft;
+      var err = document.getElementById('rv-error');
+      err.classList.add('hidden');
+      try {
+        var res = await fetch('/api/employee/reviews/' + _rvOpen.id + '/' + (role === 'subject' ? 'self' : 'manager'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        var d = await res.json().catch(function () { return {}; });
+        if (!res.ok) { err.textContent = d.detail || 'Could not save that.'; err.classList.remove('hidden'); return; }
+        uiToast(draft ? 'Draft saved' : (role === 'subject' ? 'Sent - your reviewer has been told' : 'Submitted - they have been told'), 'success');
+        if (draft) return;
+        closeReview();
+        loadMyReviews();
+      } catch (e) {
+        err.textContent = 'Could not save that.'; err.classList.remove('hidden');
+      }
+    }
+    window.submitReview = submitReview;
+
+    // --- Certifications -----------------------------------------------------------
+
+    var CERT_PILL = {
+      valid:    ['Valid',    'bg-emerald-50 text-emerald-700 border-emerald-200'],
+      expiring: ['Expiring', 'bg-amber-50 text-amber-700 border-amber-200'],
+      expired:  ['Lapsed',   'bg-rose-50 text-rose-700 border-rose-200'],
+    };
+
+    function toggleCertForm() {
+      var f = document.getElementById('cert-form');
+      f.classList.toggle('hidden');
+      if (!f.classList.contains('hidden')) document.getElementById('cert-name').focus();
+    }
+    window.toggleCertForm = toggleCertForm;
+
+    async function loadMyCerts() {
+      var host = document.getElementById('myCerts');
+      if (!host) return;
+      try {
+        var res = await fetch('/api/employee/certifications');
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        renderMyCerts(await res.json());
+      } catch (e) {
+        host.textContent = 'Could not load your certifications.';
+      }
+    }
+    window.loadMyCerts = loadMyCerts;
+
+    function certWords(c) {
+      if (!c.expires_on) return 'No expiry';
+      if (c.status === 'expired') return 'Lapsed on ' + c.expires_on;
+      if (c.days_left === 0) return 'Expires today';
+      return 'Expires ' + c.expires_on + ' (' + c.days_left + ' day' + (c.days_left === 1 ? '' : 's') + ')';
+    }
+
+    function renderMyCerts(data) {
+      var host = document.getElementById('myCerts');
+      host.textContent = '';
+      if (!data.certifications.length) {
+        var none = document.createElement('p');
+        none.className = 'text-sm text-gray-400';
+        none.textContent = 'Nothing recorded. Add a licence, a course or a qualification and HR will confirm it.';
+        host.appendChild(none);
+        return;
+      }
+      data.certifications.forEach(function (c) {
+        var row = document.createElement('div');
+        row.className = 'flex items-center gap-3 p-3 rounded-xl border border-gray-100';
+        var text = document.createElement('div'); text.className = 'flex-1 min-w-0';
+        var name = document.createElement('div'); name.className = 'text-sm font-medium text-gray-900';
+        name.textContent = c.name + (c.issuer ? ' \u00b7 ' + c.issuer : ''); text.appendChild(name);
+        var meta = document.createElement('div'); meta.className = 'text-xs text-gray-500';
+        meta.textContent = certWords(c) + (c.verified ? '' : ' \u00b7 waiting for HR to confirm'); text.appendChild(meta);
+        row.appendChild(text);
+        row.appendChild(_rvPill(CERT_PILL[c.status] || [c.status, 'bg-gray-100 text-gray-600 border-gray-200']));
+        if (c.has_document) {
+          var a = document.createElement('a'); a.href = '/api/employee/certifications/' + c.id + '/document'; a.target = '_blank'; a.rel = 'noopener';
+          a.className = 'text-xs text-brand-600 hover:underline'; a.textContent = 'View'; row.appendChild(a);
+        }
+        if (!c.verified) {
+          var del = document.createElement('button'); del.type = 'button'; del.className = 'text-xs text-gray-400 hover:text-rose-600';
+          del.textContent = 'Remove'; del.addEventListener('click', function () { removeMyCert(c.id); }); row.appendChild(del);
+        }
+        host.appendChild(row);
+      });
+    }
+
+    function _fileAsDataUrl(input) {
+      return new Promise(function (resolve) {
+        var f = input && input.files && input.files[0];
+        if (!f) return resolve('');
+        var reader = new FileReader();
+        reader.onload = function () { resolve(String(reader.result || '')); };
+        reader.onerror = function () { resolve(''); };
+        reader.readAsDataURL(f);
+      });
+    }
+
+    async function submitMyCert(ev) {
+      if (ev) ev.preventDefault();
+      var btn = document.getElementById('cert-submit');
+      btn.disabled = true;
+      try {
+        var body = {
+          name: document.getElementById('cert-name').value.trim(),
+          issuer: document.getElementById('cert-issuer').value.trim(),
+          issued_on: document.getElementById('cert-issued').value,
+          expires_on: document.getElementById('cert-expires').value,
+          reference: document.getElementById('cert-ref').value.trim(),
+          document_data: await _fileAsDataUrl(document.getElementById('cert-photo')),
+        };
+        var res = await fetch('/api/employee/certifications', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        var d = await res.json().catch(function () { return {}; });
+        if (!res.ok) { uiToast(d.detail || 'Could not add that.', 'error'); return; }
+        uiToast('Added - HR will confirm it', 'success');
+        document.getElementById('cert-form').reset();
+        toggleCertForm();
+        loadMyCerts();
+      } catch (e) {
+        uiToast('Could not add that.', 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+    window.submitMyCert = submitMyCert;
+
+    async function removeMyCert(id) {
+      if (!await uiConfirm('Remove this one?', { title: 'Remove', confirmText: 'Remove', danger: true })) return;
+      try {
+        var res = await fetch('/api/employee/certifications/' + id, { method: 'DELETE' });
+        var d = await res.json().catch(function () { return {}; });
+        if (!res.ok) { uiToast(d.detail || 'Could not remove that.', 'error'); return; }
+        loadMyCerts();
+      } catch (e) { uiToast('Could not remove that.', 'error'); }
+    }
+    window.removeMyCert = removeMyCert;
+
+    // --- Job history ---------------------------------------------------------------
+
+    async function loadMyHistory() {
+      var host = document.getElementById('myHistory');
+      if (!host) return;
+      try {
+        var res = await fetch('/api/employee/history');
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        renderMyHistory((await res.json()).history);
+      } catch (e) {
+        host.textContent = 'Could not load your history.';
+      }
+    }
+    window.loadMyHistory = loadMyHistory;
+
+    function renderMyHistory(rows) {
+      var host = document.getElementById('myHistory');
+      host.textContent = '';
+      if (!rows.length) {
+        var none = document.createElement('p'); none.className = 'text-sm text-gray-400';
+        none.textContent = 'Nothing yet.'; host.appendChild(none); return;
+      }
+      rows.forEach(function (h) {
+        var row = document.createElement('div');
+        row.className = 'flex items-start gap-3 p-3 rounded-xl border border-gray-100';
+        var when = document.createElement('div'); when.className = 'text-xs text-gray-500 w-24 shrink-0 pt-0.5'; when.textContent = h.effective_on || ''; row.appendChild(when);
+        var text = document.createElement('div'); text.className = 'flex-1 min-w-0';
+        var lab = document.createElement('div'); lab.className = 'text-sm font-medium text-gray-900'; lab.textContent = h.label; text.appendChild(lab);
+        var what = h.kind === 'joined' ? (h.new_value ? 'as ' + h.new_value : '') :
+                   (h.old_value && h.new_value) ? h.old_value + ' \u2192 ' + h.new_value : (h.new_value || h.note || '');
+        if (what) { var d = document.createElement('div'); d.className = 'text-xs text-gray-500'; d.textContent = what; text.appendChild(d); }
+        if (h.note && (h.old_value || h.new_value)) { var n = document.createElement('div'); n.className = 'text-xs text-gray-400'; n.textContent = h.note; text.appendChild(n); }
+        row.appendChild(text);
+        host.appendChild(row);
+      });
     }
 
     // --- Expense claims ------------------------------------------------------
@@ -3288,8 +3797,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=156"></script>
-    <script src="/pwa.js?v=156"></script>
-    <script src="/feed.js?v=156"></script>
+    <script src="/install-hint.js?v=157"></script>
+    <script src="/pwa.js?v=157"></script>
+    <script src="/feed.js?v=157"></script>
 </body>
 </html>

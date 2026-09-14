@@ -9478,9 +9478,14 @@ def update_employee(emp_id: int, request: Request, body: dict = None, db: Sessio
         body["role"] = validate_role(body["role"])
     if "reports_to" in body:
         body["reports_to"] = validate_manager(db, client.id, emp.id, body["reports_to"])
+    # What the job looked like before, so a change to it can be written down.
+    before = {f: getattr(emp, f, None) for f in TRACKED_JOB_FIELDS}
     for key, val in body.items():
         if hasattr(emp, key) and key not in ("id", "client_id", "created_at", "password_hash", "employee_id"):
             setattr(emp, key, val)
+    record_employment_changes(db, client.id, emp, before, body,
+                              client.company_name or client.email or "HR",
+                              body.get("effective_on"))
     new_dept = emp.department_id
     if new_dept and new_dept != old_dept:
         pending_goals = db.query(models.DBDepartmentGoal).filter(
@@ -9523,8 +9528,12 @@ def delete_employee(emp_id: int, request: Request, db: Session = Depends(get_db)
         models.DBOnboardingItem, models.DBPayslip, models.DBAttendance,
         models.DBEmployeeGoal, models.DBLeaveRequest, models.DBDocument,
         models.DBNotification, models.DBOvertimeLog,
+        models.DBReview, models.DBCertification, models.DBEmploymentChange,
     ):
         db.query(model).filter(model.employee_id == emp_id).delete(synchronize_session=False)
+    # Reviews they were going to write go back to the HR pool.
+    db.query(models.DBReview).filter(models.DBReview.reviewer_id == emp_id).update(
+        {"reviewer_id": None, "reviewer_how": "hr"}, synchronize_session=False)
     # Anyone reporting to this person would keep a dangling manager reference.
     db.query(models.DBEmployee).filter(models.DBEmployee.reports_to == emp_id).update(
         {"reports_to": None}, synchronize_session=False
@@ -10801,6 +10810,17 @@ def get_hr_dashboard(request: Request, db: Session = Depends(get_db)):
     bank_changes = db.query(models.DBProfileChange).filter(
         models.DBProfileChange.client_id == cid,
         models.DBProfileChange.status == "pending").count()
+    # Reviews with nobody above the person: HR writes those.
+    open_cycles = [c.id for c in db.query(models.DBReviewCycle).filter(
+        models.DBReviewCycle.client_id == cid, models.DBReviewCycle.status == "open").all()]
+    reviews_for_hr = db.query(models.DBReview).filter(
+        models.DBReview.cycle_id.in_(open_cycles), models.DBReview.reviewer_id == None,  # noqa: E711
+        models.DBReview.status != "complete").count() if open_cycles else 0
+    current_ids = {e.id for e in emps().all() if employee_is_current(e)}
+    certs = [c for c in db.query(models.DBCertification).filter(
+        models.DBCertification.client_id == cid).all() if c.employee_id in current_ids]
+    certs_lapsing = sum(1 for c in certs if certification_status(c)[0] != "valid")
+    certs_unverified = sum(1 for c in certs if not c.verified_by)
 
     waiting = [
         {"key": "leave", "label": "Leave requests to decide", "count": pending_leave,
@@ -10816,6 +10836,12 @@ def get_hr_dashboard(request: Request, db: Session = Depends(get_db)):
          "view": "onboarding-hub-view"},
         {"key": "payroll", "label": "Payslips not paid", "count": len(unpaid),
          "view": "payroll-view"},
+        {"key": "reviews", "label": "Reviews for HR to write", "count": reviews_for_hr,
+         "view": "reviews-view"},
+        {"key": "certifications", "label": "Certifications expiring or lapsed",
+         "count": certs_lapsing, "view": "training-view"},
+        {"key": "verify", "label": "Certifications to verify", "count": certs_unverified,
+         "view": "training-view"},
     ]
 
     # --- what lands soon -----------------------------------------------------
@@ -23644,6 +23670,1194 @@ def set_auto_topup(request: Request, body: dict = None,
     wallet.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     db.commit()
     return read_auto_topup(request, db)
+
+
+# ============================================================================
+# Performance reviews
+# ============================================================================
+# A cycle: HR names a period, writes the questions, and opens it. Opening
+# writes one review per person. The person answers first (a self-assessment),
+# then whoever they report to, and the manager's overall rating is the one
+# that counts. HR reads all of it and can write the manager half for anybody
+# with nobody above them.
+
+REVIEW_QUESTION_KINDS = ("rating", "text")
+DEFAULT_REVIEW_QUESTIONS = [
+    {"text": "What went well this period?", "kind": "text"},
+    {"text": "What could have gone better?", "kind": "text"},
+    {"text": "Quality of work", "kind": "rating"},
+    {"text": "Working with others", "kind": "rating"},
+    {"text": "Ownership and initiative", "kind": "rating"},
+    {"text": "What should the focus be next period?", "kind": "text"},
+]
+RATING_LABELS = {1: "Needs improvement", 2: "Developing", 3: "Meets expectations",
+                 4: "Exceeds expectations", 5: "Outstanding"}
+
+
+def _json_list(raw):
+    try:
+        value = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+def _clean_ymd(value, label):
+    """A YYYY-MM-DD string, "" for nothing, or a refusal."""
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if not _parse_date(value):
+        raise HTTPException(status_code=400, detail=f"{label} must be a date, YYYY-MM-DD")
+    return value[:10]
+
+
+def clean_review_questions(raw):
+    """Between one and twenty questions, each with some text. A bare string is
+    a text question; a missing list is the default set."""
+    if raw is None:
+        return [dict(q) for q in DEFAULT_REVIEW_QUESTIONS]
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="Questions must be a list")
+    out = []
+    for q in raw:
+        if isinstance(q, str):
+            q = {"text": q, "kind": "text"}
+        if not isinstance(q, dict):
+            raise HTTPException(status_code=400, detail="Each question needs some text")
+        text = str(q.get("text") or "").strip()[:500]
+        kind = str(q.get("kind") or "text").strip().lower()
+        if not text:
+            continue
+        out.append({"text": text, "kind": kind if kind in REVIEW_QUESTION_KINDS else "text"})
+    if not out:
+        raise HTTPException(status_code=400, detail="A review needs at least one question")
+    if len(out) > 20:
+        raise HTTPException(status_code=400, detail="Keep it to twenty questions")
+    return out
+
+
+def clean_rating(value, required=False):
+    if value in (None, ""):
+        if required:
+            raise HTTPException(status_code=400, detail="Give an overall rating from 1 to 5")
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="A rating is a whole number from 1 to 5")
+    if not 1 <= n <= 5:
+        raise HTTPException(status_code=400, detail="A rating is a whole number from 1 to 5")
+    return n
+
+
+def clean_answers(raw, questions):
+    """One answer per question, in the cycle's order. Ratings are checked,
+    text is trimmed, and a rating on a text question is dropped."""
+    raw = raw if isinstance(raw, list) else []
+    out = []
+    for i, q in enumerate(questions):
+        a = raw[i] if i < len(raw) and isinstance(raw[i], dict) else {}
+        text = str(a.get("text") or "").strip()[:4000]
+        rating = clean_rating(a.get("rating")) if q.get("kind") == "rating" else None
+        out.append({"rating": rating, "text": text})
+    return out
+
+
+def _unanswered(questions, answers):
+    """The first rating question left blank, or None."""
+    for q, a in zip(questions, answers):
+        if q.get("kind") == "rating" and a.get("rating") is None:
+            return q["text"]
+    return None
+
+
+def _review_counts(db, cycle_ids):
+    """{cycle_id: {status: n}} in one query."""
+    out = {cid: {"awaiting_self": 0, "awaiting_manager": 0, "complete": 0, "total": 0}
+           for cid in cycle_ids}
+    if not cycle_ids:
+        return out
+    rows = db.query(models.DBReview.cycle_id, models.DBReview.status,
+                    sqlfunc.count(models.DBReview.id)).filter(
+        models.DBReview.cycle_id.in_(cycle_ids)).group_by(
+        models.DBReview.cycle_id, models.DBReview.status).all()
+    for cid, status, n in rows:
+        if cid in out:
+            out[cid][status] = out[cid].get(status, 0) + n
+            out[cid]["total"] += n
+    return out
+
+
+def cycle_to_dict(c, counts=None, department_name=""):
+    d = {
+        "id": c.id, "name": c.name, "period_start": c.period_start,
+        "period_end": c.period_end, "due_on": c.due_on, "status": c.status,
+        "questions": _json_list(c.questions), "department_id": c.department_id,
+        "department_name": department_name, "opened_at": c.opened_at,
+        "closed_at": c.closed_at, "created_by": c.created_by, "created_at": c.created_at,
+    }
+    if counts is not None:
+        d["counts"] = counts
+    return d
+
+
+def _employee_names(db, client_id):
+    return {e.id: (f"{e.first_name} {e.last_name}".strip() or e.email or "")
+            for e in db.query(models.DBEmployee).filter(
+                models.DBEmployee.client_id == client_id).all()}
+
+
+def _goals_for(db, employee_id):
+    """What they were working towards, for whoever writes about them."""
+    rows = db.query(models.DBEmployeeGoal).filter(
+        models.DBEmployeeGoal.employee_id == employee_id).order_by(
+        models.DBEmployeeGoal.id.desc()).limit(20).all()
+    out = []
+    for g in rows:
+        target = g.target_value or 0
+        pct = int(round(100 * (g.current_value or 0) / target)) if target else None
+        out.append({"id": g.id, "title": g.title, "status": g.status,
+                    "current_value": g.current_value, "target_value": g.target_value,
+                    "unit": g.unit or "", "due_date": g.due_date or "",
+                    "progress_pct": max(0, min(100, pct)) if pct is not None else None})
+    return out
+
+
+def review_to_dict(db, r, cycle, viewer, names):
+    """One review as seen by one kind of reader.
+
+    hr sees everything. The subject sees their own half always and the
+    manager's only once complete. The reviewer sees the subject's half only
+    once submitted - a draft is private - and their own half always.
+    """
+    d = {
+        "id": r.id, "cycle_id": cycle.id, "cycle_name": cycle.name,
+        "period_start": cycle.period_start, "period_end": cycle.period_end,
+        "due_on": cycle.due_on, "cycle_status": cycle.status,
+        "questions": _json_list(cycle.questions),
+        "employee_id": r.employee_id, "employee_name": names.get(r.employee_id, ""),
+        "reviewer_id": r.reviewer_id, "reviewer_name": names.get(r.reviewer_id, "") if r.reviewer_id else "HR",
+        "reviewer_how": r.reviewer_how, "status": r.status,
+        "self_submitted_at": r.self_submitted_at,
+        "manager_submitted_at": r.manager_submitted_at,
+    }
+    show_self = viewer in ("hr", "subject") or bool(r.self_submitted_at)
+    show_manager = viewer in ("hr", "reviewer") or r.status == "complete"
+    if show_self:
+        d["self"] = {"answers": _json_list(r.self_answers), "rating": r.self_rating,
+                     "comment": r.self_comment or "", "submitted_at": r.self_submitted_at}
+    if show_manager:
+        d["manager"] = {"answers": _json_list(r.manager_answers), "rating": r.manager_rating,
+                        "rating_label": RATING_LABELS.get(r.manager_rating or 0, ""),
+                        "summary": r.manager_summary or "", "by": r.manager_by,
+                        "submitted_at": r.manager_submitted_at}
+    d["goals"] = _goals_for(db, r.employee_id)
+    return d
+
+
+def resolve_reviewer(db, client_id, emp):
+    """(reviewer_id, how). Their manager if still here, else the head of
+    their department if that is somebody else, else nobody - which is HR."""
+    if emp.reports_to:
+        mgr = db.query(models.DBEmployee).filter(
+            models.DBEmployee.id == emp.reports_to,
+            models.DBEmployee.client_id == client_id).first()
+        if mgr and employee_is_current(mgr):
+            return mgr.id, "manager"
+    head_id, how = resolve_task_owner(db, client_id, emp, "department_head")
+    if head_id:
+        return head_id, "department_head"
+    return None, "hr"
+
+
+def _cycle_or_404(db, client_id, cycle_id):
+    c = db.query(models.DBReviewCycle).filter(
+        models.DBReviewCycle.id == cycle_id,
+        models.DBReviewCycle.client_id == client_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Review cycle not found")
+    return c
+
+
+def _hr_name(client):
+    return (client.company_name or client.email or "HR")[:120]
+
+
+def _cycle_fields(db, client_id, body, cycle=None):
+    """Name, period, due date and audience, cleaned. Raises on nonsense."""
+    name = str(body.get("name") or (cycle.name if cycle else "") or "").strip()[:200]
+    if not name:
+        raise HTTPException(status_code=400, detail="Give the cycle a name - 'H1 2026', say")
+    start = _clean_ymd(body.get("period_start", cycle.period_start if cycle else ""), "Period start")
+    end = _clean_ymd(body.get("period_end", cycle.period_end if cycle else ""), "Period end")
+    due = _clean_ymd(body.get("due_on", cycle.due_on if cycle else ""), "Due date")
+    if start and end and end < start:
+        raise HTTPException(status_code=400, detail="The period ends before it starts")
+    dept_id = body.get("department_id", cycle.department_id if cycle else None)
+    if dept_id in ("", 0, "0"):
+        dept_id = None
+    if dept_id is not None:
+        try:
+            dept_id = int(dept_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Department not found")
+        if not db.query(models.DBDepartment).filter(
+                models.DBDepartment.id == dept_id,
+                models.DBDepartment.client_id == client_id).first():
+            raise HTTPException(status_code=404, detail="Department not found")
+    return name, start, end, due, dept_id
+
+
+# --- HR's side ------------------------------------------------------------------
+
+@app.get("/api/review-cycles")
+def list_review_cycles(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    cycles = db.query(models.DBReviewCycle).filter(
+        models.DBReviewCycle.client_id == client.id).order_by(
+        models.DBReviewCycle.id.desc()).limit(200).all()
+    counts = _review_counts(db, [c.id for c in cycles])
+    depts = {d.id: d.name for d in db.query(models.DBDepartment).filter(
+        models.DBDepartment.client_id == client.id).all()}
+    return {
+        "cycles": [cycle_to_dict(c, counts[c.id], depts.get(c.department_id, ""))
+                   for c in cycles],
+        "default_questions": [dict(q) for q in DEFAULT_REVIEW_QUESTIONS],
+        "rating_labels": RATING_LABELS,
+    }
+
+
+@app.post("/api/review-cycles")
+def create_review_cycle(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    name, start, end, due, dept_id = _cycle_fields(db, client.id, body)
+    questions = clean_review_questions(body.get("questions"))
+    c = models.DBReviewCycle(
+        client_id=client.id, name=name, period_start=start, period_end=end,
+        due_on=due, questions=json.dumps(questions), department_id=dept_id,
+        status="draft", created_by=_hr_name(client))
+    db.add(c)
+    db.flush()
+    log_audit(db, client.id, "review_cycle_created", "review_cycle", c.id, name, "", request)
+    db.commit()
+    return cycle_to_dict(c, {"awaiting_self": 0, "awaiting_manager": 0, "complete": 0, "total": 0})
+
+
+@app.put("/api/review-cycles/{cycle_id}")
+def update_review_cycle(cycle_id: int, request: Request, body: dict = None,
+                        db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    c = _cycle_or_404(db, client.id, cycle_id)
+    body = body or {}
+    if c.status == "closed":
+        raise HTTPException(status_code=409, detail="This cycle is closed and kept as it was")
+    name, start, end, due, dept_id = _cycle_fields(db, client.id, body, c)
+    if "questions" in body:
+        # Answers are stored by position against these. Once anybody has
+        # answered, changing them would make every answer about something else.
+        if c.status != "draft":
+            raise HTTPException(status_code=409,
+                                detail="The questions are fixed once a cycle is open - "
+                                       "people have answered them")
+        c.questions = json.dumps(clean_review_questions(body.get("questions")))
+    if c.status != "draft" and dept_id != c.department_id:
+        raise HTTPException(status_code=409,
+                            detail="Who is in a cycle is fixed once it is open")
+    c.name, c.period_start, c.period_end, c.due_on, c.department_id = name, start, end, due, dept_id
+    db.commit()
+    return cycle_to_dict(c, _review_counts(db, [c.id])[c.id])
+
+
+@app.delete("/api/review-cycles/{cycle_id}")
+def delete_review_cycle(cycle_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    c = _cycle_or_404(db, client.id, cycle_id)
+    if c.status != "draft":
+        raise HTTPException(status_code=409,
+                            detail="A cycle that has opened is a record; close it instead")
+    db.delete(c)
+    log_audit(db, client.id, "review_cycle_deleted", "review_cycle", c.id, c.name, "", request)
+    db.commit()
+    return {"deleted": True}
+
+
+@app.post("/api/review-cycles/{cycle_id}/open")
+def open_review_cycle(cycle_id: int, request: Request, db: Session = Depends(get_db)):
+    """One review per person still here, and a word to each of them and to
+    each person who will write about somebody."""
+    client = get_client_user(request, db)
+    c = _cycle_or_404(db, client.id, cycle_id)
+    if c.status == "open":
+        raise HTTPException(status_code=409, detail="This cycle is already open")
+    if c.status == "closed":
+        raise HTTPException(status_code=409, detail="This cycle is closed")
+    people = [e for e in db.query(models.DBEmployee).filter(
+                  models.DBEmployee.client_id == client.id).all()
+              if employee_is_current(e)
+              and (not c.department_id or e.department_id == c.department_id)]
+    if not people:
+        raise HTTPException(status_code=400, detail="There is nobody to review")
+
+    due = f" by {c.due_on}" if c.due_on else ""
+    to_write = Counter()
+    hr_pool = 0
+    for e in people:
+        reviewer_id, how = resolve_reviewer(db, client.id, e)
+        db.add(models.DBReview(client_id=client.id, cycle_id=c.id, employee_id=e.id,
+                               reviewer_id=reviewer_id, reviewer_how=how))
+        notify_employee(db, e, f"Review: {c.name}",
+                        f"Your self-assessment is due{due}. Open Reviews in your portal.",
+                        "info", "reviews", "HR")
+        if reviewer_id:
+            to_write[reviewer_id] += 1
+        else:
+            hr_pool += 1
+    people_by_id = {e.id: e for e in people}
+    for reviewer_id, n in to_write.items():
+        reviewer = people_by_id.get(reviewer_id) or db.query(models.DBEmployee).filter(
+            models.DBEmployee.id == reviewer_id).first()
+        if reviewer:
+            notify_employee(db, reviewer, f"{n} review{'s' if n != 1 else ''} to write",
+                            f"{c.name}: you review {n} {'person' if n == 1 else 'people'}{due}.",
+                            "info", "reviews", "HR")
+    c.status = "open"
+    c.opened_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_audit(db, client.id, "review_cycle_opened", "review_cycle", c.id, c.name,
+              f"{len(people)} reviews", request)
+    db.commit()
+    return {"opened": len(people), "reviewers": len(to_write), "hr_pool": hr_pool,
+            "status": c.status}
+
+
+@app.post("/api/review-cycles/{cycle_id}/close")
+def close_review_cycle(cycle_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    c = _cycle_or_404(db, client.id, cycle_id)
+    if c.status != "open":
+        raise HTTPException(status_code=409, detail="Only an open cycle can be closed")
+    c.status = "closed"
+    c.closed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_audit(db, client.id, "review_cycle_closed", "review_cycle", c.id, c.name, "", request)
+    db.commit()
+    return cycle_to_dict(c, _review_counts(db, [c.id])[c.id])
+
+
+def _rating_summary(reviews):
+    rated = [r.manager_rating for r in reviews if r.manager_rating]
+    dist = {n: 0 for n in range(1, 6)}
+    for n in rated:
+        dist[n] += 1
+    return {
+        "rated": len(rated),
+        "average": round(sum(rated) / len(rated), 2) if rated else None,
+        "distribution": dist,
+    }
+
+
+@app.get("/api/review-cycles/{cycle_id}")
+def get_review_cycle(cycle_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    c = _cycle_or_404(db, client.id, cycle_id)
+    reviews = db.query(models.DBReview).filter(
+        models.DBReview.cycle_id == c.id).order_by(models.DBReview.id).all()
+    names = _employee_names(db, client.id)
+    depts = {d.id: d.name for d in db.query(models.DBDepartment).filter(
+        models.DBDepartment.client_id == client.id).all()}
+    rows = []
+    for r in reviews:
+        rows.append({
+            "id": r.id, "employee_id": r.employee_id,
+            "employee_name": names.get(r.employee_id, ""),
+            "reviewer_id": r.reviewer_id,
+            "reviewer_name": names.get(r.reviewer_id, "") if r.reviewer_id else "HR",
+            "reviewer_how": r.reviewer_how, "status": r.status,
+            "self_rating": r.self_rating, "manager_rating": r.manager_rating,
+            "rating_label": RATING_LABELS.get(r.manager_rating or 0, ""),
+            "self_submitted_at": r.self_submitted_at,
+            "manager_submitted_at": r.manager_submitted_at,
+        })
+    return {
+        "cycle": cycle_to_dict(c, _review_counts(db, [c.id])[c.id], depts.get(c.department_id, "")),
+        "reviews": rows,
+        "summary": _rating_summary(reviews),
+        "rating_labels": RATING_LABELS,
+    }
+
+
+@app.get("/api/reviews/{review_id}")
+def hr_get_review(review_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    r = db.query(models.DBReview).filter(
+        models.DBReview.id == review_id, models.DBReview.client_id == client.id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Review not found")
+    c = _cycle_or_404(db, client.id, r.cycle_id)
+    return review_to_dict(db, r, c, "hr", _employee_names(db, client.id))
+
+
+def write_manager_half(db, r, cycle, body, by_name):
+    """The reviewer's answers, rating and summary. A draft keeps what was
+    typed; a submission needs the rating and the summary and completes the
+    review, whether or not the person wrote their own half."""
+    if cycle.status != "open":
+        raise HTTPException(status_code=409, detail="This review cycle is not open")
+    if r.status == "complete":
+        raise HTTPException(status_code=409, detail="This review is already complete")
+    body = body or {}
+    questions = _json_list(cycle.questions)
+    draft = bool(body.get("draft"))
+    answers = clean_answers(body.get("answers"), questions)
+    r.manager_answers = json.dumps(answers)
+    r.manager_rating = clean_rating(body.get("rating"), required=not draft)
+    r.manager_summary = str(body.get("summary") or "").strip()[:6000]
+    r.manager_by = by_name[:120]
+    if draft:
+        return "draft"
+    missing = _unanswered(questions, answers)
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Rate '{missing}' before submitting")
+    if not r.manager_summary:
+        raise HTTPException(status_code=400,
+                            detail="Write a summary - it is the part they will read first")
+    r.manager_submitted_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    r.status = "complete"
+    subject = db.query(models.DBEmployee).filter(models.DBEmployee.id == r.employee_id).first()
+    if subject:
+        notify_employee(db, subject, "Your review is ready",
+                        f"{cycle.name}: {by_name} has written your review. Open Reviews to read it.",
+                        "info", "reviews", by_name)
+    return "complete"
+
+
+@app.post("/api/reviews/{review_id}/manager")
+def hr_write_review(review_id: int, request: Request, body: dict = None,
+                    db: Session = Depends(get_db)):
+    """HR writes the manager half. Meant for the people with nobody above
+    them, but allowed for anybody: HR can always step in."""
+    client = get_client_user(request, db)
+    r = db.query(models.DBReview).filter(
+        models.DBReview.id == review_id, models.DBReview.client_id == client.id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Review not found")
+    c = _cycle_or_404(db, client.id, r.cycle_id)
+    outcome = write_manager_half(db, r, c, body, _hr_name(client))
+    db.commit()
+    return {"id": r.id, "status": r.status, "saved": outcome}
+
+
+# --- the employee's side ---------------------------------------------------------
+
+@app.get("/api/employee/reviews")
+def my_reviews(request: Request, db: Session = Depends(get_db)):
+    """Two lists: reviews about me, and reviews I write about others. The
+    second is empty for most people and is why a manager opens this tab."""
+    emp = current_employee(request, db)
+    names = _employee_names(db, emp.client_id)
+    cycles = {c.id: c for c in db.query(models.DBReviewCycle).filter(
+        models.DBReviewCycle.client_id == emp.client_id).all()}
+    mine = db.query(models.DBReview).filter(
+        models.DBReview.client_id == emp.client_id,
+        models.DBReview.employee_id == emp.id).order_by(models.DBReview.id.desc()).all()
+    to_write = db.query(models.DBReview).filter(
+        models.DBReview.client_id == emp.client_id,
+        models.DBReview.reviewer_id == emp.id).order_by(models.DBReview.id.desc()).all()
+
+    def brief(r, role):
+        c = cycles.get(r.cycle_id)
+        if not c:
+            return None
+        d = {"id": r.id, "cycle_id": c.id, "cycle_name": c.name, "due_on": c.due_on,
+             "period_start": c.period_start, "period_end": c.period_end,
+             "cycle_status": c.status, "status": r.status,
+             "employee_id": r.employee_id, "employee_name": names.get(r.employee_id, ""),
+             "reviewer_name": names.get(r.reviewer_id, "") if r.reviewer_id else "HR",
+             "self_submitted_at": r.self_submitted_at,
+             "manager_submitted_at": r.manager_submitted_at}
+        if role == "subject" and r.status == "complete":
+            d["manager_rating"] = r.manager_rating
+            d["rating_label"] = RATING_LABELS.get(r.manager_rating or 0, "")
+        return d
+
+    return {
+        "mine": [b for b in (brief(r, "subject") for r in mine) if b],
+        "to_write": [b for b in (brief(r, "reviewer") for r in to_write)
+                     if b and b["cycle_status"] == "open"],
+        "rating_labels": RATING_LABELS,
+    }
+
+
+def _review_i_can_see(db, emp, review_id):
+    """The review and my role in it, or 404. A review I am neither the
+    subject nor the reviewer of does not exist as far as I am concerned."""
+    r = db.query(models.DBReview).filter(
+        models.DBReview.id == review_id,
+        models.DBReview.client_id == emp.client_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Review not found")
+    if r.employee_id == emp.id:
+        role = "subject"
+    elif r.reviewer_id == emp.id:
+        role = "reviewer"
+    else:
+        raise HTTPException(status_code=404, detail="Review not found")
+    c = _cycle_or_404(db, emp.client_id, r.cycle_id)
+    return r, c, role
+
+
+@app.get("/api/employee/reviews/{review_id}")
+def my_review(review_id: int, request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    r, c, role = _review_i_can_see(db, emp, review_id)
+    d = review_to_dict(db, r, c, role, _employee_names(db, emp.client_id))
+    d["my_role"] = role
+    return d
+
+
+@app.post("/api/employee/reviews/{review_id}/self")
+def write_self_review(review_id: int, request: Request, body: dict = None,
+                      db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    r, c, role = _review_i_can_see(db, emp, review_id)
+    if role != "subject":
+        raise HTTPException(status_code=403, detail="This is somebody else's self-assessment")
+    if c.status != "open":
+        raise HTTPException(status_code=409, detail="This review cycle is not open")
+    if r.status != "awaiting_self":
+        raise HTTPException(status_code=409, detail="You have already submitted this")
+    body = body or {}
+    questions = _json_list(c.questions)
+    draft = bool(body.get("draft"))
+    answers = clean_answers(body.get("answers"), questions)
+    r.self_answers = json.dumps(answers)
+    r.self_rating = clean_rating(body.get("rating"), required=not draft)
+    r.self_comment = str(body.get("comment") or "").strip()[:6000]
+    if draft:
+        db.commit()
+        return {"id": r.id, "status": r.status, "saved": "draft"}
+    missing = _unanswered(questions, answers)
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Rate '{missing}' before submitting")
+    r.self_submitted_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    r.status = "awaiting_manager"
+    if r.reviewer_id:
+        reviewer = db.query(models.DBEmployee).filter(
+            models.DBEmployee.id == r.reviewer_id).first()
+        if reviewer:
+            me = f"{emp.first_name} {emp.last_name}".strip()
+            notify_employee(db, reviewer, f"{me} has written their self-assessment",
+                            f"{c.name}: their half is in. Yours is next.",
+                            "info", "reviews", me)
+    db.commit()
+    return {"id": r.id, "status": r.status, "saved": "submitted"}
+
+
+@app.post("/api/employee/reviews/{review_id}/manager")
+def manager_writes_review(review_id: int, request: Request, body: dict = None,
+                          db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    r, c, role = _review_i_can_see(db, emp, review_id)
+    if role != "reviewer":
+        raise HTTPException(status_code=403, detail="You are not this person's reviewer")
+    outcome = write_manager_half(db, r, c, body, f"{emp.first_name} {emp.last_name}".strip())
+    db.commit()
+    return {"id": r.id, "status": r.status, "saved": outcome}
+
+
+# ============================================================================
+# Certifications and training
+# ============================================================================
+
+CERT_WARN_DAYS = 30
+
+
+def certification_status(c, today=None):
+    """(status, days_left). valid | expiring | expired; days is None when
+    it never expires."""
+    if not c.expires_on:
+        return "valid", None
+    when = _parse_date(c.expires_on)
+    if not when:
+        return "valid", None
+    days = (when - (today or date.today())).days
+    if days < 0:
+        return "expired", days
+    if days <= CERT_WARN_DAYS:
+        return "expiring", days
+    return "valid", days
+
+
+def certification_to_dict(c, names=None, today=None):
+    status, days = certification_status(c, today)
+    return {
+        "id": c.id, "employee_id": c.employee_id,
+        "employee_name": (names or {}).get(c.employee_id, ""),
+        "name": c.name, "issuer": c.issuer, "issued_on": c.issued_on,
+        "expires_on": c.expires_on, "reference": c.reference, "notes": c.notes,
+        "has_document": bool(c.document_data), "added_by": c.added_by,
+        "verified": bool(c.verified_by), "verified_by": c.verified_by,
+        "verified_at": c.verified_at, "status": status, "days_left": days,
+        "created_at": c.created_at,
+    }
+
+
+def apply_certification_fields(c, body):
+    """Name, issuer, dates, reference, notes and the picture, onto a row.
+    Only keys that were sent change, so a partial edit is a partial edit."""
+    if "name" in body or not c.name:
+        name = str(body.get("name") or "").strip()[:200]
+        if not name:
+            raise HTTPException(status_code=400, detail="Say what the certification is")
+        c.name = name
+    if "issuer" in body:
+        c.issuer = str(body.get("issuer") or "").strip()[:200]
+    if "issued_on" in body:
+        c.issued_on = _clean_ymd(body.get("issued_on"), "Issued on")
+    if "expires_on" in body:
+        c.expires_on = _clean_ymd(body.get("expires_on"), "Expires on")
+        # A new date is news again.
+        c.reminder_stage = 0
+    if c.issued_on and c.expires_on and c.expires_on < c.issued_on:
+        raise HTTPException(status_code=400, detail="It expires before it was issued")
+    if "reference" in body:
+        c.reference = str(body.get("reference") or "").strip()[:200]
+    if "notes" in body:
+        c.notes = str(body.get("notes") or "").strip()[:2000]
+    if "document_data" in body:
+        c.document_data = image_upload_or_400(body.get("document_data"), "certificate")
+
+
+def _certifications_for(db, client_id, employee_id=None):
+    q = db.query(models.DBCertification).filter(models.DBCertification.client_id == client_id)
+    if employee_id:
+        q = q.filter(models.DBCertification.employee_id == employee_id)
+    return q.order_by(models.DBCertification.expires_on == "",
+                      models.DBCertification.expires_on,
+                      models.DBCertification.id.desc()).limit(2000).all()
+
+
+# --- HR's side ------------------------------------------------------------------
+
+@app.get("/api/certifications")
+def list_certifications(request: Request, status: str = "", db: Session = Depends(get_db)):
+    """Everybody's, soonest to lapse first. The counts are for the page
+    header and the dashboard, and the filter is one of them."""
+    client = get_client_user(request, db)
+    names = _employee_names(db, client.id)
+    current = {e.id for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client.id).all() if employee_is_current(e)}
+    today = date.today()
+    rows = [certification_to_dict(c, names, today)
+            for c in _certifications_for(db, client.id) if c.employee_id in current]
+    counts = Counter(r["status"] for r in rows)
+    unverified = sum(1 for r in rows if not r["verified"])
+    if status in ("valid", "expiring", "expired"):
+        rows = [r for r in rows if r["status"] == status]
+    elif status == "unverified":
+        rows = [r for r in rows if not r["verified"]]
+    return {
+        "certifications": rows,
+        "counts": {"valid": counts.get("valid", 0), "expiring": counts.get("expiring", 0),
+                   "expired": counts.get("expired", 0), "unverified": unverified,
+                   "total": sum(counts.values())},
+        "warn_days": CERT_WARN_DAYS,
+    }
+
+
+@app.get("/api/employees/{emp_id}/certifications")
+def employee_certifications(emp_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    names = {emp.id: f"{emp.first_name} {emp.last_name}".strip()}
+    return {"certifications": [certification_to_dict(c, names)
+                               for c in _certifications_for(db, client.id, emp.id)]}
+
+
+@app.post("/api/employees/{emp_id}/certifications")
+def hr_add_certification(emp_id: int, request: Request, body: dict = None,
+                         db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    c = models.DBCertification(client_id=client.id, employee_id=emp.id, added_by="hr",
+                               verified_by=_hr_name(client),
+                               verified_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    apply_certification_fields(c, body or {})
+    db.add(c)
+    db.flush()
+    log_audit(db, client.id, "certification_added", "certification", c.id, c.name,
+              f"for {emp.first_name} {emp.last_name}", request)
+    db.commit()
+    return certification_to_dict(c, {emp.id: f"{emp.first_name} {emp.last_name}".strip()})
+
+
+def _cert_or_404(db, client_id, cert_id):
+    c = db.query(models.DBCertification).filter(
+        models.DBCertification.id == cert_id,
+        models.DBCertification.client_id == client_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Certification not found")
+    return c
+
+
+@app.put("/api/certifications/{cert_id}")
+def hr_update_certification(cert_id: int, request: Request, body: dict = None,
+                            db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    c = _cert_or_404(db, client.id, cert_id)
+    body = body or {}
+    apply_certification_fields(c, body)
+    if body.get("verified") is True and not c.verified_by:
+        c.verified_by = _hr_name(client)
+        c.verified_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    elif body.get("verified") is False:
+        c.verified_by, c.verified_at = "", ""
+    db.commit()
+    return certification_to_dict(c, _employee_names(db, client.id))
+
+
+@app.delete("/api/certifications/{cert_id}")
+def hr_delete_certification(cert_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    c = _cert_or_404(db, client.id, cert_id)
+    log_audit(db, client.id, "certification_deleted", "certification", c.id, c.name, "", request)
+    db.delete(c)
+    db.commit()
+    return {"deleted": True}
+
+
+@app.get("/api/certifications/{cert_id}/document")
+def hr_certification_document(cert_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    c = _cert_or_404(db, client.id, cert_id)
+    if not c.document_data:
+        raise HTTPException(status_code=404, detail="No document on this certification")
+    return serve_image(c.document_data)
+
+
+# --- the employee's side ---------------------------------------------------------
+
+@app.get("/api/employee/certifications")
+def my_certifications(request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    names = {emp.id: f"{emp.first_name} {emp.last_name}".strip()}
+    rows = [certification_to_dict(c, names) for c in _certifications_for(db, emp.client_id, emp.id)]
+    return {"certifications": rows,
+            "expiring": sum(1 for r in rows if r["status"] in ("expiring", "expired")),
+            "warn_days": CERT_WARN_DAYS}
+
+
+@app.post("/api/employee/certifications")
+def add_my_certification(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Theirs to add, HR's to confirm: it shows as unverified until then."""
+    emp = current_employee(request, db)
+    c = models.DBCertification(client_id=emp.client_id, employee_id=emp.id, added_by="employee")
+    apply_certification_fields(c, body or {})
+    db.add(c)
+    db.commit()
+    return certification_to_dict(c, {emp.id: f"{emp.first_name} {emp.last_name}".strip()})
+
+
+@app.delete("/api/employee/certifications/{cert_id}")
+def delete_my_certification(cert_id: int, request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    c = db.query(models.DBCertification).filter(
+        models.DBCertification.id == cert_id,
+        models.DBCertification.client_id == emp.client_id,
+        models.DBCertification.employee_id == emp.id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Certification not found")
+    if c.verified_by:
+        raise HTTPException(status_code=409,
+                            detail="HR has verified this one - ask them to remove it")
+    db.delete(c)
+    db.commit()
+    return {"deleted": True}
+
+
+@app.get("/api/employee/certifications/{cert_id}/document")
+def my_certification_document(cert_id: int, request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    c = db.query(models.DBCertification).filter(
+        models.DBCertification.id == cert_id,
+        models.DBCertification.client_id == emp.client_id,
+        models.DBCertification.employee_id == emp.id).first()
+    if not c or not c.document_data:
+        raise HTTPException(status_code=404, detail="No document on this certification")
+    return serve_image(c.document_data)
+
+
+@scheduled_job("certification_expiry")
+def job_certification_expiry(db, now):
+    """A month out, a week out, and the day it lapses: one word each, to the
+    person it belongs to. The stage on the row is what stops the same word
+    being said every morning."""
+    today = now.date()
+    told = 0
+    rows = db.query(models.DBCertification).filter(
+        models.DBCertification.expires_on != "").all()
+    people = {}
+    for c in rows:
+        status, days = certification_status(c, today)
+        due = 3 if status == "expired" else 2 if days is not None and days <= 7 else \
+            1 if status == "expiring" else 0
+        if due <= (c.reminder_stage or 0):
+            continue
+        c.reminder_stage = due
+        if c.employee_id not in people:
+            people[c.employee_id] = db.query(models.DBEmployee).filter(
+                models.DBEmployee.id == c.employee_id).first()
+        emp = people[c.employee_id]
+        if not emp or not employee_is_current(emp):
+            continue
+        if due == 3:
+            title, msg = f"{c.name} has expired", f"It lapsed on {c.expires_on}. Renew it and update your profile."
+        elif due == 2:
+            title, msg = f"{c.name} expires in {max(days, 0)} day{'s' if days != 1 else ''}", \
+                f"It runs out on {c.expires_on}."
+        else:
+            title, msg = f"{c.name} expires on {c.expires_on}", \
+                f"About {days} days left. Renew it before then and update your profile."
+        notify_employee(db, emp, title, msg, "warning", "profile", "HR")
+        told += 1
+    db.commit()
+    return f"{told} told"
+
+
+# ============================================================================
+# Employment history
+# ============================================================================
+# Written by the employee update route when a job field changes, and by HR
+# by hand for the rest. Joining and leaving come off the employee row itself.
+
+TRACKED_JOB_FIELDS = {
+    "job_title": "title_change", "department_id": "transfer", "salary": "pay_change",
+    "hourly_rate": "pay_change", "reports_to": "manager_change", "level": "level_change",
+    "employment_type": "type_change",
+}
+CHANGE_KINDS = ("promotion", "transfer", "pay_change", "title_change", "manager_change",
+                "level_change", "type_change", "note")
+CHANGE_LABELS = {
+    "promotion": "Promotion", "transfer": "Moved department", "pay_change": "Pay change",
+    "title_change": "New title", "manager_change": "New manager", "level_change": "Level change",
+    "type_change": "Employment type", "note": "Note", "joined": "Joined", "left": "Left",
+}
+
+
+def _job_value_label(db, client_id, field, value):
+    """A department id or a manager id as the name a person would recognise."""
+    if value in (None, ""):
+        return ""
+    if field == "department_id":
+        d = db.query(models.DBDepartment).filter(
+            models.DBDepartment.id == value, models.DBDepartment.client_id == client_id).first()
+        return d.name if d else str(value)
+    if field == "reports_to":
+        m = db.query(models.DBEmployee).filter(
+            models.DBEmployee.id == value, models.DBEmployee.client_id == client_id).first()
+        return f"{m.first_name} {m.last_name}".strip() if m else str(value)
+    if field in ("salary", "hourly_rate"):
+        try:
+            return f"{float(value):g}"
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
+def _same_job_value(a, b):
+    if a in (None, "") and b in (None, ""):
+        return True
+    try:
+        return float(a) == float(b)
+    except (TypeError, ValueError):
+        return str(a) == str(b)
+
+
+def record_employment_changes(db, client_id, emp, before, body, by_name, effective_on=""):
+    """One row per tracked field that actually changed. Reads the labels
+    before the ids are gone, so the row says 'Sales' and not '7'."""
+    when = _clean_ymd(effective_on, "Effective date") or datetime.now().strftime("%Y-%m-%d")
+    written = []
+    for field, kind in TRACKED_JOB_FIELDS.items():
+        if field not in body:
+            continue
+        old, new = before.get(field), getattr(emp, field, None)
+        if _same_job_value(old, new):
+            continue
+        row = models.DBEmploymentChange(
+            client_id=client_id, employee_id=emp.id, effective_on=when, kind=kind,
+            field=field, old_value=_job_value_label(db, client_id, field, old)[:200],
+            new_value=_job_value_label(db, client_id, field, new)[:200],
+            note=str(body.get("change_note") or "").strip()[:1000], recorded_by=by_name[:120])
+        db.add(row)
+        written.append(row)
+    return written
+
+
+def change_to_dict(r, include_pay=True):
+    d = {"id": r.id, "employee_id": r.employee_id, "effective_on": r.effective_on,
+         "kind": r.kind, "label": CHANGE_LABELS.get(r.kind, r.kind), "field": r.field,
+         "old_value": r.old_value, "new_value": r.new_value, "note": r.note,
+         "recorded_by": r.recorded_by, "created_at": r.created_at}
+    if not include_pay and r.kind == "pay_change":
+        d["old_value"], d["new_value"] = "", ""
+    return d
+
+
+def employment_history(db, emp, include_pay=True):
+    """Newest first, with joining and leaving read off the employee row."""
+    rows = db.query(models.DBEmploymentChange).filter(
+        models.DBEmploymentChange.employee_id == emp.id,
+        models.DBEmploymentChange.client_id == emp.client_id).all()
+    out = [change_to_dict(r, include_pay) for r in rows]
+    # The day they joined, with the title they joined as: the oldest title
+    # change knows what it was before, and if there was none it is today's.
+    joined = _parse_date(emp.start_date) or _parse_date(emp.created_at)
+    if joined:
+        titles = sorted((r for r in rows if r.field == "job_title"),
+                        key=lambda r: (r.effective_on or "", r.id))
+        first_title = titles[0].old_value if titles else (emp.job_title or "")
+        out.append({"id": None, "employee_id": emp.id, "effective_on": joined.isoformat(),
+                    "kind": "joined", "label": "Joined", "field": "", "old_value": "",
+                    "new_value": first_title, "note": "", "recorded_by": "", "created_at": ""})
+    if emp.end_date:
+        out.append({"id": None, "employee_id": emp.id, "effective_on": emp.end_date[:10],
+                    "kind": "left", "label": "Left", "field": "", "old_value": "",
+                    "new_value": "", "note": "", "recorded_by": "", "created_at": ""})
+    out.sort(key=lambda d: (d["effective_on"] or "", d["created_at"] or "", d["id"] or 0), reverse=True)
+    return out
+
+
+@app.get("/api/employees/{emp_id}/history")
+def hr_employment_history(emp_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    return {"history": employment_history(db, emp), "kinds": CHANGE_KINDS, "labels": CHANGE_LABELS}
+
+
+@app.post("/api/employees/{emp_id}/history")
+def hr_add_history(emp_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """For the record: a promotion, a note, anything the fields do not
+    capture. The date is theirs to set, because it usually already happened."""
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    body = body or {}
+    kind = str(body.get("kind") or "note").strip().lower()
+    if kind not in CHANGE_KINDS:
+        raise HTTPException(status_code=400, detail="Not a kind of change this keeps")
+    note = str(body.get("note") or "").strip()[:1000]
+    new_value = str(body.get("new_value") or "").strip()[:200]
+    if not note and not new_value:
+        raise HTTPException(status_code=400, detail="Say what changed")
+    row = models.DBEmploymentChange(
+        client_id=client.id, employee_id=emp.id,
+        effective_on=_clean_ymd(body.get("effective_on"), "Effective date") or datetime.now().strftime("%Y-%m-%d"),
+        kind=kind, field="", old_value=str(body.get("old_value") or "").strip()[:200],
+        new_value=new_value, note=note, recorded_by=_hr_name(client))
+    db.add(row)
+    db.commit()
+    return change_to_dict(row)
+
+
+@app.delete("/api/employment-changes/{change_id}")
+def hr_delete_history(change_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = db.query(models.DBEmploymentChange).filter(
+        models.DBEmploymentChange.id == change_id,
+        models.DBEmploymentChange.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Not found")
+    db.delete(row)
+    db.commit()
+    return {"deleted": True}
+
+
+@app.get("/api/employee/history")
+def my_employment_history(request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    return {"history": employment_history(db, emp), "labels": CHANGE_LABELS}
+
+
+# ============================================================================
+# People analytics
+# ============================================================================
+# The numbers a head of people is asked for: how many, how fast they leave,
+# how long they stay, and whether the reviews, certifications and leave are
+# where they should be. Everything is worked out from rows that already
+# exist, so it is right on the day it is switched on.
+
+def _month_starts(n, today):
+    first = today.replace(day=1)
+    out = []
+    y, m = first.year, first.month
+    for _ in range(n):
+        out.append(date(y, m, 1))
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+    return list(reversed(out))
+
+
+def _month_end(d):
+    return date(d.year, d.month, calendar.monthrange(d.year, d.month)[1])
+
+
+def _joined_on(emp):
+    return _parse_date(emp.start_date) or _parse_date(emp.created_at)
+
+
+def _left_on(emp):
+    """When they went, or None if still here. A leaver without a date is
+    taken to have gone the day the row says it was created - wrong, but not
+    invisible, which is what the alternative was."""
+    if employee_is_current(emp):
+        return None
+    return _parse_date(emp.end_date) or _parse_date(emp.created_at) or date.today()
+
+
+@app.get("/api/hr/analytics")
+def hr_analytics(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    cid = client.id
+    today = date.today()
+    everyone = db.query(models.DBEmployee).filter(models.DBEmployee.client_id == cid).all()
+    current = [e for e in everyone if employee_is_current(e)]
+    joined = {e.id: _joined_on(e) for e in everyone}
+    left = {e.id: _left_on(e) for e in everyone}
+
+    # --- headcount, month by month ---------------------------------------
+    months = []
+    for start in _month_starts(12, today):
+        end = _month_end(start)
+        here = sum(1 for e in everyone
+                   if joined[e.id] and joined[e.id] <= end
+                   and (left[e.id] is None or left[e.id] > end))
+        joiners = sum(1 for e in everyone if joined[e.id] and start <= joined[e.id] <= end)
+        leavers = sum(1 for e in everyone if left[e.id] and start <= left[e.id] <= end)
+        months.append({"month": start.strftime("%Y-%m"), "label": start.strftime("%b %y"),
+                       "headcount": here, "joiners": joiners, "leavers": leavers})
+    year_ago = today - timedelta(days=365)
+    leavers_12m = sum(1 for e in everyone if left[e.id] and left[e.id] > year_ago)
+    joiners_12m = sum(1 for e in everyone if joined[e.id] and joined[e.id] > year_ago)
+    avg_headcount = (sum(m["headcount"] for m in months) / len(months)) if months else 0
+    turnover = round(100 * leavers_12m / avg_headcount, 1) if avg_headcount else 0.0
+
+    # --- tenure -------------------------------------------------------------
+    tenures = [(today - joined[e.id]).days / 365.25 for e in current if joined[e.id]]
+    bands = {"under_1": 0, "1_to_2": 0, "2_to_5": 0, "over_5": 0}
+    for t in tenures:
+        bands["under_1" if t < 1 else "1_to_2" if t < 2 else "2_to_5" if t < 5 else "over_5"] += 1
+
+    # --- who is where -------------------------------------------------------
+    depts = {d.id: d.name for d in db.query(models.DBDepartment).filter(
+        models.DBDepartment.client_id == cid).all()}
+    by_dept = Counter(depts.get(e.department_id, "No department") for e in current)
+    by_type = Counter((e.employment_type or "Unspecified") for e in current)
+
+    # --- reviews: the latest cycle ---------------------------------------------
+    latest = db.query(models.DBReviewCycle).filter(
+        models.DBReviewCycle.client_id == cid,
+        models.DBReviewCycle.status != "draft").order_by(models.DBReviewCycle.id.desc()).first()
+    reviews_block = None
+    if latest:
+        rows = db.query(models.DBReview).filter(models.DBReview.cycle_id == latest.id).all()
+        summary = _rating_summary(rows)
+        reviews_block = {
+            "cycle_id": latest.id, "cycle_name": latest.name, "status": latest.status,
+            "total": len(rows),
+            "complete": sum(1 for r in rows if r.status == "complete"),
+            "awaiting_self": sum(1 for r in rows if r.status == "awaiting_self"),
+            "awaiting_manager": sum(1 for r in rows if r.status == "awaiting_manager"),
+            "average": summary["average"], "distribution": summary["distribution"],
+        }
+
+    # --- certifications -----------------------------------------------------------
+    current_ids = {e.id for e in current}
+    certs = [c for c in db.query(models.DBCertification).filter(
+        models.DBCertification.client_id == cid).all() if c.employee_id in current_ids]
+    cert_status = Counter(certification_status(c, today)[0] for c in certs)
+    cert_block = {"total": len(certs), "valid": cert_status.get("valid", 0),
+                  "expiring": cert_status.get("expiring", 0),
+                  "expired": cert_status.get("expired", 0),
+                  "unverified": sum(1 for c in certs if not c.verified_by),
+                  "people_with_one": len({c.employee_id for c in certs})}
+
+    # --- leave this year ------------------------------------------------------------
+    year = today.strftime("%Y")
+    approved = db.query(models.DBLeaveRequest).filter(
+        models.DBLeaveRequest.client_id == cid,
+        models.DBLeaveRequest.status == "approved",
+        models.DBLeaveRequest.start_date >= f"{year}-01-01").all()
+    days_taken = sum((r.days or 0) for r in approved)
+    by_leave_type = Counter()
+    for r in approved:
+        by_leave_type[(r.leave_type or "other")] += (r.days or 0)
+    leave_block = {"days_taken": round(days_taken, 1),
+                   "per_person": round(days_taken / len(current), 1) if current else 0.0,
+                   "by_type": {k: round(v, 1) for k, v in by_leave_type.items()}}
+
+    # --- goals ------------------------------------------------------------------------
+    goals = db.query(models.DBEmployeeGoal).filter(
+        models.DBEmployeeGoal.client_id == cid).all()
+    live = [g for g in goals if g.employee_id in current_ids]
+    done = sum(1 for g in live if g.status == "completed")
+    with_target = [g for g in live if (g.target_value or 0) > 0 and g.status != "completed"]
+    avg_progress = round(100 * sum(min(1.0, (g.current_value or 0) / g.target_value)
+                                   for g in with_target) / len(with_target)) if with_target else None
+    overdue = sum(1 for g in live if g.status != "completed" and g.due_date
+                  and (_parse_date(g.due_date) or today) < today)
+    goals_block = {"total": len(live), "completed": done, "overdue": overdue,
+                   "average_progress_pct": avg_progress}
+
+    # --- changes in the last year -----------------------------------------------------
+    since = year_ago.strftime("%Y-%m-%d")
+    changes = db.query(models.DBEmploymentChange).filter(
+        models.DBEmploymentChange.client_id == cid,
+        models.DBEmploymentChange.effective_on >= since).all()
+    change_counts = Counter(c.kind for c in changes)
+    moves_block = {"promotions": change_counts.get("promotion", 0) + change_counts.get("level_change", 0),
+                   "pay_changes": change_counts.get("pay_change", 0),
+                   "transfers": change_counts.get("transfer", 0),
+                   "manager_changes": change_counts.get("manager_change", 0)}
+
+    # --- hiring ---------------------------------------------------------------------------
+    open_reqs = db.query(models.DBJobRequisition).filter(
+        models.DBJobRequisition.client_id == cid,
+        models.DBJobRequisition.status == "open").all()
+    hiring_block = {"open_roles": len(open_reqs),
+                    "openings": sum((r.openings or 1) for r in open_reqs)}
+
+    return {
+        "as_of": today.strftime("%Y-%m-%d"),
+        "headcount": {
+            "now": len(current), "joiners_12m": joiners_12m, "leavers_12m": leavers_12m,
+            "turnover_pct": turnover, "average_headcount_12m": round(avg_headcount, 1),
+            "by_month": months,
+            "average_tenure_years": round(sum(tenures) / len(tenures), 1) if tenures else 0.0,
+            "tenure_bands": bands,
+            "by_department": [{"name": k, "count": v} for k, v in by_dept.most_common()],
+            "by_type": [{"name": k, "count": v} for k, v in by_type.most_common()],
+        },
+        "reviews": reviews_block,
+        "certifications": cert_block,
+        "leave": leave_block,
+        "goals": goals_block,
+        "moves_12m": moves_block,
+        "hiring": hiring_block,
+    }
+
 
 
 # Serve frontend
