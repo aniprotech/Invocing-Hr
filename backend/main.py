@@ -425,6 +425,43 @@ admin.add_view(AdminUserAdmin)
 # development (the browser refuses to store the session at all). Default to
 # secure, and let a local run opt out with COOKIE_SECURE=false.
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").strip().lower() not in ("false", "0", "no")
+# Registered before SessionMiddleware on purpose. Starlette wraps in the order
+# added, last outermost, so anything that needs request.session has to be
+# added before the middleware that provides it - or it runs first and finds
+# nothing there.
+# Every path a signed-in employee can reach. The two prefixes are the staff
+# portal's own API and the feed it shares with HR.
+STAFF_PATHS = ("/api/employee/", "/api/feed")
+
+
+@app.middleware("http")
+async def a_leaver_is_out(request: Request, call_next):
+    """Sign-in refused somebody who had left. Nothing after sign-in did.
+
+    The session is a signed cookie with nothing server-side to revoke, so
+    somebody marked as having left kept every portal endpoint working until
+    the cookie expired - days, on a phone. Twenty-four of those endpoints
+    read the session themselves rather than through current_employee, so a
+    check inside that helper covered less than half of them. This is in
+    front of all of them, and of any route somebody writes next year.
+
+    One indexed lookup per staff request. Every one of those routes loads the
+    employee row anyway.
+    """
+    path = request.url.path
+    if path.startswith(STAFF_PATHS) and not path.startswith("/api/employee/auth/login"):
+        emp_id = request.session.get("employee_id")
+        if emp_id:
+            with SessionLocal() as db:
+                status = db.query(models.DBEmployee.status).filter(
+                    models.DBEmployee.id == emp_id).scalar()
+            if status == "terminated":
+                request.session.clear()
+                return JSONResponse({"detail": "This account has been closed"},
+                                    status_code=401)
+    return await call_next(request)
+
+
 app.add_middleware(
     SessionMiddleware,
     secret_key=SECRET_KEY,
@@ -9372,18 +9409,218 @@ def start_offboarding(emp_id: int, request: Request, db: Session = Depends(get_d
     db.commit()
     return {"message": "Offboarding started"}
 
-@app.post("/api/employees/{emp_id}/complete-offboard")
-def complete_offboarding(emp_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+# ============================================================================
+# OFFBOARDING
+#
+# Starting it set a status and fired a workflow. Finishing it set another
+# status and was reachable from nothing in the browser, so everybody who ever
+# left stayed "offboarding" for good. In between, nothing looked at what the
+# person still had or was still responsible for.
+#
+# That is the security hole. A leaver with the laptop still on their desk at
+# home, a live portal login, three people reporting to them and a leave
+# request from one of those people waiting on their approval - and the record
+# says "offboarding" and nothing else. The checklist below is worked out live
+# from what the product already knows, and completing the leaver is refused
+# while the things that matter are still open.
+# ============================================================================
+
+def offboarding_checklist(db, client, emp):
+    """Everything still open for somebody on their way out, from the data
+    that is already here. Nothing on this list is typed in by anybody."""
+    # What they still hold. An open assignment is one with no return date.
+    held = db.query(models.DBAssetAssignment, models.DBAsset).join(
+        models.DBAsset, models.DBAsset.id == models.DBAssetAssignment.asset_id
+    ).filter(
+        models.DBAssetAssignment.client_id == client.id,
+        models.DBAssetAssignment.employee_id == emp.id,
+        models.DBAssetAssignment.returned_at == "",
+    ).all()
+    assets_out = [{"asset_id": a.id, "tag": a.tag, "name": a.name,
+                   "issued_at": asg.issued_at or ""} for asg, a in held]
+
+    # Leave they are owed, which is usually paid in lieu on the last day.
+    try:
+        balance = leave_balance_for(db, emp)
+        leave_owed = max(0.0, float(balance.get("annual_remaining") or 0))
+    except Exception:      # noqa: BLE001
+        leave_owed = 0.0
+
+    # Money the business owes them.
+    owed = db.query(models.DBExpenseClaim).filter(
+        models.DBExpenseClaim.client_id == client.id,
+        models.DBExpenseClaim.employee_id == emp.id,
+        models.DBExpenseClaim.status == "approved").all()
+    cur = (client.currency or "GBP").upper()
+    expenses_owed = to_major(sum((r.amount_minor or 0) for r in owed), cur)
+
+    # Things still to do about them - the leaver workflow's own tasks.
+    open_tasks = db.query(models.DBWorkflowTask).filter(
+        models.DBWorkflowTask.client_id == client.id,
+        models.DBWorkflowTask.employee_id == emp.id,
+        models.DBWorkflowTask.done == False,                    # noqa: E712
+    ).order_by(models.DBWorkflowTask.due_date).all()
+
+    # People who will have no manager once they go.
+    reports = db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client.id,
+        models.DBEmployee.reports_to == emp.id,
+        models.DBEmployee.status != "terminated",
+    ).all()
+    report_ids = [r.id for r in reports]
+
+    # Decisions waiting on them that will otherwise wait forever.
+    waiting = 0
+    if report_ids:
+        waiting += db.query(models.DBLeaveRequest).filter(
+            models.DBLeaveRequest.employee_id.in_(report_ids),
+            models.DBLeaveRequest.status == "pending").count()
+        waiting += db.query(models.DBExpenseClaim).filter(
+            models.DBExpenseClaim.employee_id.in_(report_ids),
+            models.DBExpenseClaim.status == "pending").count()
+        waiting += db.query(models.DBAttendanceCorrection).filter(
+            models.DBAttendanceCorrection.employee_id.in_(report_ids),
+            models.DBAttendanceCorrection.status == "pending").count()
+
+    # Which of these stop the door closing. Unreturned equipment does; a
+    # leave balance does not, it is settled in the final pay. Open tasks are
+    # HR's own list and are not a reason to keep the account alive.
+    blocking = []
+    if assets_out:
+        blocking.append(f"{len(assets_out)} item(s) of equipment not returned")
+    if reports and waiting:
+        blocking.append(f"{waiting} decision(s) waiting on them for their team")
+
+    return {
+        "employee_id": emp.id,
+        "name": f"{emp.first_name} {emp.last_name}".strip(),
+        "status": emp.status or "",
+        "end_date": emp.end_date or "",
+        "assets_out": assets_out,
+        "leave_owed_days": round(leave_owed, 2),
+        "expenses_owed": expenses_owed, "currency": cur,
+        "open_tasks": [{"id": t.id, "title": t.title, "due_date": t.due_date or "",
+                        "assignee": t.assigned_how or ""} for t in open_tasks],
+        "direct_reports": [{"id": r.id, "name": f"{r.first_name} {r.last_name}".strip()}
+                           for r in reports],
+        "decisions_waiting_on_them": waiting,
+        # Whether the person can still sign in. True until the moment they
+        # are marked as having left.
+        "portal_access": (emp.status or "") != "terminated",
+        "blocking": blocking,
+        "ready": not blocking,
+    }
+
+
+@app.get("/api/employees/{emp_id}/offboarding")
+def read_offboarding(emp_id: int, request: Request, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
-    emp = db.query(models.DBEmployee).filter(models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
-    end_date = body.get("end_date", "") if body else ""
+    return offboarding_checklist(db, client, emp)
+
+
+@app.post("/api/employees/{emp_id}/complete-offboard")
+def complete_offboarding(emp_id: int, request: Request, body: dict = None,
+                         db: Session = Depends(get_db)):
+    """Close the account.
+
+    Refused while equipment is out or their team's decisions are waiting on
+    them, unless HR says to go ahead anyway and says why - a laptop written
+    off is a decision, and it is recorded as one. Their reports are moved to
+    whoever is named, or left without a manager and shown as such on the org
+    chart rather than pointing at somebody who has gone.
+    """
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    if (emp.status or "") == "terminated":
+        raise HTTPException(status_code=409, detail="They have already left")
+
+    body = body or {}
+    end_date = str(body.get("end_date") or "").strip()
+    try:
+        datetime.strptime(end_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="When is their last day? (YYYY-MM-DD)")
+
+    check = offboarding_checklist(db, client, emp)
+    force = bool(body.get("force"))
+    force_note = str(body.get("force_note") or "").strip()[:300]
+    if check["blocking"] and not force:
+        raise HTTPException(
+            status_code=409,
+            detail="Not ready: " + "; ".join(check["blocking"]) +
+                   ". Sort these out, or confirm you want to go ahead anyway.")
+    if check["blocking"] and force and not force_note:
+        raise HTTPException(status_code=400,
+                            detail="Say why you are going ahead with these still open")
+
+    # Who takes their people. Checked against this business and against
+    # the leaver themselves - reassigning to the person leaving is the state
+    # this exists to get out of.
+    new_manager = None
+    raw = body.get("reassign_to")
+    if raw not in (None, "", 0, "0"):
+        try:
+            new_id = int(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Not an employee")
+        if new_id == emp.id:
+            raise HTTPException(status_code=400,
+                                detail="Their team cannot be reassigned to them")
+        new_manager = db.query(models.DBEmployee).filter(
+            models.DBEmployee.id == new_id,
+            models.DBEmployee.client_id == client.id,
+            models.DBEmployee.status != "terminated").first()
+        if not new_manager:
+            raise HTTPException(status_code=404, detail="That manager was not found")
+
+    moved = 0
+    for r in db.query(models.DBEmployee).filter(
+            models.DBEmployee.client_id == client.id,
+            models.DBEmployee.reports_to == emp.id).all():
+        r.reports_to = new_manager.id if new_manager else None
+        moved += 1
+        if new_manager:
+            notify_employee(db, r, "You have a new manager",
+                            f"{new_manager.first_name} {new_manager.last_name} now looks after "
+                            f"your leave and expenses.", kind="info")
+    if new_manager and moved:
+        notify_employee(db, new_manager,
+                        f"{moved} {'person now reports' if moved == 1 else 'people now report'} to you",
+                        f"From {check['name']}'s team. Their pending requests are yours to decide.",
+                        kind="info")
+
+    # A department they head has nobody running it now.
+    for d in db.query(models.DBDepartment).filter(
+            models.DBDepartment.client_id == client.id,
+            models.DBDepartment.head_id == emp.id).all():
+        d.head_id = new_manager.id if new_manager else None
+
     emp.status = "terminated"
     emp.end_date = end_date
     emp.offboarding_complete = True
+
+    log_audit(db, client.id, "employee_left", "employee", emp.id, check["name"],
+              f"last day {end_date}"
+              + (f"; reports moved to employee {new_manager.id}" if new_manager else
+                 (f"; {moved} report(s) left without a manager" if moved else ""))
+              + (f"; went ahead with: {'; '.join(check['blocking'])} - {force_note}"
+                 if check["blocking"] else ""),
+              request)
     db.commit()
-    return {"message": "Employee offboarded"}
+    return {
+        "message": "Employee offboarded",
+        "end_date": end_date,
+        "reports_moved": moved,
+        "reassigned_to": new_manager.id if new_manager else None,
+        "went_ahead_with": check["blocking"] if force else [],
+    }
 
 # --- Onboarding API ---
 

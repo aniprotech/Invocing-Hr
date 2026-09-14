@@ -5140,6 +5140,7 @@ async function viewEmployee(empId) {
 
         var offboardBtn = document.getElementById('emp-offboard-btn');
         if (offboardBtn) offboardBtn.style.display = (emp.status === 'active' || emp.status === 'onboarding') ? 'inline-flex' : 'none';
+        loadOffboarding(emp);
 
         // Onboarding
         var items = emp.onboarding_items || [];
@@ -5333,6 +5334,117 @@ async function submitNewEmployee() {
     } catch (e) { showToast('Failed: ' + e, 'error'); }
 }
 window.submitNewEmployee = submitNewEmployee;
+
+// --- Leaving ---------------------------------------------------------------
+// The checklist is the server's. This only draws it and refuses to let the
+// door close while it says not to - and lets HR say "go ahead anyway" with a
+// reason, because a laptop written off is a decision and gets recorded as one.
+
+async function loadOffboarding(emp) {
+    var widget = document.getElementById('offboarding-widget');
+    if (!widget) return;
+    // Only for somebody on their way out. Somebody active has the Offboard
+    // button; somebody gone has nothing left to do.
+    if ((emp.status || '') !== 'offboarding') { widget.style.display = 'none'; return; }
+    widget.style.display = '';
+    try {
+        var res = await fetch('/api/employees/' + emp.id + '/offboarding');
+        if (!res.ok) throw new Error('Failed');
+        renderOffboarding(await res.json());
+    } catch (e) {
+        document.getElementById('offb-checklist').innerHTML =
+            '<div style="color:var(--text-secondary);">Could not load the checklist.</div>';
+    }
+}
+
+function renderOffboarding(c) {
+    var state = document.getElementById('offb-state');
+    state.textContent = c.ready ? 'Ready to close' : 'Not ready';
+    state.style.color = c.ready ? 'var(--success-color)' : 'var(--warning-color)';
+
+    function line(ok, text, sub) {
+        return '<div style="display:flex;gap:10px;align-items:flex-start;padding:7px 0;border-bottom:1px solid var(--border-color);">' +
+            '<span style="flex:none;width:18px;color:' + (ok ? 'var(--success-color)' : 'var(--warning-color)') + ';">' + (ok ? '&#10003;' : '&#9679;') + '</span>' +
+            '<div><div>' + text + '</div>' + (sub ? '<div style="font-size:0.78rem;color:var(--text-secondary);margin-top:2px;">' + sub + '</div>' : '') + '</div></div>';
+    }
+
+    var html = '';
+    html += line(!c.assets_out.length,
+        c.assets_out.length ? c.assets_out.length + ' item(s) of equipment still out' : 'All equipment returned',
+        c.assets_out.map(function (a) { return esc(a.tag) + ' ' + esc(a.name) + ' (since ' + esc(a.issued_at) + ')'; }).join(', '));
+    html += line(!c.decisions_waiting_on_them,
+        c.decisions_waiting_on_them ? c.decisions_waiting_on_them + ' decision(s) from their team waiting on them' : 'Nothing waiting on them',
+        c.decisions_waiting_on_them ? 'Reassign their team and the new manager decides these' : '');
+    html += line(true,
+        c.direct_reports.length ? c.direct_reports.length + ' person(s) report to them' : 'Nobody reports to them',
+        c.direct_reports.map(function (r) { return esc(r.name); }).join(', '));
+    html += line(true, c.leave_owed_days + ' day(s) of annual leave to settle in final pay');
+    html += line(true, c.expenses_owed ? _expMoney(c.expenses_owed, c.currency) + ' of approved expenses to pay' : 'No expenses owed');
+    html += line(!c.open_tasks.length,
+        c.open_tasks.length ? c.open_tasks.length + ' leaver task(s) still open' : 'Leaver checklist done',
+        c.open_tasks.slice(0, 4).map(function (t) { return esc(t.title); }).join(', ') + (c.open_tasks.length > 4 ? ', \u2026' : ''));
+    html += line(!c.portal_access, c.portal_access ? 'Can still sign in to the portal' : 'Portal access closed',
+        c.portal_access ? 'Closes the moment their account is closed below' : '');
+    document.getElementById('offb-checklist').innerHTML = html;
+
+    // Who can take their people: anybody here except them.
+    var sel = document.getElementById('offb-reassign');
+    sel.innerHTML = '<option value="">Nobody yet</option>' + allEmployees
+        .filter(function (e) { return e.id !== c.employee_id && (e.status || 'active') !== 'terminated'; })
+        .map(function (e) {
+            var name = ((e.first_name || '') + ' ' + (e.last_name || '')).trim() || e.name || '';
+            return '<option value="' + e.id + '">' + esc(name) + '</option>';
+        }).join('');
+    if (!c.direct_reports.length) sel.disabled = true; else sel.disabled = false;
+
+    var end = document.getElementById('offb-end');
+    if (!end.value) end.value = c.end_date || new Date().toISOString().slice(0, 10);
+
+    // The override is only offered when there is something to override.
+    var forceBox = document.getElementById('offb-force-box');
+    forceBox.style.display = c.blocking.length ? '' : 'none';
+    document.getElementById('offb-force').checked = false;
+    document.getElementById('offb-force-note').style.display = 'none';
+    document.getElementById('offb-force').onchange = function () {
+        document.getElementById('offb-force-note').style.display = this.checked ? '' : 'none';
+    };
+    document.getElementById('offb-error').style.display = 'none';
+}
+
+async function completeOffboarding() {
+    if (!currentEmployeeId) return;
+    var err = document.getElementById('offb-error');
+    err.style.display = 'none';
+    var body = {
+        end_date: document.getElementById('offb-end').value,
+        reassign_to: document.getElementById('offb-reassign').value || null,
+        force: document.getElementById('offb-force').checked,
+        force_note: document.getElementById('offb-force-note').value.trim(),
+    };
+    if (!body.end_date) { err.textContent = 'When is their last day?'; err.style.display = 'block'; return; }
+    if (!await uiConfirm('Close this account? They will be signed out of the portal immediately and cannot sign in again.',
+        { title: 'Close their account', confirmText: 'Close it', danger: true })) return;
+    try {
+        var res = await fetch('/api/employees/' + currentEmployeeId + '/complete-offboard', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        var d = await res.json().catch(function () { return {}; });
+        if (!res.ok) {
+            // The reason matters. "Not ready: laptop out" and "say why you are
+            // going ahead" need different things done.
+            err.textContent = d.detail || 'That did not go through.';
+            err.style.display = 'block';
+            return;
+        }
+        showToast('Account closed.' + (d.reports_moved ? ' ' + d.reports_moved + ' report(s) reassigned.' : ''), 'success');
+        hrDataChanged('employees', { employeeId: currentEmployeeId });
+    } catch (e) {
+        err.textContent = 'That did not go through.';
+        err.style.display = 'block';
+    }
+}
+window.completeOffboarding = completeOffboarding;
 
 async function startOffboarding() {
     if (!currentEmployeeId) return;
@@ -6879,9 +6991,8 @@ window.loadExpensesView = loadExpensesView;
 async function decideExpenseHr(id, action) {
     var note = '';
     if (action === 'reject') {
-        // The same way the rest of the app asks for a reason.
-        note = window.prompt('Why not? This is shown to them.');
-        if (note === null) return;
+        note = await uiPrompt('Why not? This is shown to them.');
+        if (note === null || note === undefined) return;
     }
     try {
         var res = await fetch('/api/expenses/' + id + '/decide', {
