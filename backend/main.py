@@ -27787,6 +27787,90 @@ def job_employee_digest(db, now):
     return f"{sent} sent"
 
 
+# ============================================================================
+# What is waiting on me, and how the product is used
+# ============================================================================
+# For a person: the handful of things the portal wants from them, as
+# counts that jump to the tab. For the operator: which businesses use
+# which parts of the HR side, so the ones that have not found a feature
+# can be shown it.
+
+@app.get("/api/employee/todo")
+def my_todo(request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    today = date.today().isoformat()
+    since_30 = (date.today() - timedelta(days=30)).isoformat()
+    open_cycles = {c.id for c in db.query(models.DBReviewCycle).filter(
+        models.DBReviewCycle.client_id == emp.client_id, models.DBReviewCycle.status == "open").all()}
+    reviews = db.query(models.DBReview).filter(
+        models.DBReview.client_id == emp.client_id,
+        (models.DBReview.employee_id == emp.id) | (models.DBReview.reviewer_id == emp.id)).all()
+    self_to_write = sum(1 for r in reviews if r.employee_id == emp.id and r.status == "awaiting_self" and r.cycle_id in open_cycles)
+    to_review = sum(1 for r in reviews if r.reviewer_id == emp.id and r.status != "complete" and r.cycle_id in open_cycles)
+    ready = sum(1 for r in reviews if r.employee_id == emp.id and r.status == "complete" and r.cycle_id in open_cycles)
+    feedback = db.query(models.DBPeerFeedback).filter(models.DBPeerFeedback.peer_id == emp.id,
+                                                       models.DBPeerFeedback.status == "requested").count()
+    policies = [p for p in db.query(models.DBPolicy).filter(models.DBPolicy.client_id == emp.client_id,
+                                                             models.DBPolicy.active == True, models.DBPolicy.requires_ack == True).all()  # noqa: E712
+                if not p.department_id or p.department_id == emp.department_id]
+    acked = {(a.policy_id, a.version) for a in db.query(models.DBPolicyAck).filter(models.DBPolicyAck.employee_id == emp.id).all()}
+    policies_to_read = sum(1 for p in policies if (p.id, p.version) not in acked)
+    actions_on_me = sum(1 for c in db.query(models.DBCheckIn).filter(
+        models.DBCheckIn.employee_id == emp.id, models.DBCheckIn.status == "done").all()
+        for a in _json_list(c.actions) if a.get("owner") == emp.id and not a.get("done"))
+    last_met = max([c.scheduled_for for c in db.query(models.DBCheckIn).filter(
+        models.DBCheckIn.employee_id == emp.id, models.DBCheckIn.status == "done").all()] or [""])
+    has_manager = bool(emp.reports_to)
+    expiring = sum(1 for c in _certifications_for(db, emp.client_id, emp.id) if certification_status(c)[0] != "valid")
+    goals_overdue = db.query(models.DBEmployeeGoal).filter(
+        models.DBEmployeeGoal.employee_id == emp.id, models.DBEmployeeGoal.status != "completed",
+        models.DBEmployeeGoal.due_date != "", models.DBEmployeeGoal.due_date < today).count()
+    prob = probation_to_dict(emp)
+    items = [
+        {"key": "self_review", "label": "Your self-assessment to write", "count": self_to_write, "tab": "reviews"},
+        {"key": "reviews", "label": "Reviews to write", "count": to_review, "tab": "reviews"},
+        {"key": "review_ready", "label": "A review to read", "count": ready, "tab": "reviews"},
+        {"key": "feedback", "label": "Feedback asked of you", "count": feedback, "tab": "reviews"},
+        {"key": "policies", "label": "Policies to read", "count": policies_to_read, "tab": "documents"},
+        {"key": "actions", "label": "Actions from your one-to-ones", "count": actions_on_me, "tab": "checkins"},
+        {"key": "one_to_one", "label": "No one-to-one in 30 days", "count": 1 if has_manager and (not last_met or last_met < since_30) else 0, "tab": "checkins"},
+        {"key": "certifications", "label": "Certifications expiring or lapsed", "count": expiring, "tab": "profile"},
+        {"key": "goals", "label": "Goals overdue", "count": goals_overdue, "tab": "goals"},
+    ]
+    if prob["status"] in ("on_probation", "extended") and prob["days_left"] is not None:
+        items.append({"key": "probation", "label": f"Probation ends {prob['end']}" if prob["days_left"] >= 0 else "Probation end passed", "count": 1, "tab": "profile"})
+    return {"items": [i for i in items if i["count"]], "total": sum(i["count"] for i in items)}
+
+
+@app.get("/api/superadmin/hr-adoption")
+def superadmin_hr_adoption(request: Request, db: Session = Depends(get_db)):
+    """Per business: how many people, and which parts of the HR side have
+    been touched. A row of zeros is a business to show around."""
+    require_superadmin(request)
+
+    def count(model, col=None):
+        rows = db.query(model.client_id, sqlfunc.count(model.id)).group_by(model.client_id).all()
+        return {cid: n for cid, n in rows}
+    employees = count(models.DBEmployee)
+    features = {
+        "reviews": count(models.DBReviewCycle), "one_to_ones": count(models.DBCheckIn),
+        "policies": count(models.DBPolicy), "skills": count(models.DBEmployeeSkill),
+        "certifications": count(models.DBCertification), "pay_bands": count(models.DBPayBand),
+        "workflows": count(models.DBWorkflow), "webhooks": count(models.DBWebhook), "api_keys": count(models.DBApiKey),
+        "custom_fields": count(models.DBCustomField), "expenses": count(models.DBExpenseClaim), "posts": count(models.DBPost),
+    }
+    out = []
+    for c in db.query(models.DBClient).order_by(models.DBClient.id).all():
+        if "hr" not in (c.modules or "invoicing,hr"):
+            continue
+        used = {k: v.get(c.id, 0) for k, v in features.items()}
+        out.append({"client_id": c.id, "company": c.company_name or c.email, "email": c.email, "active": bool(c.is_active),
+                    "employees": employees.get(c.id, 0), "features": used,
+                    "features_used": sum(1 for v in used.values() if v), "created_at": c.created_at})
+    out.sort(key=lambda r: (-r["employees"], -r["features_used"]))
+    return {"businesses": out, "feature_keys": list(features)}
+
+
 # Serve frontend
 frontend_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 if os.path.exists(frontend_path):

@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=170">
+  <link rel="stylesheet" href="tailwind.css?v=171">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,12 +50,12 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=170">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=170">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=170">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=170">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=170">
-    <script src="/dialogs.js?v=170"></script>
+    <link rel="stylesheet" href="mobile.css?v=171">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=171">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=171">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=171">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=171">
+    <script src="/dialogs.js?v=171"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -193,6 +193,9 @@
 
     <!-- Tab: Overview -->
     <div id="tab-overview" class="tab-panel fade-in">
+      <!-- The handful of things the portal wants from you, each a step
+           to the tab where it is done. Hidden when there is nothing. -->
+      <div id="todoStrip" class="flex flex-wrap gap-2 mb-4" hidden></div>
       <!-- Clock Section -->
       <div class="clock-gradient rounded-2xl p-5 sm:p-6 text-white mb-4 relative overflow-hidden shadow-2xl shadow-dark-900/50">
         <div class="absolute top-0 right-0 w-64 h-64 bg-brand-500/10 rounded-full -translate-y-1/2 translate-x-1/2"></div>
@@ -1817,7 +1820,7 @@
       var btn = document.querySelector('[data-tab="' + tab + '"]');
       if (panel) panel.classList.remove('hidden');
       if (btn) { btn.classList.add('tab-active'); btn.classList.remove('text-gray-500'); }
-      if (tab === 'overview') { loadMyTasks(); loadTeamTasks(); loadApprovals(); loadCelebrations(); }
+      if (tab === 'overview') { loadMyTasks(); loadTeamTasks(); loadApprovals(); loadCelebrations(); loadTodo(); }
       if (tab === 'attendance') loadAttendanceStats();
       if (tab === 'goals') loadGoals();
       if (tab === 'leave') { loadLeave(); loadLeaveBalance(); }
@@ -2033,6 +2036,28 @@
       } catch (e) { uiToast('Could not save that.', 'error'); }
     }
     window.submitMySkills = submitMySkills;
+
+    // --- What is waiting on me ---------------------------------------------------------
+
+    async function loadTodo() {
+      var strip = document.getElementById('todoStrip');
+      if (!strip) return;
+      try {
+        var res = await fetch('/api/employee/todo');
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        var d = await res.json();
+        strip.textContent = '';
+        strip.hidden = !d.items.length;
+        d.items.forEach(function (it) {
+          var b = document.createElement('button'); b.type = 'button';
+          b.className = 'text-sm px-3 py-1.5 rounded-full border bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100';
+          b.textContent = (it.count > 1 ? it.count + ' · ' : '') + it.label;
+          b.addEventListener('click', function () { switchTab(it.tab); });
+          strip.appendChild(b);
+        });
+      } catch (e) { strip.hidden = true; }
+    }
+    window.loadTodo = loadTodo;
 
     // --- Celebrations ------------------------------------------------------------
 
@@ -4547,8 +4572,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=170"></script>
-    <script src="/pwa.js?v=170"></script>
-    <script src="/feed.js?v=170"></script>
+    <script src="/install-hint.js?v=171"></script>
+    <script src="/pwa.js?v=171"></script>
+    <script src="/feed.js?v=171"></script>
 </body>
 </html>

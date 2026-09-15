@@ -16388,7 +16388,7 @@ async function loadSkillsView() {
             return '<div style="display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border-color);font-size:0.88rem;">' +
                 '<span>' + esc(sk.name) + '</span><a href="#" onclick="searchSkills(' + JSON.stringify(sk.name).replace(/"/g, '&quot;') + ');return false;" style="font-size:0.8rem;">Who holds it</a></div>';
         }).join('');
-        document.getElementById('skill-catalogue').innerHTML = d.skills.length ? '<table class="data-table"><thead><tr><th>Skill</th><th>People</th><th>Strong</th><th>Avg</th><th></th></tr></thead><tbody>' +
+        document.getElementById('skill-catalogue').innerHTML = d.skills.length ? '<table class="data-table"><thead><tr><th style="white-space:nowrap;">Skill</th><th style="white-space:nowrap;">People</th><th style="white-space:nowrap;">Strong</th><th style="white-space:nowrap;">Avg</th><th></th></tr></thead><tbody>' +
             d.skills.map(function (sk) {
                 return '<tr><td>' + esc(sk.name) + (sk.category ? ' <span style="font-size:0.72rem;color:var(--text-secondary);">' + esc(sk.category) + '</span>' : '') +
                     (sk.single_point_of_failure ? ' <span style="font-size:0.7rem;color:var(--warning-color);">only one</span>' : '') + '</td>' +
@@ -16604,7 +16604,7 @@ async function loadIntegrations() {
     if (!keys || !hooks) return;
     try {
         var k = await fetchJson('/api/api-keys');
-        var live = k.keys.filter(function (x) { return !x.revoked_at; });
+        var live = (k.keys || []).filter(function (x) { return !x.revoked_at; });
         keys.innerHTML = live.length ? '<table class="data-table"><thead><tr><th>Name</th><th>Key</th><th>Can</th><th>Last used</th><th></th></tr></thead><tbody>' +
             live.map(function (x) {
                 return '<tr><td>' + esc(x.name) + '</td><td><code>' + esc(x.prefix) + '\u2026</code></td><td>' + (x.scopes === 'read' ? 'read' : 'read and write') + '</td>' +
@@ -16613,6 +16613,7 @@ async function loadIntegrations() {
             }).join('') + '</tbody></table>' : '<p style="color:var(--text-secondary);font-size:0.85rem;">No keys yet.</p>';
         var w = await fetchJson('/api/webhooks');
         _webhookEvents = w.events || [];
+        w.webhooks = w.webhooks || []; w.deliveries = w.deliveries || [];
         hooks.innerHTML = w.webhooks.length ? w.webhooks.map(function (h) {
             var tone = !h.active ? 'var(--danger-color)' : h.last_status >= 200 && h.last_status < 300 ? 'var(--success-color)' : h.last_status ? 'var(--warning-color)' : 'var(--text-secondary)';
             return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--border-color);">' +

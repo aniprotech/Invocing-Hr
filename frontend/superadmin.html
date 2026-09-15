@@ -367,12 +367,12 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=170">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=170">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=170">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=170">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=170">
-    <script src="/dialogs.js?v=170"></script>
+    <link rel="stylesheet" href="mobile.css?v=171">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=171">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=171">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=171">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=171">
+    <script src="/dialogs.js?v=171"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -591,6 +591,13 @@
         </section>
 
         <section class="admin-panel" id="panel-clients">
+        <!-- Which businesses use which parts of the HR side. A row of
+             dashes is a business to show around. -->
+        <div class="section-header">
+            <h2>HR adoption</h2>
+            <span style="font-size:0.8rem;color:#94a3b8;">people, and what each business has touched</span>
+        </div>
+        <div style="overflow-x:auto;margin-bottom:28px;" id="hr-adoption"></div>
         <div class="section-header">
             <h2>All Clients</h2>
             <input type="text" class="search-box" placeholder="Search clients..." oninput="filterClients(this.value)">
@@ -1376,6 +1383,27 @@
                 if (typeof loadRevenue === 'function') loadRevenue();
                 adjustWallet(walletPanelFor);   // reopen, showing the new balance
             } catch (e) { err.textContent = 'That did not go through.'; }
+        }
+
+        var ADOPTION_LABELS = { reviews: 'Reviews', one_to_ones: '1:1s', policies: 'Policies', skills: 'Skills', certifications: 'Certs',
+                                pay_bands: 'Pay bands', workflows: 'Workflows', webhooks: 'Webhooks', api_keys: 'API keys',
+                                custom_fields: 'Fields', expenses: 'Expenses', posts: 'Feed' };
+        async function loadHrAdoption() {
+            var host = document.getElementById('hr-adoption');
+            if (!host) return;
+            try {
+                var res = await fetch('/api/superadmin/hr-adoption');
+                if (!res.ok) throw new Error('Request failed: ' + res.status);
+                var d = await res.json();
+                if (!d.businesses.length) { host.innerHTML = '<p style="color:#94a3b8;font-size:0.85rem;">No businesses with the HR side yet.</p>'; return; }
+                host.innerHTML = '<table class="clients-table"><thead><tr><th>Business</th><th>People</th>' +
+                    d.feature_keys.map(function (k) { return '<th title="' + esc(k) + '">' + esc(ADOPTION_LABELS[k] || k) + '</th>'; }).join('') + '<th>Used</th></tr></thead><tbody>' +
+                    d.businesses.map(function (b) {
+                        return '<tr' + (b.active ? '' : ' style="opacity:0.5;"') + '><td>' + esc(b.company) + '<div style="font-size:0.72rem;color:#94a3b8;">' + esc(b.email) + '</div></td><td>' + b.employees + '</td>' +
+                            d.feature_keys.map(function (k) { var v = b.features[k]; return '<td style="text-align:center;color:' + (v ? '#34d399' : '#475569') + ';">' + (v || '–') + '</td>'; }).join('') +
+                            '<td>' + b.features_used + ' of ' + d.feature_keys.length + '</td></tr>';
+                    }).join('') + '</tbody></table>';
+            } catch (e) { host.innerHTML = '<p style="color:#fb7185;font-size:0.85rem;">' + esc(e.message) + '</p>'; }
         }
 
         async function loadClients() {
@@ -2905,7 +2933,7 @@
             billing:  [loadRevenue, loadGatewayStatus, loadPricing, loadWallets, loadSettlements],
             trends:   [loadTrends],
             activity: [loadLoginLogs],
-            clients:  [loadClients],
+            clients:  [loadClients, loadHrAdoption],
             control:  [loadPlatformEmail, loadMigrationWarnings, loadEnvironment, loadJobRuns,
                        loadPlatformSettings, loadLandingItems]
         };
@@ -2992,6 +3020,6 @@
         <div id="wallet-panel-body"></div>
       </div>
     </div>
-    <script src="/pwa.js?v=170"></script>
+    <script src="/pwa.js?v=171"></script>
 </body>
 </html>
