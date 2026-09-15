@@ -16747,15 +16747,20 @@ def get_pending_department_goals(request: Request, db: Session = Depends(get_db)
 def get_all_leave_requests(request: Request, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
     leaves = db.query(models.DBLeaveRequest).filter(models.DBLeaveRequest.client_id == client.id).order_by(models.DBLeaveRequest.created_at.desc()).all()
+    people = {e.id: e for e in db.query(models.DBEmployee).filter(models.DBEmployee.client_id == client.id).all()}
     result = []
     for l in leaves:
-        emp = db.query(models.DBEmployee).filter(models.DBEmployee.id == l.employee_id).first()
+        emp = people.get(l.employee_id)
+        # Who else in the department is off those days - the question behind
+        # the decision - worked out only for what is still to decide.
+        clashes = leave_clashes(db, client.id, l, emp.department_id if emp else None) if l.status == "pending" else []
         result.append({
             "id": l.id, "employee_id": l.employee_id,
             "employee_name": f"{emp.first_name} {emp.last_name}" if emp else "",
             "leave_type": l.leave_type, "start_date": l.start_date, "end_date": l.end_date,
             "days": l.days, "reason": l.reason, "status": l.status,
             "approved_by": l.approved_by, "created_at": l.created_at,
+            "others_off": clashes,
         })
     return result
 
@@ -19330,6 +19335,7 @@ def my_approvals(request: Request, db: Session = Depends(get_db)):
             "requested_at": l.created_at or "",
             "annual_remaining": (balances.get(l.employee_id) or {}).get("annual_remaining"),
             "sick_remaining": (balances.get(l.employee_id) or {}).get("sick_remaining"),
+            "others_off": leave_clashes(db, emp.client_id, l, next((r.department_id for r in reports if r.id == l.employee_id), None)),
         } for l in leave],
         "corrections": [{
             "id": c.id, "employee_id": c.employee_id,
@@ -27624,6 +27630,81 @@ def hr_digest_preview(request: Request, db: Session = Depends(get_db)):
     digest = hr_digest_for(db, client)
     on = str(tenant_setting(db, client.id, "hr_digest", "1")).lower() not in ("0", "false", "no", "off")
     return {"enabled": on, "to": client.email, "digest": digest}
+
+
+# ============================================================================
+# Who else is off, and the employee's own morning
+# ============================================================================
+# The question behind every leave decision is "who covers?", so a pending
+# request carries how many others in the same department are already off
+# on any of those days, and who. And a person whose portal filled up
+# overnight - a review to write, a policy to read, feedback asked - gets
+# one email in the morning saying so, rather than nothing until they
+# happen to sign in.
+
+def leave_clashes(db, client_id, leave, department_id):
+    """The others in the department approved off on any day of this
+    request. Not the person themselves; not other departments."""
+    if not department_id or not leave.start_date or not leave.end_date:
+        return []
+    others = [e for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client_id, models.DBEmployee.department_id == department_id).all()
+        if employee_is_current(e) and e.id != leave.employee_id]
+    ids = {e.id: f"{e.first_name} {e.last_name}".strip() for e in others}
+    if not ids:
+        return []
+    rows = db.query(models.DBLeaveRequest).filter(
+        models.DBLeaveRequest.client_id == client_id, models.DBLeaveRequest.status == "approved",
+        models.DBLeaveRequest.employee_id.in_(list(ids)),
+        models.DBLeaveRequest.start_date <= leave.end_date, models.DBLeaveRequest.end_date >= leave.start_date).all()
+    seen = {}
+    for r in rows:
+        seen.setdefault(r.employee_id, {"employee_id": r.employee_id, "name": ids[r.employee_id],
+                                        "from": r.start_date, "to": r.end_date})
+    return sorted(seen.values(), key=lambda d: d["name"])
+
+
+def employee_digest_for(db, emp, since):
+    """Unread notifications since a moment, grouped by what they are about."""
+    rows = db.query(models.DBNotification).filter(
+        models.DBNotification.employee_id == emp.id, models.DBNotification.is_read == False,  # noqa: E712
+        models.DBNotification.created_at >= since).order_by(models.DBNotification.id.desc()).limit(30).all()
+    if not rows:
+        return None
+    base = (os.getenv("APP_BASE_URL") or "https://www.aniprotech.com").rstrip("/")
+    lines = [f"- {n.title}" for n in rows]
+    text = (f"Good morning {emp.first_name}. Since yesterday:\n\n" + "\n".join(lines) +
+            f"\n\nOpen your portal: {base}/employee-login.html")
+    esc_ = html_mod.escape
+    html = (f"<p>Good morning {esc_(emp.first_name or '')}. Since yesterday:</p><ul>" +
+            "".join(f"<li>{esc_(n.title)}</li>" for n in rows) +
+            f"</ul><p><a href=\"{base}/employee-login.html\">Open your portal</a></p>")
+    return {"subject": f"{len(rows)} thing{'s' if len(rows) != 1 else ''} waiting for you", "text": text, "html": html, "count": len(rows)}
+
+
+@scheduled_job("employee_digest", period_key_fn=_digest_key)
+def job_employee_digest(db, now):
+    if now.hour < 7:
+        return "too early"
+    since = (now - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+    clients = {c.id: c for c in db.query(models.DBClient).filter(models.DBClient.is_active == True).all()}  # noqa: E712
+    sent = 0
+    for emp in db.query(models.DBEmployee).all():
+        client = clients.get(emp.client_id)
+        if not client or "hr" not in (client.modules or "invoicing,hr") or not employee_is_current(emp):
+            continue
+        if not (emp.email or "").strip():
+            continue
+        if str(tenant_setting(db, client.id, "employee_digest", "1")).lower() in ("0", "false", "no", "off"):
+            continue
+        digest = employee_digest_for(db, emp, since)
+        if not digest:
+            continue
+        ok, _why = send_email_background(emp.email, digest["subject"], digest["text"],
+                                         platform_from_address(db), digest["html"], client_id=client.id)
+        if ok:
+            sent += 1
+    return f"{sent} sent"
 
 
 # Serve frontend

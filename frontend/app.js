@@ -8914,7 +8914,13 @@ function leaveRowHtml(l) {
         '<td>' + esc(l.end_date) + '</td>' +
         '<td><strong>' + esc(l.days) + '</strong></td>' +
         '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" ' +
-            'title="' + esc(l.reason || '') + '">' + esc(l.reason || '-') + '</td>' +
+            'title="' + esc(l.reason || '') + '">' + esc(l.reason || '-') +
+            // Who else in the department is already off those days: the
+            // question behind the decision, answered before it is asked.
+            ((l.others_off || []).length ? '<div style="font-size:0.72rem;color:var(--warning-color);white-space:normal;" title="' +
+                esc(l.others_off.map(function (o) { return o.name + ' (' + o.from + ' to ' + o.to + ')'; }).join(', ')) + '">' +
+                l.others_off.length + ' other' + (l.others_off.length === 1 ? '' : 's') + ' in the department off then: ' +
+                esc(l.others_off.map(function (o) { return o.name; }).join(', ')) + '</div>' : '') + '</td>' +
         '<td><span class="status-pill ' + statusClass + '">' + esc(l.status) + '</span></td>' +
         '<td class="text-right">' + actions + '</td></tr>';
 }

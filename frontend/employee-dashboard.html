@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=168">
+  <link rel="stylesheet" href="tailwind.css?v=169">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,12 +50,12 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=168">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=168">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=168">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=168">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=168">
-    <script src="/dialogs.js?v=168"></script>
+    <link rel="stylesheet" href="mobile.css?v=169">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=169">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=169">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=169">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=169">
+    <script src="/dialogs.js?v=169"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -1430,6 +1430,10 @@
                 ? (l.reason || '')
                 : (left + ' day(s) of ' + l.leave_type + ' leave left after this'
                    + (l.reason ? ' - ' + l.reason : ''));
+            // Who covers: the others in the department already off those days.
+            if ((l.others_off || []).length) {
+              detail += (detail ? ' · ' : '') + 'Also off then: ' + l.others_off.map(function (o) { return o.name; }).join(', ');
+            }
             host.appendChild(_decideRow(
                 l.employee + ' - ' + l.days + ' day(s) ' + l.leave_type + ' leave',
                 l.start_date + ' to ' + l.end_date,
@@ -4543,8 +4547,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=168"></script>
-    <script src="/pwa.js?v=168"></script>
-    <script src="/feed.js?v=168"></script>
+    <script src="/install-hint.js?v=169"></script>
+    <script src="/pwa.js?v=169"></script>
+    <script src="/feed.js?v=169"></script>
 </body>
 </html>
