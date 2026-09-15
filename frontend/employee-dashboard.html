@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=162">
+  <link rel="stylesheet" href="tailwind.css?v=163">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,12 +50,12 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=162">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=162">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=162">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=162">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=162">
-    <script src="/dialogs.js?v=162"></script>
+    <link rel="stylesheet" href="mobile.css?v=163">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=163">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=163">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=163">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=163">
+    <script src="/dialogs.js?v=163"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -824,6 +824,32 @@
           <div class="mt-6" id="myAssetsCard">
             <h3 class="font-semibold text-gray-900 mb-3">Equipment you have</h3>
             <div id="myAssets" class="space-y-2"></div>
+          </div>
+
+          <!-- What you can do, at what level. Yours to say; HR or your
+               manager confirms. -->
+          <div class="mt-6" id="mySkillsCard">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="font-semibold text-gray-900">Your skills</h3>
+              <button type="button" onclick="toggleSkillForm()" class="text-sm text-brand-600 hover:underline" id="skill-toggle">Edit</button>
+            </div>
+            <div id="mySkills" class="flex flex-wrap gap-2"></div>
+            <form id="skill-form" onsubmit="submitMySkills(event)" class="hidden mt-3 p-4 rounded-xl border border-gray-100 bg-gray-50 space-y-3">
+              <div id="skill-rows" class="space-y-2"></div>
+              <div class="flex gap-2 items-center flex-wrap">
+                <input id="skill-new" list="skill-catalogue" maxlength="80" placeholder="Add a skill" class="flex-1 min-w-[160px] px-3 py-2 rounded-lg border border-gray-200 text-sm">
+                <datalist id="skill-catalogue"></datalist>
+                <select id="skill-new-level" class="px-3 py-2 rounded-lg border border-gray-200 text-sm">
+                  <option value="1">Learning</option><option value="2" selected>Working</option><option value="3">Strong</option><option value="4">Expert</option>
+                </select>
+                <button type="button" onclick="addMySkillRow()" class="px-3 py-2 rounded-lg border border-gray-200 text-sm">Add</button>
+              </div>
+              <div class="flex gap-2">
+                <button type="submit" class="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-medium">Save</button>
+                <button type="button" onclick="toggleSkillForm()" class="px-4 py-2 rounded-lg border border-gray-200 text-sm">Cancel</button>
+              </div>
+              <p class="text-xs text-gray-500">Changing a level asks HR or your manager to confirm it again.</p>
+            </form>
           </div>
 
           <!-- What you are qualified to do. Add your own; HR confirms it.
@@ -1765,7 +1791,7 @@
       if (tab === 'leave') { loadLeave(); loadLeaveBalance(); }
       if (tab === 'documents') { loadDocuments(); loadDocumentRequests(); }
       if (tab === 'team') loadTeamPresence();
-      if (tab === 'profile') { loadProfileTab(); loadMyChanges(); loadMyAssets(); loadMyCerts(); loadMyHistory(); }
+      if (tab === 'profile') { loadProfileTab(); loadMyChanges(); loadMyAssets(); loadMyCerts(); loadMyHistory(); loadMySkills(); }
       if (tab === 'reviews') { loadMyReviews(); loadFeedbackRequests(); }
       if (tab === 'checkins') loadCheckIns();
       if (tab === 'requests') loadStaffRequests();
@@ -1777,6 +1803,93 @@
       if (tab === 'feed') loadFeed();
       if (tab === 'expenses') loadExpenses();
     }
+
+    // --- Skills ---------------------------------------------------------------------
+
+    var SKILL_WORDS = { 1: 'Learning', 2: 'Working', 3: 'Strong', 4: 'Expert' };
+    var _mySkills = [];
+
+    async function loadMySkills() {
+      var host = document.getElementById('mySkills');
+      if (!host) return;
+      try {
+        var res = await fetch('/api/employee/skills');
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        var d = await res.json();
+        _mySkills = d.skills.map(function (s) { return { name: s.name, level: s.level, verified: s.verified }; });
+        var list = document.getElementById('skill-catalogue');
+        list.textContent = '';
+        (d.catalogue || []).forEach(function (n) { var o = document.createElement('option'); o.value = n; list.appendChild(o); });
+        renderMySkills();
+      } catch (e) { host.textContent = 'Could not load your skills.'; }
+    }
+    window.loadMySkills = loadMySkills;
+
+    function renderMySkills() {
+      var host = document.getElementById('mySkills');
+      host.textContent = '';
+      if (!_mySkills.length) {
+        var none = document.createElement('p'); none.className = 'text-sm text-gray-400';
+        none.textContent = 'Nothing yet. Add what you can do, and how well.'; host.appendChild(none); return;
+      }
+      _mySkills.forEach(function (s) {
+        var chip = document.createElement('span');
+        chip.className = 'inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs border ' + (s.verified ? 'border-brand-500 text-brand-700 bg-brand-50' : 'border-gray-200 text-gray-700');
+        chip.textContent = s.name + ' \u00b7 ' + SKILL_WORDS[s.level] + (s.verified ? ' \u2713' : '');
+        chip.title = s.verified ? 'Confirmed' : 'Waiting for HR or your manager to confirm';
+        host.appendChild(chip);
+      });
+    }
+
+    function toggleSkillForm() {
+      var f = document.getElementById('skill-form');
+      f.classList.toggle('hidden');
+      if (!f.classList.contains('hidden')) renderSkillRows();
+    }
+    window.toggleSkillForm = toggleSkillForm;
+
+    function renderSkillRows() {
+      var host = document.getElementById('skill-rows');
+      host.textContent = '';
+      _mySkills.forEach(function (s, i) {
+        var row = document.createElement('div'); row.className = 'flex items-center gap-2 text-sm';
+        var name = document.createElement('span'); name.className = 'flex-1 text-gray-900'; name.textContent = s.name; row.appendChild(name);
+        var sel = document.createElement('select'); sel.className = 'px-2 py-1 rounded-lg border border-gray-200 text-sm skill-level';
+        [1, 2, 3, 4].forEach(function (k) { var o = document.createElement('option'); o.value = k; o.textContent = SKILL_WORDS[k]; if (s.level === k) o.selected = true; sel.appendChild(o); });
+        sel.addEventListener('change', function () { s.level = Number(sel.value); });
+        row.appendChild(sel);
+        var del = document.createElement('button'); del.type = 'button'; del.className = 'text-xs text-gray-400 hover:text-rose-600'; del.textContent = 'Remove';
+        del.addEventListener('click', function () { _mySkills.splice(i, 1); renderSkillRows(); });
+        row.appendChild(del);
+        host.appendChild(row);
+      });
+    }
+
+    function addMySkillRow() {
+      var inp = document.getElementById('skill-new');
+      var name = inp.value.trim();
+      if (!name) return;
+      var level = Number(document.getElementById('skill-new-level').value);
+      var have = _mySkills.filter(function (s) { return s.name.toLowerCase() === name.toLowerCase(); })[0];
+      if (have) have.level = level; else _mySkills.push({ name: name, level: level, verified: false });
+      inp.value = '';
+      renderSkillRows();
+    }
+    window.addMySkillRow = addMySkillRow;
+
+    async function submitMySkills(ev) {
+      if (ev) ev.preventDefault();
+      try {
+        var res = await fetch('/api/employee/skills', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ skills: _mySkills.map(function (s) { return { name: s.name, level: s.level }; }) }) });
+        var d = await res.json().catch(function () { return {}; });
+        if (!res.ok) { uiToast(d.detail || 'Could not save that.', 'error'); return; }
+        uiToast('Saved', 'success');
+        toggleSkillForm();
+        loadMySkills();
+      } catch (e) { uiToast('Could not save that.', 'error'); }
+    }
+    window.submitMySkills = submitMySkills;
 
     // --- Celebrations ------------------------------------------------------------
 
@@ -4288,8 +4401,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=162"></script>
-    <script src="/pwa.js?v=162"></script>
-    <script src="/feed.js?v=162"></script>
+    <script src="/install-hint.js?v=163"></script>
+    <script src="/pwa.js?v=163"></script>
+    <script src="/feed.js?v=163"></script>
 </body>
 </html>

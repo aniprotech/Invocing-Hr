@@ -9547,7 +9547,7 @@ def delete_employee(emp_id: int, request: Request, db: Session = Depends(get_db)
         models.DBEmployeeGoal, models.DBLeaveRequest, models.DBDocument,
         models.DBNotification, models.DBOvertimeLog,
         models.DBReview, models.DBCertification, models.DBEmploymentChange, models.DBCheckIn,
-        models.DBPeerFeedback,
+        models.DBPeerFeedback, models.DBEmployeeSkill,
     ):
         db.query(model).filter(model.employee_id == emp_id).delete(synchronize_session=False)
     db.query(models.DBCheckIn).filter(models.DBCheckIn.manager_id == emp_id).delete(synchronize_session=False)
@@ -24900,6 +24900,14 @@ def hr_analytics(request: Request, db: Session = Depends(get_db)):
     coverage = check_in_coverage(db, cid)
     coverage.pop("rows", None)
 
+    skill_summary, skilled_ids = _skill_summary(db, cid)
+    skills_block = {"skills": len(skill_summary),
+                    "single_points_of_failure": sum(1 for v in skill_summary.values() if v["single_point_of_failure"]),
+                    "people_with_none": len(skilled_ids - {r.employee_id for r in db.query(models.DBEmployeeSkill).filter(
+                        models.DBEmployeeSkill.client_id == cid).all()}),
+                    "top": [{"name": v["name"], "people": v["people"]} for v in
+                            sorted(skill_summary.values(), key=lambda v: -v["people"])[:5]]}
+
     pay_rows, _ = pay_review_rows(db, cid)
     ratios = [r["compa_ratio"] for r in pay_rows if r["compa_ratio"]]
     pay_block = {"annual_payroll": round(sum(r["annual"] for r in pay_rows), 2),
@@ -24913,6 +24921,7 @@ def hr_analytics(request: Request, db: Session = Depends(get_db)):
         "as_of": today.strftime("%Y-%m-%d"),
         "check_ins": coverage,
         "pay": pay_block,
+        "skills": skills_block,
         "headcount": {
             "now": len(current), "joiners_12m": joiners_12m, "leavers_12m": leavers_12m,
             "turnover_pct": turnover, "average_headcount_12m": round(avg_headcount, 1),
@@ -25991,6 +26000,302 @@ def my_pay_band(request: Request, db: Session = Depends(get_db)):
     ratio, pos, pct = band_position(annual, band)
     return {"visible": True, "level": emp.level or "", "band": band_to_dict(band),
             "annual": annual, "position": pos, "pct_through_band": pct}
+
+
+# ============================================================================
+# Skills
+# ============================================================================
+# What people can do, at what level, and who else can do it. The catalogue
+# grows from use: a skill typed on a profile that does not exist yet is
+# created. A person adds their own and HR confirms; HR adds and it is
+# confirmed. The question this exists to answer is the one asked the day
+# somebody resigns: who else can do what they did.
+
+SKILL_LEVELS = {1: "Learning", 2: "Working", 3: "Strong", 4: "Expert"}
+SKILL_LIMIT = 40
+
+
+def clean_skill_level(value):
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="A skill level is 1 to 4")
+    if n not in SKILL_LEVELS:
+        raise HTTPException(status_code=400, detail="A skill level is 1 to 4")
+    return n
+
+
+def skill_by_name(db, client_id, name, create=True):
+    """The catalogue entry, matched without regard to case, made if absent."""
+    name = " ".join(str(name or "").split())[:80]
+    if not name:
+        raise HTTPException(status_code=400, detail="Name the skill")
+    row = db.query(models.DBSkill).filter(
+        models.DBSkill.client_id == client_id,
+        sqlfunc.lower(models.DBSkill.name) == name.lower()).first()
+    if row or not create:
+        return row
+    row = models.DBSkill(client_id=client_id, name=name)
+    db.add(row)
+    db.flush()
+    return row
+
+
+def set_employee_skills(db, client_id, emp, items, by, verified):
+    """Replace the person's skills with this list. A level that changes on
+    something HR had confirmed is no longer confirmed; the same level again
+    keeps its confirmation."""
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="Skills are a list")
+    if len(items) > SKILL_LIMIT:
+        raise HTTPException(status_code=400, detail=f"Keep it to {SKILL_LIMIT} skills")
+    wanted = {}
+    for it in items:
+        if isinstance(it, str):
+            it = {"name": it, "level": 2}
+        if not isinstance(it, dict):
+            continue
+        skill = skill_by_name(db, client_id, it.get("name"))
+        wanted[skill.id] = clean_skill_level(it.get("level", 2))
+    existing = {r.skill_id: r for r in db.query(models.DBEmployeeSkill).filter(
+        models.DBEmployeeSkill.employee_id == emp.id).all()}
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for sid, row in existing.items():
+        if sid not in wanted:
+            db.delete(row)
+    for sid, level in wanted.items():
+        row = existing.get(sid)
+        if not row:
+            row = models.DBEmployeeSkill(client_id=client_id, employee_id=emp.id, skill_id=sid,
+                                         level=level, added_by=by)
+            db.add(row)
+        elif row.level != level:
+            row.level = level
+            row.verified_by, row.verified_at = "", ""
+        if verified:
+            row.verified_by, row.verified_at = verified, now
+    db.flush()
+
+
+def employee_skills(db, emp, names=None):
+    rows = db.query(models.DBEmployeeSkill, models.DBSkill).join(
+        models.DBSkill, models.DBSkill.id == models.DBEmployeeSkill.skill_id).filter(
+        models.DBEmployeeSkill.employee_id == emp.id).all()
+    out = [{"skill_id": s.id, "name": s.name, "category": s.category or "", "level": es.level,
+            "level_word": SKILL_LEVELS.get(es.level, ""), "verified": bool(es.verified_by),
+            "verified_by": es.verified_by or "", "added_by": es.added_by or ""} for es, s in rows]
+    out.sort(key=lambda d: (-d["level"], d["name"].lower()))
+    return out
+
+
+def _skill_summary(db, client_id):
+    """Per skill: who has it and how strongly; and the ones only one person
+    holds well - the single points of failure."""
+    current = {e.id for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client_id).all() if employee_is_current(e)}
+    rows = db.query(models.DBEmployeeSkill).filter(models.DBEmployeeSkill.client_id == client_id).all()
+    per = defaultdict(list)
+    for r in rows:
+        if r.employee_id in current:
+            per[r.skill_id].append(r)
+    out = {}
+    for s in db.query(models.DBSkill).filter(models.DBSkill.client_id == client_id).all():
+        have = per.get(s.id, [])
+        strong = [r for r in have if r.level >= 3]
+        out[s.id] = {"id": s.id, "name": s.name, "category": s.category or "",
+                     "people": len(have), "strong": len(strong),
+                     "average_level": round(sum(r.level for r in have) / len(have), 1) if have else None,
+                     "single_point_of_failure": len(strong) == 1 and len(have) <= 1 + 0,
+                     "unverified": sum(1 for r in have if not r.verified_by)}
+        # One person holds it well and nobody else holds it at all above learning.
+        out[s.id]["single_point_of_failure"] = len(strong) == 1 and sum(1 for r in have if r.level >= 2) == 1
+    return out, current
+
+
+@app.get("/api/skills")
+def list_skills(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    summary, current = _skill_summary(db, client.id)
+    with_none = current - {r.employee_id for r in db.query(models.DBEmployeeSkill).filter(
+        models.DBEmployeeSkill.client_id == client.id).all()}
+    rows = sorted(summary.values(), key=lambda d: (-d["people"], d["name"].lower()))
+    return {"skills": rows, "levels": SKILL_LEVELS,
+            "single_points_of_failure": [d for d in rows if d["single_point_of_failure"]],
+            "people_with_none": len(with_none), "people": len(current)}
+
+
+@app.post("/api/skills")
+def add_skill(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    row = skill_by_name(db, client.id, body.get("name"))
+    if body.get("category") is not None:
+        row.category = str(body.get("category") or "").strip()[:80]
+    db.commit()
+    return {"id": row.id, "name": row.name, "category": row.category or ""}
+
+
+@app.put("/api/skills/{skill_id}")
+def rename_skill(skill_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = db.query(models.DBSkill).filter(models.DBSkill.id == skill_id, models.DBSkill.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    body = body or {}
+    if body.get("name"):
+        name = " ".join(str(body["name"]).split())[:80]
+        clash = skill_by_name(db, client.id, name, create=False)
+        if clash and clash.id != row.id:
+            raise HTTPException(status_code=409, detail="There is already a skill with that name")
+        row.name = name
+    if "category" in body:
+        row.category = str(body.get("category") or "").strip()[:80]
+    db.commit()
+    return {"id": row.id, "name": row.name, "category": row.category or ""}
+
+
+@app.delete("/api/skills/{skill_id}")
+def delete_skill(skill_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = db.query(models.DBSkill).filter(models.DBSkill.id == skill_id, models.DBSkill.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    db.query(models.DBEmployeeSkill).filter(models.DBEmployeeSkill.skill_id == row.id).delete(synchronize_session=False)
+    db.delete(row)
+    db.commit()
+    return {"deleted": True}
+
+
+@app.get("/api/skills/search")
+def find_people_by_skill(request: Request, q: str = "", db: Session = Depends(get_db)):
+    """Who can do this - strongest first."""
+    client = get_client_user(request, db)
+    q = (q or "").strip().lower()
+    if not q:
+        return {"people": []}
+    names = _employee_names(db, client.id)
+    current = {e.id for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client.id).all() if employee_is_current(e)}
+    rows = db.query(models.DBEmployeeSkill, models.DBSkill).join(
+        models.DBSkill, models.DBSkill.id == models.DBEmployeeSkill.skill_id).filter(
+        models.DBSkill.client_id == client.id, sqlfunc.lower(models.DBSkill.name).contains(q)).all()
+    out = [{"employee_id": es.employee_id, "name": names.get(es.employee_id, ""), "skill": s.name,
+            "level": es.level, "level_word": SKILL_LEVELS.get(es.level, ""), "verified": bool(es.verified_by)}
+           for es, s in rows if es.employee_id in current]
+    out.sort(key=lambda d: (-d["level"], d["name"]))
+    return {"people": out}
+
+
+@app.get("/api/skills/matrix")
+def skills_matrix(request: Request, department_id: int = 0, db: Session = Depends(get_db)):
+    """People down the side, skills across the top, a level in each cell.
+    One department at a time, or everybody."""
+    client = get_client_user(request, db)
+    people = [e for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client.id).all()
+        if employee_is_current(e) and (not department_id or e.department_id == department_id)]
+    ids = {e.id for e in people}
+    rows = db.query(models.DBEmployeeSkill).filter(models.DBEmployeeSkill.client_id == client.id).all()
+    rows = [r for r in rows if r.employee_id in ids]
+    skill_ids = {r.skill_id for r in rows}
+    skills = sorted(db.query(models.DBSkill).filter(models.DBSkill.id.in_(skill_ids)).all(),
+                    key=lambda s: s.name.lower()) if skill_ids else []
+    cell = {(r.employee_id, r.skill_id): r for r in rows}
+    return {
+        "skills": [{"id": s.id, "name": s.name} for s in skills],
+        "people": [{"employee_id": e.id, "name": f"{e.first_name} {e.last_name}".strip(),
+                    "job_title": e.job_title or "",
+                    "levels": [(cell[(e.id, s.id)].level if (e.id, s.id) in cell else 0) for s in skills],
+                    "verified": [(bool(cell[(e.id, s.id)].verified_by) if (e.id, s.id) in cell else False) for s in skills]}
+                   for e in sorted(people, key=lambda e: (e.first_name or "", e.last_name or ""))],
+        "coverage": [{"skill_id": s.id, "name": s.name,
+                      "strong": sum(1 for e in people if (e.id, s.id) in cell and cell[(e.id, s.id)].level >= 3),
+                      "any": sum(1 for e in people if (e.id, s.id) in cell)} for s in skills],
+        "levels": SKILL_LEVELS,
+    }
+
+
+@app.get("/api/employees/{emp_id}/skills")
+def hr_employee_skills(emp_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    return {"skills": employee_skills(db, emp), "levels": SKILL_LEVELS}
+
+
+@app.put("/api/employees/{emp_id}/skills")
+def hr_set_employee_skills(emp_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """HR writes the list; what HR writes is confirmed."""
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    set_employee_skills(db, client.id, emp, (body or {}).get("skills"), "hr", _hr_name(client))
+    db.commit()
+    return {"skills": employee_skills(db, emp)}
+
+
+@app.post("/api/employees/{emp_id}/skills/{skill_id}/verify")
+def hr_verify_skill(emp_id: int, skill_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = db.query(models.DBEmployeeSkill).filter(
+        models.DBEmployeeSkill.employee_id == emp_id, models.DBEmployeeSkill.skill_id == skill_id,
+        models.DBEmployeeSkill.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Not found")
+    row.verified_by = _hr_name(client)
+    row.verified_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    db.commit()
+    return {"verified": True}
+
+
+# --- the person's own ------------------------------------------------------------
+
+@app.get("/api/employee/skills")
+def my_skills(request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    known = [s.name for s in db.query(models.DBSkill).filter(models.DBSkill.client_id == emp.client_id)
+             .order_by(models.DBSkill.name).limit(300).all()]
+    return {"skills": employee_skills(db, emp), "levels": SKILL_LEVELS, "catalogue": known}
+
+
+@app.put("/api/employee/skills")
+def set_my_skills(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Theirs to say; HR's to confirm. Anything HR had confirmed and they
+    leave at the same level stays confirmed."""
+    emp = current_employee(request, db)
+    set_employee_skills(db, emp.client_id, emp, (body or {}).get("skills"), "employee", "")
+    db.commit()
+    return {"skills": employee_skills(db, emp)}
+
+
+@app.get("/api/employee/team-skills")
+def my_teams_skills(request: Request, db: Session = Depends(get_db)):
+    """A manager's view of what their reports can do, with a way to confirm."""
+    emp = current_employee(request, db)
+    out = []
+    for r in _my_reports(db, emp):
+        if employee_is_current(r):
+            out.append({"employee_id": r.id, "name": f"{r.first_name} {r.last_name}".strip(),
+                        "skills": employee_skills(db, r)})
+    return {"reports": out, "levels": SKILL_LEVELS}
+
+
+@app.post("/api/employee/team/{employee_id}/skills/{skill_id}/verify")
+def manager_verifies_skill(employee_id: int, skill_id: int, request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    report = _a_report_of_mine(db, emp, employee_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Not one of your reports")
+    row = db.query(models.DBEmployeeSkill).filter(
+        models.DBEmployeeSkill.employee_id == report.id, models.DBEmployeeSkill.skill_id == skill_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Not found")
+    row.verified_by = f"{emp.first_name} {emp.last_name}".strip()
+    row.verified_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    db.commit()
+    return {"verified": True}
 
 
 # Serve frontend

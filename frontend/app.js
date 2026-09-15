@@ -343,6 +343,7 @@ var NAV_FOR_VIEW = {
     'reviews-view': 'nav-reviews',
     'training-view': 'nav-training',
     'compensation-view': 'nav-pay',
+    'skills-view': 'nav-skills',
     'analytics-view': 'nav-people-analytics',
     'wallet-view': 'nav-wallet',
     'settings-view': 'nav-settings'
@@ -381,6 +382,7 @@ var ROUTE_SLUGS = {
     'reviews-view': 'reviews',
     'training-view': 'training',
     'compensation-view': 'pay',
+    'skills-view': 'skills',
     'analytics-view': 'people-analytics',
     'leave-view': 'leave',
     'goals-view': 'goals',
@@ -5158,6 +5160,7 @@ async function viewEmployee(empId) {
         loadEmployeeCerts(emp.id);
         loadEmployeeHistory(emp.id);
         loadEmployeeCheckIns(emp.id);
+        loadEmployeeSkills(emp.id);
 
         // Onboarding
         var items = emp.onboarding_items || [];
@@ -7523,6 +7526,7 @@ showView = function(viewId) {
     if (viewId === 'reviews-view') loadReviewsView();
     if (viewId === 'training-view') loadTrainingView();
     if (viewId === 'compensation-view') loadPayView();
+    if (viewId === 'skills-view') loadSkillsView();
     if (viewId === 'analytics-view') loadAnalyticsView();
     if (viewId === 'recruitment-view') {
         loadRecAnalytics();
@@ -11397,6 +11401,7 @@ var HR_VIEW_LOADERS = {
     'reviews-view':        function () { loadReviewsView(); },
     'training-view':       function () { loadTrainingView(); },
     'compensation-view':   function () { loadPayView(); },
+    'skills-view':         function () { loadSkillsView(); },
     'analytics-view':      function () { loadAnalyticsView(); }
 };
 
@@ -16236,3 +16241,171 @@ async function setBandVisibility(on) {
     } catch (e) { showToast(e.message, 'error'); }
 }
 window.setBandVisibility = setBandVisibility;
+
+// ===========================================================================
+// Skills
+// ===========================================================================
+
+var SKILL_WORDS = { 1: 'Learning', 2: 'Working', 3: 'Strong', 4: 'Expert' };
+var SKILL_TONE = { 0: 'transparent', 1: 'rgba(148,163,184,0.25)', 2: 'rgba(56,189,248,0.35)', 3: 'rgba(56,189,248,0.7)', 4: 'var(--primary-color)' };
+var _skillSearchTimer = null;
+
+function _skillDots(level) {
+    var out = '';
+    for (var i = 1; i <= 4; i++) out += '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:2px;background:' + (i <= level ? 'var(--primary-color)' : 'rgba(255,255,255,0.12)') + ';"></span>';
+    return '<span title="' + esc(SKILL_WORDS[level] || '') + '">' + out + '</span>';
+}
+
+async function loadSkillsView() {
+    var tiles = document.getElementById('skill-tiles');
+    if (!tiles) return;
+    try {
+        var d = await fetchJson('/api/skills');
+        function tile(label, value, sub, tone) {
+            return '<div class="stat-card"><span class="stat-label">' + label + '</span><span class="stat-value"' + (tone ? ' style="color:' + tone + ';"' : '') + '>' + value + '</span>' +
+                (sub ? '<span style="font-size:0.75rem;color:var(--text-secondary);">' + sub + '</span>' : '') + '</div>';
+        }
+        var unverified = d.skills.reduce(function (n, s) { return n + (s.unverified || 0); }, 0);
+        tiles.innerHTML = tile('Skills in the catalogue', d.skills.length) +
+            tile('Only one person can do it', d.single_points_of_failure.length, 'single points of failure', d.single_points_of_failure.length ? 'var(--warning-color)' : '') +
+            tile('People with none recorded', d.people_with_none, 'of ' + d.people) +
+            tile('Waiting to be confirmed', unverified, 'added by people themselves', unverified ? 'var(--warning-color)' : '');
+        var spof = document.getElementById('skill-spof-widget');
+        spof.style.display = d.single_points_of_failure.length ? '' : 'none';
+        document.getElementById('skill-spof').innerHTML = d.single_points_of_failure.map(function (sk) {
+            return '<div style="display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border-color);font-size:0.88rem;">' +
+                '<span>' + esc(sk.name) + '</span><a href="#" onclick="searchSkills(' + JSON.stringify(sk.name).replace(/"/g, '&quot;') + ');return false;" style="font-size:0.8rem;">Who holds it</a></div>';
+        }).join('');
+        document.getElementById('skill-catalogue').innerHTML = d.skills.length ? '<table class="data-table"><thead><tr><th>Skill</th><th>People</th><th>Strong</th><th>Avg</th><th></th></tr></thead><tbody>' +
+            d.skills.map(function (sk) {
+                return '<tr><td>' + esc(sk.name) + (sk.category ? ' <span style="font-size:0.72rem;color:var(--text-secondary);">' + esc(sk.category) + '</span>' : '') +
+                    (sk.single_point_of_failure ? ' <span style="font-size:0.7rem;color:var(--warning-color);">only one</span>' : '') + '</td>' +
+                    '<td>' + sk.people + '</td><td>' + sk.strong + '</td><td>' + (sk.average_level != null ? sk.average_level : '-') + '</td>' +
+                    '<td style="white-space:nowrap;"><button class="btn btn-sm btn-outline" onclick="renameSkill(' + sk.id + ')">Edit</button> ' +
+                    '<button class="btn btn-sm btn-outline" onclick="deleteSkill(' + sk.id + ')">Delete</button></td></tr>';
+            }).join('') + '</tbody></table>' :
+            '<p style="color:var(--text-secondary);font-size:0.85rem;padding:12px 0;">Nothing yet. Add skills here, on a profile, or let people add their own from the portal.</p>';
+        var sel = document.getElementById('skill-matrix-dept');
+        if (sel.options.length <= 1) {
+            try {
+                var depts = await fetchJson('/api/departments');
+                (Array.isArray(depts) ? depts : depts.departments || []).forEach(function (dp) {
+                    var o = document.createElement('option'); o.value = dp.id; o.textContent = dp.name; sel.appendChild(o);
+                });
+            } catch (e) { /* everybody */ }
+        }
+        loadSkillMatrix();
+    } catch (e) { tiles.innerHTML = '<div class="widget" style="padding:20px;color:var(--danger-text);">' + esc(e.message) + '</div>'; }
+}
+window.loadSkillsView = loadSkillsView;
+
+async function loadSkillMatrix() {
+    var host = document.getElementById('skill-matrix');
+    if (!host) return;
+    var dept = (document.getElementById('skill-matrix-dept') || {}).value || '';
+    try {
+        var m = await fetchJson('/api/skills/matrix' + (dept ? '?department_id=' + encodeURIComponent(dept) : ''));
+        if (!m.skills.length) { host.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem;padding:12px 0;">No skills recorded for these people yet.</p>'; return; }
+        host.innerHTML = '<table class="data-table" style="font-size:0.8rem;"><thead><tr><th>Person</th>' +
+            m.skills.map(function (sk) { return '<th style="writing-mode:vertical-rl;transform:rotate(180deg);padding:8px 4px;white-space:nowrap;">' + esc(sk.name) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+            m.people.map(function (p) {
+                return '<tr><td style="white-space:nowrap;"><a href="#" onclick="viewEmployee(' + p.employee_id + ');return false;">' + esc(p.name) + '</a></td>' +
+                    p.levels.map(function (lv, i) {
+                        return '<td style="text-align:center;padding:6px 4px;"><span title="' + esc(SKILL_WORDS[lv] || 'None') + (p.verified[i] ? ' (confirmed)' : '') + '" style="display:inline-block;width:18px;height:18px;border-radius:5px;background:' + SKILL_TONE[lv] + ';border:1px solid ' + (p.verified[i] ? 'var(--primary-color)' : 'rgba(255,255,255,0.12)') + ';"></span></td>';
+                    }).join('') + '</tr>';
+            }).join('') +
+            '<tr><td style="color:var(--text-secondary);">Strong cover</td>' + m.coverage.map(function (c) {
+                return '<td style="text-align:center;color:' + (c.strong === 0 ? 'var(--danger-color)' : c.strong === 1 ? 'var(--warning-color)' : 'var(--text-secondary)') + ';">' + c.strong + '</td>';
+            }).join('') + '</tr></tbody></table>' +
+            '<p style="font-size:0.72rem;color:var(--text-secondary);margin:8px 0 0;">Darker is stronger; a blue border means confirmed. The last row counts who holds each skill well.</p>';
+    } catch (e) { host.innerHTML = '<p style="color:var(--danger-text);font-size:0.85rem;">' + esc(e.message) + '</p>'; }
+}
+window.loadSkillMatrix = loadSkillMatrix;
+
+function searchSkills(q) {
+    var box = document.getElementById('skill-search-results');
+    var input = document.getElementById('skill-search');
+    if (input && input.value !== q) input.value = q;
+    clearTimeout(_skillSearchTimer);
+    if (!q || !q.trim()) { box.style.display = 'none'; return; }
+    _skillSearchTimer = setTimeout(async function () {
+        try {
+            var d = await fetchJson('/api/skills/search?q=' + encodeURIComponent(q.trim()));
+            box.style.display = '';
+            box.innerHTML = '<div class="widget-header"><h3>Who can do "' + esc(q.trim()) + '"</h3><span style="font-size:0.8rem;color:var(--text-secondary);">' + d.people.length + ' found</span></div>' +
+                (d.people.length ? d.people.map(function (p) {
+                    return '<div style="display:flex;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border-color);font-size:0.88rem;">' +
+                        '<a href="#" onclick="viewEmployee(' + p.employee_id + ');return false;" style="min-width:160px;">' + esc(p.name) + '</a>' +
+                        '<span style="color:var(--text-secondary);">' + esc(p.skill) + '</span>' + _skillDots(p.level) +
+                        '<span style="font-size:0.75rem;color:var(--text-secondary);">' + esc(p.level_word) + (p.verified ? ' \u00b7 confirmed' : '') + '</span></div>';
+                }).join('') : '<p style="color:var(--text-secondary);font-size:0.85rem;">Nobody has that recorded.</p>');
+        } catch (e) { box.style.display = 'none'; }
+    }, 200);
+}
+window.searchSkills = searchSkills;
+
+async function addSkillToCatalogue() {
+    var out = await uiForm([{ name: 'name', label: 'Skill', required: true, placeholder: 'Payroll run' },
+                            { name: 'category', label: 'Category', placeholder: 'Finance' }], { title: 'Add a skill', confirmText: 'Add' });
+    if (!out) return;
+    try { await fetchJson('/api/skills', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(out) }); loadSkillsView(); }
+    catch (e) { showToast(e.message, 'error'); }
+}
+window.addSkillToCatalogue = addSkillToCatalogue;
+
+async function renameSkill(id) {
+    var out = await uiForm([{ name: 'name', label: 'Name', required: true }, { name: 'category', label: 'Category' }], { title: 'Edit skill', confirmText: 'Save' });
+    if (!out) return;
+    try { await fetchJson('/api/skills/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(out) }); loadSkillsView(); }
+    catch (e) { showToast(e.message, 'error'); }
+}
+window.renameSkill = renameSkill;
+
+async function deleteSkill(id) {
+    if (!await uiConfirm('Delete this skill from the catalogue? It comes off everybody who has it.', { title: 'Delete skill', confirmText: 'Delete', danger: true })) return;
+    try { await fetchJson('/api/skills/' + id, { method: 'DELETE' }); loadSkillsView(); }
+    catch (e) { showToast(e.message, 'error'); }
+}
+window.deleteSkill = deleteSkill;
+
+var _empSkills = [];
+async function loadEmployeeSkills(empId) {
+    var host = document.getElementById('emp-skills-list');
+    if (!host || !empId) return;
+    try {
+        var d = await fetchJson('/api/employees/' + empId + '/skills');
+        _empSkills = d.skills;
+        if (!d.skills.length) { host.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem;">None recorded.</p>'; return; }
+        host.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:8px;">' + d.skills.map(function (sk) {
+            return '<span style="display:inline-flex;gap:6px;align-items:center;padding:4px 10px;border-radius:999px;border:1px solid ' + (sk.verified ? 'var(--primary-color)' : 'var(--border-color)') + ';font-size:0.82rem;">' +
+                esc(sk.name) + ' ' + _skillDots(sk.level) +
+                (sk.verified ? '' : '<button class="btn-icon" title="Confirm" onclick="verifyEmployeeSkill(' + empId + ',' + sk.skill_id + ')" style="font-size:0.8rem;">\u2713</button>') + '</span>';
+        }).join('') + '</div>' +
+            (d.skills.some(function (sk) { return !sk.verified; }) ? '<p style="font-size:0.75rem;color:var(--text-secondary);margin:8px 0 0;">A grey outline is something they added themselves; tick to confirm it.</p>' : '');
+    } catch (e) { host.innerHTML = '<p style="color:var(--danger-text);font-size:0.85rem;">' + esc(e.message) + '</p>'; }
+}
+window.loadEmployeeSkills = loadEmployeeSkills;
+
+async function verifyEmployeeSkill(empId, skillId) {
+    try { await fetchJson('/api/employees/' + empId + '/skills/' + skillId + '/verify', { method: 'POST' }); loadEmployeeSkills(empId); }
+    catch (e) { showToast(e.message, 'error'); }
+}
+window.verifyEmployeeSkill = verifyEmployeeSkill;
+
+async function editEmployeeSkills(empId) {
+    if (!empId) return;
+    var current = _empSkills.map(function (sk) { return sk.name + ':' + sk.level; }).join(', ');
+    var out = await uiForm([{ name: 'list', label: 'Skills, one per line or comma-separated, with a level 1 to 4 after a colon', type: 'textarea', value: current.replace(/, /g, '\n') }],
+        { title: 'Skills', confirmText: 'Save', message: 'Python:4, SQL:2 - 1 learning, 2 working, 3 strong, 4 expert. What you write here is confirmed.' });
+    if (!out) return;
+    var skills = String(out.list || '').split(/[\n,]/).map(function (t) { return t.trim(); }).filter(Boolean).map(function (t) {
+        var m = t.match(/^(.*?):\s*([1-4])$/);
+        return m ? { name: m[1].trim(), level: Number(m[2]) } : { name: t, level: 2 };
+    });
+    try {
+        await fetchJson('/api/employees/' + empId + '/skills', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ skills: skills }) });
+        showToast('Saved', 'success');
+        loadEmployeeSkills(empId);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.editEmployeeSkills = editEmployeeSkills;

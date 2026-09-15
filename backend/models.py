@@ -2390,3 +2390,31 @@ class DBPayBand(Base):
     currency = Column(String, default="GBP")
     notes = Column(String, default="")
     updated_at = Column(String, default="")
+
+
+# ---- Skills ------------------------------------------------------------------------
+# A catalogue per business, grown from use, and a level per person per skill.
+
+class DBSkill(Base):
+    __tablename__ = "skills"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    category = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBEmployeeSkill(Base):
+    __tablename__ = "employee_skills"
+    __table_args__ = (UniqueConstraint("employee_id", "skill_id", name="uq_skill_per_person"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+    skill_id = Column(Integer, ForeignKey("skills.id"), nullable=False, index=True)
+    level = Column(Integer, default=2)             # 1 learning, 2 working, 3 strong, 4 expert
+    added_by = Column(String, default="employee")  # employee | hr
+    verified_by = Column(String, default="")       # HR or the manager, by name
+    verified_at = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
