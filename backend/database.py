@@ -1719,6 +1719,17 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 58: {sys.exc_info()[1]}")
 
+            # 59. Which of the business's accounts a receipt landed in.
+            try:
+                for ddl in (
+                    "ALTER TABLE payments ADD COLUMN IF NOT EXISTS account_id INTEGER",
+                    "CREATE INDEX IF NOT EXISTS ix_payments_account_id ON payments (account_id)",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 59: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

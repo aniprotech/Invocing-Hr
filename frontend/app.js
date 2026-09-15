@@ -566,6 +566,7 @@ function showView(viewId) {
     if (viewId === 'hr-dashboard-view' && typeof loadHrDashboard === 'function') loadHrDashboard();
     if (viewId === 'settings-view' && typeof buildSettingsSections === 'function') buildSettingsSections();
     if (viewId === 'settings-view' && typeof loadPaymentGateways === 'function') loadPaymentGateways();
+    if (viewId === 'settings-view' && typeof loadAccounts === 'function') loadAccounts();
     if (viewId === 'settings-view' && typeof loadBrandingThemes === 'function') loadBrandingThemes();
     if (viewId === 'settings-view' && typeof loadAuditLogs === 'function') loadAuditLogs();
     if (viewId === 'settings-view' && typeof loadIntegrations === 'function') loadIntegrations();
@@ -2512,6 +2513,11 @@ var _viewOutstanding = 0;
 
 // Payment history + overdue banner, injected above the invoice actions so the
 // state of an invoice is obvious without opening a report.
+// The codes the ledger stores, in words. "bank_transfer" is a database value,
+// not something to show a person.
+var PAYMENT_METHOD_LABELS = { bank_transfer: 'Bank transfer', card: 'Card', cash: 'Cash', cheque: 'Cheque', direct_debit: 'Direct debit',
+    other: 'Other', manual: 'Marked as paid', stripe: 'Stripe', razorpay: 'Razorpay', gocardless: 'GoCardless', paypal: 'PayPal' };
+
 function renderInvoicePayments(inv) {
     var host = document.getElementById('view-inv-payments');
     if (!host) return;
@@ -2539,7 +2545,8 @@ function renderInvoicePayments(inv) {
         payments.forEach(function(p) {
             html += '<tr style="border-bottom:1px solid var(--border-color);">' +
                     '<td style="padding:6px 0;">' + esc(p.paid_on || '') + '</td>' +
-                    '<td style="padding:6px 0;color:var(--text-secondary);">' + esc(p.method || '') +
+                    '<td style="padding:6px 0;color:var(--text-secondary);">' + esc(PAYMENT_METHOD_LABELS[p.method] || p.method || '') +
+                    (p.account_name ? ' \u2192 ' + esc(p.account_name) : '') +
                     (p.reference ? ' &middot; ' + esc(p.reference) : '') + '</td>' +
                     '<td style="padding:6px 0;text-align:right;font-weight:600;">' + sym + (p.amount || 0).toFixed(2) + '</td>' +
                     '<td style="padding:6px 0;text-align:right;width:32px;">' +
@@ -3732,8 +3739,40 @@ function recordPayment(number) {
     document.getElementById('payment-error').style.display = 'none';
     document.getElementById('payment-modal').style.display = 'flex';
     updatePaymentRemainder();
+    fillPaymentAccounts();
 }
 window.recordPayment = recordPayment;
+
+// The business's open accounts, default first and selected. With none
+// set up the receipt is simply untracked, and the form says where to fix
+// that rather than refusing.
+var _accountsCache = null;
+async function fillPaymentAccounts(chooseId) {
+    var sel = document.getElementById('payment-account');
+    var hint = document.getElementById('payment-account-hint');
+    if (!sel) return;
+    try {
+        var d = await fetchJson('/api/accounts');
+        _accountsCache = d.accounts || [];
+    } catch (e) { _accountsCache = []; }
+    var open = _accountsCache.filter(function (a) { return a.active; });
+    sel.innerHTML = '';
+    if (!open.length) {
+        sel.innerHTML = '<option value="">Not tracked</option>';
+        if (hint) hint.textContent = 'Add an account and every receipt will say where it landed.';
+        return;
+    }
+    if (hint) hint.textContent = '';
+    open.forEach(function (a) {
+        var o = document.createElement('option');
+        o.value = String(a.id);
+        o.textContent = a.name + (a.kind === 'cash' ? ' (cash)' : a.kind === 'gateway' ? ' (gateway)' : '') + (a.is_default ? ' \u00b7 default' : '');
+        sel.appendChild(o);
+    });
+    var pick = chooseId || (open.filter(function (a) { return a.is_default; })[0] || open[0]).id;
+    sel.value = String(pick);
+}
+window.fillPaymentAccounts = fillPaymentAccounts;
 
 function closePaymentModal() {
     document.getElementById('payment-modal').style.display = 'none';
@@ -3794,6 +3833,7 @@ async function confirmPayment() {
                 paid_on: paidOn,
                 method: document.getElementById('payment-method').value,
                 reference: document.getElementById('payment-reference').value.trim(),
+                account_id: Number((document.getElementById('payment-account') || {}).value || 0) || null,
             }),
         });
         var data = await res.json().catch(function () { return {}; });
@@ -15140,6 +15180,103 @@ async function copyInvoiceLink() {
 window.copyInvoiceLink = copyInvoiceLink;
 
 
+// --- Where the money lands ----------------------------------------------------
+// The business's accounts. Named once, each receipt lands in one.
+
+var ACCOUNT_KIND_LABELS = { bank: 'Bank account', cash: 'Cash', gateway: 'Payment gateway', other: 'Other' };
+
+async function loadAccounts() {
+    var host = document.getElementById('accounts-list');
+    if (!host) return;
+    try {
+        var d = await fetchJson('/api/accounts');
+        _accountsCache = d.accounts || [];
+        var sym = getCurrencySymbol();
+        if (!_accountsCache.length) {
+            host.innerHTML = '<p style="font-size:0.85rem;color:var(--text-secondary);padding:8px 0;">No accounts yet. Add the bank account customers pay into; the first one becomes the default for every receipt.' +
+                (d.untracked && d.untracked.count ? ' ' + d.untracked.count + ' receipt' + (d.untracked.count === 1 ? '' : 's') + ' so far (' + sym + Number(d.untracked.all_time || 0).toFixed(2) + ') are not tracked.' : '') + '</p>';
+            return;
+        }
+        host.innerHTML = '<div style="overflow-x:auto;"><table class="data-table" style="font-size:0.85rem;"><thead><tr><th style="min-width:170px;">Account</th><th>Kind</th><th style="text-align:right;white-space:nowrap;">This month</th><th style="text-align:right;white-space:nowrap;">Last month</th><th style="text-align:right;white-space:nowrap;">All time</th><th></th></tr></thead><tbody>' +
+            _accountsCache.map(function (a) {
+                var t = a.totals || {};
+                return '<tr' + (a.active ? '' : ' style="opacity:0.55;"') + '><td><strong>' + esc(a.name) + '</strong>' +
+                    (a.is_default ? ' <span class="status-pill status-paid">default</span>' : '') +
+                    (a.active ? '' : ' <span class="status-pill">closed</span>') +
+                    (a.details ? '<div style="font-size:0.75rem;color:var(--text-secondary);white-space:pre-line;">' + esc(a.details) + '</div>' : '') + '</td>' +
+                    '<td style="color:var(--text-secondary);white-space:nowrap;">' + esc(ACCOUNT_KIND_LABELS[a.kind] || a.kind) + '</td>' +
+                    '<td style="text-align:right;white-space:nowrap;">' + sym + Number(t.this_month || 0).toFixed(2) + '</td>' +
+                    '<td style="text-align:right;white-space:nowrap;">' + sym + Number(t.last_month || 0).toFixed(2) + '</td>' +
+                    '<td style="text-align:right;white-space:nowrap;">' + sym + Number(t.all_time || 0).toFixed(2) + (t.last_on ? '<div style="font-size:0.72rem;color:var(--text-secondary);">last ' + esc(t.last_on) + '</div>' : '') + '</td>' +
+                    '<td style="text-align:right;white-space:nowrap;">' +
+                    (a.active && !a.is_default ? '<button class="btn btn-outline btn-sm" data-acct-default="' + a.id + '">Make default</button> ' : '') +
+                    (a.active ? '<button class="btn btn-outline btn-sm" data-acct-edit="' + a.id + '">Edit</button> ' : '<button class="btn btn-outline btn-sm" data-acct-reopen="' + a.id + '">Reopen</button> ') +
+                    (a.active ? '<button class="btn btn-outline btn-sm" data-acct-close="' + a.id + '">Close</button>' : '') + '</td></tr>';
+            }).join('') + '</tbody></table></div>' +
+            (d.untracked && d.untracked.count ? '<p style="font-size:0.75rem;color:var(--text-secondary);margin:8px 0 0;">' + d.untracked.count + ' older receipt' + (d.untracked.count === 1 ? '' : 's') + ' (' + sym + Number(d.untracked.all_time || 0).toFixed(2) + ') were recorded before accounts existed and are not in these totals.</p>' : '');
+        host.querySelectorAll('[data-acct-default]').forEach(function (b) { b.addEventListener('click', function () { setAccount(Number(b.getAttribute('data-acct-default')), { is_default: true }); }); });
+        host.querySelectorAll('[data-acct-reopen]').forEach(function (b) { b.addEventListener('click', function () { setAccount(Number(b.getAttribute('data-acct-reopen')), { active: true }); }); });
+        host.querySelectorAll('[data-acct-edit]').forEach(function (b) { b.addEventListener('click', function () { editAccount(Number(b.getAttribute('data-acct-edit'))); }); });
+        host.querySelectorAll('[data-acct-close]').forEach(function (b) { b.addEventListener('click', function () { closeAccount(Number(b.getAttribute('data-acct-close'))); }); });
+    } catch (e) {
+        host.innerHTML = '<p style="color:var(--danger-text);font-size:0.85rem;">' + esc(e.message) + '</p>';
+    }
+}
+window.loadAccounts = loadAccounts;
+
+function _accountFields(a) {
+    a = a || {};
+    return [
+        { name: 'name', label: 'Name', type: 'text', value: a.name || '', required: true, placeholder: 'HDFC current account' },
+        { name: 'kind', label: 'Kind', type: 'select', value: a.kind || 'bank',
+          options: [{ value: 'bank', label: 'Bank account' }, { value: 'cash', label: 'Cash' }, { value: 'gateway', label: 'Payment gateway' }, { value: 'other', label: 'Other' }] },
+        { name: 'details', label: 'Details customers need to pay into it', type: 'textarea', value: a.details || '',
+          placeholder: 'Account number, sort code / IFSC, UPI id', hint: 'Optional. For your own reference and, for the default account, for invoices.' }
+    ];
+}
+
+// fromReceipt: opened from the receive-payment form, so the new account
+// is selected there when it comes back.
+async function addAccount(fromReceipt) {
+    var out = await uiForm(_accountFields(), { title: 'Add an account', confirmText: 'Add' });
+    if (!out) return;
+    try {
+        var made = await fetchJson('/api/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: out.name, kind: out.kind, details: out.details || '' }) });
+        showToast('Account added', 'success');
+        if (fromReceipt) fillPaymentAccounts(made.id); else loadAccounts();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.addAccount = addAccount;
+
+async function editAccount(id) {
+    var a = (_accountsCache || []).filter(function (x) { return x.id === id; })[0];
+    if (!a) return;
+    var out = await uiForm(_accountFields(a), { title: 'Edit account', confirmText: 'Save' });
+    if (!out) return;
+    setAccount(id, { name: out.name, kind: out.kind, details: out.details || '' });
+}
+window.editAccount = editAccount;
+
+async function setAccount(id, body) {
+    try {
+        await fetchJson('/api/accounts/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        loadAccounts();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.setAccount = setAccount;
+
+async function closeAccount(id) {
+    var a = (_accountsCache || []).filter(function (x) { return x.id === id; })[0];
+    if (!await uiConfirm('Close ' + (a ? a.name : 'this account') + '? Receipts already in it stay on record; new ones cannot land there.', { title: 'Close account', confirmText: 'Close', danger: true })) return;
+    try {
+        var out = await fetchJson('/api/accounts/' + id, { method: 'DELETE' });
+        showToast(out.message || 'Done', 'success');
+        loadAccounts();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.closeAccount = closeAccount;
+
 // --- Getting paid ------------------------------------------------------------
 // The business's own keys, collecting into the business's own account. The
 // platform's keys are separate and take wallet top-ups; these two must never
@@ -15147,7 +15284,7 @@ window.copyInvoiceLink = copyInvoiceLink;
 
 var GATEWAY_HINTS = {
     razorpay: { public: 'Key ID (rzp_...)', secret: 'Key Secret', ready: true },
-    stripe: { public: 'Publishable key (pk_...)', secret: 'Secret key (sk_...)', ready: false },
+    stripe: { public: 'Publishable key (pk_...)', secret: 'Secret key (sk_...)', ready: true },
     paypal: { public: 'Client ID', secret: 'Secret', ready: false }
 };
 
@@ -15165,7 +15302,7 @@ async function loadPaymentGateways() {
                 '<summary style="cursor:pointer;padding:12px 0;font-weight:600;">' +
                 esc(g.label) +
                 (g.is_active ? ' <span class="status-pill status-paid">on</span>' : '') +
-                (hint.ready === false ? ' <span class="bt-note">(keys stored, checkout not wired yet)</span>' : '') +
+                (hint.ready === false ? ' <span class="bt-note">(keys kept for later - invoices cannot be paid with this yet)</span>' : '') +
                 '</summary>' +
                 '<label class="bfield">' + esc(hint.public || 'Public key') +
                 '<input type="text" id="gw-pub-' + g.provider + '" value="' + esc(g.public_key) + '"></label>' +
@@ -15176,10 +15313,12 @@ async function loadPaymentGateways() {
                 (g.is_live ? ' checked' : '') + '> These are live keys, not test keys</label>' +
                 '<label class="bcheck"><input type="checkbox" id="gw-on-' + g.provider + '"' +
                 (g.is_active ? ' checked' : '') + '> Offer this on my invoices</label>' +
-                '<div style="display:flex;gap:8px;margin:10px 0 14px;">' +
+                '<div style="display:flex;gap:8px;margin:10px 0 14px;flex-wrap:wrap;align-items:center;">' +
                 '<button class="btn btn-primary" onclick="savePaymentGateway(\'' + g.provider + '\')">Save</button>' +
+                (g.has_secret ? '<button class="btn btn-outline" onclick="checkPaymentGateway(\'' + g.provider + '\')" id="gw-check-' + g.provider + '">Check keys</button>' : '') +
                 (g.has_secret ? '<button class="btn btn-outline" onclick="removePaymentGateway(\'' + g.provider + '\')">Remove</button>' : '') +
                 '</div>' +
+                '<p id="gw-result-' + g.provider + '" style="font-size:0.82rem;margin:-6px 0 12px;display:none;"></p>' +
                 '</details>';
         }).join('');
     } catch (e) { /* the rest of settings still works */ }
@@ -15206,6 +15345,32 @@ async function savePaymentGateway(provider) {
     } catch (e) { showToast('Could not save those keys', 'error'); }
 }
 window.savePaymentGateway = savePaymentGateway;
+
+// Ask the provider whether the saved keys work, before a customer does.
+async function checkPaymentGateway(provider) {
+    var out = document.getElementById('gw-result-' + provider);
+    var btn = document.getElementById('gw-check-' + provider);
+    if (!out) return;
+    out.style.display = 'block';
+    out.style.color = 'var(--text-secondary)';
+    out.textContent = 'Asking ' + provider + '\u2026';
+    if (btn) btn.disabled = true;
+    try {
+        var res = await fetch('/api/payment-gateways/' + provider + '/check', { method: 'POST', credentials: 'same-origin' });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) throw new Error(data.detail || 'Could not check those keys');
+        out.style.color = data.ok ? 'var(--success-color)' : 'var(--danger-color)';
+        out.textContent = (data.ok ? '\u2713 ' : '\u2717 ') + data.message +
+            (data.warning ? ' \u00b7 ' + data.warning : '') +
+            (data.ok && !data.offered ? ' \u00b7 Not offered on invoices until "Offer this" is ticked and saved.' : '');
+    } catch (e) {
+        out.style.color = 'var(--danger-color)';
+        out.textContent = e.message;
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+window.checkPaymentGateway = checkPaymentGateway;
 
 async function removePaymentGateway(provider) {
     if (!await uiConfirm('Remove these keys? Invoices will stop offering online payment.')) return;

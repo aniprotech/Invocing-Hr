@@ -114,6 +114,30 @@ class DBPayment(Base):
     method = Column(String, default="bank_transfer")
     reference = Column(String, default="")
     note = Column(String, default="")
+    # Where the money landed - one of the business's own accounts below.
+    # Null for receipts recorded before accounts existed.
+    account_id = Column(Integer, ForeignKey("money_accounts.id"), nullable=True, index=True)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBMoneyAccount(Base):
+    """One place a business's money lands: a bank account, the cash box, a
+    gateway's balance. A receipt names one, so "how much came into which
+    account this month" has an answer and the bank statement can be
+    matched line by line."""
+    __tablename__ = "money_accounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    name = Column(String, default="")
+    kind = Column(String, default="bank")            # bank | cash | gateway | other
+    # For a gateway account, which one - so an online payment finds it.
+    provider = Column(String, default="")
+    # Shown on invoices when this is the default: account number, sort code,
+    # IFSC, UPI id - whatever the customer needs to pay into it.
+    details = Column(Text, default="")
+    is_default = Column(Boolean, default=False)
+    active = Column(Boolean, default=True)
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 

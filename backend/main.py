@@ -3564,6 +3564,7 @@ def get_invoice(number: str, request: Request, db: Session = Depends(get_db)):
     payments = db.query(models.DBPayment).filter(
         models.DBPayment.invoice_id == inv.id
     ).order_by(models.DBPayment.id.asc()).all()
+    acct_names = account_names(db, inv.client_id)
 
     # Whether the last attempt to email this actually arrived. Recording a
     # failure and showing nothing leaves it as silent as pretending it went.
@@ -3593,6 +3594,7 @@ def get_invoice(number: str, request: Request, db: Session = Depends(get_db)):
         "payments": [{
             "id": p.id, "amount": p.amount, "paid_on": p.paid_on,
             "method": p.method, "reference": p.reference, "note": p.note,
+            "account_id": p.account_id, "account_name": acct_names.get(p.account_id, ""),
         } for p in payments],
         "status": inv.status,
         "sent": inv.sent,
@@ -5347,7 +5349,7 @@ def mark_invoice_paid(number: str, request: Request, db: Session = Depends(get_d
         db.add(models.DBPayment(
             client_id=client.id, invoice_id=inv.id, amount=outstanding,
             paid_on=datetime.now().strftime("%Y-%m-%d"), method="manual",
-            note="Marked as paid in full",
+            note="Marked as paid in full", account_id=default_account_id(db, client.id),
         ))
     inv.paid = money((inv.paid or 0) + outstanding)
     inv.due = 0.0
@@ -5363,6 +5365,7 @@ class PaymentCreate(BaseModel):
     method: Optional[str] = "bank_transfer"
     reference: Optional[str] = ""
     note: Optional[str] = ""
+    account_id: Optional[int] = None
 
 
 @app.post("/api/invoices/{number}/payments")
@@ -5390,6 +5393,7 @@ def record_invoice_payment(number: str, body: PaymentCreate, request: Request, d
         paid_on=body.paid_on or datetime.now().strftime("%Y-%m-%d"),
         method=body.method or "bank_transfer",
         reference=body.reference or "", note=body.note or "",
+        account_id=resolve_account(db, client.id, body.account_id),
     )
     db.add(payment)
     inv.paid = money((inv.paid or 0) + amount)
@@ -14550,6 +14554,14 @@ def _create_stripe_checkout(order, client, request):
     return {"provider": "stripe", "checkout_url": data.get("url", ""), "session_id": data.get("id", "")}
 
 
+def stripe_complaint(resp) -> str:
+    """Stripe's own words for a refusal, or the status code if it had none."""
+    try:
+        return ((resp.json().get("error") or {}).get("message") or "").strip()[:200] or f"HTTP {resp.status_code}"
+    except Exception:      # noqa: BLE001
+        return f"HTTP {resp.status_code}"
+
+
 def razorpay_complaint(resp, currency="") -> str:
     """Turn a Razorpay rejection into something the person reading it can act on.
 
@@ -21990,7 +22002,8 @@ def record_invoice_payment(db: Session, inv, amount: float, method: str,
     db.add(models.DBPayment(
         client_id=inv.client_id, invoice_id=inv.id, amount=amount,
         paid_on=datetime.now().strftime("%Y-%m-%d"), method=method,
-        reference=reference[:120], note=note[:200]))
+        reference=reference[:120], note=note[:200],
+        account_id=gateway_account_id(db, inv.client_id, method)))
 
     inv.paid = money((inv.paid or 0) + amount)
     sub, tax, total = compute_invoice_totals(inv.line_items, inv.tax_type)
@@ -22187,6 +22200,7 @@ def start_stripe_invoice_payment(tracking_id: str, request: Request,
         # to reach the log or the business has nothing to act on.
         logger.error("Stripe session failed for invoice %s: %s",
                      inv.number, resp.text[:400])
+        gateway_failure_notice(db, inv.client_id, "stripe", stripe_complaint(resp))
         raise HTTPException(status_code=502,
                             detail="This card payment could not be started. "
                                    "The business has been notified.")
@@ -22304,6 +22318,7 @@ def start_invoice_payment(tracking_id: str, request: Request,
         # the business needs the reason in the log to act on.
         logger.error("Razorpay order failed for invoice %s: %s",
                      inv.number, resp.text[:400])
+        gateway_failure_notice(db, inv.client_id, "razorpay", razorpay_complaint(resp, currency))
         raise HTTPException(status_code=502,
                             detail=razorpay_complaint(resp, currency))
     order = resp.json()
@@ -28070,6 +28085,278 @@ def set_company_values(request: Request, body: dict = None, db: Session = Depend
         db.add(models.DBSettings(client_id=client.id, key="company_values", value=str(raw)[:600]))
     db.commit()
     return {"values": company_values(db, client.id)}
+
+
+# ============================================================================
+# Where the money lands
+# ============================================================================
+# A receipt used to say how the customer paid and nothing about where it
+# went. A business with a current account, a cash box and a Stripe balance
+# could not answer "how much came into the bank this month", and matching
+# a bank statement meant guessing. Now the business names its accounts
+# once, every receipt lands in one, and online payments file themselves
+# under the gateway that took them.
+
+ACCOUNT_KINDS = ("bank", "cash", "gateway", "other")
+GATEWAY_ACCOUNT_NAMES = {"stripe": "Stripe", "razorpay": "Razorpay", "paypal": "PayPal",
+                         "gocardless": "GoCardless", "platform": "Collected by aniprotech"}
+
+
+def account_to_dict(a):
+    return {"id": a.id, "name": a.name or "", "kind": a.kind or "bank", "provider": a.provider or "",
+            "details": a.details or "", "is_default": bool(a.is_default), "active": bool(a.active),
+            "created_at": a.created_at or ""}
+
+
+def _accounts(db, client_id, active_only=False):
+    q = db.query(models.DBMoneyAccount).filter(models.DBMoneyAccount.client_id == client_id)
+    if active_only:
+        q = q.filter(models.DBMoneyAccount.active == True)  # noqa: E712
+    return q.order_by(models.DBMoneyAccount.is_default.desc(), models.DBMoneyAccount.id).all()
+
+
+def default_account_id(db, client_id):
+    row = db.query(models.DBMoneyAccount).filter(
+        models.DBMoneyAccount.client_id == client_id, models.DBMoneyAccount.active == True,  # noqa: E712
+        models.DBMoneyAccount.is_default == True).first()  # noqa: E712
+    return row.id if row else None
+
+
+def gateway_account_id(db, client_id, provider):
+    """The account an online payment through this provider lands in, made
+    the first time one does. Never the default: the business's own bank
+    stays where a hand-typed receipt goes unless they say otherwise."""
+    provider = (provider or "").lower()
+    if provider not in GATEWAY_ACCOUNT_NAMES:
+        return None
+    row = db.query(models.DBMoneyAccount).filter(
+        models.DBMoneyAccount.client_id == client_id, models.DBMoneyAccount.kind == "gateway",
+        models.DBMoneyAccount.provider == provider).first()
+    if not row:
+        row = models.DBMoneyAccount(client_id=client_id, name=GATEWAY_ACCOUNT_NAMES[provider],
+                                    kind="gateway", provider=provider, active=True, is_default=False)
+        db.add(row)
+        db.flush()
+    elif not row.active:
+        row.active = True
+    return row.id
+
+
+def account_names(db, client_id):
+    return {a.id: a.name for a in db.query(models.DBMoneyAccount).filter(models.DBMoneyAccount.client_id == client_id).all()}
+
+
+def resolve_account(db, client_id, account_id):
+    """An account the caller named, checked to be this business's and
+    open; nothing named means the default, if there is one."""
+    if account_id in (None, "", 0, "0"):
+        return default_account_id(db, client_id)
+    try:
+        account_id = int(account_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Pick an account from the list")
+    row = db.query(models.DBMoneyAccount).filter(
+        models.DBMoneyAccount.id == account_id, models.DBMoneyAccount.client_id == client_id).first()
+    if not row or not row.active:
+        raise HTTPException(status_code=400, detail="That account is not one of yours, or has been closed")
+    return row.id
+
+
+def account_totals(db, client_id, today=None):
+    """Per account: received this month, last month, all time, and the
+    last receipt - the figures the bank statement is checked against."""
+    today = today or date.today()
+    this_month = today.strftime("%Y-%m")
+    last_month = (today.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    out = {}
+    rows = db.query(models.DBPayment).filter(models.DBPayment.client_id == client_id).all()
+    for p in rows:
+        t = out.setdefault(p.account_id, {"this_month": 0.0, "last_month": 0.0, "all_time": 0.0, "count": 0, "last_on": ""})
+        amt = float(p.amount or 0)
+        t["all_time"] = money(t["all_time"] + amt)
+        t["count"] += 1
+        if (p.paid_on or "").startswith(this_month):
+            t["this_month"] = money(t["this_month"] + amt)
+        elif (p.paid_on or "").startswith(last_month):
+            t["last_month"] = money(t["last_month"] + amt)
+        if (p.paid_on or "") > t["last_on"]:
+            t["last_on"] = p.paid_on or ""
+    return out
+
+
+@app.get("/api/accounts")
+def list_accounts(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    totals = account_totals(db, client.id)
+    empty = {"this_month": 0.0, "last_month": 0.0, "all_time": 0.0, "count": 0, "last_on": ""}
+    rows = [dict(account_to_dict(a), totals=totals.get(a.id, empty)) for a in _accounts(db, client.id)]
+    return {"accounts": rows, "kinds": list(ACCOUNT_KINDS),
+            "untracked": totals.get(None, empty), "currency": (client.currency or "GBP").upper()}
+
+
+def _read_account_body(body):
+    body = body or {}
+    name = str(body.get("name") or "").strip()[:80]
+    kind = str(body.get("kind") or "bank").strip().lower()
+    if not name:
+        raise HTTPException(status_code=400, detail="Give the account a name")
+    if kind not in ACCOUNT_KINDS:
+        raise HTTPException(status_code=400, detail="Kind must be bank, cash, gateway or other")
+    return name, kind, str(body.get("details") or "").strip()[:600]
+
+
+@app.post("/api/accounts")
+def create_account(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    name, kind, details = _read_account_body(body)
+    row = models.DBMoneyAccount(client_id=client.id, name=name, kind=kind, details=details, active=True)
+    # The first account is the default, since a receipt with nowhere to go
+    # is the situation this exists to end.
+    row.is_default = default_account_id(db, client.id) is None or bool((body or {}).get("is_default"))
+    if row.is_default:
+        db.query(models.DBMoneyAccount).filter(models.DBMoneyAccount.client_id == client.id).update(
+            {"is_default": False}, synchronize_session=False)
+    db.add(row)
+    log_audit(db, client.id, "account_added", "account", None, name, kind, request)
+    db.commit()
+    db.refresh(row)
+    return account_to_dict(row)
+
+
+@app.put("/api/accounts/{account_id}")
+def update_account(account_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = db.query(models.DBMoneyAccount).filter(
+        models.DBMoneyAccount.id == account_id, models.DBMoneyAccount.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Account not found")
+    body = body or {}
+    if any(k in body for k in ("name", "kind", "details")):
+        merged = {"name": body.get("name", row.name), "kind": body.get("kind", row.kind),
+                  "details": body.get("details", row.details)}
+        row.name, row.kind, row.details = _read_account_body(merged)
+    if "active" in body:
+        row.active = bool(body["active"])
+        if not row.active and row.is_default:
+            row.is_default = False
+    if body.get("is_default"):
+        if not row.active:
+            raise HTTPException(status_code=400, detail="A closed account cannot be the default")
+        db.query(models.DBMoneyAccount).filter(models.DBMoneyAccount.client_id == client.id).update(
+            {"is_default": False}, synchronize_session=False)
+        row.is_default = True
+    log_audit(db, client.id, "account_updated", "account", row.id, row.name, "", request)
+    db.commit()
+    db.refresh(row)
+    return account_to_dict(row)
+
+
+@app.delete("/api/accounts/{account_id}")
+def delete_account(account_id: int, request: Request, db: Session = Depends(get_db)):
+    """Gone only if nothing ever landed in it; otherwise closed, so the
+    receipts that name it keep their answer."""
+    client = get_client_user(request, db)
+    row = db.query(models.DBMoneyAccount).filter(
+        models.DBMoneyAccount.id == account_id, models.DBMoneyAccount.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Account not found")
+    used = db.query(models.DBPayment).filter(models.DBPayment.account_id == row.id).count()
+    if used:
+        row.active = False
+        row.is_default = False
+        db.commit()
+        return {"message": f"Closed - {used} receipt{'s' if used != 1 else ''} name it, so it stays on record", "closed": True}
+    db.delete(row)
+    db.commit()
+    return {"message": "Removed", "closed": False}
+
+
+# --- Do the keys work? --------------------------------------------------------
+# Saving keys proves nothing. A wrong secret used to sit there, "on", until a
+# customer pressed Pay and got an apology. Now the business can ask the
+# provider directly, and when a customer's attempt fails because of the keys
+# the business is told that day rather than never.
+
+def check_gateway_keys(provider, public_key, secret_key):
+    """(ok, message, live) by asking the provider something harmless."""
+    try:
+        if provider == "stripe":
+            r = httpx.get("https://api.stripe.com/v1/balance", auth=(secret_key, ""), timeout=15.0)
+            if r.status_code == 200:
+                live = bool(r.json().get("livemode"))
+                return True, "Stripe accepted the secret key" + (" (live)" if live else " (test mode)"), live
+            return False, "Stripe refused the secret key: " + (r.json().get("error", {}).get("message") or f"HTTP {r.status_code}")[:160], None
+        if provider == "razorpay":
+            r = httpx.get("https://api.razorpay.com/v1/payments", params={"count": 1},
+                          auth=(public_key, secret_key), timeout=15.0)
+            if r.status_code == 200:
+                live = public_key.startswith("rzp_live_")
+                return True, "Razorpay accepted the keys" + (" (live)" if live else " (test mode)"), live
+            return False, "Razorpay refused the keys: " + ((r.json().get("error") or {}).get("description") or f"HTTP {r.status_code}")[:160], None
+        if provider == "paypal":
+            r = httpx.post("https://api-m.paypal.com/v1/oauth2/token", auth=(public_key, secret_key),
+                           data={"grant_type": "client_credentials"}, timeout=15.0)
+            live = r.status_code == 200
+            if not live:
+                r = httpx.post("https://api-m.sandbox.paypal.com/v1/oauth2/token", auth=(public_key, secret_key),
+                               data={"grant_type": "client_credentials"}, timeout=15.0)
+            if r.status_code == 200:
+                return True, "PayPal accepted the credentials" + (" (live)" if live else " (sandbox)"), live
+            return False, "PayPal refused the credentials: " + ((r.json().get("error_description") or f"HTTP {r.status_code}"))[:160], None
+    except Exception as exc:                                    # noqa: BLE001
+        return False, f"Could not reach {PROVIDER_LABELS.get(provider, provider)}: {str(exc)[:120]}", None
+    return False, "Unknown provider", None
+
+
+@app.post("/api/payment-gateways/{provider}/check")
+def check_client_gateway(provider: str, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    provider = (provider or "").strip().lower()
+    if provider not in CLIENT_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Unknown payment provider")
+    row = db.query(models.DBClientGateway).filter(
+        models.DBClientGateway.client_id == client.id, models.DBClientGateway.provider == provider).first()
+    if not row or not (row.public_key and row.secret_key):
+        raise HTTPException(status_code=400, detail="Save both keys first")
+    ok, message, live = check_gateway_keys(provider, row.public_key, row.secret_key)
+    warning = ""
+    if ok and live is not None and live != bool(row.is_live):
+        warning = ("These are live keys but the box says test" if live
+                   else "These are test keys but the box says live - real customers will not be charged")
+    log_audit(db, client.id, "payment_gateway_checked", "gateway", None, provider, "ok" if ok else "failed", request)
+    db.commit()
+    return {"ok": ok, "message": message, "live": live, "warning": warning,
+            "offered": bool(row.is_active) and ok}
+
+
+def gateway_failure_notice(db, client_id, provider, why):
+    """Tell the business once a day that customers cannot pay them. The
+    customer already got an apology; this is the side that can fix it."""
+    key = f"gateway_alert_{provider}"
+    today = date.today().isoformat()
+    if str(tenant_setting(db, client_id, key, "")) == today:
+        return False
+    client = db.get(models.DBClient, client_id)
+    if not client or not (client.email or "").strip():
+        return False
+    row = db.query(models.DBSettings).filter(models.DBSettings.client_id == client_id, models.DBSettings.key == key).first()
+    if row:
+        row.value = today
+    else:
+        db.add(models.DBSettings(client_id=client_id, key=key, value=today))
+    label = PROVIDER_LABELS.get(provider, provider.title())
+    base = (os.getenv("APP_BASE_URL") or "https://www.aniprotech.com").rstrip("/")
+    text_body = (f"A customer tried to pay an invoice through {label} and it could not be started.\n\n"
+                 f"{label} said: {why}\n\n"
+                 f"Check the keys under Settings > Payments and press \"Check keys\": {base}/app.html#/settings\n\n"
+                 "Until then your invoices still show the Pay button, and each attempt will fail the same way.")
+    try:
+        send_email_background(client.email, f"Customers cannot pay you through {label}", text_body,
+                              platform_from_address(db), None, client_id=client_id)
+    except Exception:                                           # noqa: BLE001
+        logger.exception("Could not send the gateway failure notice")
+    db.commit()
+    return True
 
 
 # Serve frontend
