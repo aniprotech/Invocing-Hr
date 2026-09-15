@@ -564,6 +564,7 @@ function showView(viewId) {
     if (viewId === 'settings-view' && typeof loadPaymentGateways === 'function') loadPaymentGateways();
     if (viewId === 'settings-view' && typeof loadBrandingThemes === 'function') loadBrandingThemes();
     if (viewId === 'settings-view' && typeof loadAuditLogs === 'function') loadAuditLogs();
+    if (viewId === 'settings-view' && typeof loadIntegrations === 'function') loadIntegrations();
     if (viewId === 'insights-view' && typeof loadInsights === 'function') loadInsights();
     if (viewId === 'reports-view' && typeof loadReports === 'function') loadReports();
     // Every route into a view comes through here, so this is where the drawer
@@ -5161,6 +5162,8 @@ async function viewEmployee(empId) {
         loadEmployeeHistory(emp.id);
         loadEmployeeCheckIns(emp.id);
         loadEmployeeSkills(emp.id);
+        var exportLink = document.getElementById('emp-export-link');
+        if (exportLink) exportLink.href = '/api/employees/' + emp.id + '/export';
 
         // Onboarding
         var items = emp.onboarding_items || [];
@@ -10692,64 +10695,134 @@ let _invoiceChart = null;
 // arithmetic on one number, so any trend read off it was invented. It now
 // draws the same months the insights page counts, and says so when there is
 // nothing to draw rather than showing a shape.
+// Money in, month by month. Bars, not a smoothed line: a month's takings
+// are a quantity, and the curve that used to join them invented a hump
+// between two points that nothing happened in. The axis is compact money
+// (£1.2m, not 1,200,000.00), the headline is the period's total with the
+// change on the period before, and the range is the reader's to choose.
+// One series is the point - collected - so it wears the accent and the
+// invoiced bars are context in grey, each named in the legend.
+
+var _cashflowMonths = 6;
+var CF_COLLECTED = '#0284c7';
+var CF_INVOICED = '#475569';
+
+function compactMoney(value, currency) {
+    currency = currency || _appCurrency || 'GBP';
+    try {
+        return new Intl.NumberFormat('en-GB', { style: 'currency', currency: currency, notation: 'compact', maximumFractionDigits: 1 }).format(value || 0);
+    } catch (e) {
+        return formatCurrency(value, currency);
+    }
+}
+window.compactMoney = compactMoney;
+
+function setCashflowRange(months, btn) {
+    _cashflowMonths = months;
+    document.querySelectorAll('#cf-range .tab').forEach(function (t) { t.classList.remove('active'); });
+    if (btn) btn.classList.add('active');
+    renderInvoiceChart();
+}
+window.setCashflowRange = setCashflowRange;
+
 async function renderInvoiceChart() {
     var canvas = document.getElementById('invoiceChart');
     if (!canvas || typeof Chart === 'undefined') return;
 
+    // Twice the range, so the period before is there to compare against.
+    var n = _cashflowMonths;
     var data;
     try {
-        var res = await fetch('/api/insights?months=6');
+        var res = await fetch('/api/insights?months=' + Math.min(24, n * 2));
         if (!res.ok) return;
         data = await res.json();
     } catch (e) {
         return;
     }
 
-    var invoiced = (data.series || {}).invoiced || [];
-    var collected = (data.series || {}).collected || [];
-    var anything = invoiced.concat(collected).some(function (v) { return v; });
+    var months = data.months || [];
+    var invoicedAll = (data.series || {}).invoiced || [];
+    var collectedAll = (data.series || {}).collected || [];
+    var cur = (data.totals || {}).currency || _appCurrency || 'GBP';
+    var labels = months.slice(-n), invoiced = invoicedAll.slice(-n), collected = collectedAll.slice(-n);
+    var prevCollected = collectedAll.slice(0, Math.max(0, collectedAll.length - n));
+    var sum = function (a) { return a.reduce(function (t, v) { return t + (Number(v) || 0); }, 0); };
+    var got = sum(collected), billed = sum(invoiced), before = sum(prevCollected);
 
-    if (_invoiceChart) { _invoiceChart.destroy(); _invoiceChart = null; }
-    if (!anything) {
-        // Drawing two flat lines would read as six months of no trade.
-        var host = canvas.parentNode;
-        if (host && !host.querySelector('.chart-empty')) {
-            var note = document.createElement('div');
-            note.className = 'chart-empty';
-            note.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;' +
-                'justify-content:center;color:var(--text-secondary);font-size:0.85rem;';
-            note.textContent = 'No invoices in the last six months yet.';
-            host.appendChild(note);
+    var monthsEl = document.getElementById('cf-months');
+    if (monthsEl) monthsEl.textContent = n;
+    var head = document.getElementById('cf-headline');
+    if (head) head.textContent = compactMoney(got, cur);
+    var sub = document.getElementById('cf-sub');
+    if (sub) {
+        var parts = [];
+        if (billed) parts.push('of ' + compactMoney(billed, cur) + ' invoiced (' + Math.round(100 * got / billed) + '% collected)');
+        if (before > 0 && prevCollected.length >= n) {
+            var pct = Math.round(100 * (got - before) / before);
+            parts.push('<span style="color:' + (pct >= 0 ? 'var(--success-color)' : 'var(--danger-color)') + ';">' + (pct >= 0 ? '\u25B2 ' : '\u25BC ') + Math.abs(pct) + '%</span> on the ' + n + ' months before');
         }
+        sub.innerHTML = parts.join(' \u00b7 ');
+    }
+    var legend = document.getElementById('cf-legend');
+    if (legend) {
+        legend.innerHTML = '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + CF_INVOICED + ';margin-right:4px;"></span>Invoiced' +
+            '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + CF_COLLECTED + ';margin:0 4px 0 12px;"></span>Collected';
+    }
+
+    var anything = invoiced.concat(collected).some(function (v) { return v; });
+    if (_invoiceChart) { _invoiceChart.destroy(); _invoiceChart = null; }
+    var host = canvas.parentNode;
+    var stale = host && host.querySelector('.chart-empty');
+    if (stale) stale.remove();
+    if (!anything) {
+        // Drawing empty bars would read as months of no trade.
+        var note = document.createElement('div');
+        note.className = 'chart-empty';
+        note.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;' +
+            'justify-content:center;color:var(--text-secondary);font-size:0.85rem;';
+        note.textContent = 'No invoices in the last ' + n + ' months yet.';
+        host.appendChild(note);
         canvas.style.display = 'none';
         return;
     }
     canvas.style.display = '';
-    var stale = canvas.parentNode && canvas.parentNode.querySelector('.chart-empty');
-    if (stale) stale.remove();
 
     var c = insightColours();
     Chart.defaults.color = c.muted;
+    var short = labels.map(function (l) { return String(l).replace(/^(\w{3})\w* (\d{2})(\d{2})$/, '$1 \u2019$3'); });
 
     _invoiceChart = new Chart(canvas, {
-        type: 'line',
+        type: 'bar',
         data: {
-            labels: data.months || [],
+            labels: short,
             datasets: [
-                { label: 'Invoiced', data: invoiced, borderColor: c.primary,
-                  backgroundColor: c.primary + '22', borderWidth: 2,
-                  pointRadius: 3, fill: true, tension: 0.35 },
-                { label: 'Collected', data: collected, borderColor: c.success,
-                  backgroundColor: c.success + '22', borderWidth: 2,
-                  pointRadius: 3, fill: true, tension: 0.35 },
+                { label: 'Invoiced', data: invoiced, backgroundColor: CF_INVOICED, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 22 },
+                { label: 'Collected', data: collected, backgroundColor: CF_COLLECTED, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 22 },
             ],
         },
         options: {
             responsive: true, maintainAspectRatio: false,
-            plugins: { legend: { position: 'top' } },
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: '#161f2d', borderColor: 'rgba(255,255,255,0.12)', borderWidth: 1,
+                    titleColor: '#f8fafc', bodyColor: '#e2e8f0', footerColor: '#94a3b8', padding: 10,
+                    callbacks: {
+                        title: function (items) { return labels[items[0].dataIndex]; },
+                        label: function (item) { return item.dataset.label + ': ' + formatCurrency(item.raw, cur); },
+                        footer: function (items) {
+                            var i = items[0].dataIndex;
+                            var b = Number(invoiced[i]) || 0, g = Number(collected[i]) || 0;
+                            return b ? Math.round(100 * g / b) + '% of the month\u2019s invoicing collected' : '';
+                        },
+                    },
+                },
+            },
             scales: {
-                y: { beginAtZero: true, grid: { color: c.line }, ticks: { color: c.muted } },
-                x: { grid: { color: c.line }, ticks: { color: c.muted } },
+                y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.06)' },
+                     ticks: { color: c.muted, maxTicksLimit: 5, callback: function (v) { return compactMoney(v, cur); } } },
+                x: { grid: { display: false }, ticks: { color: c.muted } },
             },
         },
     });
@@ -15922,6 +15995,7 @@ async function loadAnalyticsView() {
             data: lt.length ? lt.map(function (k) { return a.leave.by_type[k]; }) : [0], backgroundColor: PA_HUE, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 28 }] },
             options: { indexAxis: 'y', scales: { x: { beginAtZero: true, title: { display: true, text: 'days', color: '#94a3b8' } }, y: {} } } });
 
+        loadAbsencePanel();
         var c = a.certifications, g = a.goals, m = a.moves_12m;
         function block(title, rows) {
             return '<div class="widget" style="padding:16px;"><div style="font-size:0.8rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);margin-bottom:8px;">' + title + '</div>' +
@@ -16409,3 +16483,167 @@ async function editEmployeeSkills(empId) {
     } catch (e) { showToast(e.message, 'error'); }
 }
 window.editEmployeeSkills = editEmployeeSkills;
+
+// ===========================================================================
+// Absence
+// ===========================================================================
+
+var BRADFORD_TONE = { Fine: 'var(--text-secondary)', Watch: 'var(--warning-color)', Concern: 'var(--warning-color)', Act: 'var(--danger-color)', Serious: 'var(--danger-color)' };
+
+async function loadAbsencePanel() {
+    var host = document.getElementById('pa-absence-list');
+    if (!host) return;
+    try {
+        var a = await fetchJson('/api/absence');
+        document.getElementById('pa-absence-note').textContent = a.totals.sick_days + ' days in ' + a.totals.spells + ' spells \u00b7 ' + a.totals.absence_rate_pct + '% of working time';
+        if (!a.people.length) {
+            host.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem;">No sick leave recorded in the last year.</p>';
+        } else {
+            host.innerHTML = '<table class="data-table" style="font-size:0.82rem;"><thead><tr><th>Person</th><th>Spells</th><th>Days</th><th>Bradford</th></tr></thead><tbody>' +
+                a.people.slice(0, 8).map(function (p) {
+                    return '<tr><td><a href="#" onclick="viewEmployee(' + p.employee_id + ');return false;">' + esc(p.name) + '</a></td><td>' + p.spells + '</td><td>' + p.days + '</td>' +
+                        '<td><strong style="color:' + BRADFORD_TONE[p.band] + ';">' + p.bradford + '</strong> <span style="font-size:0.72rem;color:' + BRADFORD_TONE[p.band] + ';">' + esc(p.band) + '</span></td></tr>';
+                }).join('') + '</tbody></table>' +
+                '<p style="font-size:0.72rem;color:var(--text-secondary);margin:8px 0 0;">Bradford is spells\u00b2 \u00d7 days: many short absences score higher than one long one. Under 50 is fine; over 100 is worth a conversation; over 200 needs one.</p>';
+        }
+        _paChart('pa-weekday', { type: 'bar', data: { labels: a.spells_by_weekday.map(function (d) { return d.day; }), datasets: [{
+            data: a.spells_by_weekday.map(function (d) { return d.spells; }), backgroundColor: PA_HUE, borderRadius: 4, borderSkipped: 'start', maxBarThickness: 28 }] },
+            options: { scales: { y: { beginAtZero: true }, x: {} } } });
+    } catch (e) { host.innerHTML = '<p style="color:var(--danger-text);font-size:0.85rem;">' + esc(e.message) + '</p>'; }
+}
+window.loadAbsencePanel = loadAbsencePanel;
+
+// ===========================================================================
+// People as a file
+// ===========================================================================
+// A dry run first, always: what would be created, what updated, what is
+// wrong and why - then the same file is sent for real.
+
+function importPeopleCsv() {
+    var input = document.getElementById('people-csv-file');
+    if (input) { input.value = ''; input.click(); }
+}
+window.importPeopleCsv = importPeopleCsv;
+
+function peopleCsvChosen(input) {
+    var f = input && input.files && input.files[0];
+    if (!f) return;
+    var reader = new FileReader();
+    reader.onload = function () { previewPeopleCsv(String(reader.result || '')); };
+    reader.readAsText(f);
+}
+window.peopleCsvChosen = peopleCsvChosen;
+
+async function previewPeopleCsv(csv) {
+    try {
+        var out = await fetchJson('/api/people/import?dry_run=1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ csv: csv }) });
+        var s = out.summary;
+        var problems = out.rows.filter(function (r) { return r.problems.length; });
+        var lines = [s.create + ' to create, ' + s.update + ' to update' + (s.skip ? ', ' + s.skip + ' skipped' : '') + '.'];
+        problems.slice(0, 8).forEach(function (r) { lines.push('Row ' + r.row + (r.email ? ' (' + r.email + ')' : '') + ': ' + r.problems.join(', ')); });
+        if (problems.length > 8) lines.push('and ' + (problems.length - 8) + ' more rows with problems');
+        var newDepts = out.rows.filter(function (r) { return r.new_department && !r.problems.length; }).length;
+        if (newDepts) lines.push(newDepts + ' row' + (newDepts === 1 ? '' : 's') + ' name a department that does not exist yet; it will be created.');
+        if (!s.create && !s.update) { await uiAlert(lines.join('\n'), { title: 'Nothing to import' }); return; }
+        if (!await uiConfirm(lines.join('\n') + '\n\nAn email already on the books updates that person. Go ahead?', { title: 'Import ' + s.rows + ' rows', confirmText: 'Import' })) return;
+        var done = await fetchJson('/api/people/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ csv: csv }) });
+        showToast(done.summary.create + ' created, ' + done.summary.update + ' updated', 'success');
+        if (typeof fetchEmployees === 'function') fetchEmployees(currentEmpFilter);
+        if (typeof loadHRStats === 'function') loadHRStats();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.previewPeopleCsv = previewPeopleCsv;
+
+// ===========================================================================
+// Integrations: API keys and webhooks
+// ===========================================================================
+
+var _webhookEvents = [];
+
+async function loadIntegrations() {
+    var keys = document.getElementById('api-keys-list');
+    var hooks = document.getElementById('webhooks-list');
+    if (!keys || !hooks) return;
+    try {
+        var k = await fetchJson('/api/api-keys');
+        var live = k.keys.filter(function (x) { return !x.revoked_at; });
+        keys.innerHTML = live.length ? '<table class="data-table"><thead><tr><th>Name</th><th>Key</th><th>Can</th><th>Last used</th><th></th></tr></thead><tbody>' +
+            live.map(function (x) {
+                return '<tr><td>' + esc(x.name) + '</td><td><code>' + esc(x.prefix) + '\u2026</code></td><td>' + (x.scopes === 'read' ? 'read' : 'read and write') + '</td>' +
+                    '<td style="color:var(--text-secondary);">' + esc(x.last_used_at || 'never') + '</td>' +
+                    '<td><button class="btn btn-sm btn-outline" onclick="revokeApiKey(' + x.id + ')">Revoke</button></td></tr>';
+            }).join('') + '</tbody></table>' : '<p style="color:var(--text-secondary);font-size:0.85rem;">No keys yet.</p>';
+        var w = await fetchJson('/api/webhooks');
+        _webhookEvents = w.events || [];
+        hooks.innerHTML = w.webhooks.length ? w.webhooks.map(function (h) {
+            var tone = !h.active ? 'var(--danger-color)' : h.last_status >= 200 && h.last_status < 300 ? 'var(--success-color)' : h.last_status ? 'var(--warning-color)' : 'var(--text-secondary)';
+            return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--border-color);">' +
+                '<div style="flex:1;min-width:220px;"><div style="font-size:0.88rem;word-break:break-all;">' + esc(h.url) + '</div>' +
+                    '<div style="font-size:0.75rem;color:var(--text-secondary);">' + esc(h.events.join(', ')) + '</div>' +
+                    '<div style="font-size:0.75rem;color:' + tone + ';">' + (!h.active ? 'Switched off after ' + h.failures + ' failures' :
+                        h.last_status ? 'Last answer ' + h.last_status + (h.last_delivered_at ? ' \u00b7 delivered ' + esc(h.last_delivered_at) : '') : 'Nothing sent yet') + '</div></div>' +
+                '<button class="btn btn-sm btn-outline" onclick="pingWebhook(' + h.id + ')">Send a test</button>' +
+                '<button class="btn btn-sm btn-outline" onclick="toggleWebhook(' + h.id + ',' + (!h.active) + ')">' + (h.active ? 'Switch off' : 'Switch on') + '</button>' +
+                '<button class="btn btn-sm btn-outline" onclick="deleteWebhook(' + h.id + ')">Delete</button></div>';
+        }).join('') : '<p style="color:var(--text-secondary);font-size:0.85rem;">No webhooks yet.</p>';
+        var log = document.getElementById('webhook-deliveries');
+        log.innerHTML = w.deliveries.length ? '<table class="data-table" style="font-size:0.8rem;"><thead><tr><th>When</th><th>Event</th><th>Result</th><th>Tries</th></tr></thead><tbody>' +
+            w.deliveries.map(function (d) {
+                return '<tr><td style="white-space:nowrap;">' + esc(d.created_at) + '</td><td>' + esc(d.event) + '</td>' +
+                    '<td style="color:' + (d.ok ? 'var(--success-color)' : 'var(--danger-color)') + ';">' + (d.ok ? 'Delivered ' + d.status_code : (d.error || 'Failed') + (d.next_attempt_at ? ' \u00b7 again at ' + esc(d.next_attempt_at) : '')) + '</td>' +
+                    '<td>' + d.attempts + '</td></tr>';
+            }).join('') + '</tbody></table>' : '<p style="color:var(--text-secondary);font-size:0.85rem;">Nothing delivered yet.</p>';
+    } catch (e) { keys.innerHTML = '<p style="color:var(--danger-text);font-size:0.85rem;">' + esc(e.message) + '</p>'; }
+}
+window.loadIntegrations = loadIntegrations;
+
+async function createApiKey() {
+    var out = await uiForm([{ name: 'name', label: 'What it is for', placeholder: 'Payroll sync', required: true },
+                            { name: 'write', label: 'Access', type: 'select', value: 'read', options: [{ value: 'read', label: 'Read only' }, { value: 'write', label: 'Read and write' }] }],
+                           { title: 'New API key', confirmText: 'Create' });
+    if (!out) return;
+    try {
+        var k = await fetchJson('/api/api-keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: out.name, write: out.write === 'write' }) });
+        await uiAlert('Copy it now - it is not shown again:\n\n' + k.key, { title: 'Your new key' });
+        loadIntegrations();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.createApiKey = createApiKey;
+
+async function revokeApiKey(id) {
+    if (!await uiConfirm('Revoke this key? Anything using it stops working now.', { title: 'Revoke key', confirmText: 'Revoke', danger: true })) return;
+    try { await fetchJson('/api/api-keys/' + id, { method: 'DELETE' }); loadIntegrations(); } catch (e) { showToast(e.message, 'error'); }
+}
+window.revokeApiKey = revokeApiKey;
+
+async function addWebhook() {
+    var out = await uiForm([{ name: 'url', label: 'https URL', placeholder: 'https://example.com/hooks/aniprotech', required: true },
+                            { name: 'events', label: 'Events, comma-separated, or "all"', value: 'all', hint: _webhookEvents.join(', ') }],
+                           { title: 'Add a webhook', confirmText: 'Add' });
+    if (!out) return;
+    var events = String(out.events || 'all').trim().toLowerCase() === 'all' ? '*' : String(out.events).split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+    try {
+        var w = await fetchJson('/api/webhooks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: out.url.trim(), events: events }) });
+        await uiAlert('Signing secret - copy it now, it is not shown again:\n\n' + w.secret, { title: 'Webhook added' });
+        loadIntegrations();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.addWebhook = addWebhook;
+
+async function pingWebhook(id) {
+    try { await fetchJson('/api/webhooks/' + id + '/test', { method: 'POST' }); showToast('Test queued - the log below shows the answer', 'success'); setTimeout(loadIntegrations, 2500); }
+    catch (e) { showToast(e.message, 'error'); }
+}
+window.pingWebhook = pingWebhook;
+
+async function toggleWebhook(id, on) {
+    try { await fetchJson('/api/webhooks/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: !!on }) }); loadIntegrations(); }
+    catch (e) { showToast(e.message, 'error'); }
+}
+window.toggleWebhook = toggleWebhook;
+
+async function deleteWebhook(id) {
+    if (!await uiConfirm('Delete this webhook and its delivery log?', { title: 'Delete webhook', confirmText: 'Delete', danger: true })) return;
+    try { await fetchJson('/api/webhooks/' + id, { method: 'DELETE' }); loadIntegrations(); } catch (e) { showToast(e.message, 'error'); }
+}
+window.deleteWebhook = deleteWebhook;

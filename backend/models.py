@@ -2418,3 +2418,54 @@ class DBEmployeeSkill(Base):
     verified_by = Column(String, default="")       # HR or the manager, by name
     verified_at = Column(String, default="")
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+# ---- API keys and webhooks -----------------------------------------------------------
+# A key is shown once; its hash is what is kept. A webhook is a URL, the
+# events it wants, and a secret each delivery is signed with. Every
+# delivery attempt is a row.
+
+class DBApiKey(Base):
+    __tablename__ = "api_keys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    name = Column(String, default="")
+    prefix = Column(String, default="")           # the first characters, to tell keys apart
+    key_hash = Column(String, nullable=False, index=True)
+    scopes = Column(String, default="read")       # read | read,write
+    last_used_at = Column(String, default="")
+    revoked_at = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBWebhook(Base):
+    __tablename__ = "webhooks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    url = Column(String, nullable=False)
+    events = Column(String, default="")           # comma-separated
+    secret = Column(String, default="")
+    active = Column(Boolean, default=True)
+    last_status = Column(Integer, default=0)
+    last_delivered_at = Column(String, default="")
+    failures = Column(Integer, default=0)         # in a row; twenty switches it off
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBWebhookDelivery(Base):
+    __tablename__ = "webhook_deliveries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    webhook_id = Column(Integer, ForeignKey("webhooks.id"), nullable=False, index=True)
+    event = Column(String, default="")
+    payload = Column(Text, default="")
+    ok = Column(Boolean, default=False, index=True)
+    status_code = Column(Integer, default=0)
+    attempts = Column(Integer, default=0)
+    next_attempt_at = Column(String, default="", index=True)
+    error = Column(String, default="")
+    delivered_at = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))

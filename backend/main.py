@@ -444,6 +444,16 @@ COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").strip().lower() not in ("fals
 # portal's own API and the feed it shares with HR.
 STAFF_PATHS = ("/api/employee/", "/api/feed")
 
+_kick_wanted = threading.Event()
+
+
+async def deliver_after_the_response(request: Request, call_next):
+    response = await call_next(request)
+    if _kick_wanted.is_set():
+        _kick_wanted.clear()
+        kick_webhooks()
+    return response
+
 
 @app.middleware("http")
 async def a_leaver_is_out(request: Request, call_next):
@@ -805,6 +815,11 @@ class TrustTheProxy:
 
 # Registered last so it wraps everything else: the scheme has to be right
 # before any other middleware or route reads it.
+# Webhook deliveries queued during a request go out on a thread once the
+# response is written. Added before TrustTheProxy so that one stays
+# outermost; this one reads nothing off the request.
+app.middleware("http")(deliver_after_the_response)
+
 if TRUST_PROXY_HEADERS:
     app.add_middleware(TrustTheProxy)
 
@@ -834,6 +849,12 @@ WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 def get_client_user(request: Request, db: Session):
+    # A request that came in on an API key has already been checked by
+    # api_client, which leaves the business here so the same route can serve
+    # a session and a key alike.
+    keyed = getattr(request.state, "api_client", None)
+    if keyed is not None:
+        return keyed
     client_id = request.session.get("client_id")
     if not client_id:
         raise HTTPException(status_code=401, detail="Not logged in")
@@ -9295,6 +9316,9 @@ def create_employee(request: Request, body: EmployeeCreate, db: Session = Depend
 
     # Create default onboarding checklist
     start_onboarding(db, client.id, emp)
+    announce(db, client.id, "employee.created", {"id": emp.id, "email": emp.email,
+                       "first_name": emp.first_name, "last_name": emp.last_name,
+                       "job_title": emp.job_title or "", "start_date": emp.start_date or ""})
 
     if body.department_id:
         pending_goals = db.query(models.DBDepartmentGoal).filter(
@@ -9529,6 +9553,8 @@ def update_employee(emp_id: int, request: Request, body: dict = None, db: Sessio
             db.add(note)
             dg.is_assigned = True
     log_audit(db, client.id, "employee_updated", "employee", emp.id, f"{emp.first_name} {emp.last_name}", f"Fields: {', '.join(body.keys()) if body else 'none'}", request)
+    announce(db, client.id, "employee.updated", {"id": emp.id, "email": emp.email,
+             "fields": [k for k in body.keys() if k not in ("password", "bank_account", "tax_id")]})
     db.commit()
     return {"message": "Employee updated"}
 
@@ -9788,6 +9814,7 @@ def complete_offboarding(emp_id: int, request: Request, body: dict = None,
     emp.status = "terminated"
     emp.end_date = end_date
     emp.offboarding_complete = True
+    announce(db, client.id, "employee.left", {"id": emp.id, "email": emp.email, "end_date": end_date})
 
     log_audit(db, client.id, "employee_left", "employee", emp.id, check["name"],
               f"last day {end_date}"
@@ -16426,6 +16453,9 @@ def request_leave(request: Request, body: dict, db: Session = Depends(get_db)):
         days=days, reason=body.get("reason", ""),
     )
     db.add(leave)
+    db.flush()
+    announce(db, emp.client_id, "leave.requested", {"id": leave.id, "employee_id": emp_id, "type": leave_type,
+             "start_date": start_date, "end_date": end_date, "days": days})
     db.add(models.DBNotification(
         client_id=emp.client_id, employee_id=emp_id,
         title="Leave Request Submitted",
@@ -16758,6 +16788,9 @@ def decide_leave(db, leave, action, decided_by, request=None):
     log_audit(db, leave.client_id, f"leave_{leave.status}", "leave", leave.id,
               f"{leave.leave_type} ({leave.days}d)",
               f"Employee ID: {leave.employee_id} - by {decided_by}", request)
+    announce(db, leave.client_id, "leave.decided", {"id": leave.id, "employee_id": leave.employee_id,
+             "type": leave.leave_type, "status": leave.status, "start_date": leave.start_date,
+             "end_date": leave.end_date, "days": leave.days, "decided_by": decided_by})
     return leave
 
 
@@ -24161,6 +24194,8 @@ def write_manager_half(db, r, cycle, body, by_name):
                             detail="Write a summary - it is the part they will read first")
     r.manager_submitted_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     r.status = "complete"
+    announce(db, r.client_id, "review.completed", {"review_id": r.id, "employee_id": r.employee_id,
+             "cycle": cycle.name, "rating": r.manager_rating})
     subject = db.query(models.DBEmployee).filter(models.DBEmployee.id == r.employee_id).first()
     if subject:
         notify_employee(db, subject, "Your review is ready",
@@ -24900,6 +24935,10 @@ def hr_analytics(request: Request, db: Session = Depends(get_db)):
     coverage = check_in_coverage(db, cid)
     coverage.pop("rows", None)
 
+    absence = absence_report(db, cid, today)
+    absence_block = dict(absence["totals"], top=[{"name": p["name"], "bradford": p["bradford"], "band": p["band"]}
+                                                 for p in absence["people"][:5]])
+
     skill_summary, skilled_ids = _skill_summary(db, cid)
     skills_block = {"skills": len(skill_summary),
                     "single_points_of_failure": sum(1 for v in skill_summary.values() if v["single_point_of_failure"]),
@@ -24922,6 +24961,7 @@ def hr_analytics(request: Request, db: Session = Depends(get_db)):
         "check_ins": coverage,
         "pay": pay_block,
         "skills": skills_block,
+        "absence": absence_block,
         "headcount": {
             "now": len(current), "joiners_12m": joiners_12m, "leavers_12m": leavers_12m,
             "turnover_pct": turnover, "average_headcount_12m": round(avg_headcount, 1),
@@ -25374,6 +25414,8 @@ def decide_probation(emp_id: int, request: Request, body: dict = None,
         notify_employee(db, emp, label, told + (f" {note}" if note else ""), "info", "profile", by)
     log_audit(db, client.id, "probation_" + decision, "employee", emp.id,
               f"{emp.first_name} {emp.last_name}", label, request)
+    announce(db, client.id, "probation.decided", {"id": emp.id, "email": emp.email, "decision": decision,
+             "status": emp.probation_status, "end": emp.probation_end})
     db.commit()
     return probation_to_dict(emp)
 
@@ -25982,6 +26024,8 @@ def apply_pay_review(request: Request, body: dict = None, db: Session = Depends(
         applied.append({"employee_id": emp.id, "salary": emp.salary,
                         "was": before["salary"], "annual": annual_pay(emp)})
     log_audit(db, client.id, "pay_review_applied", "employee", None, "", f"{len(applied)} changes from {when}", request)
+    for a in applied:
+        announce(db, client.id, "pay.changed", dict(a, effective_on=when))
     db.commit()
     return {"applied": len(applied), "effective_on": when, "changes": applied}
 
@@ -26296,6 +26340,696 @@ def manager_verifies_skill(employee_id: int, skill_id: int, request: Request, db
     row.verified_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     db.commit()
     return {"verified": True}
+
+
+# ============================================================================
+# Absence
+# ============================================================================
+# Sickness over the last fifty-two weeks, read the way an HR department
+# reads it: not how many days but how many spells, because ten separate
+# Mondays disrupt more than one fortnight. The Bradford score is spells
+# squared times days - the standard measure - with the usual thresholds,
+# and the day-of-week pattern beside it, which is where the Mondays show.
+
+BRADFORD_BANDS = [(0, "Fine"), (50, "Watch"), (100, "Concern"), (200, "Act"), (400, "Serious")]
+
+
+def bradford_band(score):
+    label = BRADFORD_BANDS[0][1]
+    for floor, name in BRADFORD_BANDS:
+        if score >= floor:
+            label = name
+    return label
+
+
+def absence_report(db, client_id, today=None):
+    today = today or date.today()
+    since = (today - timedelta(weeks=52)).isoformat()
+    people = {e.id: e for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client_id).all() if employee_is_current(e)}
+    rows = db.query(models.DBLeaveRequest).filter(
+        models.DBLeaveRequest.client_id == client_id,
+        models.DBLeaveRequest.status == "approved",
+        models.DBLeaveRequest.leave_type == "sick",
+        models.DBLeaveRequest.start_date >= since).all()
+    per = defaultdict(list)
+    weekday = Counter()
+    for r in rows:
+        if r.employee_id not in people:
+            continue
+        per[r.employee_id].append(r)
+        start = _parse_date(r.start_date)
+        if start:
+            weekday[start.weekday()] += 1
+    out = []
+    for emp_id, spells in per.items():
+        e = people[emp_id]
+        days = sum((r.days or 0) for r in spells)
+        score = int(round(len(spells) ** 2 * days))
+        out.append({"employee_id": emp_id, "name": f"{e.first_name} {e.last_name}".strip(),
+                    "job_title": e.job_title or "", "spells": len(spells), "days": round(days, 1),
+                    "bradford": score, "band": bradford_band(score),
+                    "last_spell": max(r.start_date for r in spells)})
+    out.sort(key=lambda d: (-d["bradford"], d["name"]))
+    total_days = sum(d["days"] for d in out)
+    # Working days in the window, roughly: 52 weeks of 5 for everybody here.
+    capacity = len(people) * 260
+    names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    return {
+        "people": out, "window_weeks": 52,
+        "totals": {"sick_days": round(total_days, 1), "spells": sum(d["spells"] for d in out),
+                   "people_off_sick": len(out), "people": len(people),
+                   "absence_rate_pct": round(100 * total_days / capacity, 2) if capacity else 0.0,
+                   "concern_or_worse": sum(1 for d in out if d["bradford"] >= 100)},
+        "spells_by_weekday": [{"day": names[i], "spells": weekday.get(i, 0)} for i in range(7)],
+        "bands": [{"from": f, "label": l} for f, l in BRADFORD_BANDS],
+    }
+
+
+@app.get("/api/absence")
+def hr_absence(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    return absence_report(db, client.id)
+
+
+# ============================================================================
+# People in and out as a file
+# ============================================================================
+# Every business that arrives has a spreadsheet. A CSV in, checked row by
+# row before anything is written - a dry run says what would happen and
+# what is wrong - and the same columns out.
+
+PEOPLE_CSV_COLUMNS = ["first_name", "last_name", "email", "job_title", "department", "manager_email",
+                      "level", "employment_type", "pay_frequency", "salary", "start_date",
+                      "date_of_birth", "phone", "employee_id"]
+
+
+@app.get("/api/people/export.csv")
+def export_people_csv(request: Request, db: Session = Depends(get_db)):
+    """Everybody, one row each, the same columns the import takes - so a
+    file out is a file that can go back in."""
+    client = get_client_user(request, db)
+    depts = {d.id: d.name for d in db.query(models.DBDepartment).filter(models.DBDepartment.client_id == client.id).all()}
+    people = db.query(models.DBEmployee).filter(models.DBEmployee.client_id == client.id).order_by(
+        models.DBEmployee.first_name, models.DBEmployee.last_name).all()
+    emails = {e.id: e.email or "" for e in people}
+    import csv as _csv
+    import io as _io
+    buf = _io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(PEOPLE_CSV_COLUMNS + ["status"])
+    for e in people:
+        w.writerow([e.first_name or "", e.last_name or "", e.email or "", e.job_title or "",
+                    depts.get(e.department_id, ""), emails.get(e.reports_to, ""), e.level or "",
+                    e.employment_type or "", e.pay_frequency or "", e.salary or 0, e.start_date or "",
+                    e.date_of_birth or "", e.phone or "", e.employee_id or "", e.status or ""])
+    return Response(content=buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": 'attachment; filename="people.csv"'})
+
+
+def _csv_rows(raw):
+    import csv as _csv
+    import io as _io
+    text = (raw or "").lstrip("﻿")
+    reader = _csv.DictReader(_io.StringIO(text))
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="The file has no header row")
+    reader.fieldnames = [(f or "").strip().lower().replace(" ", "_") for f in reader.fieldnames]
+    if "email" not in reader.fieldnames or "first_name" not in reader.fieldnames:
+        raise HTTPException(status_code=400, detail="The file needs at least first_name, last_name and email columns")
+    return [{k: (v or "").strip() for k, v in row.items() if k} for row in reader]
+
+
+@app.post("/api/people/import")
+def import_people_csv(request: Request, body: dict = None, dry_run: int = 0,
+                      db: Session = Depends(get_db)):
+    """A CSV as text. Every row is checked; with dry_run nothing is written
+    and the answer says, row by row, what would happen. An email already
+    on the books updates that person rather than making a second one.
+    Managers are matched by email, so a manager can be on the same file
+    as their reports."""
+    client = get_client_user(request, db)
+    rows = _csv_rows((body or {}).get("csv"))
+    if len(rows) > 2000:
+        raise HTTPException(status_code=400, detail="Keep a file to two thousand rows")
+    depts = {d.name.lower(): d for d in db.query(models.DBDepartment).filter(
+        models.DBDepartment.client_id == client.id).all()}
+    existing = {(e.email or "").lower(): e for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client.id).all()}
+    seen = set()
+    report = []
+    to_write = []
+    for n, row in enumerate(rows, start=2):
+        problems = []
+        email = row.get("email", "").lower()
+        if not email or "@" not in email:
+            problems.append("no email")
+        elif email in seen:
+            problems.append("the same email twice in the file")
+        seen.add(email)
+        if not row.get("first_name"):
+            problems.append("no first name")
+        level = row.get("level", "").upper()
+        if level and level not in LEVEL_CODES:
+            problems.append(f"unknown level {level}")
+        for key in ("start_date", "date_of_birth"):
+            if row.get(key) and not _parse_date(row[key]):
+                problems.append(f"{key} is not YYYY-MM-DD")
+        salary = 0.0
+        if row.get("salary"):
+            try:
+                salary = float(row["salary"].replace(",", ""))
+                if salary < 0 or salary > 1e8:
+                    problems.append("salary out of range")
+            except ValueError:
+                problems.append("salary is not a number")
+        dept_name = row.get("department", "")
+        emp_type = (row.get("employment_type") or "full_time").lower().replace(" ", "_")
+        action = "update" if email in existing else "create"
+        report.append({"row": n, "email": email, "name": f"{row.get('first_name', '')} {row.get('last_name', '')}".strip(),
+                       "action": action if not problems else "skip", "problems": problems,
+                       "new_department": bool(dept_name and dept_name.lower() not in depts)})
+        if not problems:
+            to_write.append((row, email, salary, level, emp_type))
+    summary = {"rows": len(rows), "create": sum(1 for r in report if r["action"] == "create"),
+               "update": sum(1 for r in report if r["action"] == "update"),
+               "skip": sum(1 for r in report if r["action"] == "skip")}
+    if dry_run or not to_write:
+        return {"dry_run": True, "summary": summary, "rows": report}
+
+    # Write. Departments first, then people, then managers - a manager may
+    # be lower in the file than the person who reports to them.
+    by = _hr_name(client)
+    for row, email, salary, level, emp_type in to_write:
+        dept_name = row.get("department", "")
+        if dept_name and dept_name.lower() not in depts:
+            d = models.DBDepartment(client_id=client.id, name=dept_name[:100])
+            db.add(d)
+            db.flush()
+            depts[dept_name.lower()] = d
+    written = {}
+    for row, email, salary, level, emp_type in to_write:
+        e = existing.get(email)
+        dept = depts.get(row.get("department", "").lower())
+        if e is None:
+            max_num = db.query(sqlfunc.coalesce(sqlfunc.max(models.DBEmployee.id), 0)).filter(
+                models.DBEmployee.client_id == client.id).scalar()
+            e = models.DBEmployee(client_id=client.id, email=email, status="onboarding",
+                                  employee_id=(row.get("employee_id") or f"EMP-{max_num + 1:04d}")[:40])
+            db.add(e)
+            existing[email] = e
+        e.first_name = clean_person_name(row.get("first_name"), "First name")
+        e.last_name = clean_person_name(row.get("last_name") or "-", "Last name") if row.get("last_name") else (e.last_name or "")
+        for key in ("job_title", "phone", "start_date", "date_of_birth"):
+            if row.get(key):
+                setattr(e, key, row[key][:200])
+        if dept:
+            e.department_id = dept.id
+        if level:
+            e.level = level
+        if row.get("employment_type"):
+            e.employment_type = emp_type[:40]
+        if row.get("pay_frequency"):
+            e.pay_frequency = row["pay_frequency"].lower()[:20]
+        if row.get("salary"):
+            e.salary = salary
+        db.flush()
+        if e.probation_status == "" and e.start_date and not e.probation_end and row.get("start_date"):
+            start_probation(db, e)
+        written[email] = e
+    for row, email, *_ in to_write:
+        mgr_email = row.get("manager_email", "").lower()
+        if mgr_email and mgr_email in existing and existing[mgr_email].id != written[email].id:
+            try:
+                written[email].reports_to = validate_manager(db, client.id, written[email].id, existing[mgr_email].id)
+            except HTTPException as exc:
+                for r in report:
+                    if r["email"] == email:
+                        r["problems"].append(f"manager not set: {exc.detail}")
+    log_audit(db, client.id, "people_imported", "employee", None, "", f"{summary['create']} created, {summary['update']} updated", request)
+    db.commit()
+    return {"dry_run": False, "summary": summary, "rows": report}
+
+
+# ============================================================================
+# Everything about one person, as a file
+# ============================================================================
+# A subject access request answered in one call, and a person's own copy
+# of their own data from the portal. The manager's private notes are not
+# theirs and are not in it.
+
+def person_export(db, emp):
+    names = _employee_names(db, emp.client_id)
+    depts = {d.id: d.name for d in db.query(models.DBDepartment).filter(models.DBDepartment.client_id == emp.client_id).all()}
+    reviews = []
+    for r in db.query(models.DBReview).filter(models.DBReview.employee_id == emp.id).all():
+        c = db.query(models.DBReviewCycle).filter(models.DBReviewCycle.id == r.cycle_id).first()
+        if c:
+            reviews.append(review_to_dict(db, r, c, "subject", names))
+    return {
+        "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "profile": {
+            "employee_id": emp.employee_id, "first_name": emp.first_name, "last_name": emp.last_name,
+            "email": emp.email, "phone": emp.phone, "address": emp.address, "job_title": emp.job_title,
+            "department": depts.get(emp.department_id, ""), "manager": names.get(emp.reports_to, ""),
+            "level": emp.level, "employment_type": emp.employment_type, "pay_frequency": emp.pay_frequency,
+            "salary": emp.salary, "hourly_rate": emp.hourly_rate, "start_date": emp.start_date,
+            "end_date": emp.end_date, "date_of_birth": emp.date_of_birth, "status": emp.status,
+            "emergency_contact": emp.emergency_contact, "emergency_phone": emp.emergency_phone,
+            "bank_name": emp.bank_name, "tax_id": emp.tax_id, "work_location": emp.work_location,
+            "probation": probation_to_dict(emp),
+        },
+        "employment_history": employment_history(db, emp),
+        "leave": [{"type": l.leave_type, "from": l.start_date, "to": l.end_date, "days": l.days,
+                   "status": l.status, "reason": l.reason} for l in db.query(models.DBLeaveRequest).filter(
+                       models.DBLeaveRequest.employee_id == emp.id).all()],
+        "attendance": [{"date": a.date, "in": a.clock_in, "out": a.clock_out, "hours": a.total_hours,
+                        "status": a.status} for a in db.query(models.DBAttendance).filter(
+                            models.DBAttendance.employee_id == emp.id).order_by(models.DBAttendance.date).all()],
+        "payslips": [{"number": p.number, "period": f"{p.period_start} to {p.period_end}", "pay_date": p.pay_date,
+                      "gross": p.gross_pay, "net": p.net_pay} for p in db.query(models.DBPayslip).filter(
+                          models.DBPayslip.employee_id == emp.id).all()],
+        "goals": _goals_for(db, emp.id),
+        "reviews": reviews,
+        "certifications": [certification_to_dict(c) for c in _certifications_for(db, emp.client_id, emp.id)],
+        "skills": employee_skills(db, emp),
+        "one_to_ones": [check_in_to_dict(c, names, emp.id) for c in db.query(models.DBCheckIn).filter(
+            models.DBCheckIn.employee_id == emp.id).all()],
+        "expenses": [expense_to_dict(x, names, viewer_employee_id=emp.id) for x in db.query(models.DBExpenseClaim).filter(
+            models.DBExpenseClaim.employee_id == emp.id).all()],
+        "notifications": [{"title": n.title, "message": n.message, "at": n.created_at} for n in
+                          db.query(models.DBNotification).filter(models.DBNotification.employee_id == emp.id)
+                          .order_by(models.DBNotification.id.desc()).limit(500).all()],
+    }
+
+
+@app.get("/api/employees/{emp_id}/export")
+def hr_person_export(emp_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    log_audit(db, client.id, "person_exported", "employee", emp.id, f"{emp.first_name} {emp.last_name}", "", request)
+    db.commit()
+    return person_export(db, emp)
+
+
+@app.get("/api/employee/my-data")
+def my_data_export(request: Request, db: Session = Depends(get_db)):
+    """Everything the company holds about me, in one file, from my own
+    portal - no request to HR needed."""
+    emp = current_employee(request, db)
+    return person_export(db, emp)
+
+
+# ============================================================================
+# API keys, a public API, and webhooks
+# ============================================================================
+# The product has to talk to the tools around it: a payroll provider that
+# wants the people list, a Slack that wants to know when somebody joins, a
+# BI tool that wants leave. An API key is made once and shown once - the
+# hash is what is kept - with a scope of read or read-and-write. Webhooks
+# are signed with a secret the receiver checks, delivered by a job that
+# retries with backoff, with every attempt written down.
+
+API_KEY_LIMIT = 10
+WEBHOOK_LIMIT = 10
+WEBHOOK_EVENTS = ("employee.created", "employee.updated", "employee.left",
+                  "leave.requested", "leave.decided", "probation.decided", "pay.changed",
+                  "review.completed")
+WEBHOOK_MAX_ATTEMPTS = 5
+WEBHOOK_BACKOFF_MINUTES = (0, 1, 5, 30, 120)
+
+
+def _hash_key(raw):
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def client_from_bearer(request: Request, db):
+    """The business behind an API key, or None if there is no usable one."""
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return None, None
+    raw = auth[7:].strip()
+    if not raw.startswith("ak_"):
+        return None, None
+    key = db.query(models.DBApiKey).filter(models.DBApiKey.key_hash == _hash_key(raw)).first()
+    if not key or key.revoked_at:
+        return None, None
+    client = db.query(models.DBClient).filter(models.DBClient.id == key.client_id).first()
+    if not client:
+        return None, None
+    key.last_used_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return client, key
+
+
+def api_client(request: Request, db, write=False):
+    """A session or a key - and if a key, one with the scope this needs.
+    Keys are rate limited per key, sessions as they already are."""
+    client, key = client_from_bearer(request, db)
+    if key is not None:
+        if write and "write" not in (key.scopes or ""):
+            raise HTTPException(status_code=403, detail="This key can read but not write")
+        if rate_limiter.is_rate_limited(f"apikey:{key.id}", max_requests=600, window=60):
+            raise HTTPException(status_code=429, detail="Slow down: 600 requests a minute per key")
+        return client
+    if request.headers.get("authorization"):
+        raise HTTPException(status_code=401, detail="That API key is not valid")
+    return get_client_user(request, db)
+
+
+def api_key_to_dict(k):
+    return {"id": k.id, "name": k.name, "prefix": k.prefix, "scopes": k.scopes,
+            "created_at": k.created_at, "last_used_at": k.last_used_at or "", "revoked_at": k.revoked_at or ""}
+
+
+@app.get("/api/api-keys")
+def list_api_keys(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    rows = db.query(models.DBApiKey).filter(models.DBApiKey.client_id == client.id).order_by(models.DBApiKey.id.desc()).all()
+    return {"keys": [api_key_to_dict(k) for k in rows], "events": list(WEBHOOK_EVENTS)}
+
+
+@app.post("/api/api-keys")
+def create_api_key(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Made once, shown once. The response is the only time the key is
+    readable; what is kept is its hash."""
+    client = get_client_user(request, db)
+    body = body or {}
+    name = str(body.get("name") or "").strip()[:80] or "API key"
+    scopes = "read,write" if body.get("write") else "read"
+    live = db.query(models.DBApiKey).filter(models.DBApiKey.client_id == client.id,
+                                            models.DBApiKey.revoked_at == "").count()
+    if live >= API_KEY_LIMIT:
+        raise HTTPException(status_code=400, detail=f"Keep it to {API_KEY_LIMIT} live keys - revoke one first")
+    raw = "ak_" + secrets.token_urlsafe(32)
+    k = models.DBApiKey(client_id=client.id, name=name, prefix=raw[:11], key_hash=_hash_key(raw), scopes=scopes)
+    db.add(k)
+    db.flush()
+    log_audit(db, client.id, "api_key_created", "api_key", k.id, name, scopes, request)
+    db.commit()
+    return dict(api_key_to_dict(k), key=raw)
+
+
+@app.delete("/api/api-keys/{key_id}")
+def revoke_api_key(key_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    k = db.query(models.DBApiKey).filter(models.DBApiKey.id == key_id, models.DBApiKey.client_id == client.id).first()
+    if not k:
+        raise HTTPException(status_code=404, detail="Key not found")
+    k.revoked_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_audit(db, client.id, "api_key_revoked", "api_key", k.id, k.name, "", request)
+    db.commit()
+    return {"revoked": True}
+
+
+# --- the public API -------------------------------------------------------------
+# Versioned, read-mostly, the same rows the screens use. Nothing here is
+# reachable without a session or a key for the business it belongs to.
+
+def _v1_employee(e, depts, names):
+    return {"id": e.id, "employee_id": e.employee_id, "first_name": e.first_name, "last_name": e.last_name,
+            "email": e.email, "job_title": e.job_title or "", "department": depts.get(e.department_id, ""),
+            "department_id": e.department_id, "manager_id": e.reports_to, "manager": names.get(e.reports_to, ""),
+            "level": e.level or "", "employment_type": e.employment_type or "", "status": e.status or "",
+            "start_date": e.start_date or "", "end_date": e.end_date or "", "phone": e.phone or "",
+            "work_location": e.work_location or "", "updated_at": e.created_at or ""}
+
+
+@app.get("/api/v1/employees")
+def v1_employees(request: Request, status: str = "", db: Session = Depends(get_db)):
+    client = api_client(request, db)
+    depts = {d.id: d.name for d in db.query(models.DBDepartment).filter(models.DBDepartment.client_id == client.id).all()}
+    names = _employee_names(db, client.id)
+    rows = db.query(models.DBEmployee).filter(models.DBEmployee.client_id == client.id).order_by(models.DBEmployee.id).all()
+    if status == "current":
+        rows = [e for e in rows if employee_is_current(e)]
+    elif status:
+        rows = [e for e in rows if (e.status or "") == status]
+    return {"employees": [_v1_employee(e, depts, names) for e in rows], "count": len(rows)}
+
+
+@app.get("/api/v1/employees/{emp_id}")
+def v1_employee(emp_id: int, request: Request, db: Session = Depends(get_db)):
+    client = api_client(request, db)
+    e = db.query(models.DBEmployee).filter(models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    depts = {d.id: d.name for d in db.query(models.DBDepartment).filter(models.DBDepartment.client_id == client.id).all()}
+    return _v1_employee(e, depts, _employee_names(db, client.id))
+
+
+@app.post("/api/v1/employees")
+def v1_create_employee(request: Request, body: EmployeeCreate, db: Session = Depends(get_db)):
+    """The same checks as the screen: a name, a free email, a real manager."""
+    client = api_client(request, db, write=True)
+    request.state.api_client = client
+    return create_employee(request, body, db)
+
+
+@app.get("/api/v1/departments")
+def v1_departments(request: Request, db: Session = Depends(get_db)):
+    client = api_client(request, db)
+    names = _employee_names(db, client.id)
+    return {"departments": [{"id": d.id, "name": d.name, "head_id": d.head_id, "head": names.get(d.head_id, "")}
+                            for d in db.query(models.DBDepartment).filter(models.DBDepartment.client_id == client.id).all()]}
+
+
+@app.get("/api/v1/leave")
+def v1_leave(request: Request, status: str = "", since: str = "", db: Session = Depends(get_db)):
+    client = api_client(request, db)
+    names = _employee_names(db, client.id)
+    q = db.query(models.DBLeaveRequest).filter(models.DBLeaveRequest.client_id == client.id)
+    if status:
+        q = q.filter(models.DBLeaveRequest.status == status)
+    if since:
+        q = q.filter(models.DBLeaveRequest.start_date >= _clean_ymd(since, "since"))
+    rows = q.order_by(models.DBLeaveRequest.start_date.desc()).limit(2000).all()
+    return {"leave": [{"id": l.id, "employee_id": l.employee_id, "employee": names.get(l.employee_id, ""),
+                       "type": l.leave_type, "start_date": l.start_date, "end_date": l.end_date, "days": l.days,
+                       "status": l.status} for l in rows]}
+
+
+@app.get("/api/v1/attendance")
+def v1_attendance(request: Request, date_: str = "", db: Session = Depends(get_db)):
+    client = api_client(request, db)
+    day = _clean_ymd(request.query_params.get("date") or date_, "date") or date.today().isoformat()
+    names = _employee_names(db, client.id)
+    rows = db.query(models.DBAttendance).filter(models.DBAttendance.client_id == client.id,
+                                                models.DBAttendance.date == day).all()
+    return {"date": day, "attendance": [{"employee_id": a.employee_id, "employee": names.get(a.employee_id, ""),
+                                         "clock_in": a.clock_in or "", "clock_out": a.clock_out or "",
+                                         "hours": a.total_hours or 0, "status": a.status or ""} for a in rows]}
+
+
+# --- webhooks ------------------------------------------------------------------------
+
+def webhook_to_dict(w):
+    return {"id": w.id, "url": w.url, "events": [e for e in (w.events or "").split(",") if e],
+            "active": bool(w.active), "created_at": w.created_at, "last_status": w.last_status,
+            "last_delivered_at": w.last_delivered_at or "", "failures": w.failures or 0,
+            "secret_prefix": (w.secret or "")[:6]}
+
+
+@app.get("/api/webhooks")
+def list_webhooks(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    rows = db.query(models.DBWebhook).filter(models.DBWebhook.client_id == client.id).order_by(models.DBWebhook.id).all()
+    recent = db.query(models.DBWebhookDelivery).filter(models.DBWebhookDelivery.client_id == client.id).order_by(
+        models.DBWebhookDelivery.id.desc()).limit(30).all()
+    return {"webhooks": [webhook_to_dict(w) for w in rows], "events": list(WEBHOOK_EVENTS),
+            "deliveries": [{"id": d.id, "webhook_id": d.webhook_id, "event": d.event, "ok": bool(d.ok),
+                            "status_code": d.status_code, "attempts": d.attempts, "created_at": d.created_at,
+                            "delivered_at": d.delivered_at or "", "error": d.error or "",
+                            "next_attempt_at": d.next_attempt_at or ""} for d in recent]}
+
+
+@app.post("/api/webhooks")
+def add_webhook(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """An https URL and the events it wants. The secret is made here and
+    shown once; each delivery is signed with it."""
+    client = get_client_user(request, db)
+    body = body or {}
+    url = str(body.get("url") or "").strip()
+    if not re.match(r"^https://[^\s/]+\.[^\s/]+(/.*)?$", url) or len(url) > 500:
+        raise HTTPException(status_code=400, detail="Give an https URL")
+    events = body.get("events")
+    if events == "*" or events is None:
+        events = list(WEBHOOK_EVENTS)
+    if not isinstance(events, list) or not events:
+        raise HTTPException(status_code=400, detail="Pick at least one event")
+    bad = [e for e in events if e not in WEBHOOK_EVENTS]
+    if bad:
+        raise HTTPException(status_code=400, detail=f"Unknown event: {bad[0]}")
+    if db.query(models.DBWebhook).filter(models.DBWebhook.client_id == client.id).count() >= WEBHOOK_LIMIT:
+        raise HTTPException(status_code=400, detail=f"Keep it to {WEBHOOK_LIMIT} webhooks")
+    w = models.DBWebhook(client_id=client.id, url=url, events=",".join(dict.fromkeys(events)),
+                         secret="whsec_" + secrets.token_urlsafe(24), active=True)
+    db.add(w)
+    db.flush()
+    log_audit(db, client.id, "webhook_added", "webhook", w.id, url, "", request)
+    db.commit()
+    return dict(webhook_to_dict(w), secret=w.secret)
+
+
+@app.put("/api/webhooks/{webhook_id}")
+def update_webhook(webhook_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    w = db.query(models.DBWebhook).filter(models.DBWebhook.id == webhook_id, models.DBWebhook.client_id == client.id).first()
+    if not w:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    body = body or {}
+    if "active" in body:
+        w.active = bool(body["active"])
+        if w.active:
+            w.failures = 0
+    if "events" in body:
+        events = body["events"] if isinstance(body["events"], list) else list(WEBHOOK_EVENTS)
+        bad = [e for e in events if e not in WEBHOOK_EVENTS]
+        if bad or not events:
+            raise HTTPException(status_code=400, detail="Unknown event" if bad else "Pick at least one event")
+        w.events = ",".join(dict.fromkeys(events))
+    db.commit()
+    return webhook_to_dict(w)
+
+
+@app.delete("/api/webhooks/{webhook_id}")
+def delete_webhook(webhook_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    w = db.query(models.DBWebhook).filter(models.DBWebhook.id == webhook_id, models.DBWebhook.client_id == client.id).first()
+    if not w:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    db.query(models.DBWebhookDelivery).filter(models.DBWebhookDelivery.webhook_id == w.id).delete(synchronize_session=False)
+    db.delete(w)
+    db.commit()
+    return {"deleted": True}
+
+
+@app.post("/api/webhooks/{webhook_id}/test")
+def test_webhook(webhook_id: int, request: Request, db: Session = Depends(get_db)):
+    """A ping, queued like any event and delivered by the same job."""
+    client = get_client_user(request, db)
+    w = db.query(models.DBWebhook).filter(models.DBWebhook.id == webhook_id, models.DBWebhook.client_id == client.id).first()
+    if not w:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    d = models.DBWebhookDelivery(client_id=client.id, webhook_id=w.id, event="ping",
+                                 payload=json.dumps({"event": "ping", "sent_at": datetime.now().isoformat(timespec="seconds")}))
+    db.add(d)
+    db.commit()
+    return {"queued": True, "delivery_id": d.id}
+
+
+def emit_event(db, client_id, event, payload):
+    """Queue one delivery per webhook that wants this event. Cheap: rows
+    only; the job does the network."""
+    hooks = db.query(models.DBWebhook).filter(models.DBWebhook.client_id == client_id,
+                                              models.DBWebhook.active == True).all()  # noqa: E712
+    body = json.dumps({"event": event, "sent_at": datetime.now().isoformat(timespec="seconds"), "data": payload},
+                      default=str)
+    n = 0
+    for w in hooks:
+        if event in (w.events or "").split(","):
+            db.add(models.DBWebhookDelivery(client_id=client_id, webhook_id=w.id, event=event, payload=body))
+            n += 1
+    return n
+
+
+def _post_webhook(url, body, headers, timeout=6):
+    """One HTTP POST. Split out so a test can stand in for the network."""
+    import urllib.request
+    import urllib.error
+    req = urllib.request.Request(url, data=body.encode(), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            return res.status, ""
+    except urllib.error.HTTPError as exc:
+        return exc.code, f"HTTP {exc.code}"
+    except Exception as exc:                          # noqa: BLE001
+        return 0, str(exc)[:200]
+
+
+def deliver_webhooks(db, now=None):
+    """Everything due: never delivered, or failed and due another go. A
+    delivery that has had its five attempts is left failed; a webhook that
+    fails twenty times in a row is switched off and HR sees why."""
+    now = now or datetime.now()
+    stamp = now.strftime("%Y-%m-%d %H:%M:%S")
+    due = db.query(models.DBWebhookDelivery).filter(
+        models.DBWebhookDelivery.ok == False,                                  # noqa: E712
+        models.DBWebhookDelivery.attempts < WEBHOOK_MAX_ATTEMPTS,
+        (models.DBWebhookDelivery.next_attempt_at == "") | (models.DBWebhookDelivery.next_attempt_at <= stamp),
+    ).order_by(models.DBWebhookDelivery.id).limit(100).all()
+    sent = 0
+    for d in due:
+        w = db.query(models.DBWebhook).filter(models.DBWebhook.id == d.webhook_id).first()
+        if not w or not w.active:
+            d.attempts = WEBHOOK_MAX_ATTEMPTS
+            d.error = "webhook switched off"
+            continue
+        sig = hmac.new((w.secret or "").encode(), d.payload.encode(), hashlib.sha256).hexdigest()
+        headers = {"Content-Type": "application/json", "User-Agent": "aniprotech-webhooks/1",
+                   "X-Aniprotech-Event": d.event, "X-Aniprotech-Delivery": str(d.id),
+                   "X-Aniprotech-Signature": "sha256=" + sig}
+        code, err = _post_webhook(w.url, d.payload, headers)
+        d.attempts = (d.attempts or 0) + 1
+        d.status_code = code
+        d.error = err[:200]
+        w.last_status = code
+        if 200 <= code < 300:
+            d.ok = True
+            d.delivered_at = stamp
+            w.last_delivered_at = stamp
+            w.failures = 0
+            sent += 1
+        else:
+            wait = WEBHOOK_BACKOFF_MINUTES[min(d.attempts, len(WEBHOOK_BACKOFF_MINUTES) - 1)]
+            d.next_attempt_at = (now + timedelta(minutes=wait)).strftime("%Y-%m-%d %H:%M:%S")
+            w.failures = (w.failures or 0) + 1
+            if w.failures >= 20:
+                w.active = False
+    db.commit()
+    return sent
+
+
+@scheduled_job("webhook_deliveries", period_key_fn=lambda now: now.strftime("%Y-%m-%d %H:%M"))
+def job_webhook_deliveries(db, now):
+    return f"{deliver_webhooks(db, now)} sent"
+
+
+
+_webhook_kick_lock = threading.Lock()
+
+
+def kick_webhooks():
+    """Deliver what was just queued without waiting for the sweep. A thread
+    of its own with its own session; one at a time. Off when WEBHOOKS_ASYNC
+    is 0, which the tests use so they can drive delivery by hand."""
+    if os.getenv("WEBHOOKS_ASYNC", "1") != "1":
+        return
+    if not _webhook_kick_lock.acquire(blocking=False):
+        return
+
+    def run():
+        try:
+            with SessionLocal() as own:
+                deliver_webhooks(own)
+        except Exception:                                  # noqa: BLE001
+            logger.exception("Webhook delivery failed")
+        finally:
+            _webhook_kick_lock.release()
+    threading.Thread(target=run, daemon=True).start()
+
+
+def announce(db, client_id, event, payload):
+    """Queue, and ask for a kick once this request has committed. The rows
+    go out with the route's transaction; the middleware below starts the
+    delivery thread after the response, so a slow receiver never slows the
+    person who pressed the button."""
+    n = emit_event(db, client_id, event, payload)
+    if n:
+        _kick_wanted.set()
+    return n
+
 
 
 # Serve frontend

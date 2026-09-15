@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=163">
+  <link rel="stylesheet" href="tailwind.css?v=165">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,12 +50,12 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=163">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=163">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=163">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=163">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=163">
-    <script src="/dialogs.js?v=163"></script>
+    <link rel="stylesheet" href="mobile.css?v=165">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=165">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=165">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=165">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=165">
+    <script src="/dialogs.js?v=165"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -899,6 +899,14 @@
           <div class="mt-6" id="myHistoryCard">
             <h3 class="font-semibold text-gray-900 mb-3">Your job history</h3>
             <div id="myHistory" class="space-y-2"></div>
+          </div>
+
+          <!-- Everything the company holds about you, as one file. No
+               request to HR needed; the manager's private notes are not
+               yours and are not in it. -->
+          <div class="mt-6 pt-4 border-t border-gray-100 text-sm text-gray-500">
+            <a href="/api/employee/my-data" target="_blank" rel="noopener" class="text-brand-600 hover:underline" id="my-data-link">Download everything held about you</a>
+            <span class="text-xs text-gray-400"> \u00b7 one file, yours to keep</span>
           </div>
         </div>
       </div>
@@ -4401,8 +4409,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=163"></script>
-    <script src="/pwa.js?v=163"></script>
-    <script src="/feed.js?v=163"></script>
+    <script src="/install-hint.js?v=165"></script>
+    <script src="/pwa.js?v=165"></script>
+    <script src="/feed.js?v=165"></script>
 </body>
 </html>
