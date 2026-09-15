@@ -21703,12 +21703,25 @@ def public_invoice_payload(db: Session, inv, client):
         # key it needs. The secret never leaves the server.
         # Either the business's own keys or the platform's, depending on how
         # the operator has set collection up. The customer sees no difference.
-        "payment": ({
-            "provider": "razorpay", "key_id": _pay_key,
-        } if (_pay_key := collecting_keys(db, client.id)[0]) and
-             not (inv.status == "Paid" or (inv.due or 0) <= 0) else None),
+        # Set whenever *any* gateway is offered. It used to need Razorpay keys
+        # specifically, so a business with only Stripe or PayPal saw its
+        # methods listed by /pay/methods and no button drawn to use them.
+        "payment": _public_payment_block(db, client, inv),
         "logo": (theme.logo_data if theme else "") or client.logo_url or "",
     }
+
+
+def _public_payment_block(db, client, inv):
+    """Truthy when the page should draw Pay buttons; carries Razorpay's public
+    key when that is one of them, since its checkout opens in the page."""
+    if inv.status == "Paid" or (inv.due or 0) <= 0:
+        return None
+    offered = invoice_payment_methods(db, inv)
+    if not offered:
+        return None
+    razorpay_key = collecting_keys(db, client.id, "razorpay")[0] if any(m["provider"] == "razorpay" for m in offered) else ""
+    return {"provider": "razorpay" if razorpay_key else offered[0]["provider"], "key_id": razorpay_key or "",
+            "providers": [m["provider"] for m in offered]}
 
 
 @app.get("/api/public/invoices/{tracking_id}")
@@ -22840,13 +22853,15 @@ def invoice_payment_methods(db: Session, inv):
     """
     out = []
     for provider in CLIENT_PROVIDERS:
-        if provider == "paypal":
-            continue          # configurable, but no invoice flow yet
         key_id, key_secret, mode = collecting_keys(db, inv.client_id, provider)
-        if key_id and key_secret:
-            out.append({"provider": provider,
-                        "label": PROVIDER_LABELS[provider],
-                        "mode": mode})
+        if not (key_id and key_secret):
+            continue
+        # PayPal settles a fixed list of currencies, and INR is not on it.
+        if provider == "paypal" and (inv.currency or "GBP").upper() not in PAYPAL_CURRENCIES:
+            continue
+        out.append({"provider": provider,
+                    "label": PROVIDER_LABELS[provider],
+                    "mode": mode})
 
     # GoCardless runs on the operator's own account, so it can only be offered
     # where invoice money is meant to arrive there. In direct mode a business
@@ -28357,6 +28372,213 @@ def gateway_failure_notice(db, client_id, provider, why):
         logger.exception("Could not send the gateway failure notice")
     db.commit()
     return True
+
+
+# ============================================================================
+# Paying an invoice with PayPal
+# ============================================================================
+# The last of the three gateways a business can hold keys for, and until
+# now the one that could not take a payment. PayPal's Orders API: open an
+# order for the amount due, send the customer to approve it, capture it
+# when they come back. The capture is what counts - the return URL only
+# says somebody came back, so the server asks PayPal what it captured,
+# and checks the order was opened for this invoice, for this amount.
+
+# What PayPal will settle. INR is not on it: most businesses here take
+# cards and UPI through Razorpay and use PayPal for customers abroad.
+PAYPAL_CURRENCIES = {"AUD", "BRL", "CAD", "CNY", "CZK", "DKK", "EUR", "HKD", "HUF", "ILS", "JPY", "MYR",
+                     "MXN", "TWD", "NZD", "NOK", "PHP", "PLN", "GBP", "SGD", "SEK", "CHF", "THB", "USD"}
+PAYPAL_ZERO_DECIMAL = {"HUF", "JPY", "TWD"}
+
+
+def paypal_base_url(live):
+    return "https://api-m.paypal.com" if live else "https://api-m.sandbox.paypal.com"
+
+
+def paypal_amount(amount, currency):
+    """PayPal wants a string: two decimals, or none for the three that take none."""
+    if currency in PAYPAL_ZERO_DECIMAL:
+        return str(int(round(amount)))
+    return f"{money(amount):.2f}"
+
+
+def paypal_keys(db, client_id):
+    """(client_id, secret, live) for this business's own PayPal, or Nones."""
+    if collection_mode(db) == "platform":
+        return None, None, False
+    gw = db.query(models.DBClientGateway).filter(
+        models.DBClientGateway.client_id == client_id, models.DBClientGateway.provider == "paypal",
+        models.DBClientGateway.is_active == True).first()  # noqa: E712
+    if not gw or not (gw.public_key and gw.secret_key):
+        return None, None, False
+    return gw.public_key, gw.secret_key, bool(gw.is_live)
+
+
+def paypal_token(base, client_id, secret):
+    """A short-lived bearer for the API, or None with PayPal's reason."""
+    resp = httpx.post(f"{base}/v1/oauth2/token", auth=(client_id, secret),
+                      data={"grant_type": "client_credentials"}, timeout=20.0)
+    if resp.status_code >= 400:
+        return None, paypal_refusal(resp)
+    return (resp.json().get("access_token") or None), ""
+
+
+def paypal_refusal(resp) -> str:
+    """PayPal's own words for a refusal of a business's keys or order - not
+    paypal_complaint, whose advice is about the platform's env vars."""
+    try:
+        body = resp.json()
+        detail = body.get("error_description") or body.get("message") or ""
+        issues = body.get("details") or []
+        if issues and isinstance(issues, list):
+            detail = (detail + ": " if detail else "") + str(issues[0].get("description") or issues[0].get("issue") or "")
+        return (detail or f"HTTP {resp.status_code}")[:200]
+    except Exception:      # noqa: BLE001
+        return f"HTTP {resp.status_code}"
+
+
+@app.post("/api/public/invoices/{tracking_id}/pay/paypal/order")
+def start_paypal_invoice_payment(tracking_id: str, request: Request, db: Session = Depends(get_db)):
+    """Open a PayPal order against the business's own account and say where
+    the customer should be sent to approve it."""
+    inv = payable_invoice(db, tracking_id)
+    if inv.status == "Paid" or (inv.due or 0) <= 0:
+        raise HTTPException(status_code=409, detail="This invoice is already paid")
+    cid, secret, live = paypal_keys(db, inv.client_id)
+    if not cid:
+        raise HTTPException(status_code=503, detail="PayPal is not set up for this invoice")
+    currency = (inv.currency or "GBP").upper()
+    if currency not in PAYPAL_CURRENCIES:
+        raise HTTPException(status_code=409, detail=f"PayPal does not settle {currency}")
+    amount = money(inv.due or 0)
+    if amount <= 0:
+        raise HTTPException(status_code=409, detail="Nothing left to pay")
+
+    base_url = paypal_base_url(live)
+    base = (os.getenv("APP_BASE_URL", "") or str(request.base_url)).rstrip("/")
+    back = f"{base}/invoice.html?id={inv.tracking_id}"
+    try:
+        token, why = paypal_token(base_url, cid, secret)
+        if not token:
+            logger.error("PayPal refused the credentials for invoice %s: %s", inv.number, why)
+            gateway_failure_notice(db, inv.client_id, "paypal", why)
+            raise HTTPException(status_code=502, detail="This PayPal payment could not be started. The business has been notified.")
+        resp = httpx.post(
+            f"{base_url}/v2/checkout/orders",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                     # The same request twice opens one order, not two.
+                     "PayPal-Request-Id": f"inv-{inv.tracking_id}-{to_minor_units(amount, currency)}"},
+            json={"intent": "CAPTURE",
+                  "purchase_units": [{"reference_id": inv.tracking_id, "custom_id": inv.number[:127],
+                                      "description": f"Invoice {inv.number}"[:127],
+                                      "amount": {"currency_code": currency, "value": paypal_amount(amount, currency)}}],
+                  "application_context": {"return_url": f"{back}&paypal=return", "cancel_url": back,
+                                          "shipping_preference": "NO_SHIPPING", "user_action": "PAY_NOW",
+                                          "brand_name": (db.get(models.DBClient, inv.client_id).company_name or "")[:127] or "Invoice"}},
+            timeout=20.0)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("PayPal unreachable for invoice %s", inv.number)
+        raise HTTPException(status_code=502, detail="Could not reach the payment provider. Please try again shortly.")
+    if resp.status_code >= 400:
+        logger.error("PayPal order failed for invoice %s: %s", inv.number, resp.text[:400])
+        gateway_failure_notice(db, inv.client_id, "paypal", paypal_refusal(resp))
+        raise HTTPException(status_code=502, detail="This PayPal payment could not be started. The business has been notified.")
+
+    order = resp.json()
+    order_id = order.get("id") or ""
+    approve = next((l.get("href") for l in order.get("links", []) if l.get("rel") == "approve"), "")
+    if not order_id or not approve:
+        logger.error("PayPal returned no order or approve link for invoice %s", inv.number)
+        raise HTTPException(status_code=502, detail="Could not start the payment. Please try again shortly.")
+    # Bound to this invoice before the customer goes anywhere, the same way
+    # a Razorpay order is: the capture that comes back is checked against it.
+    existing = db.query(models.DBInvoicePaymentOrder).filter(
+        models.DBInvoicePaymentOrder.provider_order_id == order_id).first()
+    if not existing:
+        db.add(models.DBInvoicePaymentOrder(
+            invoice_id=inv.id, client_id=inv.client_id, provider="paypal",
+            provider_order_id=order_id, amount_minor=to_minor_units(amount, currency), currency=currency))
+    db.commit()
+    return {"order_id": order_id, "approve_url": approve, "amount": paypal_amount(amount, currency),
+            "currency": currency, "invoice_number": inv.number, "live": live}
+
+
+@app.post("/api/public/invoices/{tracking_id}/pay/paypal/capture")
+def capture_paypal_invoice_payment(tracking_id: str, body: dict = None, db: Session = Depends(get_db)):
+    """Take the money, then believe it. The order id in the URL is a claim;
+    the capture PayPal returns is the fact, and it has to be for this
+    invoice and for what this invoice asked."""
+    body = body or {}
+    inv = payable_invoice(db, tracking_id)
+    cid, secret, live = paypal_keys(db, inv.client_id)
+    if not cid:
+        raise HTTPException(status_code=503, detail="PayPal is not set up")
+    order_id = str(body.get("order_id") or "").strip()[:64]
+    if not order_id:
+        raise HTTPException(status_code=400, detail="Incomplete payment details")
+
+    order = db.query(models.DBInvoicePaymentOrder).filter(
+        models.DBInvoicePaymentOrder.provider_order_id == order_id,
+        models.DBInvoicePaymentOrder.provider == "paypal").first()
+    if not order or order.invoice_id != inv.id:
+        logger.warning("PayPal order %s does not belong to invoice %s", order_id, inv.number)
+        raise HTTPException(status_code=400, detail="That payment was not for this invoice")
+    if order.status == "paid":
+        # The customer refreshed the page after coming back. Nothing to do.
+        return {"paid": True, "already_recorded": True, "invoice_number": inv.number, "status": inv.status}
+
+    base_url = paypal_base_url(live)
+    try:
+        token, why = paypal_token(base_url, cid, secret)
+        if not token:
+            raise HTTPException(status_code=502, detail="Could not confirm the payment. Please try again.")
+        resp = httpx.post(f"{base_url}/v2/checkout/orders/{order_id}/capture",
+                          headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                                   "PayPal-Request-Id": f"cap-{order_id}"},
+                          json={}, timeout=25.0)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("PayPal unreachable capturing invoice %s", inv.number)
+        raise HTTPException(status_code=502, detail="Could not confirm the payment. Please try again.")
+    if resp.status_code >= 400:
+        logger.warning("PayPal refused the capture for %s: %s", inv.number, resp.text[:300])
+        raise HTTPException(status_code=400, detail="That payment has not completed")
+
+    data = resp.json()
+    if data.get("status") != "COMPLETED":
+        raise HTTPException(status_code=400, detail="That payment has not completed")
+    units = data.get("purchase_units") or []
+    unit = units[0] if units else {}
+    if (unit.get("reference_id") or "") != inv.tracking_id:
+        logger.warning("Rejected a PayPal capture raised against another invoice (%s)", inv.number)
+        raise HTTPException(status_code=400, detail="That payment could not be verified")
+    captures = ((unit.get("payments") or {}).get("captures") or [])
+    done = [c for c in captures if c.get("status") == "COMPLETED"]
+    if not done:
+        raise HTTPException(status_code=400, detail="That payment has not completed")
+    cap = done[0]
+    got = cap.get("amount") or {}
+    currency = (order.currency or inv.currency or "GBP").upper()
+    try:
+        got_minor = to_minor_units(float(got.get("value") or 0), currency)
+    except (TypeError, ValueError):
+        got_minor = 0
+    if (got.get("currency_code") or "").upper() != currency or got_minor < (order.amount_minor or 0):
+        logger.warning("Rejected a PayPal capture short of the amount due on %s", inv.number)
+        raise HTTPException(status_code=400, detail="That payment could not be verified")
+
+    amount = (order.amount_minor or 0) if currency in STRIPE_ZERO_DECIMAL else money((order.amount_minor or 0) / 100.0)
+    capture_id = cap.get("id") or order_id
+    recorded = record_invoice_payment(db, inv, amount, "paypal", capture_id, note="Paid online by the customer")
+    if recorded:
+        order.status = "paid"
+        order.provider_payment_id = capture_id
+        order.paid_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    db.commit()
+    return {"paid": True, "already_recorded": not recorded, "invoice_number": inv.number, "status": inv.status}
 
 
 # Serve frontend

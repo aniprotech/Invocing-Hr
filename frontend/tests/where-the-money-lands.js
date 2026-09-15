@@ -142,7 +142,7 @@ function boot(opts) {
         await wait(40);
         const host = doc.getElementById('gateway-list');
         check('a gateway with keys saved offers Check keys; one without does not', host.querySelector('#gw-check-razorpay') && !host.querySelector('#gw-check-stripe'));
-        check('Stripe is no longer described as unwired, PayPal still is', !/Stripe[^]*?not wired/.test(host.innerHTML) && /PayPal[^]*?cannot be paid with this yet/.test(host.innerHTML));
+        check('no gateway is described as unwired any more; PayPal says which currencies it settles', !/not wired|cannot be paid with this yet/.test(host.innerHTML) && /PayPal[^]*?not INR/.test(host.innerHTML));
         await w.checkPaymentGateway('razorpay');
         await wait(30);
         const out = doc.getElementById('gw-result-razorpay');

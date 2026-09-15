@@ -37,6 +37,7 @@ function boot(opts) {
     let search = '?id=track-1';
     if (opts.paid) search += `&paid=${opts.paid}`;
     if (opts.bank) search += `&bank=${opts.bank}`;
+    if (opts.paypal) search += `&paypal=return&token=${opts.paypal}`;
     const dom = new JSDOM(html, {
         runScripts: 'dangerously', pretendToBeVisual: true,
         url: 'https://localhost/invoice.html' + search,
@@ -71,6 +72,21 @@ function boot(opts) {
                             checkout_url: 'https://checkout.stripe.test/cs_1',
                         }) });
                 }
+                if (p.endsWith('/pay/paypal/order')) {
+                    return Promise.resolve({ ok: true, status: 200,
+                        json: () => Promise.resolve({
+                            order_id: 'ORD1', approve_url: 'https://www.sandbox.paypal.test/checkoutnow?token=ORD1',
+                            amount: '780.00', currency: 'GBP', live: false,
+                        }) });
+                }
+                if (p.endsWith('/pay/paypal/capture')) {
+                    if (opts.confirmFails) {
+                        return Promise.resolve({ ok: false, status: 400,
+                            json: () => Promise.resolve({ detail: 'That payment could not be verified' }) });
+                    }
+                    return Promise.resolve({ ok: true, status: 200,
+                        json: () => Promise.resolve({ paid: true, already_recorded: false }) });
+                }
                 if (p.endsWith('/pay/stripe/confirm')) {
                     if (opts.confirmFails) {
                         return Promise.resolve({ ok: false, status: 400,
@@ -90,6 +106,7 @@ function boot(opts) {
 const rzp = { provider: 'razorpay', label: 'Razorpay (UPI, cards, netbanking)', mode: 'direct' };
 const card = { provider: 'stripe', label: 'Stripe (cards)', mode: 'direct' };
 const bank = { provider: 'gocardless', label: 'Bank payment (GoCardless)', mode: 'platform' };
+const paypal = { provider: 'paypal', label: 'PayPal', mode: 'direct' };
 const buttons = w => w.document.getElementById('payButtons');
 
 (async () => {
@@ -203,6 +220,46 @@ const buttons = w => w.document.getElementById('payButtons');
             !/thank|paid|settled/i.test(note.textContent), note.textContent);
         check('and the customer is told who to contact',
             /billing@acme.test/.test(note.textContent), note.textContent);
+    }
+
+    // --- PayPal -----------------------------------------------------------------
+    {
+        const w = boot({ methods: [paypal] });
+        await wait(200);
+        check('PayPal keys get a PayPal button with the amount on it',
+            !!w.document.getElementById('payPalBtn') && /780/.test(buttons(w).textContent));
+        w.__sent.length = 0;
+        await w.payWithPayPal();
+        await wait(60);
+        const started = w.__sent.find(s => s.url.endsWith('/pay/paypal/order'));
+        check('paying with PayPal asks the server to open the order, by POST',
+            started && started.method === 'POST');
+        let kept = '';
+        try { kept = w.sessionStorage.getItem('paypal-order-track-1'); } catch (e) { }
+        check('and remembers the order for the way back', kept === 'ORD1', kept);
+    }
+
+    {
+        const w = boot({ methods: [paypal], paypal: 'ORD1' });
+        await wait(250);
+        const post = w.__sent.find(s => s.url.endsWith('/pay/paypal/capture'));
+        check('returning from PayPal asks the server to capture the order it names',
+            post && JSON.parse(post.body).order_id === 'ORD1', post && post.body);
+    }
+
+    {
+        const w = boot({ methods: [paypal], paypal: 'ORD1', confirmFails: true });
+        await wait(250);
+        const note = w.document.getElementById('payNote');
+        check('a capture the server will not verify is not shown as settled, and says who to contact',
+            !/thank|settled|is paid/i.test(note.textContent) && /billing@acme.test/.test(note.textContent), note.textContent);
+    }
+
+    {
+        const w = boot({ methods: [rzp, card, paypal] });
+        await wait(200);
+        check('all three set up means all three offered',
+            !!w.document.getElementById('payBtn') && !!w.document.getElementById('payCardBtn') && !!w.document.getElementById('payPalBtn'));
     }
 
     console.log(failures ? `\n${failures} failed` : '\nall good');

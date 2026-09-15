@@ -15285,7 +15285,7 @@ window.closeAccount = closeAccount;
 var GATEWAY_HINTS = {
     razorpay: { public: 'Key ID (rzp_...)', secret: 'Key Secret', ready: true },
     stripe: { public: 'Publishable key (pk_...)', secret: 'Secret key (sk_...)', ready: true },
-    paypal: { public: 'Client ID', secret: 'Secret', ready: false }
+    paypal: { public: 'Client ID', secret: 'Secret', ready: true, note: 'USD, EUR, GBP and the other currencies PayPal settles - not INR' }
 };
 
 async function loadPaymentGateways() {
@@ -15303,6 +15303,7 @@ async function loadPaymentGateways() {
                 esc(g.label) +
                 (g.is_active ? ' <span class="status-pill status-paid">on</span>' : '') +
                 (hint.ready === false ? ' <span class="bt-note">(keys kept for later - invoices cannot be paid with this yet)</span>' : '') +
+                (hint.note ? ' <span class="bt-note">(' + esc(hint.note) + ')</span>' : '') +
                 '</summary>' +
                 '<label class="bfield">' + esc(hint.public || 'Public key') +
                 '<input type="text" id="gw-pub-' + g.provider + '" value="' + esc(g.public_key) + '"></label>' +
