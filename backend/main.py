@@ -9573,7 +9573,7 @@ def delete_employee(emp_id: int, request: Request, db: Session = Depends(get_db)
         models.DBEmployeeGoal, models.DBLeaveRequest, models.DBDocument,
         models.DBNotification, models.DBOvertimeLog,
         models.DBReview, models.DBCertification, models.DBEmploymentChange, models.DBCheckIn,
-        models.DBPeerFeedback, models.DBEmployeeSkill,
+        models.DBPeerFeedback, models.DBEmployeeSkill, models.DBPolicyAck,
     ):
         db.query(model).filter(model.employee_id == emp_id).delete(synchronize_session=False)
     db.query(models.DBCheckIn).filter(models.DBCheckIn.manager_id == emp_id).delete(synchronize_session=False)
@@ -10871,6 +10871,10 @@ def get_hr_dashboard(request: Request, db: Session = Depends(get_db)):
     certs_unverified = sum(1 for c in certs if not c.verified_by)
     probations_due = sum(1 for e in emps().all() if employee_is_current(e)
                          and probation_to_dict(e)["due"])
+    policies_outstanding = 0
+    for pol in db.query(models.DBPolicy).filter(models.DBPolicy.client_id == cid, models.DBPolicy.active == True,  # noqa: E712
+                                                 models.DBPolicy.requires_ack == True).all():  # noqa: E712
+        policies_outstanding += policy_coverage(db, pol, policy_audience(db, cid, pol))["outstanding"]
 
     waiting = [
         {"key": "leave", "label": "Leave requests to decide", "count": pending_leave,
@@ -10894,6 +10898,8 @@ def get_hr_dashboard(request: Request, db: Session = Depends(get_db)):
          "view": "training-view"},
         {"key": "probations", "label": "Probations to decide", "count": probations_due,
          "view": "onboarding-hub-view"},
+        {"key": "policies", "label": "Policy acknowledgements outstanding", "count": policies_outstanding,
+         "view": "policies-view"},
     ]
 
     # --- what lands soon -----------------------------------------------------
@@ -27030,6 +27036,218 @@ def announce(db, client_id, event, payload):
         _kick_wanted.set()
     return n
 
+
+
+# ============================================================================
+# Company policies, and who has read them
+# ============================================================================
+# The handbook, the expenses rules, the code of conduct: written once,
+# read by everybody, and proved read - each person acknowledges each
+# version, so a change means a fresh round of acknowledgements and HR can
+# see who has not, and remind them.
+
+def policy_audience(db, client_id, policy):
+    people = [e for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client_id).all() if employee_is_current(e)]
+    if policy.department_id:
+        people = [e for e in people if e.department_id == policy.department_id]
+    return people
+
+
+def policy_coverage(db, policy, people):
+    acked = {a.employee_id for a in db.query(models.DBPolicyAck).filter(
+        models.DBPolicyAck.policy_id == policy.id, models.DBPolicyAck.version == policy.version).all()}
+    outstanding = [e for e in people if e.id not in acked]
+    return {"audience": len(people), "acknowledged": len(people) - len(outstanding),
+            "outstanding": len(outstanding),
+            "pct": round(100 * (len(people) - len(outstanding)) / len(people)) if people else 100,
+            "outstanding_people": [{"employee_id": e.id, "name": f"{e.first_name} {e.last_name}".strip()} for e in outstanding[:200]]}
+
+
+def policy_to_dict(p, coverage=None, depts=None):
+    d = {"id": p.id, "title": p.title, "body": p.body or "", "url": p.url or "", "version": p.version,
+         "requires_ack": bool(p.requires_ack), "active": bool(p.active), "department_id": p.department_id,
+         "department_name": (depts or {}).get(p.department_id, ""), "published_at": p.published_at or "",
+         "updated_at": p.updated_at or "", "created_at": p.created_at, "coverage": coverage}
+    return d
+
+
+def _policy_or_404(db, client_id, policy_id):
+    p = db.query(models.DBPolicy).filter(models.DBPolicy.id == policy_id, models.DBPolicy.client_id == client_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    return p
+
+
+def _policy_fields(db, client_id, body, p):
+    title = str(body.get("title", p.title if p else "") or "").strip()[:200]
+    if not title:
+        raise HTTPException(status_code=400, detail="Give the policy a title")
+    text = str(body.get("body", p.body if p else "") or "").strip()[:60000]
+    url = str(body.get("url", p.url if p else "") or "").strip()[:500]
+    if url and not url.lower().startswith("https://"):
+        raise HTTPException(status_code=400, detail="A link must be https")
+    if not text and not url:
+        raise HTTPException(status_code=400, detail="Write the policy, or link to it")
+    dept = body.get("department_id", p.department_id if p else None)
+    if dept in ("", 0, "0"):
+        dept = None
+    if dept is not None:
+        try:
+            dept = int(dept)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=404, detail="Department not found")
+        if not db.query(models.DBDepartment).filter(models.DBDepartment.id == dept, models.DBDepartment.client_id == client_id).first():
+            raise HTTPException(status_code=404, detail="Department not found")
+    return title, text, url, dept
+
+
+def _tell_audience(db, policy, people, by, message):
+    for e in people:
+        notify_employee(db, e, f"Policy to read: {policy.title}", message, "info", "documents", by)
+
+
+@app.get("/api/policies")
+def list_policies(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    depts = {d.id: d.name for d in db.query(models.DBDepartment).filter(models.DBDepartment.client_id == client.id).all()}
+    rows = db.query(models.DBPolicy).filter(models.DBPolicy.client_id == client.id).order_by(models.DBPolicy.id.desc()).all()
+    out = []
+    for p in rows:
+        people = policy_audience(db, client.id, p) if p.requires_ack and p.active else []
+        cov = policy_coverage(db, p, people) if p.requires_ack and p.active else None
+        out.append(policy_to_dict(p, cov, depts))
+    return {"policies": out,
+            "outstanding_total": sum((p["coverage"] or {}).get("outstanding", 0) for p in out)}
+
+
+@app.post("/api/policies")
+def create_policy(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Published at once: everybody it covers is told to read it."""
+    client = get_client_user(request, db)
+    body = body or {}
+    title, text, url, dept = _policy_fields(db, client.id, body, None)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    p = models.DBPolicy(client_id=client.id, title=title, body=text, url=url, department_id=dept,
+                        requires_ack=body.get("requires_ack", True) is not False, active=True,
+                        version=1, published_at=now, updated_at=now)
+    db.add(p)
+    db.flush()
+    if p.requires_ack:
+        _tell_audience(db, p, policy_audience(db, client.id, p), _hr_name(client),
+                       "Please read it and acknowledge it from Documents in your portal.")
+    log_audit(db, client.id, "policy_published", "policy", p.id, title, "", request)
+    db.commit()
+    depts = {d.id: d.name for d in db.query(models.DBDepartment).filter(models.DBDepartment.client_id == client.id).all()}
+    return policy_to_dict(p, policy_coverage(db, p, policy_audience(db, client.id, p)) if p.requires_ack else None, depts)
+
+
+@app.put("/api/policies/{policy_id}")
+def update_policy(policy_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """A change to the words is a new version, and a new version has to be
+    read again - so `republish` bumps it and asks everybody afresh. A typo
+    fix without republish keeps the version and the acknowledgements."""
+    client = get_client_user(request, db)
+    p = _policy_or_404(db, client.id, policy_id)
+    body = body or {}
+    title, text, url, dept = _policy_fields(db, client.id, body, p)
+    p.title, p.body, p.url, p.department_id = title, text, url, dept
+    if "requires_ack" in body:
+        p.requires_ack = body["requires_ack"] is not False
+    if "active" in body:
+        p.active = bool(body["active"])
+    p.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if body.get("republish"):
+        p.version = (p.version or 1) + 1
+        p.published_at = p.updated_at
+        if p.requires_ack and p.active:
+            _tell_audience(db, p, policy_audience(db, client.id, p), _hr_name(client),
+                           f"It has changed (version {p.version}). Please read it again and acknowledge it.")
+        log_audit(db, client.id, "policy_republished", "policy", p.id, title, f"v{p.version}", request)
+    db.commit()
+    depts = {d.id: d.name for d in db.query(models.DBDepartment).filter(models.DBDepartment.client_id == client.id).all()}
+    return policy_to_dict(p, policy_coverage(db, p, policy_audience(db, client.id, p)) if p.requires_ack and p.active else None, depts)
+
+
+@app.delete("/api/policies/{policy_id}")
+def delete_policy(policy_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    p = _policy_or_404(db, client.id, policy_id)
+    db.query(models.DBPolicyAck).filter(models.DBPolicyAck.policy_id == p.id).delete(synchronize_session=False)
+    db.delete(p)
+    log_audit(db, client.id, "policy_deleted", "policy", p.id, p.title, "", request)
+    db.commit()
+    return {"deleted": True}
+
+
+@app.post("/api/policies/{policy_id}/remind")
+def remind_policy(policy_id: int, request: Request, db: Session = Depends(get_db)):
+    """A word to everyone who has not acknowledged the current version."""
+    client = get_client_user(request, db)
+    p = _policy_or_404(db, client.id, policy_id)
+    if not p.requires_ack or not p.active:
+        raise HTTPException(status_code=409, detail="This policy does not need acknowledging")
+    people = policy_audience(db, client.id, p)
+    cov = policy_coverage(db, p, people)
+    ids = {o["employee_id"] for o in cov["outstanding_people"]}
+    _tell_audience(db, p, [e for e in people if e.id in ids], _hr_name(client),
+                   "A reminder: please read it and acknowledge it from Documents in your portal.")
+    db.commit()
+    return {"reminded": len(ids)}
+
+
+@app.get("/api/policies/{policy_id}/acks")
+def policy_acks(policy_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    p = _policy_or_404(db, client.id, policy_id)
+    names = _employee_names(db, client.id)
+    rows = db.query(models.DBPolicyAck).filter(models.DBPolicyAck.policy_id == p.id).order_by(
+        models.DBPolicyAck.acknowledged_at.desc()).all()
+    return {"acks": [{"employee_id": a.employee_id, "name": names.get(a.employee_id, ""), "version": a.version,
+                      "acknowledged_at": a.acknowledged_at} for a in rows],
+            "coverage": policy_coverage(db, p, policy_audience(db, client.id, p))}
+
+
+# --- the person's side ------------------------------------------------------------
+
+@app.get("/api/employee/policies")
+def my_policies(request: Request, db: Session = Depends(get_db)):
+    """Everything that applies to me, with whether I have acknowledged the
+    version that is current. The ones I have not come first."""
+    emp = current_employee(request, db)
+    rows = db.query(models.DBPolicy).filter(models.DBPolicy.client_id == emp.client_id,
+                                            models.DBPolicy.active == True).all()  # noqa: E712
+    rows = [p for p in rows if not p.department_id or p.department_id == emp.department_id]
+    acks = {(a.policy_id, a.version): a.acknowledged_at for a in db.query(models.DBPolicyAck).filter(
+        models.DBPolicyAck.employee_id == emp.id).all()}
+    out = []
+    for p in rows:
+        when = acks.get((p.id, p.version), "")
+        out.append(dict(policy_to_dict(p), acknowledged=bool(when) or not p.requires_ack, acknowledged_at=when,
+                        to_read=bool(p.requires_ack and not when)))
+    out.sort(key=lambda d: (not d["to_read"], d["title"].lower()))
+    return {"policies": out, "to_read": sum(1 for d in out if d["to_read"])}
+
+
+@app.post("/api/employee/policies/{policy_id}/acknowledge")
+def acknowledge_policy(policy_id: int, request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    p = db.query(models.DBPolicy).filter(models.DBPolicy.id == policy_id, models.DBPolicy.client_id == emp.client_id,
+                                         models.DBPolicy.active == True).first()  # noqa: E712
+    if not p or (p.department_id and p.department_id != emp.department_id):
+        raise HTTPException(status_code=404, detail="Policy not found")
+    have = db.query(models.DBPolicyAck).filter(models.DBPolicyAck.policy_id == p.id,
+                                               models.DBPolicyAck.employee_id == emp.id,
+                                               models.DBPolicyAck.version == p.version).first()
+    if have:
+        return {"acknowledged_at": have.acknowledged_at, "version": p.version}
+    a = models.DBPolicyAck(client_id=emp.client_id, policy_id=p.id, employee_id=emp.id, version=p.version,
+                           acknowledged_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    db.add(a)
+    log_audit(db, emp.client_id, "policy_acknowledged", "policy", p.id, p.title, f"v{p.version} by employee {emp.id}",
+              request, user_type="employee", user_name=f"{emp.first_name} {emp.last_name}".strip())
+    db.commit()
+    return {"acknowledged_at": a.acknowledged_at, "version": p.version}
 
 
 # Serve frontend

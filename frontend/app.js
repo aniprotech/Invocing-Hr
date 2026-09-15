@@ -344,6 +344,7 @@ var NAV_FOR_VIEW = {
     'training-view': 'nav-training',
     'compensation-view': 'nav-pay',
     'skills-view': 'nav-skills',
+    'policies-view': 'nav-policies',
     'analytics-view': 'nav-people-analytics',
     'wallet-view': 'nav-wallet',
     'settings-view': 'nav-settings'
@@ -383,6 +384,7 @@ var ROUTE_SLUGS = {
     'training-view': 'training',
     'compensation-view': 'pay',
     'skills-view': 'skills',
+    'policies-view': 'policies',
     'analytics-view': 'people-analytics',
     'leave-view': 'leave',
     'goals-view': 'goals',
@@ -7530,6 +7532,7 @@ showView = function(viewId) {
     if (viewId === 'training-view') loadTrainingView();
     if (viewId === 'compensation-view') loadPayView();
     if (viewId === 'skills-view') loadSkillsView();
+    if (viewId === 'policies-view') loadPoliciesView();
     if (viewId === 'analytics-view') loadAnalyticsView();
     if (viewId === 'recruitment-view') {
         loadRecAnalytics();
@@ -11475,6 +11478,7 @@ var HR_VIEW_LOADERS = {
     'training-view':       function () { loadTrainingView(); },
     'compensation-view':   function () { loadPayView(); },
     'skills-view':         function () { loadSkillsView(); },
+    'policies-view':       function () { loadPoliciesView(); },
     'analytics-view':      function () { loadAnalyticsView(); }
 };
 
@@ -16647,3 +16651,86 @@ async function deleteWebhook(id) {
     try { await fetchJson('/api/webhooks/' + id, { method: 'DELETE' }); loadIntegrations(); } catch (e) { showToast(e.message, 'error'); }
 }
 window.deleteWebhook = deleteWebhook;
+
+// ===========================================================================
+// Policies
+// ===========================================================================
+
+var _policies = [];
+
+async function loadPoliciesView() {
+    var host = document.getElementById('policies-list');
+    if (!host) return;
+    try {
+        var d = await fetchJson('/api/policies');
+        _policies = d.policies;
+        if (!d.policies.length) {
+            host.innerHTML = '<div class="widget" style="padding:40px;text-align:center;color:var(--text-secondary);">No policies yet. Publish the handbook, the expenses rules, the code of conduct - everybody is told, and you see who has read it.</div>';
+            return;
+        }
+        host.innerHTML = '<div class="widget">' + d.policies.map(function (p) {
+            var c = p.coverage;
+            var tone = !p.active ? 'var(--text-secondary)' : !c ? 'var(--text-secondary)' : c.pct === 100 ? 'var(--success-color)' : c.pct >= 50 ? 'var(--warning-color)' : 'var(--danger-color)';
+            return '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:12px 0;border-bottom:1px solid var(--border-color);">' +
+                '<div style="flex:1;min-width:220px;"><div style="font-weight:600;font-size:0.92rem;">' + esc(p.title) +
+                    ' <span style="font-size:0.72rem;color:var(--text-secondary);font-weight:400;">v' + p.version + (p.department_name ? ' \u00b7 ' + esc(p.department_name) + ' only' : '') + (!p.active ? ' \u00b7 switched off' : '') + '</span></div>' +
+                    '<div style="font-size:0.75rem;color:var(--text-secondary);">' + (p.url ? '<a href="' + esc(p.url) + '" target="_blank" rel="noopener">' + esc(p.url) + '</a> \u00b7 ' : '') + 'published ' + esc((p.published_at || '').slice(0, 10)) + '</div></div>' +
+                (c ? '<div style="min-width:180px;"><div style="font-size:0.75rem;color:' + tone + ';">' + c.acknowledged + ' of ' + c.audience + ' have read v' + p.version + (c.outstanding ? ' \u00b7 ' + c.outstanding + ' have not' : '') + '</div>' +
+                    '<div style="height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden;margin-top:4px;"><div style="height:100%;width:' + c.pct + '%;background:' + tone + ';"></div></div></div>'
+                   : '<span style="font-size:0.75rem;color:var(--text-secondary);">' + (p.requires_ack ? '' : 'No acknowledgement needed') + '</span>') +
+                (c && c.outstanding ? '<button class="btn btn-sm btn-outline" onclick="remindPolicy(' + p.id + ')">Remind ' + c.outstanding + '</button>' : '') +
+                (c ? '<button class="btn btn-sm btn-outline" onclick="showPolicyAcks(' + p.id + ')">Who</button>' : '') +
+                '<button class="btn btn-sm btn-outline" onclick="editPolicy(' + p.id + ')">Edit</button>' +
+                '<button class="btn btn-sm btn-outline" onclick="deletePolicy(' + p.id + ')">Delete</button>' +
+            '</div>';
+        }).join('') + '</div>';
+    } catch (e) { host.innerHTML = '<div class="widget" style="padding:20px;color:var(--danger-text);">' + esc(e.message) + '</div>'; }
+}
+window.loadPoliciesView = loadPoliciesView;
+
+async function editPolicy(id) {
+    var p = id ? _policies.filter(function (x) { return x.id === id; })[0] : null;
+    var depts = [{ value: '', label: 'Everybody' }];
+    try { (await fetchJson('/api/departments')).forEach(function (d) { depts.push({ value: d.id, label: d.name }); }); } catch (e) { /* everybody */ }
+    var fields = [
+        { name: 'title', label: 'Title', value: p ? p.title : '', required: true, placeholder: 'Expenses policy' },
+        { name: 'body', label: 'The policy', type: 'textarea', value: p ? p.body : '', placeholder: 'Write it here, or link to it below' },
+        { name: 'url', label: 'Or a link (https)', value: p ? p.url : '' },
+        { name: 'department_id', label: 'Who', type: 'select', value: p && p.department_id ? String(p.department_id) : '', options: depts },
+        { name: 'requires_ack', label: 'Acknowledgement', type: 'select', value: p && !p.requires_ack ? 'no' : 'yes', options: [{ value: 'yes', label: 'Everybody must read and acknowledge it' }, { value: 'no', label: 'For information only' }] },
+    ];
+    if (p) fields.push({ name: 'republish', label: 'This change', type: 'select', value: 'fix', options: [{ value: 'fix', label: 'A small fix - acknowledgements stand' }, { value: 'new', label: 'A new version - everybody must read it again' }] });
+    var out = await uiForm(fields, { title: p ? 'Edit policy' : 'New policy', confirmText: p ? 'Save' : 'Publish',
+        message: p ? 'Version ' + p.version + '.' : 'Everybody it covers is told to read it.' });
+    if (!out) return;
+    var body = { title: out.title, body: out.body, url: out.url, department_id: out.department_id || null, requires_ack: out.requires_ack !== 'no' };
+    if (p) body.republish = out.republish === 'new';
+    try {
+        await fetchJson(p ? '/api/policies/' + p.id : '/api/policies', { method: p ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        showToast(p ? (body.republish ? 'Republished - everybody is asked to read it again' : 'Saved') : 'Published - everybody has been told', 'success');
+        loadPoliciesView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.editPolicy = editPolicy;
+
+async function remindPolicy(id) {
+    try { var out = await fetchJson('/api/policies/' + id + '/remind', { method: 'POST' }); showToast(out.reminded + ' reminded', 'success'); }
+    catch (e) { showToast(e.message, 'error'); }
+}
+window.remindPolicy = remindPolicy;
+
+async function showPolicyAcks(id) {
+    try {
+        var d = await fetchJson('/api/policies/' + id + '/acks');
+        var lines = ['Read the current version: ' + d.coverage.acknowledged + ' of ' + d.coverage.audience + '.'];
+        if (d.coverage.outstanding_people.length) lines.push('Not yet: ' + d.coverage.outstanding_people.map(function (o) { return o.name; }).join(', '));
+        await uiAlert(lines.join('\n\n'), { title: 'Who has read it' });
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.showPolicyAcks = showPolicyAcks;
+
+async function deletePolicy(id) {
+    if (!await uiConfirm('Delete this policy and its acknowledgements?', { title: 'Delete policy', confirmText: 'Delete', danger: true })) return;
+    try { await fetchJson('/api/policies/' + id, { method: 'DELETE' }); loadPoliciesView(); } catch (e) { showToast(e.message, 'error'); }
+}
+window.deletePolicy = deletePolicy;

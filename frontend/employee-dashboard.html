@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=165">
+  <link rel="stylesheet" href="tailwind.css?v=166">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,12 +50,12 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=165">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=165">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=165">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=165">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=165">
-    <script src="/dialogs.js?v=165"></script>
+    <link rel="stylesheet" href="mobile.css?v=166">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=166">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=166">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=166">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=166">
+    <script src="/dialogs.js?v=166"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -569,6 +569,13 @@
 
     <!-- Tab: Documents -->
     <div id="tab-documents" class="tab-panel hidden fade-in">
+      <!-- The company's policies, each acknowledged per version. The ones
+           still to read come first. -->
+      <div class="bg-white rounded-2xl border border-gray-100 p-5 mb-4" id="policiesCard" hidden>
+        <h3 class="font-semibold text-gray-900 mb-1">Company policies</h3>
+        <p class="text-xs text-gray-500 mb-4" id="policies-hint"></p>
+        <div id="policies" class="space-y-2"></div>
+      </div>
       <!-- What HR has asked this person to provide -->
       <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden mb-4">
         <div class="p-5 border-b border-gray-100 flex items-center gap-3 flex-wrap">
@@ -1797,7 +1804,7 @@
       if (tab === 'attendance') loadAttendanceStats();
       if (tab === 'goals') loadGoals();
       if (tab === 'leave') { loadLeave(); loadLeaveBalance(); }
-      if (tab === 'documents') { loadDocuments(); loadDocumentRequests(); }
+      if (tab === 'documents') { loadDocuments(); loadDocumentRequests(); loadMyPolicies(); }
       if (tab === 'team') loadTeamPresence();
       if (tab === 'profile') { loadProfileTab(); loadMyChanges(); loadMyAssets(); loadMyCerts(); loadMyHistory(); loadMySkills(); }
       if (tab === 'reviews') { loadMyReviews(); loadFeedbackRequests(); }
@@ -1811,6 +1818,56 @@
       if (tab === 'feed') loadFeed();
       if (tab === 'expenses') loadExpenses();
     }
+
+    // --- Policies ---------------------------------------------------------------------
+
+    async function loadMyPolicies() {
+      var card = document.getElementById('policiesCard'), host = document.getElementById('policies');
+      if (!card || !host) return;
+      try {
+        var res = await fetch('/api/employee/policies');
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        var d = await res.json();
+        card.hidden = !d.policies.length;
+        document.getElementById('policies-hint').textContent = d.to_read ? d.to_read + ' to read and acknowledge.' : 'You have read everything that applies to you.';
+        host.textContent = '';
+        d.policies.forEach(function (p) {
+          var box = document.createElement('div');
+          box.className = 'p-3 rounded-xl border ' + (p.to_read ? 'border-amber-200 bg-amber-50' : 'border-gray-100');
+          var head = document.createElement('div'); head.className = 'flex items-center justify-between gap-3';
+          var t = document.createElement('div'); t.className = 'text-sm font-medium text-gray-900';
+          t.textContent = p.title + ' \u00b7 v' + p.version; head.appendChild(t);
+          var pill = document.createElement('span'); pill.className = 'text-xs px-2 py-0.5 rounded-full border ' + (p.to_read ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200');
+          pill.textContent = p.to_read ? 'To read' : (p.requires_ack ? 'Acknowledged ' + (p.acknowledged_at || '').slice(0, 10) : 'For information'); head.appendChild(pill);
+          box.appendChild(head);
+          if (p.body) {
+            var det = document.createElement('details'); det.className = 'mt-2';
+            var sum = document.createElement('summary'); sum.className = 'text-xs text-brand-600 cursor-pointer'; sum.textContent = 'Read it'; det.appendChild(sum);
+            var body = document.createElement('div'); body.className = 'mt-2 text-sm text-gray-700 whitespace-pre-wrap'; body.textContent = p.body; det.appendChild(body);
+            box.appendChild(det);
+          }
+          if (p.url) {
+            var a = document.createElement('a'); a.href = p.url; a.target = '_blank'; a.rel = 'noopener'; a.className = 'block mt-2 text-xs text-brand-600 hover:underline'; a.textContent = 'Open the document'; box.appendChild(a);
+          }
+          if (p.to_read) {
+            var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'mt-3 px-3 py-1.5 rounded-lg bg-brand-600 text-white text-sm';
+            btn.textContent = 'I have read and understood this';
+            btn.addEventListener('click', async function () {
+              btn.disabled = true;
+              try {
+                var r = await fetch('/api/employee/policies/' + p.id + '/acknowledge', { method: 'POST' });
+                if (!r.ok) throw new Error('no');
+                uiToast('Thank you - recorded', 'success');
+                loadMyPolicies();
+              } catch (e) { uiToast('Could not record that.', 'error'); btn.disabled = false; }
+            });
+            box.appendChild(btn);
+          }
+          host.appendChild(box);
+        });
+      } catch (e) { card.hidden = true; }
+    }
+    window.loadMyPolicies = loadMyPolicies;
 
     // --- Skills ---------------------------------------------------------------------
 
@@ -4409,8 +4466,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=165"></script>
-    <script src="/pwa.js?v=165"></script>
-    <script src="/feed.js?v=165"></script>
+    <script src="/install-hint.js?v=166"></script>
+    <script src="/pwa.js?v=166"></script>
+    <script src="/feed.js?v=166"></script>
 </body>
 </html>

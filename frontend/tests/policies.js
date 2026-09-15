@@ -1,136 +1,114 @@
 /**
- * Policy pages, written in the operator screen and published from there.
- *
- * The front page had no policies at all and no way to add one without a
- * deploy. These now come from the same store as the other landing entries.
- *
- * Two things are worth holding to. A policy is copy typed into a form, so it
- * must render as text - a legal notice is the last page on which somebody
- * else's markup should run. And a policy that fails to load must say so
- * rather than showing an empty page under a legal heading, which reads as
- * though the policy itself is blank.
+ * Policies, on screen: coverage per policy with a reminder for those who
+ * have not read it, a form whose "new version" choice republishes, and a
+ * portal card with the unread ones first and an acknowledge button.
  */
 const fs = require('fs');
 const path = require('path');
 const { JSDOM } = require('jsdom');
-
 const ROOT = path.resolve(__dirname, '..');
-
 let failures = 0;
 const check = (label, ok, detail) => {
     if (ok) console.log(`ok    ${label}`);
     else { failures++; console.log(`FAIL  ${label}${detail ? ': ' + detail : ''}`); }
 };
 const wait = ms => new Promise(r => setTimeout(r, ms));
+const POLICIES = { outstanding_total: 2, policies: [
+    { id: 1, title: 'Expenses <b>policy</b>', body: 'Keep receipts.', url: '', version: 2, requires_ack: true, active: true, department_id: null, department_name: '', published_at: '2026-09-01 10:00:00',
+      coverage: { audience: 4, acknowledged: 2, outstanding: 2, pct: 50, outstanding_people: [{ employee_id: 3, name: 'Lena' }, { employee_id: 4, name: 'Mo' }] } },
+    { id: 2, title: 'Office map', body: 'x', url: 'https://docs.example/map', version: 1, requires_ack: false, active: true, department_id: null, department_name: '', published_at: '2026-09-01 10:00:00', coverage: null } ] };
 
-function boot(opts) {
+function bootHr(opts) {
     opts = opts || {};
-    const html = fs.readFileSync(path.join(ROOT, 'policy.html'), 'utf8');
-    const dom = new JSDOM(html, {
-        runScripts: 'dangerously', pretendToBeVisual: true,
-        url: 'https://localhost/policy.html?id=' + (opts.id === undefined ? '1' : opts.id),
-        beforeParse(w) {
-            w.console.error = () => { };
-            w.fetch = (u) => {
-                const p = String(u);
-                if (p.indexOf('/api/platform/policies/') > -1) {
-                    if (opts.missing) {
-                        return Promise.resolve({ ok: false, status: 404,
-                            json: () => Promise.resolve({ detail: 'No such policy' }) });
-                    }
-                    return Promise.resolve({ ok: true, status: 200,
-                        json: () => Promise.resolve(opts.policy || {
-                            id: 1, title: 'Privacy Policy', updated: '2026-09-02 10:00:00',
-                            body: 'First paragraph.\n\nSecond paragraph.',
-                        }) });
-                }
-                return Promise.resolve({ ok: true, status: 200,
-                    json: () => Promise.resolve({
-                        landing: { footer_copy: '(c) 2026 Ani Protech' },
-                        items: { policy: opts.others || [
-                            { id: 1, title: 'Privacy Policy' },
-                            { id: 2, title: 'Terms of Service' }] },
-                    }) });
-            };
-        },
-    });
-    return dom.window;
+    const dom = new JSDOM(fs.readFileSync(path.join(ROOT, 'app.html'), 'utf8'), { runScripts: 'outside-only', pretendToBeVisual: true, url: 'https://localhost/app.html' });
+    const w = dom.window;
+    const sent = [];
+    w.console.error = () => { };
+    w.fetch = (url, init) => {
+        const p = String(url).split('?')[0];
+        const method = (init && init.method) || 'GET';
+        sent.push({ url: p, method, body: init && init.body });
+        const give = (b) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(b) });
+        if (p === '/api/policies' && method === 'GET') return give(POLICIES);
+        if (p === '/api/policies' && method === 'POST') return give({ id: 3 });
+        if (/\/api\/policies\/\d+$/.test(p) && method === 'PUT') return give({ id: 1, version: 3 });
+        if (/\/remind$/.test(p)) return give({ reminded: 2 });
+        if (p === '/api/departments') return give([{ id: 5, name: 'Ops' }]);
+        return give(p.endsWith('s') ? [] : {});
+    };
+    w.eval(fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8'));
+    w.showToast = () => { };
+    w.uiConfirm = () => Promise.resolve(true);
+    w.uiAlert = () => Promise.resolve(true);
+    w.uiForm = () => Promise.resolve(opts.form === undefined ? null : opts.form);
+    return { w, doc: w.document, sent };
 }
+const bodyOf = e => { try { return JSON.parse(e.body); } catch (x) { return {}; } };
 
 (async () => {
     {
-        const w = boot();
-        await wait(150);
-        const d = w.document;
-        check('the policy is shown', !d.getElementById('sheet').hidden);
-        check('under its own title',
-            d.getElementById('policy-title').textContent === 'Privacy Policy',
-            d.getElementById('policy-title').textContent);
-        check('the tab says which policy it is',
-            /Privacy Policy/.test(d.title), d.title);
-        check('with the date it last changed',
-            /2026-09-02/.test(d.getElementById('policy-updated').textContent),
-            d.getElementById('policy-updated').textContent);
-
-        const paras = d.querySelectorAll('#policy-body p');
-        check('blank lines become paragraphs, not one wall of text',
-            paras.length === 2, paras.length);
-        check('and keep their wording',
-            paras[1].textContent === 'Second paragraph.', paras[1].textContent);
+        const src = fs.readFileSync(path.join(ROOT, 'app.html'), 'utf8');
+        check('People has Policies', /href="#\/policies"/.test(src) && /id="policies-view"/.test(src));
     }
-
-    // --- copy is copy ---------------------------------------------------------
     {
-        const w = boot({ policy: { id: 1, title: 'Terms', updated: '',
-            body: '<script>window.__pwned=1<\/script>\n\nSecond.' } });
-        await wait(150);
-        check('markup in a policy does not run', !w.__pwned);
-        check('it is shown as the characters that were typed',
-            /<script>/.test(w.document.getElementById('policy-body').textContent),
-            w.document.getElementById('policy-body').textContent.slice(0, 40));
-        check('and no element was created from it',
-            w.document.querySelectorAll('#policy-body script').length === 0);
+        const { w, doc, sent } = bootHr();
+        await w.loadPoliciesView();
+        await wait(40);
+        const host = doc.getElementById('policies-list');
+        check('each policy shows its version and how many have read it, title as text', /Expenses <b>policy<\/b>/.test(host.textContent) && !host.querySelector('b') && /2 of 4 have read v2/.test(host.textContent) && /2 have not/.test(host.textContent));
+        check('  one that needs no acknowledgement says so and has no reminder', /No acknowledgement needed/.test(host.textContent) && (host.innerHTML.match(/remindPolicy\(/g) || []).length === 1);
+        await w.remindPolicy(1);
+        await wait(30);
+        check('  Remind posts to the reminder route', sent.some(s => s.url === '/api/policies/1/remind' && s.method === 'POST'));
     }
-
-    // --- when it is not there --------------------------------------------------
     {
-        const w = boot({ missing: true });
-        await wait(150);
-        const d = w.document;
-        check('a policy that is gone says so',
-            /not available/i.test(d.getElementById('state').textContent),
-            d.getElementById('state').textContent);
-        check('rather than showing an empty page under a legal heading',
-            d.getElementById('sheet').hidden);
+        const { w, sent } = bootHr({ form: { title: 'Expenses policy', body: 'New words', url: '', department_id: '', requires_ack: 'yes', republish: 'new' } });
+        await w.loadPoliciesView();
+        await wait(40);
+        await w.editPolicy(1);
+        await wait(40);
+        const put = sent.find(s => s.url === '/api/policies/1' && s.method === 'PUT');
+        check('choosing "a new version" republishes', put && bodyOf(put).republish === true && bodyOf(put).requires_ack === true, put && put.body);
     }
-
     {
-        const w = boot({ id: '' });
-        await wait(150);
-        check('asking for no policy at all is explained, not left loading',
-            /no policy/i.test(w.document.getElementById('state').textContent),
-            w.document.getElementById('state').textContent);
+        const { w, sent } = bootHr({ form: { title: 'Code of conduct', body: 'Be kind', url: '', department_id: '5', requires_ack: 'no' } });
+        await w.editPolicy();
+        await wait(40);
+        const post = sent.find(s => s.url === '/api/policies' && s.method === 'POST');
+        check('a new policy posts its audience and whether it needs acknowledging', post && bodyOf(post).department_id === '5' && bodyOf(post).requires_ack === false, post && post.body);
     }
-
-    // --- finding the others -----------------------------------------------------
+    // --- portal ---
     {
-        const w = boot();
-        await wait(150);
-        const links = [...w.document.querySelectorAll('#others a')];
-        check('the other policies are linked', links.length === 1, links.length);
-        check('and the one being read is not linked to itself',
-            links[0].textContent === 'Terms of Service', links[0].textContent);
-        check('each link carries its id',
-            /id=2/.test(links[0].getAttribute('href')), links[0].getAttribute('href'));
+        const html = fs.readFileSync(path.join(ROOT, 'employee-dashboard.html'), 'utf8').replace(/<script[^>]*src=[^>]*><\/script>/g, '');
+        const sent = [];
+        const dom = new JSDOM(html, { runScripts: 'dangerously', pretendToBeVisual: true, url: 'https://localhost/employee-dashboard.html',
+            beforeParse(w) {
+                w.console.error = () => { };
+                w.uiToast = () => { }; w.uiAlert = () => Promise.resolve(true); w.uiConfirm = () => Promise.resolve(true); w.uiPrompt = () => Promise.resolve('');
+                w.fetch = (url, init) => {
+                    const p = String(url).split('?')[0];
+                    const method = (init && init.method) || 'GET';
+                    sent.push({ url: p, method });
+                    const give = (b) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(b) });
+                    if (p === '/api/employee/policies') return give({ to_read: 1, policies: [
+                        { id: 1, title: 'Expenses <i>policy</i>', body: 'Keep <b>receipts</b>.', url: '', version: 2, requires_ack: true, to_read: true, acknowledged: false, acknowledged_at: '' },
+                        { id: 2, title: 'Handbook', body: '', url: 'https://docs.example/h', version: 1, requires_ack: true, to_read: false, acknowledged: true, acknowledged_at: '2026-09-02 09:00:00' } ] });
+                    if (/\/acknowledge$/.test(p)) return give({ acknowledged_at: 'now', version: 2 });
+                    return give(p.endsWith('s') ? [] : {});
+                };
+            } });
+        const w = dom.window, doc = w.document;
+        await w.loadMyPolicies();
+        await wait(30);
+        const host = doc.getElementById('policies');
+        check('the portal lists policies with the unread one first and the words as text', host.children.length === 2 && /Expenses <i>policy<\/i>/.test(host.children[0].textContent) && !host.querySelector('b') && /Keep <b>receipts<\/b>/.test(host.textContent));
+        check('  the read one says when, and a linked one links out', /Acknowledged 2026-09-02/.test(host.children[1].textContent) && !!host.children[1].querySelector('a[href="https://docs.example/h"]'));
+        const btn = [...host.querySelectorAll('button')].find(b => /I have read/.test(b.textContent));
+        check('  only the unread one has the acknowledge button', !!btn && host.querySelectorAll('button').length === 1);
+        btn.click();
+        await wait(30);
+        check('  pressing it acknowledges', sent.some(s => s.url === '/api/employee/policies/1/acknowledge' && s.method === 'POST'));
     }
-
-    {
-        const w = boot({ others: [{ id: 1, title: 'Privacy Policy' }] });
-        await wait(150);
-        check('with nothing else to link, the row stays hidden',
-            w.document.getElementById('others').hidden);
-    }
-
-    console.log(failures ? `\n${failures} failed` : '\nall good');
-    process.exit(failures ? 1 : 0);
+    console.log(failures === 0 ? '\nAll policy checks passed.' : `\n${failures} policy check(s) failed.`);
+    process.exit(failures === 0 ? 0 : 1);
 })();

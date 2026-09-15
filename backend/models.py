@@ -2469,3 +2469,35 @@ class DBWebhookDelivery(Base):
     error = Column(String, default="")
     delivered_at = Column(String, default="")
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+# ---- Policies -----------------------------------------------------------------------
+# The handbook and its kin, each read and acknowledged per version.
+
+class DBPolicy(Base):
+    __tablename__ = "policies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    title = Column(String, nullable=False)
+    body = Column(Text, default="")
+    url = Column(String, default="")               # a link instead of, or as well as, the words
+    version = Column(Integer, default=1)
+    requires_ack = Column(Boolean, default=True)
+    active = Column(Boolean, default=True)
+    department_id = Column(Integer, nullable=True)  # None is everybody
+    published_at = Column(String, default="")
+    updated_at = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBPolicyAck(Base):
+    __tablename__ = "policy_acks"
+    __table_args__ = (UniqueConstraint("policy_id", "employee_id", "version", name="uq_ack_per_version"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    policy_id = Column(Integer, ForeignKey("policies.id"), nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+    version = Column(Integer, default=1)
+    acknowledged_at = Column(String, default="")
