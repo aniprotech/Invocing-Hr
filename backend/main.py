@@ -9600,6 +9600,7 @@ def delete_employee(emp_id: int, request: Request, db: Session = Depends(get_db)
         db.query(model).filter(model.employee_id == emp_id).delete(synchronize_session=False)
     db.query(models.DBCheckIn).filter(models.DBCheckIn.manager_id == emp_id).delete(synchronize_session=False)
     db.query(models.DBPeerFeedback).filter(models.DBPeerFeedback.peer_id == emp_id).delete(synchronize_session=False)
+    db.query(models.DBKudos).filter((models.DBKudos.from_employee_id == emp_id) | (models.DBKudos.to_employee_id == emp_id)).delete(synchronize_session=False)
     # Reviews they were going to write go back to the HR pool.
     db.query(models.DBReview).filter(models.DBReview.reviewer_id == emp_id).update(
         {"reviewer_id": None, "reviewer_how": "hr"}, synchronize_session=False)
@@ -25016,6 +25017,7 @@ def hr_analytics(request: Request, db: Session = Depends(get_db)):
         "pay": pay_block,
         "skills": skills_block,
         "absence": absence_block,
+        "recognition": recognition_summary(db, cid, today),
         "headcount": {
             "now": len(current), "joiners_12m": joiners_12m, "leavers_12m": leavers_12m,
             "turnover_pct": turnover, "average_headcount_12m": round(avg_headcount, 1),
@@ -26769,7 +26771,7 @@ API_KEY_LIMIT = 10
 WEBHOOK_LIMIT = 10
 WEBHOOK_EVENTS = ("employee.created", "employee.updated", "employee.left",
                   "leave.requested", "leave.decided", "probation.decided", "pay.changed",
-                  "review.completed")
+                  "review.completed", "kudos.given")
 WEBHOOK_MAX_ATTEMPTS = 5
 WEBHOOK_BACKOFF_MINUTES = (0, 1, 5, 30, 120)
 
@@ -27858,6 +27860,7 @@ def superadmin_hr_adoption(request: Request, db: Session = Depends(get_db)):
         "certifications": count(models.DBCertification), "pay_bands": count(models.DBPayBand),
         "workflows": count(models.DBWorkflow), "webhooks": count(models.DBWebhook), "api_keys": count(models.DBApiKey),
         "custom_fields": count(models.DBCustomField), "expenses": count(models.DBExpenseClaim), "posts": count(models.DBPost),
+        "kudos": count(models.DBKudos),
     }
     out = []
     for c in db.query(models.DBClient).order_by(models.DBClient.id).all():
@@ -27869,6 +27872,204 @@ def superadmin_hr_adoption(request: Request, db: Session = Depends(get_db)):
                     "features_used": sum(1 for v in used.values() if v), "created_at": c.created_at})
     out.sort(key=lambda r: (-r["employees"], -r["features_used"]))
     return {"businesses": out, "feature_keys": list(features)}
+
+
+# ============================================================================
+# Recognition
+# ============================================================================
+# One person thanking another where everybody can see it. Cheap to give,
+# worth more than most things HR can hand out, and the first thing a new
+# starter reads to learn what this place actually values. The business
+# names its values once; each shout-out can carry one of them, so the
+# analytics say which values are being lived, not just how many thanks.
+
+KUDOS_MESSAGE_MAX = 500
+KUDOS_PER_DAY = 10
+
+
+def company_values(db, client_id):
+    """The business's own words, as a list. Blank until they write some."""
+    raw = str(tenant_setting(db, client_id, "company_values", "") or "")
+    seen, out = set(), []
+    for part in raw.replace("\n", ",").split(","):
+        v = part.strip()[:40]
+        if v and v.lower() not in seen:
+            seen.add(v.lower())
+            out.append(v)
+    return out[:12]
+
+
+def kudos_to_dict(k, names, me=None):
+    return {"id": k.id, "from_id": k.from_employee_id, "from": names.get(k.from_employee_id, "Someone"),
+            "to_id": k.to_employee_id, "to": names.get(k.to_employee_id, "Someone"),
+            "message": k.message or "", "value": k.value or "", "created_at": k.created_at,
+            "mine": bool(me and k.from_employee_id == me)}
+
+
+def _kudos_query(db, client_id):
+    return db.query(models.DBKudos).filter(models.DBKudos.client_id == client_id)
+
+
+@app.get("/api/employee/kudos")
+def my_kudos(request: Request, limit: int = 30, db: Session = Depends(get_db)):
+    """The company's recent shout-outs, my own tallies, and who I could
+    thank - everyone still here except me."""
+    emp = current_employee(request, db)
+    names = _employee_names(db, emp.client_id)
+    rows = _kudos_query(db, emp.client_id).order_by(models.DBKudos.id.desc()).limit(max(1, min(limit, 100))).all()
+    received = _kudos_query(db, emp.client_id).filter(models.DBKudos.to_employee_id == emp.id).count()
+    given = _kudos_query(db, emp.client_id).filter(models.DBKudos.from_employee_id == emp.id).count()
+    people = [{"id": e.id, "name": f"{e.first_name} {e.last_name}".strip()}
+              for e in db.query(models.DBEmployee).filter(models.DBEmployee.client_id == emp.client_id).all()
+              if e.id != emp.id and employee_is_current(e)]
+    people.sort(key=lambda p: p["name"].lower())
+    return {"recent": [kudos_to_dict(k, names, emp.id) for k in rows],
+            "received": received, "given": given,
+            "values": company_values(db, emp.client_id), "people": people}
+
+
+@app.post("/api/employee/kudos")
+def give_kudos(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    body = body or {}
+    try:
+        to_id = int(body.get("to_employee_id") or 0)
+    except (TypeError, ValueError):
+        to_id = 0
+    message = str(body.get("message") or "").strip()[:KUDOS_MESSAGE_MAX]
+    value = str(body.get("value") or "").strip()[:40]
+    if not message:
+        raise HTTPException(status_code=400, detail="Say what they did.")
+    if to_id == emp.id:
+        raise HTTPException(status_code=400, detail="You cannot thank yourself - though somebody should.")
+    to = db.query(models.DBEmployee).filter(models.DBEmployee.id == to_id,
+                                            models.DBEmployee.client_id == emp.client_id).first()
+    if not to or not employee_is_current(to):
+        raise HTTPException(status_code=404, detail="That person is not here.")
+    values = company_values(db, emp.client_id)
+    if value and values and value.lower() not in {v.lower() for v in values}:
+        raise HTTPException(status_code=400, detail="Pick one of the company's values, or none.")
+    if value and values:
+        value = next(v for v in values if v.lower() == value.lower())
+    today = date.today().isoformat()
+    today_count = _kudos_query(db, emp.client_id).filter(models.DBKudos.from_employee_id == emp.id,
+                                                        models.DBKudos.created_at >= today).count()
+    if today_count >= KUDOS_PER_DAY:
+        raise HTTPException(status_code=429, detail="That is plenty for one day.")
+    k = models.DBKudos(client_id=emp.client_id, from_employee_id=emp.id, to_employee_id=to.id,
+                       message=message, value=value)
+    db.add(k)
+    giver = f"{emp.first_name} {emp.last_name}".strip()
+    notify_employee(db, to, f"{giver} gave you a shout-out",
+                    (f"For {value}: " if value else "") + message, "success", "", giver)
+    db.flush()
+    announce(db, emp.client_id, "kudos.given",
+             {"id": k.id, "from": {"id": emp.id, "name": giver}, "to": {"id": to.id, "name": f"{to.first_name} {to.last_name}".strip()},
+              "value": value, "message": message})
+    db.commit()
+    names = _employee_names(db, emp.client_id)
+    return kudos_to_dict(k, names, emp.id)
+
+
+@app.delete("/api/employee/kudos/{kudos_id}")
+def withdraw_kudos(kudos_id: int, request: Request, db: Session = Depends(get_db)):
+    """The giver can take theirs back. Nobody else's."""
+    emp = current_employee(request, db)
+    k = _kudos_query(db, emp.client_id).filter(models.DBKudos.id == kudos_id).first()
+    if not k or k.from_employee_id != emp.id:
+        raise HTTPException(status_code=404, detail="Not found")
+    db.delete(k)
+    db.commit()
+    return {"message": "Withdrawn"}
+
+
+def recognition_summary(db, client_id, today=None):
+    """This month against last, how many people were thanked, who most,
+    who gives most, and which values are being named."""
+    today = today or date.today()
+    this_month = today.strftime("%Y-%m")
+    first = today.replace(day=1)
+    last_month = (first - timedelta(days=1)).strftime("%Y-%m")
+    since = (today - timedelta(days=90)).isoformat()
+    rows = _kudos_query(db, client_id).filter(models.DBKudos.created_at >= since).all()
+    names = _employee_names(db, client_id)
+    current_ids = {e.id for e in db.query(models.DBEmployee).filter(models.DBEmployee.client_id == client_id).all()
+                   if employee_is_current(e)}
+    recognised = Counter(k.to_employee_id for k in rows)
+    givers = Counter(k.from_employee_id for k in rows)
+    by_value = Counter(k.value for k in rows if k.value)
+    return {
+        "this_month": sum(1 for k in rows if (k.created_at or "").startswith(this_month)),
+        "last_month": sum(1 for k in rows if (k.created_at or "").startswith(last_month)),
+        "total_90d": len(rows),
+        "people_recognised_pct": round(100 * len(set(recognised) & current_ids) / len(current_ids)) if current_ids else 0,
+        "never_recognised": sorted([names.get(i, "") for i in current_ids - set(recognised)], key=str.lower)[:10],
+        "top_recognised": [{"employee_id": i, "name": names.get(i, ""), "count": n} for i, n in recognised.most_common(5)],
+        "top_givers": [{"employee_id": i, "name": names.get(i, ""), "count": n} for i, n in givers.most_common(5)],
+        "by_value": [{"value": v, "count": n} for v, n in by_value.most_common()],
+        "values": company_values(db, client_id),
+    }
+
+
+@app.get("/api/kudos")
+def hr_kudos(request: Request, limit: int = 100, db: Session = Depends(get_db)):
+    """All of it, newest first, with the summary on top."""
+    client = get_client_user(request, db)
+    names = _employee_names(db, client.id)
+    rows = _kudos_query(db, client.id).order_by(models.DBKudos.id.desc()).limit(max(1, min(limit, 500))).all()
+    return {"kudos": [kudos_to_dict(k, names) for k in rows], "summary": recognition_summary(db, client.id)}
+
+
+@app.get("/api/employees/{emp_id}/kudos")
+def hr_employee_kudos(emp_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    names = _employee_names(db, client.id)
+    got = _kudos_query(db, client.id).filter(models.DBKudos.to_employee_id == emp.id).order_by(models.DBKudos.id.desc()).all()
+    gave = _kudos_query(db, client.id).filter(models.DBKudos.from_employee_id == emp.id).count()
+    return {"received": [kudos_to_dict(k, names) for k in got[:20]], "received_count": len(got), "given_count": gave}
+
+
+@app.delete("/api/kudos/{kudos_id}")
+def hr_remove_kudos(kudos_id: int, request: Request, db: Session = Depends(get_db)):
+    """HR can take one down - the one that should not have been said in
+    front of everybody - and it is written down that they did."""
+    client = get_client_user(request, db)
+    k = _kudos_query(db, client.id).filter(models.DBKudos.id == kudos_id).first()
+    if not k:
+        raise HTTPException(status_code=404, detail="Not found")
+    names = _employee_names(db, client.id)
+    log_audit(db, client.id, "kudos_removed", "kudos", k.id, f"{names.get(k.from_employee_id, '')} to {names.get(k.to_employee_id, '')}",
+              (k.message or "")[:120], request)
+    db.delete(k)
+    db.commit()
+    return {"message": "Removed"}
+
+
+@app.get("/api/kudos/values")
+def get_company_values(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    return {"values": company_values(db, client.id)}
+
+
+@app.put("/api/kudos/values")
+def set_company_values(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """A short list of words. Written as one setting so the CSV and the
+    portal read the same list."""
+    client = get_client_user(request, db)
+    raw = (body or {}).get("values", "")
+    if isinstance(raw, list):
+        raw = ",".join(str(v) for v in raw)
+    row = db.query(models.DBSettings).filter(models.DBSettings.client_id == client.id,
+                                             models.DBSettings.key == "company_values").first()
+    if row:
+        row.value = str(raw)[:600]
+    else:
+        db.add(models.DBSettings(client_id=client.id, key="company_values", value=str(raw)[:600]))
+    db.commit()
+    return {"values": company_values(db, client.id)}
 
 
 # Serve frontend

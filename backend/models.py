@@ -2532,3 +2532,17 @@ class DBCustomValue(Base):
     employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
     field_id = Column(Integer, ForeignKey("custom_fields.id"), nullable=False, index=True)
     value = Column(Text, default="")
+
+
+class DBKudos(Base):
+    """One person thanking another, in front of everybody. The value is one
+    of the business's own words for what it cares about, or nothing."""
+    __tablename__ = "kudos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    from_employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+    to_employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+    message = Column(Text, default="")
+    value = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"), index=True)

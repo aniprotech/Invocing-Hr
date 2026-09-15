@@ -345,6 +345,7 @@ var NAV_FOR_VIEW = {
     'compensation-view': 'nav-pay',
     'skills-view': 'nav-skills',
     'policies-view': 'nav-policies',
+    'recognition-view': 'nav-recognition',
     'analytics-view': 'nav-people-analytics',
     'wallet-view': 'nav-wallet',
     'settings-view': 'nav-settings'
@@ -385,6 +386,7 @@ var ROUTE_SLUGS = {
     'compensation-view': 'pay',
     'skills-view': 'skills',
     'policies-view': 'policies',
+    'recognition-view': 'recognition',
     'analytics-view': 'people-analytics',
     'leave-view': 'leave',
     'goals-view': 'goals',
@@ -5191,6 +5193,7 @@ async function viewEmployee(empId) {
         loadEmployeeHistory(emp.id);
         loadEmployeeCheckIns(emp.id);
         loadEmployeeSkills(emp.id);
+        loadEmployeeKudos(emp.id);
         renderCustomValues(emp.custom_fields || []);
         var exportLink = document.getElementById('emp-export-link');
         if (exportLink) exportLink.href = '/api/employees/' + emp.id + '/export';
@@ -7561,6 +7564,7 @@ showView = function(viewId) {
     if (viewId === 'compensation-view') loadPayView();
     if (viewId === 'skills-view') loadSkillsView();
     if (viewId === 'policies-view') loadPoliciesView();
+    if (viewId === 'recognition-view') loadRecognitionView();
     if (viewId === 'analytics-view') loadAnalyticsView();
     if (viewId === 'recruitment-view') {
         loadRecAnalytics();
@@ -10747,7 +10751,11 @@ var CF_INVOICED = '#475569';
 function compactMoney(value, currency) {
     currency = currency || _appCurrency || 'GBP';
     try {
-        return new Intl.NumberFormat('en-GB', { style: 'currency', currency: currency, notation: 'compact', maximumFractionDigits: 1 }).format(value || 0);
+        // Both fraction bounds are set on purpose: with only the maximum, an
+        // older ICU (Node 20's) clamps the currency's default minimum of 2 down
+        // to 1 and prints "57.0k" where a newer one prints "57k".
+        return new Intl.NumberFormat('en-GB', { style: 'currency', currency: currency, notation: 'compact',
+                                                minimumFractionDigits: 0, maximumFractionDigits: 1 }).format(value || 0);
     } catch (e) {
         return formatCurrency(value, currency);
     }
@@ -11513,6 +11521,7 @@ var HR_VIEW_LOADERS = {
     'compensation-view':   function () { loadPayView(); },
     'skills-view':         function () { loadSkillsView(); },
     'policies-view':       function () { loadPoliciesView(); },
+    'recognition-view':    function () { loadRecognitionView(); },
     'analytics-view':      function () { loadAnalyticsView(); }
 };
 
@@ -16046,7 +16055,11 @@ async function loadAnalyticsView() {
             block('Leave this year', [['Days taken', a.leave.days_taken], ['Per person', a.leave.per_person], ['Types', Object.keys(a.leave.by_type).length]]) +
             (a.check_ins ? block('One-to-ones, last ' + a.check_ins.window_days + ' days', [
                 ['Reporting lines', a.check_ins.pairs], ['Met recently', a.check_ins.recent],
-                ['Gone quiet', a.check_ins.quiet, a.check_ins.quiet ? 'var(--warning-color)' : '']]) : '');
+                ['Gone quiet', a.check_ins.quiet, a.check_ins.quiet ? 'var(--warning-color)' : '']]) : '') +
+            (a.recognition ? block('Recognition', [
+                ['This month', a.recognition.this_month], ['Last month', a.recognition.last_month],
+                ['People thanked, 90 days', a.recognition.people_recognised_pct + '%'],
+                ['Most named value', a.recognition.by_value.length ? esc(a.recognition.by_value[0].value) : '-']]) : '');
     } catch (e) {
         tiles.innerHTML = '<div class="widget" style="padding:20px;color:var(--danger-text);">' + esc(e.message) + '</div>';
     }
@@ -16521,6 +16534,99 @@ async function editEmployeeSkills(empId) {
     } catch (e) { showToast(e.message, 'error'); }
 }
 window.editEmployeeSkills = editEmployeeSkills;
+
+// ===========================================================================
+// Recognition
+// ===========================================================================
+// Everybody's shout-outs, the words the business wants named, and the
+// one thing HR can do to a shout-out: take it down.
+
+async function loadRecognitionView() {
+    var tiles = document.getElementById('kudos-tiles');
+    if (!tiles) return;
+    try {
+        var d = await fetchJson('/api/kudos');
+        var sm = d.summary;
+        function tile(label, value, sub) {
+            return '<div class="stat-card"><span class="stat-label">' + label + '</span><span class="stat-value">' + value + '</span>' +
+                (sub ? '<span style="font-size:0.75rem;color:var(--text-secondary);">' + sub + '</span>' : '') + '</div>';
+        }
+        var trend = sm.last_month ? (sm.this_month >= sm.last_month ? 'up from ' : 'down from ') + sm.last_month + ' last month' : 'none last month';
+        tiles.innerHTML = tile('This month', sm.this_month, trend) +
+            tile('People thanked', sm.people_recognised_pct + '%', 'of everybody, last 90 days') +
+            tile('Most thanked', sm.top_recognised.length ? esc(sm.top_recognised[0].name) : '-', sm.top_recognised.length ? sm.top_recognised[0].count + ' shout-out' + (sm.top_recognised[0].count === 1 ? '' : 's') : '') +
+            tile('Most generous', sm.top_givers.length ? esc(sm.top_givers[0].name) : '-', sm.top_givers.length ? sm.top_givers[0].count + ' given' : '');
+        document.getElementById('kudos-values').value = (sm.values || []).join(', ');
+        var chart = document.getElementById('kudos-values-chart');
+        var most = sm.by_value.length ? sm.by_value[0].count : 0;
+        chart.innerHTML = sm.by_value.length ? sm.by_value.map(function (v) {
+            return '<div style="display:flex;align-items:center;gap:10px;font-size:0.82rem;padding:3px 0;"><span style="width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(v.value) + '</span>' +
+                '<span style="flex:1;height:8px;background:var(--border-color);border-radius:4px;overflow:hidden;"><span style="display:block;height:100%;width:' + Math.round(100 * v.count / most) + '%;background:#0284c7;"></span></span>' +
+                '<span style="width:28px;text-align:right;color:var(--text-secondary);">' + v.count + '</span></div>';
+        }).join('') : '<p style="font-size:0.8rem;color:var(--text-secondary);margin:0;">No value has been named yet.</p>';
+        function people(list, word) {
+            return list.length ? list.map(function (p) {
+                return '<div style="display:flex;justify-content:space-between;font-size:0.85rem;padding:3px 0;"><a href="#" onclick="viewEmployee(' + p.employee_id + ');return false;">' + esc(p.name) + '</a><span style="color:var(--text-secondary);">' + p.count + ' ' + word + '</span></div>';
+            }).join('') : '<p style="font-size:0.82rem;color:var(--text-secondary);margin:0;">Nobody yet.</p>';
+        }
+        document.getElementById('kudos-summary').innerHTML =
+            '<div style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);margin:0 0 4px;">Most thanked</div>' + people(sm.top_recognised, 'received') +
+            '<div style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);margin:12px 0 4px;">Most generous</div>' + people(sm.top_givers, 'given') +
+            (sm.never_recognised.length ? '<div style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);margin:12px 0 4px;">Not thanked in 90 days</div>' +
+                '<p style="font-size:0.82rem;margin:0;">' + sm.never_recognised.map(esc).join(', ') + (sm.never_recognised.length >= 10 ? '\u2026' : '') + '</p>' : '');
+        document.getElementById('kudos-count').textContent = d.kudos.length ? d.kudos.length + ' shown' : '';
+        var list = document.getElementById('kudos-list');
+        list.innerHTML = d.kudos.length ? d.kudos.map(function (k) {
+            return '<div style="display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border-color);font-size:0.85rem;">' +
+                '<div style="flex:1;min-width:0;"><strong>' + esc(k.from) + '</strong> thanked <strong>' + esc(k.to) + '</strong>' +
+                (k.value ? ' <span style="display:inline-block;padding:1px 8px;border-radius:999px;background:rgba(180,83,9,0.12);color:#b45309;font-size:0.72rem;font-weight:600;margin-left:4px;">' + esc(k.value) + '</span>' : '') +
+                '<div style="color:var(--text-secondary);margin-top:2px;">' + esc(k.message) + '</div>' +
+                '<div style="font-size:0.72rem;color:var(--text-secondary);margin-top:4px;">' + esc((k.created_at || '').slice(0, 16)) + '</div></div>' +
+                '<button class="btn btn-outline btn-sm" data-kudos-remove="' + k.id + '">Remove</button></div>';
+        }).join('') : '<p style="font-size:0.85rem;color:var(--text-secondary);padding:12px 0;">Nobody has been thanked yet. People give shout-outs from the portal\u2019s home page.</p>';
+        list.querySelectorAll('[data-kudos-remove]').forEach(function (b) {
+            b.addEventListener('click', function () { removeKudos(Number(b.getAttribute('data-kudos-remove'))); });
+        });
+    } catch (e) {
+        tiles.innerHTML = '<div class="widget" style="padding:20px;color:var(--danger-text);">' + esc(e.message) + '</div>';
+    }
+}
+window.loadRecognitionView = loadRecognitionView;
+
+async function saveCompanyValues() {
+    var input = document.getElementById('kudos-values');
+    try {
+        var d = await fetchJson('/api/kudos/values', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values: input.value }) });
+        input.value = d.values.join(', ');
+        showToast('Saved', 'success');
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.saveCompanyValues = saveCompanyValues;
+
+async function removeKudos(id) {
+    var ok = await uiConfirm('Take this shout-out down? The giver is not told, but it is written in the activity log that you did.', { title: 'Remove', confirmText: 'Remove', danger: true });
+    if (!ok) return;
+    try { await fetchJson('/api/kudos/' + id, { method: 'DELETE' }); loadRecognitionView(); }
+    catch (e) { showToast(e.message, 'error'); }
+}
+window.removeKudos = removeKudos;
+
+async function loadEmployeeKudos(empId) {
+    var host = document.getElementById('emp-kudos-list');
+    var count = document.getElementById('emp-kudos-count');
+    if (!host || !empId) return;
+    try {
+        var d = await fetchJson('/api/employees/' + empId + '/kudos');
+        count.textContent = d.received_count || d.given_count ? d.received_count + ' received \u00b7 ' + d.given_count + ' given' : '';
+        host.innerHTML = d.received.length ? d.received.slice(0, 5).map(function (k) {
+            return '<div style="padding:6px 0;border-bottom:1px solid var(--border-color);font-size:0.85rem;"><strong>' + esc(k.from) + '</strong>' +
+                (k.value ? ' <span style="color:#b45309;font-size:0.75rem;">' + esc(k.value) + '</span>' : '') +
+                '<div style="color:var(--text-secondary);">' + esc(k.message) + '</div>' +
+                '<div style="font-size:0.72rem;color:var(--text-secondary);">' + esc((k.created_at || '').slice(0, 10)) + '</div></div>';
+        }).join('') : '<p style="color:var(--text-secondary);font-size:0.85rem;">No shout-outs yet.</p>';
+    } catch (e) { host.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem;">No shout-outs yet.</p>'; }
+}
+window.loadEmployeeKudos = loadEmployeeKudos;
 
 // ===========================================================================
 // Absence
