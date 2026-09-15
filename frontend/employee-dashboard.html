@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=166">
+  <link rel="stylesheet" href="tailwind.css?v=167">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,12 +50,12 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=166">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=166">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=166">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=166">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=166">
-    <script src="/dialogs.js?v=166"></script>
+    <link rel="stylesheet" href="mobile.css?v=167">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=167">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=167">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=167">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=167">
+    <script src="/dialogs.js?v=167"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -782,6 +782,19 @@
     </div>
 
     <div id="tab-team" class="tab-panel hidden fade-in">
+      <!-- For a manager: everything owed to the people who report to them,
+           before the department's presence below. Hidden for everybody else. -->
+      <div id="myTeamCard" class="bg-white rounded-2xl border border-gray-100 p-5 mb-4" hidden>
+        <div class="flex items-center justify-between gap-3 flex-wrap mb-3">
+          <div>
+            <h3 class="font-semibold text-gray-900">Your team</h3>
+            <p class="text-xs text-gray-500" id="myTeamSummary"></p>
+          </div>
+          <div id="myTeamWaiting" class="flex gap-2 flex-wrap"></div>
+        </div>
+        <div id="myTeam" class="grid sm:grid-cols-2 gap-3"></div>
+      </div>
+      <h3 class="font-semibold text-gray-900 mb-3" id="teamPresenceTitle">Your department today</h3>
       <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4" id="teamGrid"></div>
     </div>
 
@@ -1805,7 +1818,7 @@
       if (tab === 'goals') loadGoals();
       if (tab === 'leave') { loadLeave(); loadLeaveBalance(); }
       if (tab === 'documents') { loadDocuments(); loadDocumentRequests(); loadMyPolicies(); }
-      if (tab === 'team') loadTeamPresence();
+      if (tab === 'team') { loadTeamPresence(); loadTeamOverview(); }
       if (tab === 'profile') { loadProfileTab(); loadMyChanges(); loadMyAssets(); loadMyCerts(); loadMyHistory(); loadMySkills(); }
       if (tab === 'reviews') { loadMyReviews(); loadFeedbackRequests(); }
       if (tab === 'checkins') loadCheckIns();
@@ -1818,6 +1831,67 @@
       if (tab === 'feed') loadFeed();
       if (tab === 'expenses') loadExpenses();
     }
+
+    // --- A manager's team --------------------------------------------------------------
+
+    var TODAY_WORDS = { in: ['In', 'bg-emerald-50 text-emerald-700 border-emerald-200'], off: ['Off', 'bg-sky-50 text-sky-700 border-sky-200'],
+                        done: ['Done for today', 'bg-gray-100 text-gray-600 border-gray-200'], not_in: ['Not in yet', 'bg-amber-50 text-amber-700 border-amber-200'] };
+
+    async function loadTeamOverview() {
+      var card = document.getElementById('myTeamCard');
+      if (!card) return;
+      try {
+        var res = await fetch('/api/employee/team-overview');
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        var d = await res.json();
+        card.hidden = !d.is_manager;
+        if (!d.is_manager) return;
+        document.getElementById('myTeamSummary').textContent = d.summary.reports + ' report' + (d.summary.reports === 1 ? '' : 's') + ' \u00b7 ' +
+          d.summary.in + ' in, ' + d.summary.off + ' off' + (d.summary.not_in ? ', ' + d.summary.not_in + ' not in yet' : '');
+        var waiting = document.getElementById('myTeamWaiting');
+        waiting.textContent = '';
+        d.waiting.forEach(function (w) {
+          var b = document.createElement('button'); b.type = 'button';
+          b.className = 'text-xs px-2.5 py-1 rounded-full border bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100';
+          b.textContent = w.count + ' ' + w.label.toLowerCase();
+          b.addEventListener('click', function () { switchTab(w.tab); });
+          waiting.appendChild(b);
+        });
+        var host = document.getElementById('myTeam');
+        host.textContent = '';
+        d.reports.forEach(function (r) {
+          var box = document.createElement('div'); box.className = 'p-3 rounded-xl border border-gray-100';
+          var head = document.createElement('div'); head.className = 'flex items-center justify-between gap-2';
+          var name = document.createElement('div'); name.className = 'text-sm font-medium text-gray-900'; name.textContent = r.name; head.appendChild(name);
+          var pair = TODAY_WORDS[r.today] || [r.today, 'bg-gray-100 text-gray-600 border-gray-200'];
+          head.appendChild(_rvPill(pair));
+          box.appendChild(head);
+          var meta = document.createElement('div'); meta.className = 'text-xs text-gray-500 mt-0.5';
+          meta.textContent = [r.job_title, r.today_detail].filter(Boolean).join(' \u00b7 '); box.appendChild(meta);
+          var flags = [];
+          if (r.review_to_write) flags.push(['Review to write', 'reviews']);
+          if (r.one_to_one_quiet) flags.push([r.last_one_to_one ? 'No one-to-one since ' + r.last_one_to_one : 'No one-to-one yet', 'checkins']);
+          if (r.probation) flags.push([r.probation.overdue ? 'Probation ended with no decision' : 'Probation ends ' + r.probation.end, 'team']);
+          if (r.skills_to_confirm) flags.push([r.skills_to_confirm + ' skill' + (r.skills_to_confirm === 1 ? '' : 's') + ' to confirm', 'team']);
+          if (r.goals_overdue) flags.push([r.goals_overdue + ' goal' + (r.goals_overdue === 1 ? '' : 's') + ' overdue', 'team']);
+          if (flags.length) {
+            var list = document.createElement('div'); list.className = 'mt-2 flex flex-wrap gap-1';
+            flags.forEach(function (f) {
+              var chip = document.createElement('button'); chip.type = 'button';
+              chip.className = 'text-xs px-2 py-0.5 rounded-full border border-amber-200 bg-amber-50 text-amber-700';
+              chip.textContent = f[0];
+              chip.addEventListener('click', function () { if (f[1] !== 'team') switchTab(f[1]); });
+              list.appendChild(chip);
+            });
+            box.appendChild(list);
+          } else {
+            var ok = document.createElement('div'); ok.className = 'mt-2 text-xs text-emerald-600'; ok.textContent = 'Nothing waiting'; box.appendChild(ok);
+          }
+          host.appendChild(box);
+        });
+      } catch (e) { card.hidden = true; }
+    }
+    window.loadTeamOverview = loadTeamOverview;
 
     // --- Policies ---------------------------------------------------------------------
 
@@ -4466,8 +4540,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=166"></script>
-    <script src="/pwa.js?v=166"></script>
-    <script src="/feed.js?v=166"></script>
+    <script src="/install-hint.js?v=167"></script>
+    <script src="/pwa.js?v=167"></script>
+    <script src="/feed.js?v=167"></script>
 </body>
 </html>

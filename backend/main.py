@@ -27250,6 +27250,94 @@ def acknowledge_policy(policy_id: int, request: Request, db: Session = Depends(g
     return {"acknowledged_at": a.acknowledged_at, "version": p.version}
 
 
+# ============================================================================
+# A manager's view of their team
+# ============================================================================
+# Everything a manager owes the people who report to them, in one answer:
+# who is in and who is off today, what is waiting for a decision, reviews
+# to write, one-to-ones gone quiet, probations ending, skills to confirm,
+# goals overdue. Built for the top of the portal's Team tab, where a
+# manager looks first.
+
+@app.get("/api/employee/team-overview")
+def my_team_overview(request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    reports = [r for r in _my_reports(db, emp) if employee_is_current(r)]
+    if not reports:
+        return {"is_manager": False, "reports": [], "waiting": [], "summary": {}}
+    ids = [r.id for r in reports]
+    today = date.today()
+    today_s = today.isoformat()
+    since_30 = (today - timedelta(days=30)).isoformat()
+
+    att = {a.employee_id: a for a in db.query(models.DBAttendance).filter(
+        models.DBAttendance.employee_id.in_(ids), models.DBAttendance.date == today_s).all()}
+    off = {l.employee_id: l for l in db.query(models.DBLeaveRequest).filter(
+        models.DBLeaveRequest.employee_id.in_(ids), models.DBLeaveRequest.status == "approved",
+        models.DBLeaveRequest.start_date <= today_s, models.DBLeaveRequest.end_date >= today_s).all()}
+    pending_leave = db.query(models.DBLeaveRequest).filter(
+        models.DBLeaveRequest.employee_id.in_(ids), models.DBLeaveRequest.status == "pending").count()
+    pending_expenses = db.query(models.DBExpenseClaim).filter(
+        models.DBExpenseClaim.employee_id.in_(ids), models.DBExpenseClaim.status == "pending").count()
+    pending_corrections = db.query(models.DBAttendanceCorrection).filter(
+        models.DBAttendanceCorrection.employee_id.in_(ids), models.DBAttendanceCorrection.status == "pending").count()
+    open_cycles = {c.id for c in db.query(models.DBReviewCycle).filter(
+        models.DBReviewCycle.client_id == emp.client_id, models.DBReviewCycle.status == "open").all()}
+    to_review = {r.employee_id for r in db.query(models.DBReview).filter(
+        models.DBReview.reviewer_id == emp.id, models.DBReview.status != "complete").all()
+        if r.cycle_id in open_cycles}
+    last_met = {}
+    for c in db.query(models.DBCheckIn).filter(models.DBCheckIn.manager_id == emp.id,
+                                                models.DBCheckIn.status == "done").all():
+        if c.scheduled_for > last_met.get(c.employee_id, ""):
+            last_met[c.employee_id] = c.scheduled_for
+    unconfirmed = Counter(r.employee_id for r in db.query(models.DBEmployeeSkill).filter(
+        models.DBEmployeeSkill.employee_id.in_(ids), models.DBEmployeeSkill.verified_by == "").all())
+    overdue_goals = Counter(g.employee_id for g in db.query(models.DBEmployeeGoal).filter(
+        models.DBEmployeeGoal.employee_id.in_(ids), models.DBEmployeeGoal.status != "completed").all()
+        if g.due_date and g.due_date < today_s)
+    feedback_open = db.query(models.DBPeerFeedback).filter(
+        models.DBPeerFeedback.peer_id == emp.id, models.DBPeerFeedback.status == "requested").count()
+
+    rows = []
+    for r in reports:
+        a = att.get(r.id)
+        if r.id in off:
+            status, detail = "off", f"{off[r.id].leave_type} until {off[r.id].end_date}"
+        elif a and a.clock_in and not a.clock_out:
+            status, detail = "in", f"since {a.clock_in}"
+        elif a and a.clock_out:
+            status, detail = "done", f"left {a.clock_out}"
+        else:
+            status, detail = "not_in", "nothing recorded today"
+        prob = probation_to_dict(r)
+        met = last_met.get(r.id, "")
+        rows.append({
+            "employee_id": r.id, "name": f"{r.first_name} {r.last_name}".strip(), "job_title": r.job_title or "",
+            "today": status, "today_detail": detail,
+            "review_to_write": r.id in to_review,
+            "last_one_to_one": met, "one_to_one_quiet": not met or met < since_30,
+            "probation": prob if prob["status"] in ("on_probation", "extended") else None,
+            "skills_to_confirm": unconfirmed.get(r.id, 0),
+            "goals_overdue": overdue_goals.get(r.id, 0),
+        })
+    waiting = [w for w in [
+        {"key": "approvals", "label": "Requests to decide", "count": pending_leave + pending_expenses + pending_corrections, "tab": "overview"},
+        {"key": "reviews", "label": "Reviews to write", "count": len(to_review), "tab": "reviews"},
+        {"key": "feedback", "label": "Feedback asked of you", "count": feedback_open, "tab": "reviews"},
+        {"key": "one_to_ones", "label": "Nobody met in 30 days", "count": sum(1 for x in rows if x["one_to_one_quiet"]), "tab": "checkins"},
+        {"key": "probations", "label": "Probations ending soon", "count": sum(1 for x in rows if x["probation"] and x["probation"]["due"]), "tab": "team"},
+        {"key": "skills", "label": "Skills to confirm", "count": sum(unconfirmed.values()), "tab": "team"},
+        {"key": "goals", "label": "Goals overdue", "count": sum(overdue_goals.values()), "tab": "team"},
+    ] if w["count"]]
+    return {
+        "is_manager": True, "reports": rows, "waiting": waiting,
+        "summary": {"reports": len(rows), "in": sum(1 for x in rows if x["today"] == "in"),
+                    "off": sum(1 for x in rows if x["today"] == "off"),
+                    "not_in": sum(1 for x in rows if x["today"] == "not_in")},
+    }
+
+
 # Serve frontend
 frontend_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 if os.path.exists(frontend_path):
