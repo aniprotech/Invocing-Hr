@@ -567,6 +567,8 @@ function showView(viewId) {
     if (viewId === 'settings-view' && typeof loadBrandingThemes === 'function') loadBrandingThemes();
     if (viewId === 'settings-view' && typeof loadAuditLogs === 'function') loadAuditLogs();
     if (viewId === 'settings-view' && typeof loadIntegrations === 'function') loadIntegrations();
+    if (viewId === 'settings-view' && typeof loadCustomFields === 'function') loadCustomFields();
+    if (viewId === 'settings-view' && typeof loadDigestPreview === 'function') loadDigestPreview();
     if (viewId === 'insights-view' && typeof loadInsights === 'function') loadInsights();
     if (viewId === 'reports-view' && typeof loadReports === 'function') loadReports();
     // Every route into a view comes through here, so this is where the drawer
@@ -5164,6 +5166,7 @@ async function viewEmployee(empId) {
         loadEmployeeHistory(emp.id);
         loadEmployeeCheckIns(emp.id);
         loadEmployeeSkills(emp.id);
+        renderCustomValues(emp.custom_fields || []);
         var exportLink = document.getElementById('emp-export-link');
         if (exportLink) exportLink.href = '/api/employees/' + emp.id + '/export';
 
@@ -16734,3 +16737,127 @@ async function deletePolicy(id) {
     try { await fetchJson('/api/policies/' + id, { method: 'DELETE' }); loadPoliciesView(); } catch (e) { showToast(e.message, 'error'); }
 }
 window.deletePolicy = deletePolicy;
+
+// ===========================================================================
+// Custom fields
+// ===========================================================================
+
+var _customFields = [];
+var _customValues = [];
+
+async function loadCustomFields() {
+    var host = document.getElementById('custom-fields-list');
+    if (!host) return;
+    try {
+        var d = await fetchJson('/api/custom-fields');
+        _customFields = d.fields;
+        host.innerHTML = d.fields.length ? '<table class="data-table"><thead><tr><th>Field</th><th>Kind</th><th>Required</th><th>Shown to staff</th><th></th></tr></thead><tbody>' +
+            d.fields.map(function (f) {
+                return '<tr><td>' + esc(f.label) + ' <code style="font-size:0.72rem;color:var(--text-secondary);">' + esc(f.key) + '</code></td>' +
+                    '<td>' + esc(f.kind) + (f.kind === 'choice' ? ' <span style="font-size:0.75rem;color:var(--text-secondary);">' + esc(f.choices.join(' / ')) + '</span>' : '') + '</td>' +
+                    '<td>' + (f.required ? 'yes' : '-') + '</td><td>' + (f.shown_to_staff ? 'yes' : '-') + '</td>' +
+                    '<td style="white-space:nowrap;"><button class="btn btn-sm btn-outline" onclick="editCustomField(' + f.id + ')">Edit</button> ' +
+                    '<button class="btn btn-sm btn-outline" onclick="deleteCustomField(' + f.id + ')">Delete</button></td></tr>';
+            }).join('') + '</tbody></table>' : '<p style="color:var(--text-secondary);font-size:0.85rem;">No fields yet.</p>';
+    } catch (e) { host.innerHTML = '<p style="color:var(--danger-text);font-size:0.85rem;">' + esc(e.message) + '</p>'; }
+}
+window.loadCustomFields = loadCustomFields;
+
+async function addCustomField() {
+    var out = await uiForm([
+        { name: 'label', label: 'Label', required: true, placeholder: 'Locker number' },
+        { name: 'kind', label: 'Kind', type: 'select', value: 'text', options: [
+            { value: 'text', label: 'Words' }, { value: 'number', label: 'A number' }, { value: 'date', label: 'A date' },
+            { value: 'choice', label: 'One of a list' }, { value: 'bool', label: 'Yes or no' } ] },
+        { name: 'choices', label: 'Choices, comma-separated (for a list)', placeholder: 'S, M, L' },
+        { name: 'required', label: 'Required', type: 'select', value: 'no', options: [{ value: 'no', label: 'No' }, { value: 'yes', label: 'Yes' }] },
+        { name: 'shown_to_staff', label: 'Shown to the person', type: 'select', value: 'no', options: [{ value: 'no', label: 'HR only' }, { value: 'yes', label: 'They see it on their profile' }] },
+    ], { title: 'New employee field', confirmText: 'Add' });
+    if (!out) return;
+    try {
+        await fetchJson('/api/custom-fields', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+            label: out.label, kind: out.kind, choices: out.choices, required: out.required === 'yes', shown_to_staff: out.shown_to_staff === 'yes' }) });
+        loadCustomFields();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.addCustomField = addCustomField;
+
+async function editCustomField(id) {
+    var f = _customFields.filter(function (x) { return x.id === id; })[0];
+    if (!f) return;
+    var fields = [{ name: 'label', label: 'Label', value: f.label, required: true }];
+    if (f.kind === 'choice') fields.push({ name: 'choices', label: 'Choices, comma-separated', value: f.choices.join(', ') });
+    fields.push({ name: 'required', label: 'Required', type: 'select', value: f.required ? 'yes' : 'no', options: [{ value: 'no', label: 'No' }, { value: 'yes', label: 'Yes' }] });
+    fields.push({ name: 'shown_to_staff', label: 'Shown to the person', type: 'select', value: f.shown_to_staff ? 'yes' : 'no', options: [{ value: 'no', label: 'HR only' }, { value: 'yes', label: 'They see it' }] });
+    var out = await uiForm(fields, { title: 'Edit field', confirmText: 'Save', message: 'The kind (' + f.kind + ') cannot change once values exist; add a new field instead.' });
+    if (!out) return;
+    try {
+        await fetchJson('/api/custom-fields/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+            label: out.label, choices: out.choices, required: out.required === 'yes', shown_to_staff: out.shown_to_staff === 'yes' }) });
+        loadCustomFields();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.editCustomField = editCustomField;
+
+async function deleteCustomField(id) {
+    if (!await uiConfirm('Delete this field and every value in it?', { title: 'Delete field', confirmText: 'Delete', danger: true })) return;
+    try { await fetchJson('/api/custom-fields/' + id, { method: 'DELETE' }); loadCustomFields(); } catch (e) { showToast(e.message, 'error'); }
+}
+window.deleteCustomField = deleteCustomField;
+
+function renderCustomValues(values) {
+    var host = document.getElementById('emp-custom-list');
+    if (!host) return;
+    _customValues = values || [];
+    if (!_customValues.length) {
+        host.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem;">No fields defined. Add some under Settings \u2192 Employee fields.</p>';
+        return;
+    }
+    host.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px 16px;font-size:0.85rem;">' +
+        _customValues.map(function (f) {
+            return '<div><span style="color:var(--text-secondary);">' + esc(f.label) + ':</span> ' + (f.value ? esc(f.value) : '<span style="color:var(--text-secondary);">-</span>') +
+                (f.shown_to_staff ? ' <span title="They see this" style="font-size:0.7rem;color:var(--text-secondary);">\u25CE</span>' : '') + '</div>';
+        }).join('') + '</div>';
+}
+window.renderCustomValues = renderCustomValues;
+
+async function editCustomValues(empId) {
+    if (!empId || !_customValues.length) { showToast('Define some fields under Settings first', 'error'); return; }
+    var fields = _customValues.map(function (f) {
+        if (f.kind === 'choice') return { name: f.key, label: f.label, type: 'select', value: f.value || '', options: [{ value: '', label: '-' }].concat(f.choices.map(function (c) { return { value: c, label: c }; })) };
+        if (f.kind === 'bool') return { name: f.key, label: f.label, type: 'select', value: f.value || '', options: [{ value: '', label: '-' }, { value: 'yes', label: 'Yes' }, { value: 'no', label: 'No' }] };
+        return { name: f.key, label: f.label + (f.required ? ' *' : ''), type: f.kind === 'number' ? 'number' : f.kind === 'date' ? 'date' : 'text', value: f.value || '' };
+    });
+    var out = await uiForm(fields, { title: 'More details', confirmText: 'Save' });
+    if (!out) return;
+    try {
+        await fetchJson('/api/employees/' + empId, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ custom: out }) });
+        showToast('Saved', 'success');
+        if (typeof viewEmployee === 'function') viewEmployee(empId);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.editCustomValues = editCustomValues;
+
+// ===========================================================================
+// The morning digest
+// ===========================================================================
+
+async function loadDigestPreview() {
+    var pre = document.getElementById('digest-preview');
+    if (!pre) return;
+    try {
+        var d = await fetchJson('/api/hr/digest-preview');
+        document.getElementById('digest-on').checked = !!d.enabled;
+        document.getElementById('digest-to').textContent = d.to || 'your account email';
+        pre.textContent = d.digest ? d.digest.text : 'Nothing waiting today, so nothing would be sent.';
+    } catch (e) { pre.textContent = e.message; }
+}
+window.loadDigestPreview = loadDigestPreview;
+
+async function setDigest(on) {
+    try {
+        await fetchJson('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hr_digest: on ? '1' : '0' }) });
+        showToast(on ? 'You will get the morning digest' : 'Morning digest switched off', 'success');
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.setDigest = setDigest;

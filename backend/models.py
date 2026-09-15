@@ -2501,3 +2501,34 @@ class DBPolicyAck(Base):
     employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
     version = Column(Integer, default=1)
     acknowledged_at = Column(String, default="")
+
+
+# ---- Custom fields ---------------------------------------------------------------------
+# The three things about a person no product thought of, named once per
+# business and typed; a value per person per field.
+
+class DBCustomField(Base):
+    __tablename__ = "custom_fields"
+    __table_args__ = (UniqueConstraint("client_id", "key", name="uq_custom_field_key"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    key = Column(String, nullable=False)
+    label = Column(String, nullable=False)
+    kind = Column(String, default="text")          # text | number | date | choice | bool
+    choices = Column(Text, default="[]")           # JSON list, for choice
+    required = Column(Boolean, default=False)
+    shown_to_staff = Column(Boolean, default=False)
+    position = Column(Integer, default=0)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBCustomValue(Base):
+    __tablename__ = "custom_values"
+    __table_args__ = (UniqueConstraint("employee_id", "field_id", name="uq_custom_value"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+    field_id = Column(Integer, ForeignKey("custom_fields.id"), nullable=False, index=True)
+    value = Column(Text, default="")

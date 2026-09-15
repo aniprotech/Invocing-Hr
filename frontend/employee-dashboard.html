@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=167">
+  <link rel="stylesheet" href="tailwind.css?v=168">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,12 +50,12 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=167">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=167">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=167">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=167">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=167">
-    <script src="/dialogs.js?v=167"></script>
+    <link rel="stylesheet" href="mobile.css?v=168">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=168">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=168">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=168">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=168">
+    <script src="/dialogs.js?v=168"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -4477,6 +4477,9 @@
               icon: 'M9 8h6m-5 0a3 3 0 110 6h-1m0 0H9m0 0h1m0 0v1m0-1v-1m6 6H9' });
           }
         } catch (e) { /* not shown */ }
+        (p.custom_fields || []).forEach(function (f) {
+          if (f.value) details.push({ label: f.label, value: f.value, icon: 'M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z' });
+        });
         details = details.filter(function (d) { return d.value !== null; });
         details.forEach(function(d) {
           grid.innerHTML += '<div class="flex items-start gap-3 p-3 rounded-xl bg-gray-50"><div class="w-8 h-8 rounded-lg bg-white flex items-center justify-center flex-shrink-0 shadow-sm"><svg class="w-4 h-4 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="' + d.icon + '"/></svg></div><div><div class="text-[11px] text-gray-400 uppercase tracking-wider font-medium">' + esc(d.label) + '</div><div class="text-sm font-medium text-gray-900 mt-0.5">' + esc(d.value || '-') + '</div></div></div>';
@@ -4540,8 +4543,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=167"></script>
-    <script src="/pwa.js?v=167"></script>
-    <script src="/feed.js?v=167"></script>
+    <script src="/install-hint.js?v=168"></script>
+    <script src="/pwa.js?v=168"></script>
+    <script src="/feed.js?v=168"></script>
 </body>
 </html>

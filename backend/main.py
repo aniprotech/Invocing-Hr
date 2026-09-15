@@ -8510,6 +8510,7 @@ class EmployeeCreate(BaseModel):
     # start (the tenant's default when absent); zero means no probation.
     probation_end: Optional[str] = ""
     probation_months: Optional[int] = None
+    custom: Optional[dict] = None
 
 class PayslipCreate(BaseModel):
     employee_id: int
@@ -9313,6 +9314,8 @@ def create_employee(request: Request, body: EmployeeCreate, db: Session = Depend
     start_probation(db, emp, body.probation_end, body.probation_months)
     db.add(emp)
     db.flush()
+    if body.custom:
+        apply_custom_values(db, client.id, emp, body.custom)
 
     # Create default onboarding checklist
     start_onboarding(db, client.id, emp)
@@ -9429,6 +9432,7 @@ def get_employee(emp_id: int, request: Request, db: Session = Depends(get_db)):
         "reports_to": emp.reports_to, "manager_name": manager_name,
         "date_of_birth": emp.date_of_birth or "",
         "probation": probation_to_dict(emp),
+        "custom_fields": custom_values_for(db, client.id, emp.id),
         "job_title": emp.job_title, "role": emp.role, "level": emp.level or "",
         "employment_type": emp.employment_type, "pay_frequency": emp.pay_frequency,
         "salary": emp.salary, "hourly_rate": emp.hourly_rate,
@@ -9528,6 +9532,8 @@ def update_employee(emp_id: int, request: Request, body: dict = None, db: Sessio
     record_employment_changes(db, client.id, emp, before, body,
                               client.company_name or client.email or "HR",
                               body.get("effective_on"))
+    if "custom" in body:
+        apply_custom_values(db, client.id, emp, body.get("custom") or {})
     new_dept = emp.department_id
     if new_dept and new_dept != old_dept:
         pending_goals = db.query(models.DBDepartmentGoal).filter(
@@ -9573,7 +9579,7 @@ def delete_employee(emp_id: int, request: Request, db: Session = Depends(get_db)
         models.DBEmployeeGoal, models.DBLeaveRequest, models.DBDocument,
         models.DBNotification, models.DBOvertimeLog,
         models.DBReview, models.DBCertification, models.DBEmploymentChange, models.DBCheckIn,
-        models.DBPeerFeedback, models.DBEmployeeSkill, models.DBPolicyAck,
+        models.DBPeerFeedback, models.DBEmployeeSkill, models.DBPolicyAck, models.DBCustomValue,
     ):
         db.query(model).filter(model.employee_id == emp_id).delete(synchronize_session=False)
     db.query(models.DBCheckIn).filter(models.DBCheckIn.manager_id == emp_id).delete(synchronize_session=False)
@@ -10784,6 +10790,11 @@ def get_hr_dashboard(request: Request, db: Session = Depends(get_db)):
     missing today, and what queues have somebody waiting at the other end.
     """
     client = get_client_user(request, db)
+    return hr_dashboard_data(db, client)
+
+
+def hr_dashboard_data(db, client):
+    """The dashboard as data, for the screen and for the morning email."""
     cid = client.id
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
@@ -16543,6 +16554,7 @@ def get_employee_profile(request: Request, db: Session = Depends(get_db)):
         "start_date": emp.start_date,
         "work_location": emp.work_location,
         "probation": probation_to_dict(emp),
+        "custom_fields": custom_values_for(db, emp.client_id, emp.id, staff_only=True),
         "emergency_contact": emp.emergency_contact,
         "emergency_phone": emp.emergency_phone,
         "employee_id_code": emp.employee_id,
@@ -26441,14 +26453,19 @@ def export_people_csv(request: Request, db: Session = Depends(get_db)):
     emails = {e.id: e.email or "" for e in people}
     import csv as _csv
     import io as _io
+    fields = custom_fields_for(db, client.id)
+    values = {}
+    for v in db.query(models.DBCustomValue).filter(models.DBCustomValue.client_id == client.id).all():
+        values[(v.employee_id, v.field_id)] = v.value
     buf = _io.StringIO()
     w = _csv.writer(buf)
-    w.writerow(PEOPLE_CSV_COLUMNS + ["status"])
+    w.writerow(PEOPLE_CSV_COLUMNS + ["status"] + ["custom:" + f.key for f in fields])
     for e in people:
         w.writerow([e.first_name or "", e.last_name or "", e.email or "", e.job_title or "",
                     depts.get(e.department_id, ""), emails.get(e.reports_to, ""), e.level or "",
                     e.employment_type or "", e.pay_frequency or "", e.salary or 0, e.start_date or "",
-                    e.date_of_birth or "", e.phone or "", e.employee_id or "", e.status or ""])
+                    e.date_of_birth or "", e.phone or "", e.employee_id or "", e.status or ""] +
+                   [values.get((e.id, f.id), "") for f in fields])
     return Response(content=buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": 'attachment; filename="people.csv"'})
 
@@ -26562,6 +26579,9 @@ def import_people_csv(request: Request, body: dict = None, dry_run: int = 0,
         db.flush()
         if e.probation_status == "" and e.start_date and not e.probation_end and row.get("start_date"):
             start_probation(db, e)
+        custom = {k[7:]: v for k, v in row.items() if k.startswith("custom:") and v != ""}
+        if custom:
+            apply_custom_values(db, client.id, e, custom)
         written[email] = e
     for row, email, *_ in to_write:
         mgr_email = row.get("manager_email", "").lower()
@@ -26604,6 +26624,7 @@ def person_export(db, emp):
             "emergency_contact": emp.emergency_contact, "emergency_phone": emp.emergency_phone,
             "bank_name": emp.bank_name, "tax_id": emp.tax_id, "work_location": emp.work_location,
             "probation": probation_to_dict(emp),
+            "custom_fields": {f["label"]: f["value"] for f in custom_values_for(db, emp.client_id, emp.id)},
         },
         "employment_history": employment_history(db, emp),
         "leave": [{"type": l.leave_type, "from": l.start_date, "to": l.end_date, "days": l.days,
@@ -27336,6 +27357,273 @@ def my_team_overview(request: Request, db: Session = Depends(get_db)):
                     "off": sum(1 for x in rows if x["today"] == "off"),
                     "not_in": sum(1 for x in rows if x["today"] == "not_in")},
     }
+
+
+# ============================================================================
+# Custom fields on the employee
+# ============================================================================
+# Every business has three things about a person that no product thought
+# of: a locker number, a driving licence class, a shirt size, a security
+# clearance. A field is named once, typed - words, a number, a date, a
+# choice, yes or no - and appears on every profile; it can be shown to the
+# person themselves. Values go out in the CSV and the person's export, and
+# come back in with the file.
+
+CUSTOM_KINDS = ("text", "number", "date", "choice", "bool")
+CUSTOM_FIELD_LIMIT = 30
+
+
+def _slug(label):
+    key = re.sub(r"[^a-z0-9]+", "_", (label or "").lower()).strip("_")[:40]
+    return key or "field"
+
+
+def custom_field_to_dict(f):
+    return {"id": f.id, "key": f.key, "label": f.label, "kind": f.kind, "choices": _json_list(f.choices),
+            "required": bool(f.required), "shown_to_staff": bool(f.shown_to_staff), "position": f.position or 0}
+
+
+def custom_fields_for(db, client_id):
+    return db.query(models.DBCustomField).filter(models.DBCustomField.client_id == client_id).order_by(
+        models.DBCustomField.position, models.DBCustomField.id).all()
+
+
+def clean_custom_value(field, raw):
+    """The value as the field's kind wants it, as a string for storage, or
+    a refusal. Empty is allowed here; required is checked by the caller."""
+    if raw in (None, ""):
+        return ""
+    s = str(raw).strip()
+    if field.kind == "number":
+        try:
+            n = float(s.replace(",", ""))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"{field.label} must be a number")
+        return f"{n:g}"
+    if field.kind == "date":
+        return _clean_ymd(s, field.label)
+    if field.kind == "choice":
+        choices = _json_list(field.choices)
+        match = [c for c in choices if str(c).lower() == s.lower()]
+        if not match:
+            raise HTTPException(status_code=400, detail=f"{field.label} must be one of: {', '.join(map(str, choices))}")
+        return str(match[0])
+    if field.kind == "bool":
+        if s.lower() in ("1", "true", "yes", "y", "on"):
+            return "yes"
+        if s.lower() in ("0", "false", "no", "n", "off"):
+            return "no"
+        raise HTTPException(status_code=400, detail=f"{field.label} is yes or no")
+    return s[:500]
+
+
+def custom_values_for(db, client_id, employee_id, staff_only=False):
+    fields = custom_fields_for(db, client_id)
+    if staff_only:
+        fields = [f for f in fields if f.shown_to_staff]
+    values = {v.field_id: v.value for v in db.query(models.DBCustomValue).filter(
+        models.DBCustomValue.employee_id == employee_id).all()}
+    return [dict(custom_field_to_dict(f), value=values.get(f.id, "")) for f in fields]
+
+
+def apply_custom_values(db, client_id, emp, custom):
+    """{key: value} onto the person. Only keys sent change; a required
+    field sent empty is refused; an unknown key is ignored."""
+    if not isinstance(custom, dict):
+        raise HTTPException(status_code=400, detail="custom must be an object of field: value")
+    fields = {f.key: f for f in custom_fields_for(db, client_id)}
+    existing = {v.field_id: v for v in db.query(models.DBCustomValue).filter(
+        models.DBCustomValue.employee_id == emp.id).all()}
+    for key, raw in custom.items():
+        f = fields.get(str(key))
+        if not f:
+            continue
+        value = clean_custom_value(f, raw)
+        if f.required and not value:
+            raise HTTPException(status_code=400, detail=f"{f.label} is required")
+        row = existing.get(f.id)
+        if row is None:
+            db.add(models.DBCustomValue(client_id=client_id, employee_id=emp.id, field_id=f.id, value=value))
+        else:
+            row.value = value
+
+
+@app.get("/api/custom-fields")
+def list_custom_fields(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    return {"fields": [custom_field_to_dict(f) for f in custom_fields_for(db, client.id)], "kinds": list(CUSTOM_KINDS)}
+
+
+def _field_body(body, f=None):
+    label = str(body.get("label", f.label if f else "") or "").strip()[:80]
+    if not label:
+        raise HTTPException(status_code=400, detail="Give the field a label")
+    kind = str(body.get("kind", f.kind if f else "text") or "text").strip().lower()
+    if kind not in CUSTOM_KINDS:
+        raise HTTPException(status_code=400, detail="Kind must be text, number, date, choice or bool")
+    choices = body.get("choices", _json_list(f.choices) if f else [])
+    if isinstance(choices, str):
+        choices = [c.strip() for c in choices.split(",") if c.strip()]
+    if kind == "choice":
+        choices = [str(c).strip()[:80] for c in (choices or []) if str(c).strip()]
+        if len(choices) < 2:
+            raise HTTPException(status_code=400, detail="A choice field needs at least two choices")
+    else:
+        choices = []
+    return label, kind, choices
+
+
+@app.post("/api/custom-fields")
+def add_custom_field(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    label, kind, choices = _field_body(body)
+    fields = custom_fields_for(db, client.id)
+    if len(fields) >= CUSTOM_FIELD_LIMIT:
+        raise HTTPException(status_code=400, detail=f"Keep it to {CUSTOM_FIELD_LIMIT} fields")
+    key = _slug(label)
+    taken = {f.key for f in fields}
+    base, n = key, 2
+    while key in taken:
+        key, n = f"{base}_{n}", n + 1
+    f = models.DBCustomField(client_id=client.id, key=key, label=label, kind=kind, choices=json.dumps(choices),
+                             required=bool(body.get("required")), shown_to_staff=bool(body.get("shown_to_staff")),
+                             position=len(fields))
+    db.add(f)
+    db.flush()
+    log_audit(db, client.id, "custom_field_added", "custom_field", f.id, label, kind, request)
+    db.commit()
+    return custom_field_to_dict(f)
+
+
+@app.put("/api/custom-fields/{field_id}")
+def update_custom_field(field_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """The label, choices and who sees it can change; the kind cannot,
+    because the values already written are of the old kind."""
+    client = get_client_user(request, db)
+    f = db.query(models.DBCustomField).filter(models.DBCustomField.id == field_id, models.DBCustomField.client_id == client.id).first()
+    if not f:
+        raise HTTPException(status_code=404, detail="Field not found")
+    body = body or {}
+    if "kind" in body and body["kind"] != f.kind:
+        raise HTTPException(status_code=409, detail="A field's kind cannot change once it has one - add a new field")
+    label, kind, choices = _field_body(dict(body, kind=f.kind), f)
+    f.label = label
+    if f.kind == "choice":
+        f.choices = json.dumps(choices)
+    if "required" in body:
+        f.required = bool(body["required"])
+    if "shown_to_staff" in body:
+        f.shown_to_staff = bool(body["shown_to_staff"])
+    if "position" in body:
+        try:
+            f.position = int(body["position"])
+        except (TypeError, ValueError):
+            pass
+    db.commit()
+    return custom_field_to_dict(f)
+
+
+@app.delete("/api/custom-fields/{field_id}")
+def delete_custom_field(field_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    f = db.query(models.DBCustomField).filter(models.DBCustomField.id == field_id, models.DBCustomField.client_id == client.id).first()
+    if not f:
+        raise HTTPException(status_code=404, detail="Field not found")
+    db.query(models.DBCustomValue).filter(models.DBCustomValue.field_id == f.id).delete(synchronize_session=False)
+    db.delete(f)
+    log_audit(db, client.id, "custom_field_deleted", "custom_field", f.id, f.label, "", request)
+    db.commit()
+    return {"deleted": True}
+
+
+# ============================================================================
+# The morning digest
+# ============================================================================
+# One email a day to the business, early, saying what is waiting on HR:
+# the same rows as the dashboard, plus who is starting, whose probation
+# ends, whose birthday it is. Sent only when there is something in it,
+# and only to businesses that have not switched it off. The platform's
+# mail is used unless the business sends through its own.
+
+def hr_digest_for(db, client, today=None):
+    """The rows and the words, or None if there is nothing to say."""
+    today = today or date.today()
+    cid = client.id
+    # The dashboard's own queues, computed the same way the screen does.
+    dash = hr_dashboard_data(db, client)
+    waiting = [w for w in dash["waiting_on_you"] if w["count"]]
+    up = dash["coming_up"]
+    lines = []
+    for w in waiting:
+        lines.append(f"- {w['count']} {w['label'].lower()}")
+    coming = []
+    for p in up.get("starting", []):
+        coming.append(f"- {p['name']} starts {p['date']}" + (f" as {p['title']}" if p.get("title") else ""))
+    for p in up.get("probations", []):
+        coming.append(f"- {p['name']}'s probation " + ("ended with no decision" if (p.get("days_left") or 0) < 0 else f"ends {p['ends_on']}"))
+    for c in up.get("celebrations", []):
+        when = "today" if c["in_days"] == 0 else "tomorrow" if c["in_days"] == 1 else c["on"]
+        coming.append(f"- {c['name']}" + ("'s birthday " if c["kind"] == "birthday" else f": {c['years']} year{'s' if c['years'] != 1 else ''} here ") + when)
+    if not lines and not coming:
+        return None
+    base = (os.getenv("APP_BASE_URL") or "https://www.aniprotech.com").rstrip("/")
+    name = client.company_name or "your business"
+    text = f"Good morning. Here is what is waiting on you at {name}.\n\n"
+    if lines:
+        text += "Waiting for a decision:\n" + "\n".join(lines) + "\n\n"
+    if coming:
+        text += "Coming up:\n" + "\n".join(coming) + "\n\n"
+    text += f"Open the HR dashboard: {base}/app.html#/hr\n\nTo stop these, switch off the morning digest under Settings."
+    esc_ = html_mod.escape
+    html = (f"<p>Good morning. Here is what is waiting on you at <strong>{esc_(name)}</strong>.</p>"
+            + (f"<p><strong>Waiting for a decision</strong></p><ul>{''.join('<li>' + esc_(l[2:]) + '</li>' for l in lines)}</ul>" if lines else "")
+            + (f"<p><strong>Coming up</strong></p><ul>{''.join('<li>' + esc_(l[2:]) + '</li>' for l in coming)}</ul>" if coming else "")
+            + f"<p><a href=\"{base}/app.html#/hr\">Open the HR dashboard</a></p>"
+            + "<p style=\"color:#64748b;font-size:12px\">To stop these, switch off the morning digest under Settings.</p>")
+    subject = f"{name}: {sum(w['count'] for w in waiting)} thing{'s' if sum(w['count'] for w in waiting) != 1 else ''} waiting" if lines else f"{name}: what is coming up"
+    return {"subject": subject, "text": text, "html": html, "waiting": waiting, "coming": coming}
+
+
+def _digest_key(now):
+    # The day's key from seven in the morning; earlier ticks claim their own
+    # key and do nothing, so the send happens on the first tick after seven.
+    return now.strftime("%Y-%m-%d") if now.hour >= 7 else "early-" + now.strftime("%Y-%m-%d-%H%M")
+
+
+@scheduled_job("hr_digest", period_key_fn=_digest_key)
+def job_hr_digest(db, now):
+    if now.hour < 7:
+        return "too early"
+    sent = 0
+    for client in db.query(models.DBClient).filter(models.DBClient.is_active == True).all():  # noqa: E712
+        if "hr" not in (client.modules or "invoicing,hr"):
+            continue
+        if str(tenant_setting(db, client.id, "hr_digest", "1")).lower() in ("0", "false", "no", "off"):
+            continue
+        if not (client.email or "").strip():
+            continue
+        try:
+            digest = hr_digest_for(db, client, now.date())
+        except Exception as exc:                        # noqa: BLE001
+            logger.warning("Digest for %s failed: %s", client.id, exc)
+            continue
+        if not digest:
+            continue
+        ok, why = send_email_background(client.email, digest["subject"], digest["text"],
+                                        platform_from_address(db), digest["html"], client_id=client.id)
+        if ok:
+            sent += 1
+    return f"{sent} sent"
+
+
+@app.get("/api/hr/digest-preview")
+def hr_digest_preview(request: Request, db: Session = Depends(get_db)):
+    """What this morning's email would say, and whether it is switched on."""
+    client = get_client_user(request, db)
+    digest = hr_digest_for(db, client)
+    on = str(tenant_setting(db, client.id, "hr_digest", "1")).lower() not in ("0", "false", "no", "off")
+    return {"enabled": on, "to": client.email, "digest": digest}
 
 
 # Serve frontend
