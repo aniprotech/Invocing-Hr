@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=161">
+  <link rel="stylesheet" href="tailwind.css?v=162">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,12 +50,12 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=161">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=161">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=161">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=161">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=161">
-    <script src="/dialogs.js?v=161"></script>
+    <link rel="stylesheet" href="mobile.css?v=162">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=162">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=162">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=162">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=162">
+    <script src="/dialogs.js?v=162"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -4213,6 +4213,18 @@
 
         var grid = document.getElementById('profileDetails');
         grid.innerHTML = '';
+        try {
+          var bandRes = await fetch('/api/employee/pay-band');
+          var band = bandRes.ok ? await bandRes.json() : { visible: false };
+          if (band.visible && band.band) {
+            var fmt = function (v) { try { return new Intl.NumberFormat('en-GB', { style: 'currency', currency: band.band.currency || 'GBP', maximumFractionDigits: 0 }).format(v); } catch (e) { return String(v); } };
+            details.push({ label: 'Pay band (' + (band.level || '') + ')',
+              value: fmt(band.band.min) + ' to ' + fmt(band.band.max) + ' a year' +
+                     (band.position === 'within' ? ' \u00b7 you are ' + band.pct_through_band + '% of the way through it' :
+                      band.position === 'below' ? ' \u00b7 you are below it' : band.position === 'above' ? ' \u00b7 you are above it' : ''),
+              icon: 'M9 8h6m-5 0a3 3 0 110 6h-1m0 0H9m0 0h1m0 0v1m0-1v-1m6 6H9' });
+          }
+        } catch (e) { /* not shown */ }
         details = details.filter(function (d) { return d.value !== null; });
         details.forEach(function(d) {
           grid.innerHTML += '<div class="flex items-start gap-3 p-3 rounded-xl bg-gray-50"><div class="w-8 h-8 rounded-lg bg-white flex items-center justify-center flex-shrink-0 shadow-sm"><svg class="w-4 h-4 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="' + d.icon + '"/></svg></div><div><div class="text-[11px] text-gray-400 uppercase tracking-wider font-medium">' + esc(d.label) + '</div><div class="text-sm font-medium text-gray-900 mt-0.5">' + esc(d.value || '-') + '</div></div></div>';
@@ -4276,8 +4288,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=161"></script>
-    <script src="/pwa.js?v=161"></script>
-    <script src="/feed.js?v=161"></script>
+    <script src="/install-hint.js?v=162"></script>
+    <script src="/pwa.js?v=162"></script>
+    <script src="/feed.js?v=162"></script>
 </body>
 </html>

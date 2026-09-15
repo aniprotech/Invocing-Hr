@@ -2371,3 +2371,22 @@ class DBPeerFeedback(Base):
     rating = Column(Integer, nullable=True)
     submitted_at = Column(String, default="")
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+# ---- Pay bands ------------------------------------------------------------------
+# Per level, per year, in the business's currency: the least, the middle
+# and the most it pays. Everybody on the level is measured against it.
+
+class DBPayBand(Base):
+    __tablename__ = "pay_bands"
+    __table_args__ = (UniqueConstraint("client_id", "level", name="uq_band_per_level"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    level = Column(String, nullable=False)
+    min_annual = Column(Float, default=0.0)
+    mid_annual = Column(Float, default=0.0)
+    max_annual = Column(Float, default=0.0)
+    currency = Column(String, default="GBP")
+    notes = Column(String, default="")
+    updated_at = Column(String, default="")

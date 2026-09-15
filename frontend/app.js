@@ -342,6 +342,7 @@ var NAV_FOR_VIEW = {
     'expenses-view': 'nav-expenses',
     'reviews-view': 'nav-reviews',
     'training-view': 'nav-training',
+    'compensation-view': 'nav-pay',
     'analytics-view': 'nav-people-analytics',
     'wallet-view': 'nav-wallet',
     'settings-view': 'nav-settings'
@@ -379,6 +380,7 @@ var ROUTE_SLUGS = {
     'expenses-view': 'expenses',
     'reviews-view': 'reviews',
     'training-view': 'training',
+    'compensation-view': 'pay',
     'analytics-view': 'people-analytics',
     'leave-view': 'leave',
     'goals-view': 'goals',
@@ -7520,6 +7522,7 @@ showView = function(viewId) {
     if (viewId === 'expenses-view') loadExpensesView();
     if (viewId === 'reviews-view') loadReviewsView();
     if (viewId === 'training-view') loadTrainingView();
+    if (viewId === 'compensation-view') loadPayView();
     if (viewId === 'analytics-view') loadAnalyticsView();
     if (viewId === 'recruitment-view') {
         loadRecAnalytics();
@@ -11393,6 +11396,7 @@ var HR_VIEW_LOADERS = {
     'recruitment-view':    function () { loadRecAnalytics(); },
     'reviews-view':        function () { loadReviewsView(); },
     'training-view':       function () { loadTrainingView(); },
+    'compensation-view':   function () { loadPayView(); },
     'analytics-view':      function () { loadAnalyticsView(); }
 };
 
@@ -16067,3 +16071,168 @@ async function decideProbationFor(empId) {
     return decideProbation(empId);
 }
 window.decideProbationFor = decideProbationFor;
+
+// ===========================================================================
+// Pay bands and the pay review
+// ===========================================================================
+
+var _payCurrency = 'GBP';
+var _payProposals = {};
+var _payRows = [];
+var POSITION_WORDS = { below: ['Below band', 'var(--danger-color)'], within: ['In band', 'var(--success-color)'],
+                       above: ['Above band', 'var(--warning-color)'], no_band: ['No band', 'var(--text-secondary)'],
+                       no_pay: ['No pay set', 'var(--text-secondary)'] };
+
+function _payMoney(v) {
+    try { return new Intl.NumberFormat('en-GB', { style: 'currency', currency: _payCurrency, maximumFractionDigits: 0 }).format(v || 0); }
+    catch (e) { return String(Math.round(v || 0)); }
+}
+
+async function loadPayView() {
+    var tiles = document.getElementById('pay-tiles');
+    if (!tiles) return;
+    try {
+        var bands = await fetchJson('/api/pay-bands');
+        var rev = await fetchJson('/api/pay-review');
+        _payCurrency = rev.currency || bands.currency || 'GBP';
+        _payRows = rev.people;
+        document.getElementById('pay-visible').checked = !!bands.visible_to_staff;
+        var t = rev.totals;
+        function tile(label, value, sub, tone) {
+            return '<div class="stat-card"><span class="stat-label">' + label + '</span><span class="stat-value"' + (tone ? ' style="color:' + tone + ';"' : '') + '>' + value + '</span>' +
+                (sub ? '<span style="font-size:0.75rem;color:var(--text-secondary);">' + sub + '</span>' : '') + '</div>';
+        }
+        tiles.innerHTML = tile('Annual payroll', _payMoney(t.annual_payroll), t.people + ' people') +
+            tile('Average compa-ratio', t.average_compa_ratio != null ? t.average_compa_ratio : '-', 'pay over the middle of the band') +
+            tile('Below band', t.below_band, t.above_band + ' above', t.below_band ? 'var(--danger-color)' : '') +
+            tile('No pay change in a year', t.not_moved_in_a_year, t.no_band + ' with no band for their level');
+
+        document.getElementById('pay-bands').innerHTML = '<table class="data-table"><thead><tr><th>Level</th><th>Min</th><th>Mid</th><th>Max</th><th>People</th><th>Avg ratio</th><th>Below / in / above</th><th></th></tr></thead><tbody>' +
+            bands.levels.map(function (l) {
+                var b = l.band;
+                return '<tr><td>' + esc(l.label) + '</td>' +
+                    (b ? '<td>' + _payMoney(b.min) + '</td><td>' + _payMoney(b.mid) + '</td><td>' + _payMoney(b.max) + '</td>'
+                       : '<td colspan="3" style="color:var(--text-secondary);">No band yet</td>') +
+                    '<td>' + l.headcount + '</td><td>' + (l.average_compa_ratio != null ? l.average_compa_ratio : '-') + '</td>' +
+                    '<td>' + (b ? '<span style="color:var(--danger-color);">' + l.below + '</span> / ' + l.within + ' / <span style="color:var(--warning-color);">' + l.above + '</span>' : '-') + '</td>' +
+                    '<td style="white-space:nowrap;"><button class="btn btn-sm btn-outline" onclick="editPayBand(\'' + l.level + '\')">' + (b ? 'Edit' : 'Set band') + '</button>' +
+                    (b ? ' <button class="btn btn-sm btn-outline" onclick="removePayBand(\'' + l.level + '\')">Remove</button>' : '') + '</td></tr>';
+            }).join('') + '</tbody></table>' +
+            (bands.no_level ? '<p style="font-size:0.8rem;color:var(--text-secondary);padding:10px 0 0;">' + bands.no_level + ' people have no level on their profile, so no band can apply to them.</p>' : '');
+
+        document.getElementById('pay-review-note').textContent = rev.rating_cycle ? 'Ratings from ' + rev.rating_cycle : '';
+        renderPayReview();
+    } catch (e) {
+        tiles.innerHTML = '<div class="widget" style="padding:20px;color:var(--danger-text);">' + esc(e.message) + '</div>';
+    }
+}
+window.loadPayView = loadPayView;
+
+function _bandBar(r) {
+    if (!r.band || !r.annual) return '<span style="color:var(--text-secondary);font-size:0.78rem;">-</span>';
+    var pct = Math.max(-15, Math.min(115, r.pct_through_band == null ? 0 : r.pct_through_band));
+    var tone = POSITION_WORDS[r.position][1];
+    return '<div title="' + esc(_payMoney(r.band.min) + ' to ' + _payMoney(r.band.max) + ', mid ' + _payMoney(r.band.mid)) + '" style="position:relative;height:8px;width:120px;background:rgba(255,255,255,0.08);border-radius:4px;margin:6px 0;">' +
+        '<div style="position:absolute;left:50%;top:-2px;width:1px;height:12px;background:rgba(255,255,255,0.3);"></div>' +
+        '<div style="position:absolute;left:calc(' + pct + '% - 5px);top:-2px;width:10px;height:12px;border-radius:3px;background:' + tone + ';"></div></div>';
+}
+
+function renderPayReview() {
+    var host = document.getElementById('pay-review');
+    if (!_payRows.length) {
+        host.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem;padding:12px 0;">Nobody on the books yet.</p>';
+        return;
+    }
+    host.innerHTML = '<table class="data-table"><thead><tr><th>Person</th><th>Level</th><th>Pay</th><th>Per year</th><th>Band</th><th>Ratio</th><th>Last change</th><th>Rating</th><th>New pay per period</th></tr></thead><tbody>' +
+        _payRows.map(function (r) {
+            var pw = POSITION_WORDS[r.position] || [r.position, ''];
+            var proposed = _payProposals[r.employee_id];
+            return '<tr>' +
+                '<td><a href="#" onclick="viewEmployee(' + r.employee_id + ');return false;">' + esc(r.name) + '</a>' +
+                    '<div style="font-size:0.75rem;color:var(--text-secondary);">' + esc([r.job_title, r.department].filter(Boolean).join(' \u00b7 ')) + '</div></td>' +
+                '<td>' + esc(r.level || '-') + '</td>' +
+                '<td>' + (r.salary ? _payMoney(r.salary) + ' <span style="font-size:0.72rem;color:var(--text-secondary);">' + esc(r.pay_frequency) + '</span>' : r.hourly_rate ? _payMoney(r.hourly_rate) + ' <span style="font-size:0.72rem;color:var(--text-secondary);">hourly</span>' : '-') + '</td>' +
+                '<td>' + _payMoney(r.annual) + '</td>' +
+                '<td>' + _bandBar(r) + '<span style="font-size:0.72rem;color:' + pw[1] + ';">' + pw[0] + '</span></td>' +
+                '<td>' + (r.compa_ratio != null ? r.compa_ratio : '-') + '</td>' +
+                '<td style="font-size:0.8rem;color:' + ((r.months_since_change || 0) >= 12 ? 'var(--warning-color)' : 'var(--text-secondary)') + ';">' +
+                    (r.months_since_change == null ? '-' : r.months_since_change < 1 ? 'this month' : r.months_since_change + ' month' + (r.months_since_change === 1 ? '' : 's') + ' ago') + '</td>' +
+                '<td>' + _stars(r.rating) + '</td>' +
+                '<td><input type="number" step="0.01" min="0" class="form-control pay-new" data-id="' + r.employee_id + '" value="' + (proposed != null ? proposed : '') + '" placeholder="' + esc(String(r.salary || '')) + '" style="width:120px;padding:4px 8px;font-size:0.85rem;" oninput="proposePay(' + r.employee_id + ', this.value)"></td>' +
+            '</tr>';
+        }).join('') + '</tbody></table>';
+    _syncPayApply();
+}
+
+function proposePay(empId, value) {
+    var row = _payRows.filter(function (r) { return r.employee_id === empId; })[0];
+    var v = parseFloat(value);
+    if (!value || isNaN(v) || (row && Math.abs(v - (row.salary || 0)) < 0.005)) delete _payProposals[empId];
+    else _payProposals[empId] = v;
+    _syncPayApply();
+}
+window.proposePay = proposePay;
+
+function _syncPayApply() {
+    var n = Object.keys(_payProposals).length;
+    var box = document.getElementById('pay-apply');
+    if (!box) return;
+    box.style.display = n ? '' : 'none';
+    document.getElementById('pay-apply-btn').textContent = 'Apply ' + n + ' change' + (n === 1 ? '' : 's');
+    var dt = document.getElementById('pay-effective');
+    if (dt && !dt.value) dt.value = new Date().toISOString().slice(0, 10);
+}
+
+async function applyPayChanges() {
+    var ids = Object.keys(_payProposals);
+    if (!ids.length) return;
+    var lines = ids.map(function (id) {
+        var r = _payRows.filter(function (x) { return String(x.employee_id) === id; })[0] || {};
+        return (r.name || id) + ': ' + _payMoney(r.salary) + ' \u2192 ' + _payMoney(_payProposals[id]);
+    });
+    if (!await uiConfirm('Change ' + ids.length + ' salar' + (ids.length === 1 ? 'y' : 'ies') + ' from ' + document.getElementById('pay-effective').value + '?\n\n' + lines.join('\n') +
+        '\n\nEach goes on the person\u2019s record and each person is told.', { title: 'Apply pay changes', confirmText: 'Apply' })) return;
+    try {
+        var out = await fetchJson('/api/pay-review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+            effective_on: document.getElementById('pay-effective').value, note: document.getElementById('pay-note').value,
+            changes: ids.map(function (id) { return { employee_id: Number(id), salary: _payProposals[id] }; }) }) });
+        showToast(out.applied + ' change' + (out.applied === 1 ? '' : 's') + ' applied', 'success');
+        _payProposals = {};
+        loadPayView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.applyPayChanges = applyPayChanges;
+
+async function editPayBand(level) {
+    var current = null;
+    try { current = (await fetchJson('/api/pay-bands')).levels.filter(function (l) { return l.level === level; })[0]; } catch (e) { /* form still opens */ }
+    var b = (current && current.band) || {};
+    var out = await uiForm([
+        { name: 'min', label: 'Minimum per year', type: 'number', value: b.min || '', required: true },
+        { name: 'mid', label: 'Middle per year', type: 'number', value: b.mid || '', hint: 'Left empty, it is halfway' },
+        { name: 'max', label: 'Maximum per year', type: 'number', value: b.max || '', required: true },
+        { name: 'notes', label: 'Notes', value: b.notes || '' },
+    ], { title: 'Band for ' + ((current && current.label) || level), confirmText: 'Save', message: 'In ' + _payCurrency + ', per year. Pay on profiles is per period and is annualised before it meets the band.' });
+    if (!out) return;
+    try {
+        await fetchJson('/api/pay-bands/' + level, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(out) });
+        showToast('Band saved', 'success');
+        loadPayView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.editPayBand = editPayBand;
+
+async function removePayBand(level) {
+    if (!await uiConfirm('Remove the band for ' + level + '? People on it will show as having no band.', { title: 'Remove band', confirmText: 'Remove', danger: true })) return;
+    try { await fetchJson('/api/pay-bands/' + level, { method: 'DELETE' }); loadPayView(); }
+    catch (e) { showToast(e.message, 'error'); }
+}
+window.removePayBand = removePayBand;
+
+async function setBandVisibility(on) {
+    try {
+        await fetchJson('/api/pay-bands-visibility', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visible: !!on }) });
+        showToast(on ? 'Staff now see their own band on their profile' : 'Bands are HR-only again', 'success');
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.setBandVisibility = setBandVisibility;

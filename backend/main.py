@@ -24900,9 +24900,19 @@ def hr_analytics(request: Request, db: Session = Depends(get_db)):
     coverage = check_in_coverage(db, cid)
     coverage.pop("rows", None)
 
+    pay_rows, _ = pay_review_rows(db, cid)
+    ratios = [r["compa_ratio"] for r in pay_rows if r["compa_ratio"]]
+    pay_block = {"annual_payroll": round(sum(r["annual"] for r in pay_rows), 2),
+                 "average_compa_ratio": round(sum(ratios) / len(ratios), 2) if ratios else None,
+                 "below_band": sum(1 for r in pay_rows if r["position"] == "below"),
+                 "above_band": sum(1 for r in pay_rows if r["position"] == "above"),
+                 "no_band": sum(1 for r in pay_rows if r["position"] == "no_band"),
+                 "currency": (client.currency or "GBP").upper()}
+
     return {
         "as_of": today.strftime("%Y-%m-%d"),
         "check_ins": coverage,
+        "pay": pay_block,
         "headcount": {
             "now": len(current), "joiners_12m": joiners_12m, "leavers_12m": leavers_12m,
             "turnover_pct": turnover, "average_headcount_12m": round(avg_headcount, 1),
@@ -25703,6 +25713,284 @@ def talent_grid(request: Request, cycle_id: int = 0, db: Session = Depends(get_d
         "unplaced": unplaced, "pending": pending, "placed": sum(len(v) for v in boxes.values()),
         "potential_words": POTENTIAL_WORDS,
     }
+
+
+# ============================================================================
+# Pay bands and the pay review
+# ============================================================================
+# A band per level: the least, the middle and the most the company pays for
+# it, per year. Against it every person has a compa-ratio - their pay over
+# the middle - and a position: below, within, above. The pay review is
+# everybody on one page with that, when their pay last moved, and their
+# latest rating, and a way to change several salaries with one effective
+# date. Bands can be shown to staff, which some places must do by law and
+# the rest do because it is fairer; off unless switched on.
+
+PERIODS_PER_YEAR = {"monthly": 12, "weekly": 52, "biweekly": 26, "fortnightly": 26,
+                    "quarterly": 4, "annual": 1, "yearly": 1}
+
+
+def annual_pay(emp):
+    """What they are paid in a year, from the per-period figure on the
+    profile and how often it is paid. Hourly people are taken at 160 hours
+    a month, the same figure overtime already uses."""
+    if (emp.salary or 0) > 0:
+        return round((emp.salary or 0) * PERIODS_PER_YEAR.get((emp.pay_frequency or "monthly").lower(), 12), 2)
+    if (emp.hourly_rate or 0) > 0:
+        return round((emp.hourly_rate or 0) * 160 * 12, 2)
+    return 0.0
+
+
+def band_to_dict(b):
+    return {"level": b.level, "min": b.min_annual, "mid": b.mid_annual, "max": b.max_annual,
+            "currency": b.currency, "notes": b.notes or "", "updated_at": b.updated_at or ""}
+
+
+def band_position(annual, band):
+    """(compa_ratio, position, pct_through). Nothing without a band or pay."""
+    if not band or not annual:
+        return None, "no_band" if not band else "no_pay", None
+    ratio = round(annual / band.mid_annual, 2) if band.mid_annual else None
+    span = band.max_annual - band.min_annual
+    pct = round(100 * (annual - band.min_annual) / span) if span > 0 else None
+    pos = "below" if annual < band.min_annual else "above" if annual > band.max_annual else "within"
+    return ratio, pos, pct
+
+
+def _bands_by_level(db, client_id):
+    return {b.level: b for b in db.query(models.DBPayBand).filter(
+        models.DBPayBand.client_id == client_id).all()}
+
+
+def _last_pay_change(db, client_id):
+    """{employee_id: effective_on} of the latest recorded pay change."""
+    out = {}
+    for c in db.query(models.DBEmploymentChange).filter(
+            models.DBEmploymentChange.client_id == client_id,
+            models.DBEmploymentChange.kind == "pay_change").all():
+        if (c.effective_on or "") > out.get(c.employee_id, ""):
+            out[c.employee_id] = c.effective_on
+    return out
+
+
+def _latest_ratings(db, client_id):
+    """{employee_id: manager_rating} from the latest cycle that has opened."""
+    latest = db.query(models.DBReviewCycle).filter(
+        models.DBReviewCycle.client_id == client_id,
+        models.DBReviewCycle.status != "draft").order_by(models.DBReviewCycle.id.desc()).first()
+    if not latest:
+        return {}, ""
+    return {r.employee_id: r.manager_rating for r in db.query(models.DBReview).filter(
+        models.DBReview.cycle_id == latest.id, models.DBReview.status == "complete").all()}, latest.name
+
+
+@app.get("/api/pay-bands")
+def list_pay_bands(request: Request, db: Session = Depends(get_db)):
+    """Every level, with its band if it has one, and how the people on that
+    level sit against it."""
+    client = get_client_user(request, db)
+    bands = _bands_by_level(db, client.id)
+    people = [e for e in db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client.id).all() if employee_is_current(e)]
+    out = []
+    for lvl in EMPLOYEE_LEVELS:
+        band = bands.get(lvl["code"])
+        on_level = [e for e in people if (e.level or "") == lvl["code"]]
+        ratios, pos = [], Counter()
+        for e in on_level:
+            ratio, p, _ = band_position(annual_pay(e), band)
+            pos[p] += 1
+            if ratio:
+                ratios.append(ratio)
+        out.append({
+            "level": lvl["code"], "label": lvl["label"], "band": band_to_dict(band) if band else None,
+            "headcount": len(on_level),
+            "average_compa_ratio": round(sum(ratios) / len(ratios), 2) if ratios else None,
+            "below": pos.get("below", 0), "within": pos.get("within", 0), "above": pos.get("above", 0),
+        })
+    return {"levels": out, "currency": (client.currency or "GBP").upper(),
+            "visible_to_staff": str(tenant_setting(db, client.id, "pay_bands_visible", "0")).lower() in ("1", "true", "yes"),
+            "no_level": sum(1 for e in people if (e.level or "") not in LEVEL_CODES)}
+
+
+@app.put("/api/pay-bands/{level}")
+def set_pay_band(level: str, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    level = (level or "").strip().upper()
+    if level not in LEVEL_CODES:
+        raise HTTPException(status_code=404, detail="Unknown level")
+    body = body or {}
+
+    def num(key):
+        raw = body.get(key)
+        if raw in (None, ""):
+            return None
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{key} must be a number")
+        if v < 0 or v > 1e9:
+            raise HTTPException(status_code=400, detail=f"{key} is out of range")
+        return round(v, 2)
+    lo, mid, hi = num("min"), num("mid"), num("max")
+    if lo is None or hi is None:
+        raise HTTPException(status_code=400, detail="A band needs a minimum and a maximum")
+    if lo > hi:
+        raise HTTPException(status_code=400, detail="The minimum is above the maximum")
+    if mid is None:
+        mid = round((lo + hi) / 2, 2)
+    if not lo <= mid <= hi:
+        raise HTTPException(status_code=400, detail="The middle must sit between the two")
+    band = db.query(models.DBPayBand).filter(
+        models.DBPayBand.client_id == client.id, models.DBPayBand.level == level).first()
+    if not band:
+        band = models.DBPayBand(client_id=client.id, level=level)
+        db.add(band)
+    band.min_annual, band.mid_annual, band.max_annual = lo, mid, hi
+    band.currency = (client.currency or "GBP").upper()
+    band.notes = str(body.get("notes") or "").strip()[:500]
+    band.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_audit(db, client.id, "pay_band_set", "pay_band", None, level, f"{lo}-{mid}-{hi}", request)
+    db.commit()
+    return band_to_dict(band)
+
+
+@app.delete("/api/pay-bands/{level}")
+def delete_pay_band(level: str, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    band = db.query(models.DBPayBand).filter(
+        models.DBPayBand.client_id == client.id, models.DBPayBand.level == (level or "").upper()).first()
+    if not band:
+        raise HTTPException(status_code=404, detail="No band on that level")
+    db.delete(band)
+    db.commit()
+    return {"deleted": True}
+
+
+@app.put("/api/pay-bands-visibility")
+def set_band_visibility(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Whether staff see their own band on their profile."""
+    client = get_client_user(request, db)
+    on = bool((body or {}).get("visible"))
+    row = db.query(models.DBSettings).filter(models.DBSettings.client_id == client.id,
+                                             models.DBSettings.key == "pay_bands_visible").first()
+    if not row:
+        row = models.DBSettings(client_id=client.id, key="pay_bands_visible", value="0")
+        db.add(row)
+    row.value = "1" if on else "0"
+    db.commit()
+    return {"visible_to_staff": on}
+
+
+def pay_review_rows(db, client_id):
+    bands = _bands_by_level(db, client_id)
+    depts = {d.id: d.name for d in db.query(models.DBDepartment).filter(
+        models.DBDepartment.client_id == client_id).all()}
+    last = _last_pay_change(db, client_id)
+    ratings, cycle_name = _latest_ratings(db, client_id)
+    today = date.today()
+    rows = []
+    for e in db.query(models.DBEmployee).filter(models.DBEmployee.client_id == client_id).all():
+        if not employee_is_current(e):
+            continue
+        annual = annual_pay(e)
+        band = bands.get(e.level or "")
+        ratio, pos, pct = band_position(annual, band)
+        moved = _parse_date(last.get(e.id)) or _parse_date(e.start_date)
+        rows.append({
+            "employee_id": e.id, "name": f"{e.first_name} {e.last_name}".strip(),
+            "job_title": e.job_title or "", "department": depts.get(e.department_id, ""),
+            "level": e.level or "", "pay_frequency": e.pay_frequency or "monthly",
+            "salary": e.salary or 0, "hourly_rate": e.hourly_rate or 0, "annual": annual,
+            "band": band_to_dict(band) if band else None,
+            "compa_ratio": ratio, "position": pos, "pct_through_band": pct,
+            "last_pay_change": last.get(e.id, ""),
+            "months_since_change": (today - moved).days // 30 if moved else None,
+            "rating": ratings.get(e.id),
+        })
+    order = {"below": 0, "above": 1, "within": 2, "no_band": 3, "no_pay": 4}
+    rows.sort(key=lambda r: (order.get(r["position"], 9), r["compa_ratio"] if r["compa_ratio"] is not None else 9, r["name"]))
+    return rows, cycle_name
+
+
+@app.get("/api/pay-review")
+def pay_review(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    rows, cycle_name = pay_review_rows(db, client.id)
+    with_ratio = [r["compa_ratio"] for r in rows if r["compa_ratio"]]
+    return {
+        "people": rows, "currency": (client.currency or "GBP").upper(), "rating_cycle": cycle_name,
+        "totals": {
+            "annual_payroll": round(sum(r["annual"] for r in rows), 2),
+            "people": len(rows),
+            "below_band": sum(1 for r in rows if r["position"] == "below"),
+            "above_band": sum(1 for r in rows if r["position"] == "above"),
+            "no_band": sum(1 for r in rows if r["position"] == "no_band"),
+            "average_compa_ratio": round(sum(with_ratio) / len(with_ratio), 2) if with_ratio else None,
+            "not_moved_in_a_year": sum(1 for r in rows if (r["months_since_change"] or 0) >= 12),
+        },
+    }
+
+
+@app.post("/api/pay-review")
+def apply_pay_review(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Several salaries, one effective date, one note each. Written to
+    each person's history like any pay change, and each is told."""
+    client = get_client_user(request, db)
+    body = body or {}
+    when = _clean_ymd(body.get("effective_on"), "Effective date") or date.today().isoformat()
+    changes = body.get("changes")
+    if not isinstance(changes, list) or not changes:
+        raise HTTPException(status_code=400, detail="Nothing to apply")
+    if len(changes) > 500:
+        raise HTTPException(status_code=400, detail="Too many at once")
+    by = _hr_name(client)
+    applied = []
+    for ch in changes:
+        if not isinstance(ch, dict):
+            continue
+        try:
+            emp_id = int(ch.get("employee_id"))
+            new_salary = float(ch.get("salary"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Each change needs an employee and a salary")
+        if new_salary <= 0 or new_salary > 1e8:
+            raise HTTPException(status_code=400, detail="A salary must be a positive amount")
+        emp = db.query(models.DBEmployee).filter(
+            models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail=f"Employee {emp_id} not found")
+        if abs((emp.salary or 0) - new_salary) < 0.005:
+            continue
+        before = {"salary": emp.salary}
+        emp.salary = round(new_salary, 2)
+        note = str(ch.get("note") or body.get("note") or "").strip()[:1000]
+        record_employment_changes(db, client.id, emp, before, {"salary": new_salary, "change_note": note}, by, when)
+        cur = (client.currency or "GBP").upper()
+        notify_employee(db, emp, "Your pay is changing",
+                        f"From {when} your salary is {emp.salary:,.2f} {cur} per {emp.pay_frequency or 'month'}."
+                        + (f" {note}" if note else ""), "info", "profile", by)
+        applied.append({"employee_id": emp.id, "salary": emp.salary,
+                        "was": before["salary"], "annual": annual_pay(emp)})
+    log_audit(db, client.id, "pay_review_applied", "employee", None, "", f"{len(applied)} changes from {when}", request)
+    db.commit()
+    return {"applied": len(applied), "effective_on": when, "changes": applied}
+
+
+@app.get("/api/employee/pay-band")
+def my_pay_band(request: Request, db: Session = Depends(get_db)):
+    """Where I sit in my level's band - only if the business shows it."""
+    emp = current_employee(request, db)
+    visible = str(tenant_setting(db, emp.client_id, "pay_bands_visible", "0")).lower() in ("1", "true", "yes")
+    if not visible:
+        return {"visible": False}
+    band = _bands_by_level(db, emp.client_id).get(emp.level or "")
+    if not band:
+        return {"visible": True, "band": None, "level": emp.level or ""}
+    annual = annual_pay(emp)
+    ratio, pos, pct = band_position(annual, band)
+    return {"visible": True, "level": emp.level or "", "band": band_to_dict(band),
+            "annual": annual, "position": pos, "pct_through_band": pct}
 
 
 # Serve frontend
