@@ -2143,7 +2143,10 @@ async function runGlobalSearch(q) {
         });
         if (!res.ok) { hideSearchResults(); return; }
         var data = await res.json();
-        showSearchResults(data.results || [], q);
+        // A skill hit carries its name in `number`, so opening it can search
+        // the Skills page for it.
+        var results = (data.results || []).map(function (r) { return r.type === 'skill' ? Object.assign({}, r, { number: r.label }) : r; });
+        showSearchResults(pageHits(q).concat(results), q);
     } catch (e) {
         hideSearchResults();
     }
@@ -2162,9 +2165,29 @@ function openSearchResult(type, number, id) {
     if (type === 'recurring') { showView('recurring-view'); return; }
     if (type === 'payslip') { showView('payroll-view'); return; }
     if (type === 'contact') { if (id) { openCustomer(id); } else { showView('contacts-view'); } return; }
+    if (type === 'skill') { showView('skills-view'); setTimeout(function () { if (typeof searchSkills === 'function') searchSkills(decodeURIComponent(number || '')); }, 300); return; }
+    if (type === 'policy') { showView('policies-view'); return; }
+    if (type === 'department') { showView('departments-view'); return; }
+    if (type === 'page' && number) { showView(decodeURIComponent(number)); return; }
     showView('dashboard-view');
 }
 window.openSearchResult = openSearchResult;
+
+// Typing the name of a page finds the page. The list is the People menu's
+// own labels, so a new page is searchable the day it has a menu entry.
+function pageHits(q) {
+    var hits = [];
+    document.querySelectorAll('#main-nav .nav-item[href^="#/"]').forEach(function (a) {
+        if (a.style.display === 'none') return;
+        var label = (a.querySelector('.mega-label') || a).textContent.trim();
+        var desc = (a.querySelector('.mega-desc') || {}).textContent || '';
+        if (label.toLowerCase().indexOf(q) === -1 && desc.toLowerCase().indexOf(q) === -1) return;
+        var slug = (a.getAttribute('href') || '').replace(/^#\//, '');
+        var viewId = window.VIEW_FOR_SLUG ? VIEW_FOR_SLUG[slug] : null;
+        if (viewId) hits.push({ type: 'page', label: label, sub: desc.trim() || 'Open the page', number: viewId, id: null });
+    });
+    return hits.slice(0, 4);
+}
 
 function showSearchResults(results, q) {
     hideSearchResults();
@@ -2176,10 +2199,12 @@ function showSearchResults(results, q) {
     if (results.length === 0) {
         dropdown.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-secondary);font-size:0.85rem;">No results for "' + esc(q) + '"</div>';
     } else {
-        var types = { invoice: 'Invoices', quote: 'Quotes', recurring: 'Recurring',
-                      contact: 'Contacts', employee: 'Employees', payslip: 'Payroll' };
+        var types = { page: 'Go to', invoice: 'Invoices', quote: 'Quotes', recurring: 'Recurring',
+                      contact: 'Contacts', employee: 'Employees', payslip: 'Payroll',
+                      skill: 'Skills', policy: 'Policies', department: 'Departments' };
         var icons = { invoice: '&#128196;', quote: '&#128220;', recurring: '&#128257;',
-                      contact: '&#128100;', employee: '&#128101;', payslip: '&#128176;' };
+                      contact: '&#128100;', employee: '&#128101;', payslip: '&#128176;',
+                      page: '&#8594;', skill: '&#128161;', policy: '&#128203;', department: '&#127970;' };
         var grouped = {};
         results.forEach(function(r) {
             if (!grouped[r.type]) grouped[r.type] = [];

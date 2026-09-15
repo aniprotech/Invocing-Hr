@@ -7143,6 +7143,22 @@ def global_search(request: Request, q: str = "", limit: int = 8,
         results.append(_hit("employee", f"{e.first_name} {e.last_name}".strip(),
                             e.job_title or e.email or "", e.employee_id or "", e.id))
 
+    # The HR side: a skill by name answers "who can do this", a policy by
+    # title opens it, a department opens its people.
+    for sk in db.query(models.DBSkill).filter(
+        models.DBSkill.client_id == client.id, matches(models.DBSkill.name),
+    ).limit(cap).all():
+        holders = db.query(models.DBEmployeeSkill).filter(models.DBEmployeeSkill.skill_id == sk.id).count()
+        results.append(_hit("skill", sk.name, f"{holders} {'person has' if holders == 1 else 'people have'} it", "", sk.id))
+    for pol in db.query(models.DBPolicy).filter(
+        models.DBPolicy.client_id == client.id, matches(models.DBPolicy.title),
+    ).limit(cap).all():
+        results.append(_hit("policy", pol.title, f"policy, v{pol.version}", "", pol.id))
+    for dpt in db.query(models.DBDepartment).filter(
+        models.DBDepartment.client_id == client.id, matches(models.DBDepartment.name),
+    ).limit(cap).all():
+        results.append(_hit("department", dpt.name, "department", "", dpt.id))
+
     for r in db.query(models.DBRecurringInvoice).filter(
         models.DBRecurringInvoice.client_id == client.id,
         matches(models.DBRecurringInvoice.name, models.DBRecurringInvoice.to_contact,
@@ -18355,6 +18371,10 @@ def add_staff_message(db: Session, req, author: str, name: str, body: str):
 WORKFLOW_TRIGGERS = {
     "employee_joins": "When somebody joins",
     "employee_leaves": "When somebody leaves",
+    # The moments in between, which used to be handled by remembering.
+    "probation_passed": "When somebody passes probation",
+    "promoted": "When somebody is promoted",
+    "transferred": "When somebody moves department",
 }
 TASK_OWNERS = ("hr", "manager", "department_head", "employee", "person")
 
@@ -24702,6 +24722,12 @@ def record_employment_changes(db, client_id, emp, before, body, by_name, effecti
             note=str(body.get("change_note") or "").strip()[:1000], recorded_by=by_name[:120])
         db.add(row)
         written.append(row)
+    # A move or a step up is a moment a workflow may be waiting for.
+    kinds = {r.kind for r in written}
+    if "transfer" in kinds:
+        run_workflows_for(db, client_id, emp, "transferred")
+    if "level_change" in kinds:
+        run_workflows_for(db, client_id, emp, "promoted")
     return written
 
 
@@ -24772,6 +24798,10 @@ def hr_add_history(emp_id: int, request: Request, body: dict = None, db: Session
         kind=kind, field="", old_value=str(body.get("old_value") or "").strip()[:200],
         new_value=new_value, note=note, recorded_by=_hr_name(client))
     db.add(row)
+    if kind == "promotion":
+        run_workflows_for(db, client.id, emp, "promoted")
+    elif kind == "transfer":
+        run_workflows_for(db, client.id, emp, "transferred")
     db.commit()
     return change_to_dict(row)
 
@@ -25409,6 +25439,7 @@ def decide_probation(emp_id: int, request: Request, body: dict = None,
             raise HTTPException(status_code=409, detail="They are not on probation")
         emp.probation_status = "confirmed"
         label, told = "Probation passed", "You have passed your probation. Congratulations."
+        run_workflows_for(db, client.id, emp, "probation_passed")
     elif decision == "extend":
         if emp.probation_status not in ("on_probation", "extended"):
             raise HTTPException(status_code=409, detail="They are not on probation")
@@ -25986,6 +26017,55 @@ def pay_review_rows(db, client_id):
     order = {"below": 0, "above": 1, "within": 2, "no_band": 3, "no_pay": 4}
     rows.sort(key=lambda r: (order.get(r["position"], 9), r["compa_ratio"] if r["compa_ratio"] is not None else 9, r["name"]))
     return rows, cycle_name
+
+
+def _csv_response(filename, header, rows):
+    import csv as _csv
+    import io as _io
+    buf = _io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(header)
+    for r in rows:
+        w.writerow(r)
+    return Response(content=buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@app.get("/api/pay-review/export.csv")
+def pay_review_csv(request: Request, db: Session = Depends(get_db)):
+    """The pay review as the spreadsheet a finance person will ask for."""
+    client = get_client_user(request, db)
+    rows, _ = pay_review_rows(db, client.id)
+    return _csv_response("pay-review.csv",
+                         ["name", "job_title", "department", "level", "pay_frequency", "salary", "annual",
+                          "band_min", "band_mid", "band_max", "compa_ratio", "position", "last_pay_change", "rating"],
+                         [[r["name"], r["job_title"], r["department"], r["level"], r["pay_frequency"], r["salary"], r["annual"],
+                           (r["band"] or {}).get("min", ""), (r["band"] or {}).get("mid", ""), (r["band"] or {}).get("max", ""),
+                           r["compa_ratio"] if r["compa_ratio"] is not None else "", r["position"], r["last_pay_change"],
+                           r["rating"] if r["rating"] is not None else ""] for r in rows])
+
+
+@app.get("/api/leave/export.csv")
+def leave_csv(request: Request, year: str = "", db: Session = Depends(get_db)):
+    """Every leave request, one row each, for a year or for all time."""
+    client = get_client_user(request, db)
+    names = _employee_names(db, client.id)
+    q = db.query(models.DBLeaveRequest).filter(models.DBLeaveRequest.client_id == client.id)
+    if year:
+        q = q.filter(models.DBLeaveRequest.start_date >= f"{year}-01-01", models.DBLeaveRequest.start_date <= f"{year}-12-31")
+    rows = q.order_by(models.DBLeaveRequest.start_date.desc()).all()
+    return _csv_response("leave.csv", ["employee", "type", "start_date", "end_date", "days", "status", "decided_by", "reason", "requested_at"],
+                         [[names.get(l.employee_id, ""), l.leave_type, l.start_date, l.end_date, l.days, l.status,
+                           l.approved_by or "", l.reason or "", l.created_at or ""] for l in rows])
+
+
+@app.get("/api/absence/export.csv")
+def absence_csv(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    rep = absence_report(db, client.id)
+    return _csv_response("absence.csv", ["name", "job_title", "spells", "days", "bradford", "band", "last_spell"],
+                         [[p["name"], p["job_title"], p["spells"], p["days"], p["bradford"], p["band"], p["last_spell"]]
+                          for p in rep["people"]])
 
 
 @app.get("/api/pay-review")
