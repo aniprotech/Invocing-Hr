@@ -92,12 +92,12 @@
     }
   </style>
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-    <link rel="stylesheet" href="/mobile.css?v=177">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=177">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=177">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=177">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=177">
-    <script src="/dialogs.js?v=177"></script>
+    <link rel="stylesheet" href="/mobile.css?v=178">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=178">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=178">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=178">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=178">
+    <script src="/dialogs.js?v=178"></script>
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="aniprotech">
     <meta property="og:title" content="Your invoice">
@@ -172,7 +172,8 @@
             '<p class="small" style="margin:6px 0 0;"><strong>' + esc(inv.from.company) + '</strong><br>' +
             esc(inv.from.address).replace(/\n/g, '<br>') +
             (inv.from.email ? '<br>' + esc(inv.from.email) : '') +
-            (inv.from.phone ? '<br>' + esc(inv.from.phone) : '') + '</p>' +
+            (inv.from.phone ? '<br>' + esc(inv.from.phone) : '') +
+            (inv.from.tax_id ? '<br>Tax ID ' + esc(inv.from.tax_id) : '') + '</p>' +
           '</div>' +
         '</div>' +
 
@@ -190,7 +191,10 @@
         '</div>' +
 
         '<div class="cols">' +
-          '<div><div class="label">Billed to</div>' + esc(inv.to.name) + '</div>' +
+          '<div><div class="label">Billed to</div>' + esc(inv.to.name) +
+            (inv.to.company ? '<br>' + esc(inv.to.company) : '') +
+            (inv.to.address ? '<br><span class="small">' + esc(inv.to.address).replace(/\n/g, '<br>') + '</span>' : '') +
+            (inv.to.tax_id ? '<br><span class="small">Tax ID ' + esc(inv.to.tax_id) + '</span>' : '') + '</div>' +
           '<div><div class="label">Issued</div>' + esc(inv.issue_date) + '</div>' +
           '<div><div class="label">Due</div>' + esc(inv.due_date) + '</div>' +
         '</div>' +

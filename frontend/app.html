@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=177">
-    <link rel="stylesheet" href="mobile.css?v=177">
+    <link rel="stylesheet" href="styles.css?v=178">
+    <link rel="stylesheet" href="mobile.css?v=178">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,11 +57,11 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=177">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=177">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=177">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=177">
-    <script src="/dialogs.js?v=177"></script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=178">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=178">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=178">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=178">
+    <script src="/dialogs.js?v=178"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -695,6 +695,18 @@
                                         <input type="tel" id="quote-phone" class="form-control" placeholder="+15551234567">
                                     </div>
                                     <div class="form-group">
+                                        <label>Billed to: company</label>
+                                        <input type="text" id="quote-to-company" class="form-control" placeholder="Their company, if not the name above">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Billing address</label>
+                                        <textarea id="quote-to-address" class="form-control" rows="2" placeholder="Street, city, postcode"></textarea>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Their tax ID</label>
+                                        <input type="text" id="quote-to-taxid" class="form-control" placeholder="GSTIN / VAT / ABN">
+                                    </div>
+                                    <div class="form-group">
                                         <label>Issue Date</label>
                                         <input type="date" id="quote-issue-date" class="form-control">
                                     </div>
@@ -803,8 +815,11 @@
                                 <div>
                                     <label style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);">Customer</label>
                                     <div style="margin-top:4px;font-size:1.1rem;font-weight:600;" id="view-quote-contact">-</div>
+                                    <div style="margin-top:2px;font-weight:600;font-size:0.95rem;" id="view-quote-to-company"></div>
+                                    <div style="margin-top:2px;color:var(--text-secondary);font-size:0.9rem;white-space:pre-line;" id="view-quote-to-address"></div>
                                     <div style="margin-top:4px;color:var(--text-secondary);font-size:0.9rem;" id="view-quote-email-display">-</div>
                                     <div style="margin-top:4px;color:var(--text-secondary);font-size:0.9rem;" id="view-quote-phone-display">-</div>
+                                    <div style="margin-top:4px;color:var(--text-secondary);font-size:0.9rem;" id="view-quote-to-taxid"></div>
                                 </div>
                                 <div>
                                     <label style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);">Quote</label>
@@ -900,6 +915,20 @@
                                     <div class="form-group">
                                         <label>Phone</label>
                                         <input type="tel" id="inv-phone" class="form-control" placeholder="+15551234567">
+                                    </div>
+                                    <!-- Billed to. Filled from the contact when one is picked; whatever is
+                                         typed here is kept on this invoice and taught to the contact. -->
+                                    <div class="form-group">
+                                        <label>Billed to: company</label>
+                                        <input type="text" id="inv-to-company" class="form-control" placeholder="Their company, if not the name above">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Billing address</label>
+                                        <textarea id="inv-to-address" class="form-control" rows="2" placeholder="Street, city, postcode"></textarea>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Their tax ID</label>
+                                        <input type="text" id="inv-to-taxid" class="form-control" placeholder="GSTIN / VAT / ABN">
                                     </div>
                                     <div class="form-group">
                                         <label>Issue Date</label>
@@ -1031,10 +1060,13 @@
                             <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:32px;">
                                 <div>
                                     <div style="margin-bottom:16px;"><img id="logo-preview-view" src="" style="display:none;max-width:200px;max-height:80px;"></div>
-                                    <label style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);">Customer</label>
+                                    <label style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);">Billed to</label>
                                     <div style="margin-top:4px;font-size:1.1rem;font-weight:600;" id="view-inv-contact">-</div>
+                                    <div style="margin-top:2px;font-weight:600;font-size:0.95rem;" id="view-inv-to-company"></div>
+                                    <div style="margin-top:2px;color:var(--text-secondary);font-size:0.9rem;white-space:pre-line;" id="view-inv-to-address"></div>
                                     <div style="margin-top:4px;color:var(--text-secondary);font-size:0.9rem;" id="view-inv-email-display">-</div>
                                     <div style="margin-top:4px;color:var(--text-secondary);font-size:0.9rem;" id="view-inv-phone-display">-</div>
+                                    <div style="margin-top:4px;color:var(--text-secondary);font-size:0.9rem;" id="view-inv-to-taxid"></div>
                                 </div>
                                 <div style="text-align:right;">
                                     <div style="font-size:1.5rem;font-weight:700;color:var(--primary-color);" id="view-inv-number-val">-</div>
@@ -1045,8 +1077,9 @@
                                 </div>
                             </div>
                             <div id="view-inv-company-details" style="display:none;padding:16px;background:rgba(255, 255, 255, 0.02);border-radius:var(--radius-md);margin-bottom:24px;font-size:0.9rem;color:var(--text-secondary);">
+                                <div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Billed from</div>
                                 <div style="font-weight:600;color:var(--text-primary);" id="view-inv-company-name"></div>
-                                <div id="view-inv-company-address"></div>
+                                <div id="view-inv-company-address" style="white-space:pre-line;"></div>
                                 <div id="view-inv-company-email"></div>
                                 <div id="view-inv-company-phone"></div>
                                 <div id="view-inv-company-abn"></div>
@@ -1349,6 +1382,10 @@
                             <div class="form-group"><label>Name *</label><input type="text" id="contact-name" class="form-control" placeholder="Contact name"></div>
                             <div class="form-group"><label>Email</label><input type="email" id="contact-email" class="form-control" placeholder="email@example.com"></div>
                             <div class="form-group"><label>Phone</label><input type="tel" id="contact-phone" class="form-control" placeholder="+1 555 123 4567"></div>
+                            <!-- What goes under "Billed to" on their invoices. -->
+                            <div class="form-group"><label>Company</label><input type="text" id="contact-company" class="form-control" placeholder="The company they bill for"></div>
+                            <div class="form-group"><label>Billing address</label><textarea id="contact-address" class="form-control" rows="3" placeholder="Street, city, postcode"></textarea></div>
+                            <div class="form-group"><label>Tax ID (GSTIN / VAT / ABN)</label><input type="text" id="contact-taxid" class="form-control" placeholder="Optional"></div>
                         </div>
                         <div class="modal-footer">
                             <button class="btn btn-outline" onclick="closeAddContactModal()">Cancel</button>
@@ -3024,6 +3061,7 @@
                         </div>
                         <div class="modal-body">
                             <div id="payment-owed" class="payment-owed"></div>
+                            <div id="payment-parties" style="display:none;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 16px;font-size:0.8rem;color:var(--text-secondary);"></div>
 
                             <div class="grid-2 gap-16">
                                 <div class="form-group">
@@ -4522,8 +4560,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="feed.js?v=177"></script>
-    <script src="app.js?v=177"></script>
+    <script src="feed.js?v=178"></script>
+    <script src="app.js?v=178"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
@@ -4751,7 +4789,7 @@
             </div>
         </div>
     </div>
-    <script src="/install-hint.js?v=177"></script>
-    <script src="/pwa.js?v=177"></script>
+    <script src="/install-hint.js?v=178"></script>
+    <script src="/pwa.js?v=178"></script>
 </body>
 </html>

@@ -2370,6 +2370,9 @@ async function editInvoice(number) {
     set('inv-contact', inv.to || inv.contact || '');
     set('inv-email', inv.email || '');
     set('inv-phone', inv.phone_number || '');
+    set('inv-to-company', inv.to_company || '');
+    set('inv-to-address', inv.to_address || '');
+    set('inv-to-taxid', inv.to_tax_id || '');
     set('inv-issue-date', inv.date || inv.issue_date || '');
     set('inv-due-date', inv.due_date || '');
     set('tax-type', inv.tax_type || 'exclusive');
@@ -2511,6 +2514,7 @@ function setupLogoUpload() {
 }
 
 var _viewOutstanding = 0;
+var _viewBillTo = {}, _viewBillFrom = {};
 
 // Payment history + overdue banner, injected above the invoice actions so the
 // state of an invoice is obvious without opening a report.
@@ -2637,6 +2641,15 @@ async function viewInvoice(number) {
         document.getElementById('view-inv-status').textContent = inv.status;
         document.getElementById('view-inv-status').className = 'status-pill status-' + (inv.status || '').toLowerCase().replace(/\s+/g, '-');
         document.getElementById('view-inv-contact').textContent = inv.to;
+        var billTo = inv.bill_to || {};
+        var toCompany = document.getElementById('view-inv-to-company');
+        if (toCompany) toCompany.textContent = billTo.company || '';
+        var toAddress = document.getElementById('view-inv-to-address');
+        if (toAddress) toAddress.textContent = billTo.address || '';
+        var toTax = document.getElementById('view-inv-to-taxid');
+        if (toTax) toTax.textContent = billTo.tax_id ? 'Tax ID: ' + billTo.tax_id : '';
+        _viewBillTo = billTo;
+        _viewBillFrom = inv.bill_from || inv.company || {};
         var emailD = document.getElementById('view-inv-email-display');
         if (emailD) emailD.textContent = inv.email || 'No email';
         var phoneD = document.getElementById('view-inv-phone-display');
@@ -2679,7 +2692,7 @@ async function viewInvoice(number) {
             document.getElementById('view-inv-company-address').textContent = inv.company.address || '';
             document.getElementById('view-inv-company-email').textContent = inv.company.email ? 'Email: ' + inv.company.email : '';
             document.getElementById('view-inv-company-phone').textContent = inv.company.phone_number ? 'Phone: ' + inv.company.phone_number : '';
-            document.getElementById('view-inv-company-abn').textContent = inv.company.abn ? 'ABN: ' + inv.company.abn : '';
+            document.getElementById('view-inv-company-abn').textContent = inv.company.abn ? 'Tax ID: ' + inv.company.abn : '';
         } else {
             companyDetails.style.display = 'none';
         }
@@ -3035,7 +3048,7 @@ function generateInvoicePDF(isDummy, kind) {
     var compAddr   = isDummy ? '53 Newbridge Cres\nWolverhampton, West Midlands\nWV6 6LH, UNITED KINGDOM' : (document.getElementById(cfg.p + 'company-address') ? document.getElementById(cfg.p + 'company-address').textContent : '');
     var compEmail  = isDummy ? '' : (document.getElementById(cfg.p + 'company-email') ? document.getElementById(cfg.p + 'company-email').textContent.replace('Email: ','') : '');
     var compPhone  = isDummy ? 'Tel: 01902521476' : (document.getElementById(cfg.p + 'company-phone') ? document.getElementById(cfg.p + 'company-phone').textContent.replace('Phone: ','') : '');
-    var compAbn    = isDummy ? '' : (document.getElementById(cfg.p + 'company-abn') ? document.getElementById(cfg.p + 'company-abn').textContent.replace('ABN: ','') : '');
+    var compAbn    = isDummy ? '' : (document.getElementById(cfg.p + 'company-abn') ? document.getElementById(cfg.p + 'company-abn').textContent.replace('ABN: ','').replace('Tax ID: ','') : '');
     var savedLogo      = localStorage.getItem('company_logo') || '';
     var savedSignature = localStorage.getItem('company_signature') || '';
     var savedTerms     = localStorage.getItem('company_terms') || '';
@@ -3087,7 +3100,7 @@ function generateInvoicePDF(isDummy, kind) {
     if (compAddr) compAddr.split('\n').forEach(function(l) { if(l.trim()) compLines.push(l.trim()); });
     if (compPhone) compLines.push(compPhone.startsWith('Tel') ? compPhone : 'Tel: ' + compPhone);
     if (compEmail) compLines.push(compEmail);
-    if (compAbn)   compLines.push('ABN: ' + compAbn);
+    if (compAbn)   compLines.push(compAbn.indexOf(':') === -1 ? 'Tax ID: ' + compAbn : compAbn);
 
     doc.setFontSize(7.5); doc.setFont('helvetica','normal'); doc.setTextColor(30,30,30);
     compLines.forEach(function(line) {
@@ -3135,8 +3148,12 @@ function generateInvoicePDF(isDummy, kind) {
             // single line — try to display as-is
         }
     }
+    var toCompanyEl = document.getElementById(cfg.p + 'to-company'), toAddressEl = document.getElementById(cfg.p + 'to-address'), toTaxEl = document.getElementById(cfg.p + 'to-taxid');
+    if (!isDummy && toCompanyEl && toCompanyEl.textContent.trim()) custLines.push(toCompanyEl.textContent.trim());
+    if (!isDummy && toAddressEl && toAddressEl.textContent.trim()) toAddressEl.textContent.split('\n').forEach(function (l) { if (l.trim()) custLines.push(l.trim()); });
     if (custEmail && custEmail !== 'No email') custLines.push(custEmail);
     if (custPhone && custPhone !== 'No phone') custLines.push(custPhone);
+    if (!isDummy && toTaxEl && toTaxEl.textContent.trim()) custLines.push(toTaxEl.textContent.trim());
 
     doc.setFontSize(8.5); doc.setFont('helvetica','normal'); doc.setTextColor(30,30,30);
     custLines.forEach(function(line) {
@@ -3782,6 +3799,20 @@ function recordPayment(number) {
         'outstanding on ' + esc(number) + ': <strong>' + esc(sym + outstanding.toFixed(2)) + '</strong>';
     document.getElementById('payment-amount').value = outstanding > 0 ? outstanding.toFixed(2) : '';
     document.getElementById('payment-amount').max = outstanding > 0 ? outstanding.toFixed(2) : '';
+    // Who is paying whom, the way the invoice says it - so a receipt matched
+    // against a bank line is matched against the right name and address.
+    var parties = document.getElementById('payment-parties');
+    if (parties) {
+        var from = _viewBillFrom || {}, to = _viewBillTo || {};
+        function party(title, lines) {
+            lines = lines.filter(Boolean);
+            return '<div style="padding:10px 12px;background:rgba(255,255,255,0.03);border-radius:8px;"><div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">' + title + '</div>' +
+                (lines.length ? lines.map(function (l) { return '<div style="white-space:pre-line;">' + esc(l) + '</div>'; }).join('') : '<div style="opacity:0.7;">\u2014</div>') + '</div>';
+        }
+        parties.innerHTML = party('Billed from', [from.name, from.address, from.email, from.tax_id ? 'Tax ID ' + from.tax_id : '']) +
+            party('Billed to', [to.name, to.company, to.address, to.email, to.tax_id ? 'Tax ID ' + to.tax_id : '']);
+        parties.style.display = (from.name || to.name) ? 'grid' : 'none';
+    }
 
     var date = document.getElementById('payment-date');
     date.value = todayISO();
@@ -4296,6 +4327,9 @@ async function submitComplexInvoice(status) {
         contact: contact,
         email: document.getElementById('inv-email') ? document.getElementById('inv-email').value : '',
         phone_number: document.getElementById('inv-phone') ? document.getElementById('inv-phone').value : '',
+        to_company: ((document.getElementById('inv-to-company') || {}).value || '').trim(),
+        to_address: ((document.getElementById('inv-to-address') || {}).value || '').trim(),
+        to_tax_id: ((document.getElementById('inv-to-taxid') || {}).value || '').trim(),
         issue_date: document.getElementById('inv-issue-date').value,
         due_date: document.getElementById('inv-due-date').value,
         invoice_number: document.getElementById('inv-number').value,
@@ -5118,6 +5152,12 @@ function setupContactAutocomplete(inputId, dropdownId, emailId, phoneId) {
                             if (emailEl && c.email) emailEl.value = c.email;
                             var phoneEl = document.getElementById(phoneId);
                             if (phoneEl && c.phone_number) phoneEl.value = c.phone_number;
+                            // Billed to, from the contact record - inv-to-company, quote-to-company...
+                            var stem = inputId.replace(/-contact$/, '');
+                            [['to-company', c.company], ['to-address', c.address], ['to-taxid', c.tax_id]].forEach(function (pair) {
+                                var el = document.getElementById(stem + '-' + pair[0]);
+                                if (el) el.value = pair[1] || '';
+                            });
                             dropdown.classList.remove('show');
                         });
                         dropdown.appendChild(div);
@@ -9986,14 +10026,19 @@ async function saveContact() {
     var name = document.getElementById('contact-name').value.trim();
     var email = document.getElementById('contact-email').value.trim();
     var phone = document.getElementById('contact-phone').value.trim();
+    var billing = {
+        company: ((document.getElementById('contact-company') || {}).value || '').trim(),
+        address: ((document.getElementById('contact-address') || {}).value || '').trim(),
+        tax_id: ((document.getElementById('contact-taxid') || {}).value || '').trim()
+    };
     if (!name) { showToast('Contact name required', 'error'); return; }
     try {
         if (editId) {
-            var res = await fetch('/api/contacts/' + editId, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ name: name, email: email, phone_number: phone }) });
+            var res = await fetch('/api/contacts/' + editId, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(Object.assign({ name: name, email: email, phone_number: phone }, billing)) });
             if (res.ok) { showToast('Contact updated', 'success'); }
             else { showToast('Failed to update contact', 'error'); return; }
         } else {
-            var res = await fetch('/api/contacts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ name: name, email: email, phone_number: phone }) });
+            var res = await fetch('/api/contacts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(Object.assign({ name: name, email: email, phone_number: phone }, billing)) });
             if (res.ok) { showToast('Contact created', 'success'); }
             else { showToast('Failed to create contact', 'error'); return; }
         }
@@ -10011,6 +10056,8 @@ async function editContact(id) {
     document.getElementById('contact-name').value = c.name || '';
     document.getElementById('contact-email').value = c.email || '';
     document.getElementById('contact-phone').value = c.phone_number || c.phone || '';
+    var setv = function (id, v) { var el = document.getElementById(id); if (el) el.value = v || ''; };
+    setv('contact-company', c.company); setv('contact-address', c.address); setv('contact-taxid', c.tax_id);
     document.getElementById('add-contact-modal').style.display = 'flex';
 }
 window.editContact = editContact;
@@ -13416,6 +13463,9 @@ function collectQuotePayload(status) {
         contact: contact,
         email: val('quote-email'),
         phone_number: val('quote-phone'),
+        to_company: val('quote-to-company'),
+        to_address: val('quote-to-address'),
+        to_tax_id: val('quote-to-taxid'),
         issue_date: val('quote-issue-date'),
         expiry_date: val('quote-expiry-date'),
         quote_number: val('quote-number'),
@@ -13472,6 +13522,9 @@ async function viewQuote(number) {
         put('view-quote-title', 'Quote ' + q.number);
         put('view-quote-number-val', q.number);
         put('view-quote-contact', q.to || '-');
+        put('view-quote-to-company', q.to_company || '');
+        put('view-quote-to-address', q.to_address || '');
+        put('view-quote-to-taxid', q.to_tax_id ? 'Tax ID: ' + q.to_tax_id : '');
         put('view-quote-email-display', q.email || '');
         put('view-quote-phone-display', q.phone_number || '');
         put('view-quote-issue-date', q.date || '-');

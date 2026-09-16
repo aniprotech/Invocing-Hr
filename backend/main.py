@@ -518,6 +518,10 @@ class InvoiceCreate(BaseModel):
     contact: str
     email: Optional[str] = ""
     phone_number: Optional[str] = ""
+    # Billed to. Blank means "whatever the contact record says".
+    to_company: Optional[str] = None
+    to_address: Optional[str] = None
+    to_tax_id: Optional[str] = None
     issue_date: str
     due_date: str
     invoice_number: Optional[str] = ""
@@ -3560,6 +3564,7 @@ def get_invoice(number: str, request: Request, db: Session = Depends(get_db)):
         "abn": settings_map.get("company_abn", "") or (client.abn if client else ""),
         "logo_url": client.logo_url if client else "",
     }
+    company["tax_id"] = company["abn"]
     subtotal, tax_total, grand_total = compute_invoice_totals(inv.line_items, inv.tax_type)
     overdue_days = invoice_overdue_days(inv)
     payments = db.query(models.DBPayment).filter(
@@ -3613,6 +3618,10 @@ def get_invoice(number: str, request: Request, db: Session = Depends(get_db)):
         "open_count": inv.open_count or 0,
         "last_opened": inv.last_opened or "",
         "company": company,
+        # The two parties as they belong on the document.
+        "bill_from": company,
+        "bill_to": bill_to_dict(inv),
+        "to_company": inv.to_company or "", "to_address": inv.to_address or "", "to_tax_id": inv.to_tax_id or "",
         "line_items": [{
             "name": li.name or "",
             "description": li.description,
@@ -3725,16 +3734,12 @@ def create_invoice(invoice: InvoiceCreate, request: Request, db: Session = Depen
 
     subtotal, tax, total = compute_invoice_totals(invoice.line_items, invoice.tax_type)
 
-    # Auto-save contact (scoped to client)
-    if invoice.contact and invoice.contact.strip():
-        existing = db.query(models.DBContact).filter(models.DBContact.name == invoice.contact, models.DBContact.client_id == client.id).first()
-        if existing:
-            if invoice.email and not existing.email:
-                existing.email = invoice.email
-            if invoice.phone_number and not existing.phone_number:
-                existing.phone_number = invoice.phone_number
-        else:
-            db.add(models.DBContact(name=invoice.contact, email=invoice.email or "", phone_number=invoice.phone_number or "", client_id=client.id))
+    # The contact behind the name learns what it did not know, and the
+    # invoice keeps its own copy of the billing details as they stand today.
+    to_company, to_address, to_tax_id = billing_for_document(
+        db, client.id, invoice.contact, invoice.to_company, invoice.to_address, invoice.to_tax_id)
+    remember_contact(db, client.id, invoice.contact, invoice.email or "", invoice.phone_number or "",
+                     to_company, to_address, to_tax_id)
 
     if invoice.invoice_number and invoice.invoice_number.strip() != "":
         number = invoice.invoice_number.strip()
@@ -3754,6 +3759,7 @@ def create_invoice(invoice: InvoiceCreate, request: Request, db: Session = Depen
         to_contact=invoice.contact,
         email=invoice.email,
         phone_number=invoice.phone_number,
+        to_company=to_company[:120], to_address=to_address[:600], to_tax_id=to_tax_id[:60],
         issue_date=invoice.issue_date,
         due_date=invoice.due_date,
         paid=0.00,
@@ -4191,6 +4197,61 @@ def get_open_stats(number: str, request: Request, db: Session = Depends(get_db))
 
 # --- Contacts API ---
 
+def contact_to_dict(c):
+    return {"id": c.id, "name": c.name or "", "email": c.email or "", "phone_number": c.phone_number or "",
+            "company": c.company or "", "address": c.address or "", "tax_id": c.tax_id or ""}
+
+
+def _billing_fields(body):
+    """(company, address, tax_id) from a contact request, each None when not sent."""
+    def take(key, cap):
+        v = body.get(key)
+        return None if v is None else str(v).strip()[:cap]
+    return take("company", 120), take("address", 600), take("tax_id", 60)
+
+
+def remember_contact(db, client_id, name, email="", phone="", company=None, address=None, tax_id=None):
+    """The contact behind a name on a document: made if new, and told the
+    details it did not have. Returns it. Never overwrites something the
+    business typed on the contact with something typed on one invoice."""
+    name = (name or "").strip()
+    if not name:
+        return None
+    row = db.query(models.DBContact).filter(models.DBContact.name == name, models.DBContact.client_id == client_id).first()
+    if not row:
+        row = models.DBContact(name=name, email=email or "", phone_number=phone or "", client_id=client_id,
+                               company=company or "", address=address or "", tax_id=tax_id or "")
+        db.add(row)
+        db.flush()
+        return row
+    if email and not row.email:
+        row.email = email
+    if phone and not row.phone_number:
+        row.phone_number = phone
+    if company and not row.company:
+        row.company = company
+    if address and not row.address:
+        row.address = address
+    if tax_id and not row.tax_id:
+        row.tax_id = tax_id
+    return row
+
+
+def billing_for_document(db, client_id, name, company, address, tax_id):
+    """What to write under Billed to: what was sent, else what the contact
+    record holds. Blank stays blank."""
+    row = db.query(models.DBContact).filter(models.DBContact.name == (name or "").strip(),
+                                            models.DBContact.client_id == client_id).first() if name else None
+    return ((company if company is not None else (row.company if row else "")) or "",
+            (address if address is not None else (row.address if row else "")) or "",
+            (tax_id if tax_id is not None else (row.tax_id if row else "")) or "")
+
+
+def bill_to_dict(doc):
+    return {"name": doc.to_contact or "", "company": doc.to_company or "", "address": doc.to_address or "",
+            "email": doc.email or "", "phone": doc.phone_number or "", "tax_id": doc.to_tax_id or ""}
+
+
 @app.get("/api/contacts/search")
 def search_contacts(request: Request, q: str = "", db: Session = Depends(get_db)):
     client = get_client_user(request, db)
@@ -4202,13 +4263,13 @@ def search_contacts(request: Request, q: str = "", db: Session = Depends(get_db)
             models.DBContact.email.ilike(f"%{q}%")
         ))
     contacts = query.limit(10).all()
-    return [{"id": c.id, "name": c.name, "email": c.email or "", "phone_number": c.phone_number or ""} for c in contacts]
+    return [contact_to_dict(c) for c in contacts]
 
 @app.get("/api/contacts")
 def list_contacts(request: Request, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
     contacts = db.query(models.DBContact).filter(models.DBContact.client_id == client.id).all()
-    return [{"id": c.id, "name": c.name, "email": c.email or "", "phone_number": c.phone_number or ""} for c in contacts]
+    return [contact_to_dict(c) for c in contacts]
 
 @app.post("/api/contacts")
 def create_contact(request: Request, body: dict = None, db: Session = Depends(get_db)):
@@ -4217,17 +4278,17 @@ def create_contact(request: Request, body: dict = None, db: Session = Depends(ge
         raise HTTPException(status_code=400, detail="Name required")
     existing = db.query(models.DBContact).filter(models.DBContact.name == body["name"], models.DBContact.client_id == client.id).first()
     if existing:
-        if body.get("email") and not existing.email:
-            existing.email = body["email"]
-        if body.get("phone_number") and not existing.phone_number:
-            existing.phone_number = body["phone_number"]
+        remember_contact(db, client.id, body["name"], body.get("email") or "", body.get("phone_number") or "",
+                         *_billing_fields(body))
         db.commit()
-        return {"id": existing.id, "name": existing.name, "email": existing.email or "", "phone_number": existing.phone_number or ""}
-    contact = models.DBContact(name=body["name"], email=body.get("email", ""), phone_number=body.get("phone_number", ""), client_id=client.id)
+        return contact_to_dict(existing)
+    company, address, tax_id = _billing_fields(body)
+    contact = models.DBContact(name=body["name"], email=body.get("email", ""), phone_number=body.get("phone_number", ""), client_id=client.id,
+                               company=company or "", address=address or "", tax_id=tax_id or "")
     db.add(contact)
     db.commit()
     db.refresh(contact)
-    return {"id": contact.id, "name": contact.name, "email": contact.email or "", "phone_number": contact.phone_number or ""}
+    return contact_to_dict(contact)
 
 
 @app.put("/api/contacts/{contact_id}")
@@ -4240,9 +4301,13 @@ def update_contact(contact_id: int, request: Request, body: dict = None, db: Ses
         if "name" in body: contact.name = body["name"]
         if "email" in body: contact.email = body["email"]
         if "phone_number" in body: contact.phone_number = body["phone_number"]
+        company, address, tax_id = _billing_fields(body)
+        if company is not None: contact.company = company
+        if address is not None: contact.address = address
+        if tax_id is not None: contact.tax_id = tax_id
         db.commit()
         db.refresh(contact)
-    return {"id": contact.id, "name": contact.name, "email": contact.email or "", "phone_number": contact.phone_number or ""}
+    return contact_to_dict(contact)
 
 
 @app.delete("/api/contacts/{contact_id}")
@@ -5475,6 +5540,11 @@ def update_invoice(number: str, invoice: InvoiceCreate, request: Request, db: Se
     inv.to_contact = invoice.contact
     inv.email = invoice.email
     inv.phone_number = invoice.phone_number
+    to_company, to_address, to_tax_id = billing_for_document(
+        db, client.id, invoice.contact, invoice.to_company, invoice.to_address, invoice.to_tax_id)
+    inv.to_company, inv.to_address, inv.to_tax_id = to_company[:120], to_address[:600], to_tax_id[:60]
+    remember_contact(db, client.id, invoice.contact, invoice.email or "", invoice.phone_number or "",
+                     to_company, to_address, to_tax_id)
     inv.issue_date = invoice.issue_date
     inv.due_date = invoice.due_date
     inv.tax_type = invoice.tax_type
@@ -6067,9 +6137,11 @@ def issue_recurring_invoice(db, t, on_date):
     number = next_sequence_number(db, models.DBInvoice, t.client_id, invoice_prefix_for(db, t.client_id))
     due = on_date + timedelta(days=t.payment_terms_days or 14)
 
+    to_company, to_address, to_tax_id = billing_for_document(db, t.client_id, t.to_contact, None, None, None)
     inv = models.DBInvoice(
         client_id=t.client_id, number=number, ref=t.reference or "",
         to_contact=t.to_contact, email=t.email or "", phone_number=t.phone_number or "",
+        to_company=to_company, to_address=to_address, to_tax_id=to_tax_id,
         issue_date=on_date.strftime("%Y-%m-%d"), due_date=due.strftime("%Y-%m-%d"),
         paid=0.00, due=round(total, 2), status="Draft", sent="",
         tax_type=t.tax_type, currency=t.currency or "", bank_details=t.bank_details or "",
@@ -7061,10 +7133,7 @@ def customer_detail(contact_id: int, request: Request, db: Session = Depends(get
             fallback=client.currency or "GBP")
 
     return {
-        "contact": {
-            "id": contact.id, "name": contact.name or "",
-            "email": contact.email or "", "phone_number": contact.phone_number or "",
-        },
+        "contact": contact_to_dict(contact),
         "summary": {
             "invoice_count": len(invoices),
             "quote_count": len(quotes),
@@ -7944,6 +8013,9 @@ class QuoteCreate(BaseModel):
     contact: str
     email: Optional[str] = ""
     phone_number: Optional[str] = ""
+    to_company: Optional[str] = None
+    to_address: Optional[str] = None
+    to_tax_id: Optional[str] = None
     issue_date: str
     expiry_date: str
     quote_number: Optional[str] = ""
@@ -8012,6 +8084,8 @@ def quote_to_dict(q, client, db, detail=False):
         "to": q.to_contact,
         "email": q.email or "",
         "phone_number": q.phone_number or "",
+        "to_company": q.to_company or "", "to_address": q.to_address or "", "to_tax_id": q.to_tax_id or "",
+        "bill_to": bill_to_dict(q),
         "date": q.issue_date,
         "expiry_date": q.expiry_date,
         "title": q.title or "",
@@ -8097,19 +8171,10 @@ def create_quote(quote: QuoteCreate, request: Request, db: Session = Depends(get
 
     subtotal, tax, total = compute_invoice_totals(quote.line_items, quote.tax_type)
 
-    if quote.contact and quote.contact.strip():
-        existing = db.query(models.DBContact).filter(
-            models.DBContact.name == quote.contact, models.DBContact.client_id == client.id
-        ).first()
-        if existing:
-            if quote.email and not existing.email:
-                existing.email = quote.email
-            if quote.phone_number and not existing.phone_number:
-                existing.phone_number = quote.phone_number
-        else:
-            db.add(models.DBContact(
-                name=quote.contact, email=quote.email or "",
-                phone_number=quote.phone_number or "", client_id=client.id))
+    to_company, to_address, to_tax_id = billing_for_document(
+        db, client.id, quote.contact, quote.to_company, quote.to_address, quote.to_tax_id)
+    remember_contact(db, client.id, quote.contact, quote.email or "", quote.phone_number or "",
+                     to_company, to_address, to_tax_id)
 
     if quote.quote_number and quote.quote_number.strip():
         number = quote.quote_number.strip()
@@ -8130,6 +8195,7 @@ def create_quote(quote: QuoteCreate, request: Request, db: Session = Depends(get
         to_contact=quote.contact,
         email=quote.email or "",
         phone_number=quote.phone_number or "",
+        to_company=to_company[:120], to_address=to_address[:600], to_tax_id=to_tax_id[:60],
         issue_date=quote.issue_date,
         expiry_date=quote.expiry_date,
         total=round(total, 2),
@@ -8179,6 +8245,8 @@ def update_quote(number: str, quote: QuoteCreate, request: Request, db: Session 
     q.ref = quote.reference or ""
     q.to_contact = quote.contact
     q.email = quote.email or ""
+    q.to_company, q.to_address, q.to_tax_id = billing_for_document(
+        db, client.id, quote.contact, quote.to_company, quote.to_address, quote.to_tax_id)
     q.phone_number = quote.phone_number or ""
     q.issue_date = quote.issue_date
     q.expiry_date = quote.expiry_date
@@ -8286,6 +8354,7 @@ def convert_quote_to_invoice(number: str, request: Request,
         to_contact=q.to_contact,
         email=q.email or "",
         phone_number=q.phone_number or "",
+        to_company=q.to_company or "", to_address=q.to_address or "", to_tax_id=q.to_tax_id or "",
         issue_date=issue_date,
         due_date=due_date,
         paid=0.00,
@@ -21705,8 +21774,10 @@ def public_invoice_payload(db: Session, inv, client):
             "address": client.address or "",
             "email": client.email or "",
             "phone": client.phone_number or "",
+            "tax_id": client.abn or "",
         },
-        "to": {"name": inv.to_contact or ""},
+        "to": {"name": inv.to_contact or "", "company": inv.to_company or "", "address": inv.to_address or "",
+               "tax_id": inv.to_tax_id or ""},
         "bank_details": inv.bank_details or "",
         "payment_terms": (theme.payment_terms if theme else "") or "",
         "footer_note": (theme.footer_note if theme else "") or "",
@@ -29244,9 +29315,17 @@ def statement_email(client, contact, start, end, statements, note=""):
             + (f" <span style='color:#b91c1c'>(of which overdue {st['overdue']:,.2f})</span>" if st['overdue'] else "") + "</p>")
     text = (f"Hello {contact.name or ''},\n\nYour statement of account with {company} from {start} to {end}.\n"
             + (f"\n{note}\n" if note else "") + "\n".join(parts_t) + f"\n\nKind regards,\n{company}\n")
+    def party(title, lines):
+        lines = [l for l in lines if l]
+        return (f"<div style='flex:1;min-width:200px'><div style='font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#64748b'>{title}</div>"
+                + "".join(f"<div>{esc_(l)}</div>" for l in lines) + "</div>")
+    parties = ("<div style='display:flex;gap:24px;flex-wrap:wrap;margin:0 0 16px;font-size:13px'>"
+               + party("From", [company, client.address or "", client.email or "", client.phone_number or "", (f"Tax ID {client.abn}" if client.abn else "")])
+               + party("To", [contact.name or "", contact.company or "", contact.address or "", contact.email or "", (f"Tax ID {contact.tax_id}" if contact.tax_id else "")])
+               + "</div>")
     html = (f"<div style='font-family:Arial,Helvetica,sans-serif;max-width:640px;margin:0 auto;padding:24px;color:#0f172a'>"
             f"<h2 style='margin:0 0 4px'>Statement of account</h2><p style='margin:0 0 12px;color:#475569'>{esc_(company)} &middot; {esc_(start)} to {esc_(end)}</p>"
-            f"<p>Hello {esc_(contact.name or '')},</p>" + (f"<p>{esc_(note)}</p>" if note else "") + "".join(parts_h)
+            + parties + f"<p>Hello {esc_(contact.name or '')},</p>" + (f"<p>{esc_(note)}</p>" if note else "") + "".join(parts_h)
             + f"<p style='margin-top:18px'>Kind regards,<br>{esc_(company)}</p></div>")
     subject = f"Statement of account from {company}: {start} to {end}"
     return subject, text, html

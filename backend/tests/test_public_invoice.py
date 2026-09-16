@@ -148,7 +148,10 @@ def test_it_does_not_expose_the_customer_contact_details(client, tenant):
     may be forwarded."""
     inv = issued(tenant, contact="Anika Care Limited", email="private@example.com")
     body = client.get(f"/api/public/invoices/{tracking_id_of(tenant, inv['number'])}").json()
-    assert body["to"] == {"name": "Anika Care Limited"}
+    # What is printed on their invoice - name, company, billing address, tax
+    # id - and nothing that is not: no email, no phone.
+    assert set(body["to"]) == {"name", "company", "address", "tax_id"}
+    assert body["to"]["name"] == "Anika Care Limited"
     assert "private@example.com" not in str(body)
 
 

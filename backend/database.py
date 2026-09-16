@@ -1730,6 +1730,25 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 59: {sys.exc_info()[1]}")
 
+            # 60. Billed to: the customer's company, billing address and tax
+            # id on the contact, and a copy on each invoice and quote.
+            try:
+                for ddl in (
+                    "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS company VARCHAR DEFAULT ''",
+                    "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS address TEXT DEFAULT ''",
+                    "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS tax_id VARCHAR DEFAULT ''",
+                    "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS to_company VARCHAR DEFAULT ''",
+                    "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS to_address TEXT DEFAULT ''",
+                    "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS to_tax_id VARCHAR DEFAULT ''",
+                    "ALTER TABLE quotes ADD COLUMN IF NOT EXISTS to_company VARCHAR DEFAULT ''",
+                    "ALTER TABLE quotes ADD COLUMN IF NOT EXISTS to_address TEXT DEFAULT ''",
+                    "ALTER TABLE quotes ADD COLUMN IF NOT EXISTS to_tax_id VARCHAR DEFAULT ''",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 60: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

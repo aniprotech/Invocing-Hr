@@ -84,6 +84,11 @@ class DBInvoice(Base):
     to_contact = Column(String)
     email = Column(String, default="")
     phone_number = Column(String, default="")
+    # Billed to, as it stood when the invoice was raised. The contact record
+    # can change afterwards; the invoice must not.
+    to_company = Column(String, default="")
+    to_address = Column(Text, default="")
+    to_tax_id = Column(String, default="")
     issue_date = Column(String)
     due_date = Column(String)
     paid = Column(Float, default=0.0)
@@ -380,6 +385,9 @@ class DBQuote(Base):
     to_contact = Column(String)
     email = Column(String, default="")
     phone_number = Column(String, default="")
+    to_company = Column(String, default="")
+    to_address = Column(Text, default="")
+    to_tax_id = Column(String, default="")
     issue_date = Column(String)
     expiry_date = Column(String)
     total = Column(Float, default=0.0)
@@ -435,6 +443,11 @@ class DBContact(Base):
     name = Column(String, index=True)
     email = Column(String)
     phone_number = Column(String)
+    # What goes under "Billed to" on their invoices: the company the person
+    # bills for, where it is, and its tax number (GSTIN, VAT, ABN...).
+    company = Column(String, default="")
+    address = Column(Text, default="")
+    tax_id = Column(String, default="")
 
     client = relationship("DBClient", back_populates="contacts")
 
