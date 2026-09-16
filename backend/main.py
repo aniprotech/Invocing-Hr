@@ -9680,6 +9680,7 @@ def delete_employee(emp_id: int, request: Request, db: Session = Depends(get_db)
         models.DBNotification, models.DBOvertimeLog,
         models.DBReview, models.DBCertification, models.DBEmploymentChange, models.DBCheckIn,
         models.DBPeerFeedback, models.DBEmployeeSkill, models.DBPolicyAck, models.DBCustomValue,
+        models.DBCourseAssignment,
     ):
         db.query(model).filter(model.employee_id == emp_id).delete(synchronize_session=False)
     db.query(models.DBCheckIn).filter(models.DBCheckIn.manager_id == emp_id).delete(synchronize_session=False)
@@ -11002,6 +11003,8 @@ def hr_dashboard_data(db, client):
          "view": "onboarding-hub-view"},
         {"key": "payroll", "label": "Payslips not paid", "count": len(unpaid),
          "view": "payroll-view"},
+        {"key": "training", "label": "Training overdue", "count": training_summary(db, cid)["overdue_count"],
+         "view": "training-view"},
         {"key": "reviews", "label": "Reviews for HR to write", "count": reviews_for_hr,
          "view": "reviews-view"},
         {"key": "certifications", "label": "Certifications expiring or lapsed",
@@ -16484,29 +16487,190 @@ def working_days_between(start_date, end_date, settings=None) -> float:
     return float(days)
 
 
-def leave_balance_for(db, emp) -> dict:
-    """Entitlement and usage per leave type for one employee."""
-    leaves = db.query(models.DBLeaveRequest).filter(
-        models.DBLeaveRequest.employee_id == emp.id
-    ).all()
+# ---------------------------------------------------------------------------
+# The leave year
+# ---------------------------------------------------------------------------
+# Balances used to count every day ever approved against one entitlement,
+# so in a person's second year they had none left. A leave year has a start;
+# days accrue across it, up front or month by month; what is left at the end
+# carries over up to a cap and lapses after a while; a joiner gets the share
+# of the year they are here for. All of it the business's choice, written
+# once, under Leave.
 
-    def taken(kind, statuses):
-        return round(sum(l.days or 0 for l in leaves if l.leave_type == kind and l.status in statuses), 2)
+LEAVE_ACCRUAL = ("upfront", "monthly")
 
-    annual_total = emp.annual_leave_entitlement if emp.annual_leave_entitlement is not None else 25.0
-    sick_total = emp.sick_leave_entitlement if emp.sick_leave_entitlement is not None else 10.0
-    annual_taken = taken("annual", ("approved",))
-    annual_pending = taken("annual", ("pending",))
-    sick_taken = taken("sick", ("approved",))
+
+def leave_policy_for(db, client_id):
+    def num(key, default):
+        try:
+            return float(tenant_setting(db, client_id, key, default))
+        except (TypeError, ValueError):
+            return float(default)
+    start = str(tenant_setting(db, client_id, "leave_year_start", "01-01") or "01-01")
+    if not re.fullmatch(r"(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])", start):
+        start = "01-01"
+    accrual = str(tenant_setting(db, client_id, "leave_accrual", "upfront") or "upfront")
+    return {
+        "year_start": start,                                   # MM-DD
+        "accrual": accrual if accrual in LEAVE_ACCRUAL else "upfront",
+        "carry_over_max": max(0.0, num("leave_carry_over_max", 0)),
+        "carry_over_expires_months": int(max(0.0, num("leave_carry_over_expires_months", 3))),
+        "pro_rata": str(tenant_setting(db, client_id, "leave_pro_rata", "1")).lower() not in ("0", "false", "no", "off"),
+    }
+
+
+def _safe_date(y, m, d):
+    """A date, with the day pulled back to the month's last if it has fewer."""
+    for day in (d, 30, 29, 28):
+        try:
+            return date(y, m, min(d, day))
+        except ValueError:
+            continue
+    return date(y, m, 28)
+
+
+def _add_months(d, months):
+    m = d.month - 1 + months
+    return _safe_date(d.year + m // 12, m % 12 + 1, d.day)
+
+
+def leave_year_bounds(policy, today):
+    """[start, end) of the leave year that contains today."""
+    mm, dd = int(policy["year_start"][:2]), int(policy["year_start"][3:])
+    this = _safe_date(today.year, mm, dd)
+    start = this if this <= today else _safe_date(today.year - 1, mm, dd)
+    return start, _add_months(start, 12)
+
+
+def _months_between(a, b):
+    """Whole months from a to b, floor."""
+    if b <= a:
+        return 0
+    months = (b.year - a.year) * 12 + (b.month - a.month)
+    if b.day < a.day:
+        months -= 1
+    return max(0, months)
+
+
+def leave_accrued(policy, entitlement, year_start, year_end, start_date, today):
+    """What a person has earned of this year's entitlement by today."""
+    joined = _parse_date(start_date) if start_date else None
+    from_day = max(year_start, joined) if joined else year_start
+    if from_day >= year_end:
+        return 0.0
+    months_in_year = 12
+    if policy["accrual"] == "monthly":
+        # A month is earned at the end of its last day - the 31st has it, so
+        # the year's last month is not lost to the year after.
+        months = min(months_in_year, _months_between(from_day, min(today + timedelta(days=1), year_end)))
+        share = months / months_in_year
+    else:
+        share = 1.0
+        if policy["pro_rata"] and joined and joined > year_start:
+            share = max(0.0, (year_end - joined).days / (year_end - year_start).days)
+    return round(entitlement * share, 2)
+
+
+def leave_balance_for(db, emp, today=None) -> dict:
+    """Entitlement and usage per leave type for one employee, for the leave
+    year that contains today, with whatever carried in from last year."""
+    today = today or date.today()
+    policy = leave_policy_for(db, emp.client_id)
+    ys, ye = leave_year_bounds(policy, today)
+    last_ys, _last_ye = leave_year_bounds(policy, ys - timedelta(days=1))
+    leaves = db.query(models.DBLeaveRequest).filter(models.DBLeaveRequest.employee_id == emp.id).all()
+
+    def taken(kind, statuses, a, b):
+        return round(sum(l.days or 0 for l in leaves if l.leave_type == kind and l.status in statuses
+                         and a.isoformat() <= (l.start_date or "") < b.isoformat()), 2)
+
+    annual_ent = emp.annual_leave_entitlement if emp.annual_leave_entitlement is not None else 25.0
+    sick_ent = emp.sick_leave_entitlement if emp.sick_leave_entitlement is not None else 10.0
+    accrued = leave_accrued(policy, annual_ent, ys, ye, emp.start_date, today)
+
+    # Carried over: what was left of last year, capped, and only until it lapses.
+    carried, carry_expires = 0.0, ""
+    if policy["carry_over_max"] > 0:
+        # A joiner this year accrued nothing last year, so carries nothing in.
+        last_accrued = leave_accrued(policy, annual_ent, last_ys, ys, emp.start_date, ys - timedelta(days=1))
+        left_last_year = max(0.0, last_accrued - taken("annual", ("approved",), last_ys, ys))
+        carried = round(min(policy["carry_over_max"], left_last_year), 2)
+        if policy["carry_over_expires_months"]:
+            expiry = _add_months(ys, policy["carry_over_expires_months"]) - timedelta(days=1)
+            carry_expires = expiry.isoformat()
+            if today > expiry:
+                # Whatever of it was used before the day it lapsed stays used;
+                # the rest is gone.
+                used_before = taken("annual", ("approved",), ys, expiry + timedelta(days=1))
+                carried = round(min(carried, used_before), 2)
+
+    annual_taken = taken("annual", ("approved",), ys, ye)
+    annual_pending = taken("annual", ("pending",), ys, ye)
+    annual_total = round(accrued + carried, 2)
+    sick_taken = taken("sick", ("approved",), ys, ye)
     return {
         "annual_total": annual_total,
+        "annual_entitlement": annual_ent,
+        "annual_accrued": accrued,
+        "annual_carried": carried,
+        "carry_expires_on": carry_expires,
         "annual_taken": annual_taken,
         "annual_pending": annual_pending,
         "annual_remaining": round(annual_total - annual_taken - annual_pending, 2),
-        "sick_total": sick_total,
+        "sick_total": sick_ent,
         "sick_taken": sick_taken,
-        "sick_remaining": round(sick_total - sick_taken, 2),
+        "sick_remaining": round(sick_ent - sick_taken, 2),
+        "leave_year_start": ys.isoformat(),
+        "leave_year_end": (ye - timedelta(days=1)).isoformat(),
+        "accrual": policy["accrual"],
     }
+
+
+@app.get("/api/hr/leave-policy")
+def get_leave_policy(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    policy = leave_policy_for(db, client.id)
+    ys, ye = leave_year_bounds(policy, date.today())
+    return dict(policy, current_year_start=ys.isoformat(), current_year_end=(ye - timedelta(days=1)).isoformat(),
+                accruals=list(LEAVE_ACCRUAL))
+
+
+@app.put("/api/hr/leave-policy")
+def set_leave_policy(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """The leave year, how days accrue, and what carries over."""
+    client = get_client_user(request, db)
+    body = body or {}
+    updates = {}
+    if "year_start" in body:
+        v = str(body.get("year_start") or "").strip()
+        if not re.fullmatch(r"(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])", v):
+            raise HTTPException(status_code=400, detail="The leave year starts on a day given as MM-DD, like 04-01")
+        updates["leave_year_start"] = v
+    if "accrual" in body:
+        v = str(body.get("accrual") or "").strip().lower()
+        if v not in LEAVE_ACCRUAL:
+            raise HTTPException(status_code=400, detail="Accrual is upfront or monthly")
+        updates["leave_accrual"] = v
+    for key, setting, cap in (("carry_over_max", "leave_carry_over_max", 365), ("carry_over_expires_months", "leave_carry_over_expires_months", 12)):
+        if key in body:
+            try:
+                v = float(body.get(key) or 0)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"{key} must be a number")
+            if v < 0 or v > cap:
+                raise HTTPException(status_code=400, detail=f"{key} must be between 0 and {cap}")
+            updates[setting] = str(int(v) if key.endswith("months") else v)
+    if "pro_rata" in body:
+        updates["leave_pro_rata"] = "1" if body.get("pro_rata") else "0"
+    for key, value in updates.items():
+        row = db.query(models.DBSettings).filter(models.DBSettings.client_id == client.id, models.DBSettings.key == key).first()
+        if row:
+            row.value = value
+        else:
+            db.add(models.DBSettings(client_id=client.id, key=key, value=value))
+    log_audit(db, client.id, "leave_policy_updated", "settings", None, "leave policy", ", ".join(f"{k}={v}" for k, v in updates.items()), request)
+    db.commit()
+    return get_leave_policy(request, db)
 
 
 @app.get("/api/employee/leave")
@@ -25134,6 +25298,7 @@ def hr_analytics(request: Request, db: Session = Depends(get_db)):
         "skills": skills_block,
         "absence": absence_block,
         "recognition": recognition_summary(db, cid, today),
+        "training": training_summary(db, cid, today),
         "headcount": {
             "now": len(current), "joiners_12m": joiners_12m, "leavers_12m": leavers_12m,
             "turnover_pct": turnover, "average_headcount_12m": round(avg_headcount, 1),
@@ -27944,7 +28109,10 @@ def my_todo(request: Request, db: Session = Depends(get_db)):
         models.DBEmployeeGoal.employee_id == emp.id, models.DBEmployeeGoal.status != "completed",
         models.DBEmployeeGoal.due_date != "", models.DBEmployeeGoal.due_date < today).count()
     prob = probation_to_dict(emp)
+    training_open = sum(1 for a in db.query(models.DBCourseAssignment).filter(models.DBCourseAssignment.employee_id == emp.id).all()
+                        if assignment_status(a) != "done")
     items = [
+        {"key": "training", "label": "Training to complete", "count": training_open, "tab": "documents"},
         {"key": "self_review", "label": "Your self-assessment to write", "count": self_to_write, "tab": "reviews"},
         {"key": "reviews", "label": "Reviews to write", "count": to_review, "tab": "reviews"},
         {"key": "review_ready", "label": "A review to read", "count": ready, "tab": "reviews"},
@@ -27976,7 +28144,7 @@ def superadmin_hr_adoption(request: Request, db: Session = Depends(get_db)):
         "certifications": count(models.DBCertification), "pay_bands": count(models.DBPayBand),
         "workflows": count(models.DBWorkflow), "webhooks": count(models.DBWebhook), "api_keys": count(models.DBApiKey),
         "custom_fields": count(models.DBCustomField), "expenses": count(models.DBExpenseClaim), "posts": count(models.DBPost),
-        "kudos": count(models.DBKudos),
+        "kudos": count(models.DBKudos), "courses": count(models.DBCourse),
     }
     out = []
     for c in db.query(models.DBClient).order_by(models.DBClient.id).all():
@@ -29386,6 +29554,330 @@ def job_monthly_statements(db, now):
             if ok:
                 sent += 1
                 log_audit(db, client.id, "statement_sent", "contact", contact.id, contact.name or "", f"{start} to {end} to {to} (monthly)")
+    db.commit()
+    return f"{sent} sent"
+
+
+# ============================================================================
+# Training courses
+# ============================================================================
+# Certifications record what somebody has already proved. A course is what
+# they are asked to learn: a link, a due date, and a tick when it is done.
+# HR assigns one to a person, a department or everybody; the person sees
+# it in the portal and marks it done (or HR does); a course that must be
+# repeated comes due again; reminders go out a week before and on the
+# day; the HR dashboard and the digest count what is overdue.
+
+def course_to_dict(c, counts=None):
+    counts = counts or {}
+    return {"id": c.id, "title": c.title or "", "description": c.description or "", "link": c.link or "",
+            "provider": c.provider or "", "duration_hours": c.duration_hours or 0, "mandatory": bool(c.mandatory),
+            "due_days": c.due_days or 30, "renew_months": c.renew_months or 0, "self_complete": bool(c.self_complete),
+            "active": bool(c.active), "created_at": c.created_at or "",
+            "assigned": counts.get("assigned", 0), "done": counts.get("done", 0), "overdue": counts.get("overdue", 0)}
+
+
+def assignment_status(a, today=None):
+    """assigned | overdue | done | due_again - what the row means today."""
+    today = (today or date.today()).isoformat()
+    if a.status == "done":
+        if a.expires_on and a.expires_on <= today:
+            return "due_again"
+        return "done"
+    if a.due_on and a.due_on < today:
+        return "overdue"
+    return "assigned"
+
+
+def assignment_to_dict(a, course=None, names=None, today=None):
+    names = names or {}
+    out = {"id": a.id, "course_id": a.course_id, "employee_id": a.employee_id, "employee": names.get(a.employee_id, ""),
+           "assigned_on": a.assigned_on or "", "due_on": a.due_on or "", "status": assignment_status(a, today),
+           "completed_on": a.completed_on or "", "completed_by": a.completed_by or "", "expires_on": a.expires_on or "",
+           "note": a.note or ""}
+    if course is not None:
+        out["course"] = {"id": course.id, "title": course.title or "", "link": course.link or "", "provider": course.provider or "",
+                         "duration_hours": course.duration_hours or 0, "mandatory": bool(course.mandatory),
+                         "self_complete": bool(course.self_complete), "description": course.description or ""}
+    return out
+
+
+def _course_or_404(db, client_id, course_id):
+    c = db.query(models.DBCourse).filter(models.DBCourse.id == course_id, models.DBCourse.client_id == client_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Course not found")
+    return c
+
+
+def _read_course(body, existing=None):
+    body = body or {}
+    def pick(key, default):
+        return body[key] if key in body else (getattr(existing, key) if existing is not None else default)
+    title = str(pick("title", "") or "").strip()[:160]
+    if not title:
+        raise HTTPException(status_code=400, detail="Give the course a title")
+    link = str(pick("link", "") or "").strip()[:500]
+    if link and not re.match(r"^https?://", link, re.I):
+        raise HTTPException(status_code=400, detail="The link must start with http:// or https://")
+    try:
+        due_days = int(pick("due_days", 30) or 0)
+        renew_months = int(pick("renew_months", 0) or 0)
+        hours = float(pick("duration_hours", 0) or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Days, months and hours must be numbers")
+    if due_days < 0 or due_days > 730 or renew_months < 0 or renew_months > 120 or hours < 0:
+        raise HTTPException(status_code=400, detail="Days, months and hours must be sensible")
+    return {"title": title, "description": str(pick("description", "") or "").strip()[:2000], "link": link,
+            "provider": str(pick("provider", "") or "").strip()[:120], "duration_hours": hours,
+            "mandatory": bool(pick("mandatory", False)), "due_days": due_days, "renew_months": renew_months,
+            "self_complete": bool(pick("self_complete", True)), "active": bool(pick("active", True))}
+
+
+def course_counts(db, client_id):
+    today = date.today()
+    out = {}
+    for a in db.query(models.DBCourseAssignment).filter(models.DBCourseAssignment.client_id == client_id).all():
+        c = out.setdefault(a.course_id, {"assigned": 0, "done": 0, "overdue": 0})
+        c["assigned"] += 1
+        st = assignment_status(a, today)
+        if st == "done":
+            c["done"] += 1
+        elif st == "overdue":
+            c["overdue"] += 1
+    return out
+
+
+@app.get("/api/courses")
+def list_courses(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    counts = course_counts(db, client.id)
+    rows = db.query(models.DBCourse).filter(models.DBCourse.client_id == client.id).order_by(models.DBCourse.active.desc(), models.DBCourse.title).all()
+    return {"courses": [course_to_dict(c, counts.get(c.id)) for c in rows]}
+
+
+@app.post("/api/courses")
+def create_course(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = models.DBCourse(client_id=client.id, **_read_course(body))
+    db.add(row)
+    log_audit(db, client.id, "course_created", "course", None, row.title, "", request)
+    db.commit()
+    db.refresh(row)
+    return course_to_dict(row)
+
+
+@app.put("/api/courses/{course_id}")
+def update_course(course_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = _course_or_404(db, client.id, course_id)
+    for k, v in _read_course(body, row).items():
+        setattr(row, k, v)
+    db.commit()
+    db.refresh(row)
+    return course_to_dict(row, course_counts(db, client.id).get(row.id))
+
+
+@app.delete("/api/courses/{course_id}")
+def delete_course(course_id: int, request: Request, db: Session = Depends(get_db)):
+    """Gone if nobody was ever assigned it; otherwise closed, so the
+    record of who did it stays."""
+    client = get_client_user(request, db)
+    row = _course_or_404(db, client.id, course_id)
+    used = db.query(models.DBCourseAssignment).filter(models.DBCourseAssignment.course_id == row.id).count()
+    if used:
+        row.active = False
+        db.commit()
+        return {"message": f"Closed - {used} assignment{'s' if used != 1 else ''} keep their record", "closed": True}
+    db.delete(row)
+    db.commit()
+    return {"message": "Removed", "closed": False}
+
+
+def assign_course(db, client_id, course, emp, assigned_by, today=None):
+    """One assignment per person per course. Somebody who has it open
+    keeps it; somebody who did it and is due again gets a fresh due date."""
+    today = today or date.today()
+    row = db.query(models.DBCourseAssignment).filter(models.DBCourseAssignment.course_id == course.id,
+                                                     models.DBCourseAssignment.employee_id == emp.id).first()
+    due = (today + timedelta(days=course.due_days or 30)).isoformat()
+    if row:
+        if assignment_status(row, today) != "due_again":
+            return row, False
+        row.status, row.assigned_on, row.due_on = "assigned", today.isoformat(), due
+        row.completed_on, row.completed_by, row.expires_on, row.reminded_at = "", "", "", ""
+        return row, True
+    row = models.DBCourseAssignment(client_id=client_id, course_id=course.id, employee_id=emp.id,
+                                    assigned_on=today.isoformat(), due_on=due, assigned_by=assigned_by[:120])
+    db.add(row)
+    return row, True
+
+
+@app.post("/api/courses/{course_id}/assign")
+def assign_course_route(course_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """To named people, a department, or everybody still here."""
+    client = get_client_user(request, db)
+    course = _course_or_404(db, client.id, course_id)
+    if not course.active:
+        raise HTTPException(status_code=400, detail="This course is closed")
+    body = body or {}
+    people = [e for e in db.query(models.DBEmployee).filter(models.DBEmployee.client_id == client.id).all() if employee_is_current(e)]
+    if body.get("everyone"):
+        chosen = people
+    elif body.get("department_id"):
+        chosen = [e for e in people if e.department_id == int(body["department_id"])]
+    else:
+        ids = {int(i) for i in (body.get("employee_ids") or []) if str(i).isdigit()}
+        chosen = [e for e in people if e.id in ids]
+    if not chosen:
+        raise HTTPException(status_code=400, detail="Nobody to assign it to")
+    made = 0
+    for e in chosen:
+        row, fresh = assign_course(db, client.id, course, e, _hr_name(client))
+        if fresh:
+            made += 1
+            notify_employee(db, e, f"Training: {course.title}",
+                            f"Please complete this by {row.due_on}." + (f" {course.link}" if course.link else ""), "info", "", _hr_name(client))
+    log_audit(db, client.id, "course_assigned", "course", course.id, course.title, f"{made} of {len(chosen)} people", request)
+    db.commit()
+    return {"assigned": made, "already": len(chosen) - made}
+
+
+@app.get("/api/courses/{course_id}/assignments")
+def course_assignments(course_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    course = _course_or_404(db, client.id, course_id)
+    names = _employee_names(db, client.id)
+    rows = db.query(models.DBCourseAssignment).filter(models.DBCourseAssignment.course_id == course.id).all()
+    out = [assignment_to_dict(a, None, names) for a in rows]
+    order = {"overdue": 0, "due_again": 1, "assigned": 2, "done": 3}
+    out.sort(key=lambda r: (order.get(r["status"], 9), r["due_on"], r["employee"].lower()))
+    return {"course": course_to_dict(course, course_counts(db, client.id).get(course.id)), "assignments": out}
+
+
+@app.post("/api/courses/{course_id}/assignments/{employee_id}/complete")
+def hr_complete_course(course_id: int, employee_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    course = _course_or_404(db, client.id, course_id)
+    a = db.query(models.DBCourseAssignment).filter(models.DBCourseAssignment.course_id == course.id,
+                                                   models.DBCourseAssignment.employee_id == employee_id,
+                                                   models.DBCourseAssignment.client_id == client.id).first()
+    if not a:
+        raise HTTPException(status_code=404, detail="Not assigned")
+    complete_assignment(db, a, course, "hr", str((body or {}).get("note") or "")[:300], (body or {}).get("completed_on"))
+    db.commit()
+    return assignment_to_dict(a, course, _employee_names(db, client.id))
+
+
+@app.delete("/api/courses/{course_id}/assignments/{employee_id}")
+def unassign_course(course_id: int, employee_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    course = _course_or_404(db, client.id, course_id)
+    a = db.query(models.DBCourseAssignment).filter(models.DBCourseAssignment.course_id == course.id,
+                                                   models.DBCourseAssignment.employee_id == employee_id,
+                                                   models.DBCourseAssignment.client_id == client.id).first()
+    if not a:
+        raise HTTPException(status_code=404, detail="Not assigned")
+    db.delete(a)
+    db.commit()
+    return {"message": "Unassigned"}
+
+
+def complete_assignment(db, a, course, who, note="", on=None):
+    on = _clean_ymd(on, "completed_on") or date.today().isoformat()
+    a.status, a.completed_on, a.completed_by, a.note = "done", on, who, note or a.note or ""
+    a.expires_on = _add_months(_parse_date(on), course.renew_months).isoformat() if course.renew_months else ""
+
+
+@app.get("/api/employees/{emp_id}/courses")
+def hr_employee_courses(emp_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    return {"courses": _courses_for(db, emp)}
+
+
+def _courses_for(db, emp):
+    courses = {c.id: c for c in db.query(models.DBCourse).filter(models.DBCourse.client_id == emp.client_id).all()}
+    rows = db.query(models.DBCourseAssignment).filter(models.DBCourseAssignment.employee_id == emp.id).all()
+    out = [assignment_to_dict(a, courses.get(a.course_id)) for a in rows if a.course_id in courses]
+    order = {"overdue": 0, "due_again": 1, "assigned": 2, "done": 3}
+    out.sort(key=lambda r: (order.get(r["status"], 9), r["due_on"]))
+    return out
+
+
+@app.get("/api/employee/courses")
+def my_courses(request: Request, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    return {"courses": _courses_for(db, emp)}
+
+
+@app.post("/api/employee/courses/{course_id}/complete")
+def my_course_done(course_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    emp = current_employee(request, db)
+    course = db.query(models.DBCourse).filter(models.DBCourse.id == course_id, models.DBCourse.client_id == emp.client_id).first()
+    a = db.query(models.DBCourseAssignment).filter(models.DBCourseAssignment.course_id == course_id,
+                                                   models.DBCourseAssignment.employee_id == emp.id).first() if course else None
+    if not a:
+        raise HTTPException(status_code=404, detail="Not assigned to you")
+    if not course.self_complete:
+        raise HTTPException(status_code=403, detail="HR marks this one done once they have seen it")
+    if assignment_status(a) == "done":
+        return assignment_to_dict(a, course)
+    complete_assignment(db, a, course, "employee", str((body or {}).get("note") or "")[:300])
+    db.commit()
+    return assignment_to_dict(a, course)
+
+
+def training_summary(db, client_id, today=None):
+    """For the dashboard and the digest: what is overdue and due soon."""
+    today = today or date.today()
+    soon = (today + timedelta(days=7)).isoformat()
+    names = _employee_names(db, client_id)
+    courses = {c.id: c for c in db.query(models.DBCourse).filter(models.DBCourse.client_id == client_id).all()}
+    overdue, due_soon, open_count, done_count = [], [], 0, 0
+    for a in db.query(models.DBCourseAssignment).filter(models.DBCourseAssignment.client_id == client_id).all():
+        st = assignment_status(a, today)
+        c = courses.get(a.course_id)
+        if st in ("overdue", "due_again"):
+            overdue.append({"name": names.get(a.employee_id, ""), "course": c.title if c else "", "due_on": a.due_on if st == "overdue" else a.expires_on})
+        elif st == "assigned":
+            open_count += 1
+            if a.due_on and a.due_on <= soon:
+                due_soon.append({"name": names.get(a.employee_id, ""), "course": c.title if c else "", "due_on": a.due_on})
+        else:
+            done_count += 1
+    total = len(overdue) + open_count + done_count
+    return {"overdue": overdue[:20], "overdue_count": len(overdue), "due_soon": due_soon[:20], "open": open_count,
+            "done": done_count, "completion_pct": round(100 * done_count / total) if total else None}
+
+
+@scheduled_job("training_reminders")
+def job_training_reminders(db, now):
+    """A week before it is due, on the day, and once when it is overdue -
+    to the person; HR reads the dashboard."""
+    today = now.date()
+    sent = 0
+    for a in db.query(models.DBCourseAssignment).filter(models.DBCourseAssignment.status == "assigned").all():
+        if not a.due_on:
+            continue
+        due = _parse_date(a.due_on)
+        if not due:
+            continue
+        days = (due - today).days
+        stage = "week" if days == 7 else "day" if days == 0 else "late" if days < 0 else ""
+        if not stage or stage in (a.reminded_at or "").split():
+            continue
+        emp = db.get(models.DBEmployee, a.employee_id)
+        course = db.get(models.DBCourse, a.course_id)
+        if not emp or not course or not employee_is_current(emp):
+            continue
+        words = {"week": f"is due in a week, on {a.due_on}", "day": "is due today",
+                 "late": f"was due on {a.due_on} and is overdue"}[stage]
+        notify_employee(db, emp, f"Training: {course.title}", f"{course.title} {words}." + (f" {course.link}" if course.link else ""),
+                        "warning" if stage == "late" else "info")
+        a.reminded_at = ((a.reminded_at or "") + " " + stage).strip()
+        sent += 1
     db.commit()
     return f"{sent} sent"
 

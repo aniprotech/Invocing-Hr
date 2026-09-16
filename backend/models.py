@@ -2607,3 +2607,44 @@ class DBRefund(Base):
     refunded_on = Column(String, default="")
     created_by = Column(String, default="")
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBCourse(Base):
+    """Something people are asked to learn: a link or a place, how long it
+    takes, whether it is mandatory, and whether it has to be done again."""
+    __tablename__ = "courses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    title = Column(String, default="")
+    description = Column(Text, default="")
+    link = Column(String, default="")
+    provider = Column(String, default="")
+    duration_hours = Column(Float, default=0.0)
+    mandatory = Column(Boolean, default=False)
+    due_days = Column(Integer, default=30)            # after assignment
+    renew_months = Column(Integer, default=0)         # 0 = once is enough
+    # Whether the person can mark it done themselves, or HR must.
+    self_complete = Column(Boolean, default=True)
+    active = Column(Boolean, default=True)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBCourseAssignment(Base):
+    __tablename__ = "course_assignments"
+    __table_args__ = (UniqueConstraint("course_id", "employee_id", name="uq_course_assignment"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+    assigned_on = Column(String, default="")
+    due_on = Column(String, default="", index=True)
+    status = Column(String, default="assigned", index=True)   # assigned | done
+    completed_on = Column(String, default="")
+    completed_by = Column(String, default="")                  # employee | hr
+    expires_on = Column(String, default="")                    # when it must be done again
+    note = Column(String, default="")
+    reminded_at = Column(String, default="")
+    assigned_by = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))

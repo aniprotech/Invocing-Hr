@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=178">
-    <link rel="stylesheet" href="mobile.css?v=178">
+    <link rel="stylesheet" href="styles.css?v=179">
+    <link rel="stylesheet" href="mobile.css?v=179">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,11 +57,11 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=178">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=178">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=178">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=178">
-    <script src="/dialogs.js?v=178"></script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=179">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=179">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=179">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=179">
+    <script src="/dialogs.js?v=179"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -2202,9 +2202,16 @@
                             <p class="subtitle">What people are qualified to do, and when that runs out</p>
                         </div>
                         <div class="invoices-actions">
+                            <button class="btn btn-outline" onclick="editCourse()">+ New course</button>
                             <button class="btn btn-primary" onclick="addCertification()">+ Add certification</button>
                         </div>
                     </div>
+                    <!-- Courses: what people are asked to learn, who has, who is late. -->
+                    <div class="glass-widget" style="margin-bottom:24px;">
+                        <div class="widget-header"><h3>Courses</h3><span id="courses-note" style="font-size:0.8rem;color:var(--text-secondary);"></span></div>
+                        <div class="widget-content" style="padding:0;" id="courses-list"></div>
+                    </div>
+                    <div id="course-detail" style="margin-bottom:24px;"></div>
                     <div class="grid-4 mb-24" id="training-tiles"></div>
                     <div class="invoices-tabs" id="training-tabs">
                         <button class="tab active" onclick="switchTrainingTab('', this)">All</button>
@@ -2483,6 +2490,16 @@
                                     <p style="color:var(--text-secondary);font-size:0.85rem;">No fields defined. Add some under Settings &rarr; Employee fields.</p>
                                 </div>
                             </div>
+                            <!-- What they have been asked to learn, and whether they have. -->
+                            <div class="glass-widget" style="margin-top:24px;">
+                                <div class="widget-header">
+                                    <h3>Training</h3>
+                                    <button class="btn btn-outline btn-sm" onclick="assignCourseTo(currentEmployeeId)">+ Assign</button>
+                                </div>
+                                <div class="widget-content" id="emp-courses-list">
+                                    <p style="color:var(--text-secondary);font-size:0.85rem;">Nothing assigned.</p>
+                                </div>
+                            </div>
                             <!-- What they can do, at what level. Theirs to add, HR's to confirm. -->
                             <div class="glass-widget" style="margin-top:24px;">
                                 <div class="widget-header">
@@ -2729,9 +2746,13 @@
                             <p class="subtitle">Review and manage employee leave applications</p>
                         </div>
                         <div class="invoices-actions">
+                            <button class="btn btn-outline" onclick="editLeavePolicy()">Leave policy</button>
                             <a class="btn btn-outline" href="/api/leave/export.csv" download="leave.csv">Export CSV</a>
                         </div>
                     </div>
+                    <!-- The leave year, how days accrue and what carries over. One line;
+                         the button opens the rest. -->
+                    <p id="leave-policy-line" style="font-size:0.82rem;color:var(--text-secondary);margin:-8px 0 16px;"></p>
                     
                     <!-- Leave Metrics -->
                     <div class="grid-4 mb-24" id="leave-metrics-row">
@@ -4560,8 +4581,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="feed.js?v=178"></script>
-    <script src="app.js?v=178"></script>
+    <script src="feed.js?v=179"></script>
+    <script src="app.js?v=179"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
@@ -4789,7 +4810,7 @@
             </div>
         </div>
     </div>
-    <script src="/install-hint.js?v=178"></script>
-    <script src="/pwa.js?v=178"></script>
+    <script src="/install-hint.js?v=179"></script>
+    <script src="/pwa.js?v=179"></script>
 </body>
 </html>

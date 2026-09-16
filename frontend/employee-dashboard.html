@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=178">
+  <link rel="stylesheet" href="tailwind.css?v=179">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,12 +50,12 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=178">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=178">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=178">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=178">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=178">
-    <script src="/dialogs.js?v=178"></script>
+    <link rel="stylesheet" href="mobile.css?v=179">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=179">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=179">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=179">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=179">
+    <script src="/dialogs.js?v=179"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -585,6 +585,13 @@
 
     <!-- Tab: Documents -->
     <div id="tab-documents" class="tab-panel hidden fade-in">
+      <!-- Training: what this person has been asked to learn. The ones
+           still to do come first; done ones stay as a record. -->
+      <div class="bg-white rounded-2xl border border-gray-100 p-5 mb-4" id="trainingCard" hidden>
+        <h3 class="font-semibold text-gray-900 mb-1">Training</h3>
+        <p class="text-xs text-gray-500 mb-4" id="training-hint"></p>
+        <div id="training" class="space-y-2"></div>
+      </div>
       <!-- The company's policies, each acknowledged per version. The ones
            still to read come first. -->
       <div class="bg-white rounded-2xl border border-gray-100 p-5 mb-4" id="policiesCard" hidden>
@@ -1837,7 +1844,7 @@
       if (tab === 'attendance') loadAttendanceStats();
       if (tab === 'goals') loadGoals();
       if (tab === 'leave') { loadLeave(); loadLeaveBalance(); }
-      if (tab === 'documents') { loadDocuments(); loadDocumentRequests(); loadMyPolicies(); }
+      if (tab === 'documents') { loadDocuments(); loadDocumentRequests(); loadMyPolicies(); loadMyTraining(); }
       if (tab === 'team') { loadTeamPresence(); loadTeamOverview(); }
       if (tab === 'profile') { loadProfileTab(); loadMyChanges(); loadMyAssets(); loadMyCerts(); loadMyHistory(); loadMySkills(); }
       if (tab === 'reviews') { loadMyReviews(); loadFeedbackRequests(); }
@@ -1962,6 +1969,63 @@
       } catch (e) { card.hidden = true; }
     }
     window.loadMyPolicies = loadMyPolicies;
+
+    // --- Training ------------------------------------------------------------------
+
+    async function loadMyTraining() {
+      var card = document.getElementById('trainingCard'), host = document.getElementById('training');
+      if (!card || !host) return;
+      try {
+        var res = await fetch('/api/employee/courses');
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        var rows = (await res.json()).courses || [];
+        card.hidden = !rows.length;
+        var open = rows.filter(function (a) { return a.status !== 'done'; }).length;
+        document.getElementById('training-hint').textContent = open ? open + ' to complete.' : 'All done.';
+        host.textContent = '';
+        rows.forEach(function (a) {
+          var late = a.status === 'overdue' || a.status === 'due_again';
+          var box = document.createElement('div');
+          box.className = 'p-3 rounded-xl border ' + (late ? 'border-red-200 bg-red-50' : a.status === 'done' ? 'border-gray-100' : 'border-amber-200 bg-amber-50');
+          var head = document.createElement('div'); head.className = 'flex items-center justify-between gap-3';
+          var t = document.createElement('div'); t.className = 'text-sm font-medium text-gray-900';
+          t.textContent = a.course.title + (a.course.mandatory ? ' \u00b7 mandatory' : ''); head.appendChild(t);
+          var pill = document.createElement('span');
+          pill.className = 'text-xs px-2 py-0.5 rounded-full border ' + (a.status === 'done' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : late ? 'bg-red-100 text-red-700 border-red-200' : 'bg-amber-100 text-amber-700 border-amber-200');
+          pill.textContent = a.status === 'done' ? 'Done ' + a.completed_on : a.status === 'due_again' ? 'Due again by ' + a.expires_on : (late ? 'Overdue since ' : 'Due ') + a.due_on;
+          head.appendChild(pill);
+          box.appendChild(head);
+          var meta = document.createElement('div'); meta.className = 'text-xs text-gray-500 mt-1';
+          meta.textContent = [a.course.provider, a.course.duration_hours ? a.course.duration_hours + ' hours' : ''].filter(Boolean).join(' \u00b7 ');
+          if (meta.textContent) box.appendChild(meta);
+          if (a.course.description) { var d = document.createElement('p'); d.className = 'text-sm text-gray-700 mt-2 whitespace-pre-wrap'; d.textContent = a.course.description; box.appendChild(d); }
+          if (a.course.link) {
+            var link = document.createElement('a'); link.href = a.course.link; link.target = '_blank'; link.rel = 'noopener';
+            link.className = 'inline-block mt-2 px-3 py-1.5 rounded-lg bg-brand-600 text-white text-sm'; link.textContent = 'Open the course'; box.appendChild(link);
+          }
+          if (a.status !== 'done') {
+            if (a.course.self_complete) {
+              var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'mt-2 ml-2 px-3 py-1.5 rounded-lg border border-gray-200 text-sm hover:bg-gray-50';
+              btn.textContent = 'I have completed this';
+              btn.addEventListener('click', async function () {
+                btn.disabled = true;
+                try {
+                  var r = await fetch('/api/employee/courses/' + a.course.id + '/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+                  if (!r.ok) throw new Error('no');
+                  uiToast('Recorded - well done', 'success');
+                  loadMyTraining();
+                } catch (e) { uiToast('Could not record that.', 'error'); btn.disabled = false; }
+              });
+              box.appendChild(btn);
+            } else {
+              var n = document.createElement('div'); n.className = 'text-xs text-gray-500 mt-2'; n.textContent = 'HR marks this one done once they have seen it.'; box.appendChild(n);
+            }
+          }
+          host.appendChild(box);
+        });
+      } catch (e) { card.hidden = true; }
+    }
+    window.loadMyTraining = loadMyTraining;
 
     // --- Skills ---------------------------------------------------------------------
 
@@ -3690,6 +3754,10 @@
           '<div class="flex-1 min-w-[140px] p-4 rounded-xl bg-brand-50">' +
             '<div class="text-2xl font-bold text-brand-700">' + b.annual_remaining + '</div>' +
             '<div class="text-xs text-brand-600 mt-0.5">annual days left of ' + b.annual_total + '</div>' +
+            (b.annual_carried ? '<div class="text-[11px] text-brand-600 mt-1">includes ' + b.annual_carried + ' carried over' +
+              (b.carry_expires_on ? ', use by ' + b.carry_expires_on : '') + '</div>' : '') +
+            (b.accrual === 'monthly' && b.annual_entitlement ? '<div class="text-[11px] text-gray-500 mt-1">' + b.annual_accrued + ' of ' + b.annual_entitlement + ' earned so far this year</div>' : '') +
+            (b.leave_year_end ? '<div class="text-[11px] text-gray-400 mt-1">leave year to ' + b.leave_year_end + '</div>' : '') +
             (b.annual_pending ? '<div class="text-[11px] text-amber-600 mt-1">' + b.annual_pending +
               ' still awaiting a decision</div>' : '') +
           '</div>' +
@@ -4704,8 +4772,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=178"></script>
-    <script src="/pwa.js?v=178"></script>
-    <script src="/feed.js?v=178"></script>
+    <script src="/install-hint.js?v=179"></script>
+    <script src="/pwa.js?v=179"></script>
+    <script src="/feed.js?v=179"></script>
 </body>
 </html>

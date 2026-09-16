@@ -5329,6 +5329,7 @@ async function viewEmployee(empId) {
         loadEmployeeCheckIns(emp.id);
         loadEmployeeSkills(emp.id);
         loadEmployeeKudos(emp.id);
+        loadEmployeeCourses(emp.id);
         renderCustomValues(emp.custom_fields || []);
         var exportLink = document.getElementById('emp-export-link');
         if (exportLink) exportLink.href = '/api/employees/' + emp.id + '/export';
@@ -7681,7 +7682,7 @@ var origShowView = showView;
 showView = function(viewId) {
     origShowView(viewId);
     if (viewId === 'employees-view') { fetchEmployees(currentEmpFilter); loadHRStats(); }
-    if (viewId === 'leave-view') loadLeaveView();
+    if (viewId === 'leave-view') { loadLeaveView(); if (typeof loadLeavePolicyLine === 'function') loadLeavePolicyLine(); }
     if (viewId === 'goals-view') loadGoalsView();
     if (viewId === 'calendar-view') loadCalendarView();
     if (viewId === 'assets-view' && typeof loadAssets === 'function') loadAssets();
@@ -7695,7 +7696,7 @@ showView = function(viewId) {
     if (viewId === 'feed-view') loadFeedView();
     if (viewId === 'expenses-view') loadExpensesView();
     if (viewId === 'reviews-view') loadReviewsView();
-    if (viewId === 'training-view') loadTrainingView();
+    if (viewId === 'training-view') { loadTrainingView(); if (typeof loadCourses === 'function') loadCourses(); }
     if (viewId === 'compensation-view') loadPayView();
     if (viewId === 'skills-view') loadSkillsView();
     if (viewId === 'policies-view') loadPoliciesView();
@@ -16484,6 +16485,10 @@ async function loadAnalyticsView() {
             (a.check_ins ? block('One-to-ones, last ' + a.check_ins.window_days + ' days', [
                 ['Reporting lines', a.check_ins.pairs], ['Met recently', a.check_ins.recent],
                 ['Gone quiet', a.check_ins.quiet, a.check_ins.quiet ? 'var(--warning-color)' : '']]) : '') +
+            (a.training ? block('Training', [
+                ['Open', a.training.open], ['Done', a.training.done],
+                ['Overdue', a.training.overdue_count, a.training.overdue_count ? 'var(--danger-color)' : ''],
+                ['Completion', a.training.completion_pct != null ? a.training.completion_pct + '%' : '-']]) : '') +
             (a.recognition ? block('Recognition', [
                 ['This month', a.recognition.this_month], ['Last month', a.recognition.last_month],
                 ['People thanked, 90 days', a.recognition.people_recognised_pct + '%'],
@@ -16962,6 +16967,255 @@ async function editEmployeeSkills(empId) {
     } catch (e) { showToast(e.message, 'error'); }
 }
 window.editEmployeeSkills = editEmployeeSkills;
+
+// ===========================================================================
+// The leave year
+// ===========================================================================
+// When it starts, how days accrue, what carries over. Read as one line on
+// the Leave page; changed in one dialog.
+
+function describeLeavePolicy(p) {
+    var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    var start = p.year_start ? Number(p.year_start.slice(3, 5)) + ' ' + months[Number(p.year_start.slice(0, 2)) - 1] : '1 Jan';
+    var parts = ['Leave year from ' + start + ' (' + p.current_year_start + ' to ' + p.current_year_end + ')',
+        p.accrual === 'monthly' ? 'days accrue month by month' : 'days given up front' + (p.pro_rata ? ', pro rata for joiners' : '')];
+    if (p.carry_over_max > 0) parts.push('up to ' + p.carry_over_max + ' days carry over' + (p.carry_over_expires_months ? ', lapsing after ' + p.carry_over_expires_months + ' months' : ''));
+    else parts.push('no carry-over');
+    return parts.join(' \u00b7 ') + '.';
+}
+
+var _leavePolicy = null;
+async function loadLeavePolicyLine() {
+    var line = document.getElementById('leave-policy-line');
+    if (!line) return;
+    try {
+        _leavePolicy = await fetchJson('/api/hr/leave-policy');
+        line.textContent = describeLeavePolicy(_leavePolicy);
+    } catch (e) { line.textContent = ''; }
+}
+window.loadLeavePolicyLine = loadLeavePolicyLine;
+
+async function editLeavePolicy() {
+    if (!_leavePolicy) { try { _leavePolicy = await fetchJson('/api/hr/leave-policy'); } catch (e) { showToast(e.message, 'error'); return; } }
+    var p = _leavePolicy;
+    var out = await uiForm([
+        { name: 'year_start', label: 'The leave year starts on (MM-DD)', type: 'text', value: p.year_start, required: true, placeholder: '04-01', hint: '01-01 for January, 04-01 for April' },
+        { name: 'accrual', label: 'Days are earned', type: 'select', value: p.accrual,
+          options: [{ value: 'upfront', label: 'All at the start of the year' }, { value: 'monthly', label: 'Month by month, a twelfth at a time' }] },
+        { name: 'pro_rata', label: 'Somebody who joins mid-year gets', type: 'select', value: p.pro_rata ? 'yes' : 'no',
+          options: [{ value: 'yes', label: 'The share of the year they are here for' }, { value: 'no', label: 'The whole year' }] },
+        { name: 'carry_over_max', label: 'Days that can carry over into the next year', type: 'number', value: String(p.carry_over_max), hint: '0 for none' },
+        { name: 'carry_over_expires_months', label: 'Carried-over days lapse after (months)', type: 'number', value: String(p.carry_over_expires_months), hint: '0 for never' }
+    ], { title: 'Leave policy', confirmText: 'Save', message: 'Applies to everybody. Balances are worked out from it the moment it is saved.' });
+    if (!out) return;
+    try {
+        _leavePolicy = await fetchJson('/api/hr/leave-policy', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ year_start: out.year_start, accrual: out.accrual, pro_rata: out.pro_rata === 'yes',
+                                   carry_over_max: Number(out.carry_over_max || 0), carry_over_expires_months: Number(out.carry_over_expires_months || 0) }) });
+        showToast('Leave policy saved', 'success');
+        loadLeavePolicyLine();
+        if (typeof loadLeaveView === 'function') loadLeaveView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.editLeavePolicy = editLeavePolicy;
+
+// ===========================================================================
+// Training courses
+// ===========================================================================
+// What people are asked to learn. A course, the people it was given to,
+// who has done it, who is late.
+
+var COURSE_STATUS = { assigned: ['Assigned', 'var(--text-secondary)'], overdue: ['Overdue', 'var(--danger-color)'],
+    done: ['Done', 'var(--success-color)'], due_again: ['Due again', 'var(--warning-color)'] };
+var _courses = [];
+
+async function loadCourses() {
+    var host = document.getElementById('courses-list');
+    var note = document.getElementById('courses-note');
+    if (!host) return;
+    try {
+        var d = await fetchJson('/api/courses');
+        _courses = d.courses || [];
+        var overdue = _courses.reduce(function (n, c) { return n + (c.overdue || 0); }, 0);
+        if (note) note.textContent = _courses.length ? (overdue ? overdue + ' overdue' : 'nothing overdue') : '';
+        if (!_courses.length) {
+            host.innerHTML = '<p style="font-size:0.85rem;color:var(--text-secondary);padding:16px 20px;">No courses yet. Add one - a link and how long people have - then assign it to a person, a department or everybody.</p>';
+            return;
+        }
+        host.innerHTML = '<div class="table-responsive"><table class="data-table"><thead><tr><th style="min-width:180px;">Course</th><th style="white-space:nowrap;">Due within</th><th style="white-space:nowrap;">Renews</th><th class="text-right" style="white-space:nowrap;">Assigned</th><th class="text-right" style="white-space:nowrap;">Done</th><th class="text-right" style="white-space:nowrap;">Overdue</th><th></th></tr></thead><tbody>' +
+            _courses.map(function (c) {
+                return '<tr' + (c.active ? '' : ' style="opacity:0.55;"') + '><td><strong>' + esc(c.title) + '</strong>' +
+                    (c.mandatory ? ' <span class="status-pill status-overdue" style="font-size:0.65rem;">mandatory</span>' : '') +
+                    (c.active ? '' : ' <span class="status-pill">closed</span>') +
+                    '<div style="font-size:0.75rem;color:var(--text-secondary);">' + (c.provider ? esc(c.provider) + ' \u00b7 ' : '') + (c.duration_hours ? c.duration_hours + 'h \u00b7 ' : '') +
+                    (c.link ? '<a href="' + esc(c.link) + '" target="_blank" rel="noopener">open</a>' : 'no link') + '</div></td>' +
+                    '<td style="white-space:nowrap;">' + c.due_days + ' days</td><td style="white-space:nowrap;">' + (c.renew_months ? 'every ' + c.renew_months + ' months' : 'once') + '</td>' +
+                    '<td class="text-right">' + c.assigned + '</td><td class="text-right">' + c.done + '</td>' +
+                    '<td class="text-right"' + (c.overdue ? ' style="color:var(--danger-color);font-weight:700;"' : '') + '>' + c.overdue + '</td>' +
+                    '<td class="text-right" style="white-space:nowrap;">' +
+                    (c.active ? '<button class="btn btn-outline btn-sm" data-course-assign="' + c.id + '">Assign</button> ' : '') +
+                    '<button class="btn btn-outline btn-sm" data-course-open="' + c.id + '">People</button> ' +
+                    '<button class="btn btn-outline btn-sm" data-course-edit="' + c.id + '">Edit</button> ' +
+                    '<button class="btn btn-outline btn-sm" data-course-remove="' + c.id + '">' + (c.assigned ? 'Close' : 'Remove') + '</button></td></tr>';
+            }).join('') + '</tbody></table></div>';
+        host.querySelectorAll('[data-course-assign]').forEach(function (b) { b.addEventListener('click', function () { assignCourse(Number(b.getAttribute('data-course-assign'))); }); });
+        host.querySelectorAll('[data-course-open]').forEach(function (b) { b.addEventListener('click', function () { openCourse(Number(b.getAttribute('data-course-open'))); }); });
+        host.querySelectorAll('[data-course-edit]').forEach(function (b) { b.addEventListener('click', function () { editCourse(Number(b.getAttribute('data-course-edit'))); }); });
+        host.querySelectorAll('[data-course-remove]').forEach(function (b) { b.addEventListener('click', function () { removeCourse(Number(b.getAttribute('data-course-remove'))); }); });
+    } catch (e) { host.innerHTML = '<p style="color:var(--danger-text);font-size:0.85rem;padding:16px 20px;">' + esc(e.message) + '</p>'; }
+}
+window.loadCourses = loadCourses;
+
+function _courseFields(c) {
+    c = c || {};
+    return [
+        { name: 'title', label: 'Title', type: 'text', value: c.title || '', required: true, placeholder: 'Fire safety' },
+        { name: 'link', label: 'Link to the course', type: 'text', value: c.link || '', placeholder: 'https://' },
+        { name: 'provider', label: 'Provider', type: 'text', value: c.provider || '' },
+        { name: 'duration_hours', label: 'How long it takes (hours)', type: 'number', value: String(c.duration_hours || 0) },
+        { name: 'due_days', label: 'Days people have to finish it', type: 'number', value: String(c.due_days == null ? 30 : c.due_days), required: true },
+        { name: 'renew_months', label: 'Must be done again every (months)', type: 'number', value: String(c.renew_months || 0), hint: '0 if once is enough' },
+        { name: 'mandatory', label: 'Mandatory', type: 'select', value: c.mandatory ? 'yes' : 'no', options: [{ value: 'no', label: 'No' }, { value: 'yes', label: 'Yes' }] },
+        { name: 'self_complete', label: 'Who marks it done', type: 'select', value: c.self_complete === false ? 'hr' : 'self',
+          options: [{ value: 'self', label: 'The person, from the portal' }, { value: 'hr', label: 'HR, once they have seen it' }] },
+        { name: 'description', label: 'What it covers', type: 'textarea', value: c.description || '' }
+    ];
+}
+
+function _courseBody(out) {
+    return { title: out.title, link: out.link || '', provider: out.provider || '', duration_hours: Number(out.duration_hours || 0),
+             due_days: Number(out.due_days || 0), renew_months: Number(out.renew_months || 0), mandatory: out.mandatory === 'yes',
+             self_complete: out.self_complete !== 'hr', description: out.description || '' };
+}
+
+async function editCourse(id) {
+    var c = id ? _courses.filter(function (x) { return x.id === id; })[0] : null;
+    var out = await uiForm(_courseFields(c), { title: c ? 'Edit course' : 'New course', confirmText: c ? 'Save' : 'Add' });
+    if (!out) return;
+    try {
+        await fetchJson(c ? '/api/courses/' + c.id : '/api/courses', { method: c ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(_courseBody(out)) });
+        showToast(c ? 'Saved' : 'Course added', 'success');
+        loadCourses();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.editCourse = editCourse;
+
+async function removeCourse(id) {
+    var c = _courses.filter(function (x) { return x.id === id; })[0];
+    if (!await uiConfirm((c && c.assigned ? 'Close ' : 'Remove ') + (c ? c.title : 'this course') + '?' + (c && c.assigned ? ' The record of who did it stays.' : ''), { title: 'Course', confirmText: c && c.assigned ? 'Close' : 'Remove', danger: true })) return;
+    try {
+        var out = await fetchJson('/api/courses/' + id, { method: 'DELETE' });
+        showToast(out.message || 'Done', 'success');
+        loadCourses();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.removeCourse = removeCourse;
+
+// Who gets it: everybody, a department, or named people.
+async function assignCourse(id, presetEmployeeId) {
+    var c = _courses.filter(function (x) { return x.id === id; })[0];
+    var depts = [];
+    try { depts = await fetchJson('/api/departments'); } catch (e) { depts = []; }
+    var fields = [{ name: 'who', label: 'Give it to', type: 'select', value: presetEmployeeId ? 'people' : 'everyone',
+        options: [{ value: 'everyone', label: 'Everybody' }].concat((depts || []).map(function (d) { return { value: 'dept:' + d.id, label: 'The ' + d.name + ' department' }; }), [{ value: 'people', label: 'Named people (next box)' }]) },
+        { name: 'people', label: 'Names or emails, comma-separated', type: 'text', value: '', placeholder: 'ann@x.com, Bo Ray', hint: 'Only read when "Named people" is chosen' }];
+    var out = await uiForm(fields, { title: 'Assign ' + (c ? c.title : 'course'), confirmText: 'Assign', message: 'Each person is told, with the link and the date it is due.' });
+    if (!out) return;
+    var body = {};
+    if (out.who === 'everyone') body.everyone = true;
+    else if (out.who.indexOf('dept:') === 0) body.department_id = Number(out.who.slice(5));
+    else {
+        var ids = presetEmployeeId ? [presetEmployeeId] : [];
+        if (out.people) {
+            try {
+                var all = await fetchJson('/api/employees');
+                var wanted = String(out.people).split(',').map(function (t) { return t.trim().toLowerCase(); }).filter(Boolean);
+                (all.employees || all || []).forEach(function (e) {
+                    var name = ((e.first_name || '') + ' ' + (e.last_name || '')).trim().toLowerCase();
+                    if (wanted.indexOf(name) !== -1 || wanted.indexOf((e.email || '').toLowerCase()) !== -1) ids.push(e.id);
+                });
+            } catch (e) { /* fall through to the check below */ }
+        }
+        if (!ids.length) { showToast('Nobody matched those names', 'error'); return; }
+        body.employee_ids = ids;
+    }
+    try {
+        var res = await fetchJson('/api/courses/' + id + '/assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        showToast('Assigned to ' + res.assigned + (res.already ? ' (' + res.already + ' already had it)' : ''), 'success');
+        loadCourses();
+        if (presetEmployeeId) loadEmployeeCourses(presetEmployeeId);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.assignCourse = assignCourse;
+
+async function assignCourseTo(empId) {
+    if (!empId) return;
+    if (!_courses.length) { try { _courses = (await fetchJson('/api/courses')).courses || []; } catch (e) { _courses = []; } }
+    var open = _courses.filter(function (c) { return c.active; });
+    if (!open.length) { showToast('No courses yet - add one under People > Training', 'error'); return; }
+    var pick = await uiChoose('Which course?', open.map(function (c) { return { value: String(c.id), label: c.title }; }), { title: 'Assign training', confirmText: 'Assign' });
+    if (!pick) return;
+    try {
+        var res = await fetchJson('/api/courses/' + pick + '/assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ employee_ids: [empId] }) });
+        showToast(res.assigned ? 'Assigned - they have been told' : 'They already have it', 'success');
+        loadEmployeeCourses(empId);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.assignCourseTo = assignCourseTo;
+
+async function openCourse(id) {
+    var host = document.getElementById('course-detail');
+    if (!host) return;
+    try {
+        var d = await fetchJson('/api/courses/' + id + '/assignments');
+        host.innerHTML = '<div class="glass-widget"><div class="widget-header"><h3>' + esc(d.course.title) + ': who has it</h3>' +
+            '<button class="btn btn-outline btn-sm" onclick="document.getElementById(\'course-detail\').innerHTML=\'\'">Close</button></div>' +
+            '<div class="widget-content" style="padding:0;">' + (d.assignments.length ?
+            '<div class="table-responsive"><table class="data-table"><thead><tr><th>Person</th><th>Status</th><th>Due</th><th>Done</th><th></th></tr></thead><tbody>' +
+            d.assignments.map(function (a) {
+                var st = COURSE_STATUS[a.status] || [a.status, ''];
+                return '<tr><td><a href="#" onclick="viewEmployee(' + a.employee_id + ');return false;">' + esc(a.employee) + '</a></td>' +
+                    '<td style="color:' + st[1] + ';font-weight:600;">' + st[0] + '</td><td>' + esc(a.status === 'due_again' ? a.expires_on : a.due_on) + '</td>' +
+                    '<td>' + (a.completed_on ? esc(a.completed_on) + (a.completed_by === 'hr' ? ' (HR)' : '') + (a.note ? ' \u00b7 ' + esc(a.note) : '') : '') + '</td>' +
+                    '<td class="text-right" style="white-space:nowrap;">' + (a.status !== 'done' ? '<button class="btn btn-outline btn-sm" data-course-done="' + a.employee_id + '">Mark done</button> ' : '') +
+                    '<button class="btn btn-outline btn-sm" data-course-unassign="' + a.employee_id + '">Unassign</button></td></tr>';
+            }).join('') + '</tbody></table></div>' : '<p style="font-size:0.85rem;color:var(--text-secondary);padding:16px 20px;">Nobody has been given this yet.</p>') + '</div></div>';
+        host.querySelectorAll('[data-course-done]').forEach(function (b) {
+            b.addEventListener('click', async function () {
+                var note = await uiPrompt('Anything to note? A score, a certificate reference.', '', { title: 'Mark done', confirmText: 'Mark done' });
+                if (note === null) return;
+                try { await fetchJson('/api/courses/' + id + '/assignments/' + b.getAttribute('data-course-done') + '/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note: note || '' }) }); openCourse(id); loadCourses(); }
+                catch (e) { showToast(e.message, 'error'); }
+            });
+        });
+        host.querySelectorAll('[data-course-unassign]').forEach(function (b) {
+            b.addEventListener('click', async function () {
+                if (!await uiConfirm('Take this course off them?')) return;
+                try { await fetchJson('/api/courses/' + id + '/assignments/' + b.getAttribute('data-course-unassign'), { method: 'DELETE' }); openCourse(id); loadCourses(); }
+                catch (e) { showToast(e.message, 'error'); }
+            });
+        });
+        host.scrollIntoView({ block: 'nearest' });
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.openCourse = openCourse;
+
+async function loadEmployeeCourses(empId) {
+    var host = document.getElementById('emp-courses-list');
+    if (!host || !empId) return;
+    try {
+        var d = await fetchJson('/api/employees/' + empId + '/courses');
+        if (!d.courses.length) { host.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem;">Nothing assigned.</p>'; return; }
+        host.innerHTML = d.courses.map(function (a) {
+            var st = COURSE_STATUS[a.status] || [a.status, ''];
+            return '<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--border-color);font-size:0.85rem;">' +
+                '<div><strong>' + esc(a.course.title) + '</strong><div style="font-size:0.75rem;color:var(--text-secondary);">' +
+                (a.status === 'done' ? 'done ' + esc(a.completed_on) + (a.expires_on ? ' \u00b7 again by ' + esc(a.expires_on) : '') : 'due ' + esc(a.status === 'due_again' ? a.expires_on : a.due_on)) + '</div></div>' +
+                '<span style="color:' + st[1] + ';font-weight:600;white-space:nowrap;">' + st[0] + '</span></div>';
+        }).join('');
+    } catch (e) { host.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem;">Nothing assigned.</p>'; }
+}
+window.loadEmployeeCourses = loadEmployeeCourses;
 
 // ===========================================================================
 // Recognition
