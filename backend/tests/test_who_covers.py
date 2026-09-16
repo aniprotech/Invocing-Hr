@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta
 import pytest
 
 import main
-from conftest import make_employee
+from conftest import make_employee, work_every_day
 
 EMP_PASSWORD = "EmpPass123"
 
@@ -55,6 +55,7 @@ def approved_off(emp_id, start, end):
 
 
 def test_a_pending_request_says_who_else_in_the_department_is_off(tenant, account):
+    work_every_day(tenant)          # the dates below are relative, and land on a weekend some weeks
     ops = tenant.post("/api/departments", json={"name": "Ops"}).json()
     boss = person(tenant, first_name="Bea", department_id=ops["id"])
     asker = person(tenant, first_name="Ravi", department_id=ops["id"], reports_to=boss["id"])

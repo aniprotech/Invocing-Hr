@@ -157,6 +157,23 @@ function boot(opts) {
         await wait(30);
         check('a refusal is shown as one', /✗ Razorpay refused the keys/.test(doc.getElementById('gw-result-razorpay').textContent));
     }
+    {
+        const { w, doc, sent } = boot();
+        w.fetch = (function (orig) { return function (url, init) {
+            const p = String(url).split('?')[0];
+            if (p === '/api/settings' && !(init && init.method)) { sent.push({ url: p, method: 'GET' }); return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ notify_online_payments: '0' }) }); }
+            return orig(url, init);
+        }; })(w.fetch);
+        await w.loadOnlinePaymentNotice();
+        await wait(30);
+        const box = doc.getElementById('notify-online-payments');
+        check('the online-payment email switch reads the saved setting', box && box.checked === false);
+        box.checked = true;
+        await w.saveOnlinePaymentNotice(box);
+        await wait(30);
+        const post = sent.find(s => s.url === '/api/settings' && s.method === 'POST');
+        check('  and saves it as a setting', post && bodyOf(post).notify_online_payments === '1', post && post.body);
+    }
     console.log(failures === 0 ? '\nAll where-the-money-lands checks passed.' : `\n${failures} check(s) failed.`);
     process.exit(failures === 0 ? 0 : 1);
 })();

@@ -14432,6 +14432,7 @@ def _settle_gocardless_invoice(db: Session, ev, action, payment_id):
         record_settlement(db, inv, int(round(amount * 100)),
                           (inv.currency or "GBP"), payment_id or invoice_id,
                           gateway="gocardless")
+        online_payment_recorded(db, inv, "gocardless", amount, payment_id or invoice_id)
     return {"action": action, "invoice": inv.number, "paid": bool(recorded)}
 
 
@@ -22219,6 +22220,14 @@ def start_stripe_invoice_payment(tracking_id: str, request: Request,
                                    "The business has been notified.")
 
     session = resp.json()
+    # Written down, like a Razorpay order, so a payment the customer never
+    # came back to confirm can still be found and recorded.
+    if session.get("id") and not db.query(models.DBInvoicePaymentOrder).filter(
+            models.DBInvoicePaymentOrder.provider_order_id == session["id"]).first():
+        db.add(models.DBInvoicePaymentOrder(
+            invoice_id=inv.id, client_id=inv.client_id, provider="stripe",
+            provider_order_id=session["id"], amount_minor=amount_minor, currency=currency))
+        db.commit()
     return {
         "session_id": session.get("id"),
         "checkout_url": session.get("url"),
@@ -22265,24 +22274,17 @@ def confirm_stripe_invoice_payment(tracking_id: str, body: dict = None,
         raise HTTPException(status_code=400, detail="That payment could not be verified")
 
     session = resp.json()
-    currency = (inv.currency or "GBP").upper()
-    expected = to_minor_units(money(inv.due or 0), currency)
-
-    if session.get("payment_status") != "paid":
+    recorded, why = _stripe_session_settles(db, inv, session)
+    if why == "not paid":
         raise HTTPException(status_code=400, detail="That payment has not completed")
-    if (session.get("client_reference_id") or "") != inv.tracking_id:
-        logger.warning("Rejected a Stripe session raised against another invoice (%s)",
-                       inv.number)
+    if why:
+        logger.warning("Rejected a Stripe session on %s: %s", inv.number, why)
         raise HTTPException(status_code=400, detail="That payment could not be verified")
-    if int(session.get("amount_total") or 0) < expected:
-        logger.warning("Rejected a Stripe session short of the amount due on %s", inv.number)
-        raise HTTPException(status_code=400, detail="That payment could not be verified")
-
-    amount = money(inv.due or 0)
-    reference = session.get("payment_intent") or session_id
-    recorded = record_invoice_payment(
-        db, inv, amount, "stripe", reference,
-        note="Paid online by the customer")
+    order = db.query(models.DBInvoicePaymentOrder).filter(
+        models.DBInvoicePaymentOrder.provider_order_id == session_id).first()
+    if order and recorded:
+        order.status, order.provider_payment_id = "paid", (session.get("payment_intent") or "")[:120]
+        order.paid_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     db.commit()
 
     return {
@@ -22431,6 +22433,8 @@ def confirm_invoice_payment(tracking_id: str, request: Request,
     if recorded and mode == "platform":
         record_settlement(db, inv, int(round(amount * 100)),
                           (inv.currency or "INR"), payment_id)
+    if recorded:
+        online_payment_recorded(db, inv, "razorpay", amount, payment_id)
     db.commit()
 
     return {
@@ -26801,7 +26805,7 @@ API_KEY_LIMIT = 10
 WEBHOOK_LIMIT = 10
 WEBHOOK_EVENTS = ("employee.created", "employee.updated", "employee.left",
                   "leave.requested", "leave.decided", "probation.decided", "pay.changed",
-                  "review.completed", "kudos.given")
+                  "review.completed", "kudos.given", "invoice.paid")
 WEBHOOK_MAX_ATTEMPTS = 5
 WEBHOOK_BACKOFF_MINUTES = (0, 1, 5, 30, 120)
 
@@ -28548,17 +28552,153 @@ def capture_paypal_invoice_payment(tracking_id: str, body: dict = None, db: Sess
         raise HTTPException(status_code=400, detail="That payment has not completed")
 
     data = resp.json()
-    if data.get("status") != "COMPLETED":
+    recorded, why = _paypal_capture_settles(db, inv, order, data, datetime.now())
+    if why == "not completed":
         raise HTTPException(status_code=400, detail="That payment has not completed")
+    if why:
+        logger.warning("Rejected a PayPal capture on %s: %s", inv.number, why)
+        raise HTTPException(status_code=400, detail="That payment could not be verified")
+    db.commit()
+    return {"paid": True, "already_recorded": not recorded, "invoice_number": inv.number, "status": inv.status}
+
+
+# ============================================================================
+# Payments that came back without the customer
+# ============================================================================
+# Every online payment was recorded when the customer's browser came back
+# and said so. Most do. The one who paid on the gateway's page and shut
+# the tab - or lost signal on a train - had paid, and the invoice never
+# knew. Their money had landed; the business chased them for it.
+#
+# So every order opened at a gateway is written down, and a sweep asks
+# the gateway about the ones still open: paid, and the invoice is
+# settled the same way the customer's return would have; expired, and it
+# is closed. No webhook to set up, nothing for the business to do.
+#
+# And the business is told, each time, that money arrived - which nothing
+# did before. A customer paying online was as quiet as a customer not
+# paying at all.
+
+ONLINE_PAYMENT_METHODS = {"stripe": "card", "razorpay": "Razorpay", "paypal": "PayPal", "gocardless": "bank debit"}
+
+
+def online_payment_recorded(db, inv, method, amount, reference):
+    """Tell the business, and anything listening, that an invoice was
+    paid online. Called once per receipt, never on a refresh."""
+    client = db.get(models.DBClient, inv.client_id)
+    currency = (inv.currency or (client.currency if client else "") or "GBP").upper()
+    how = ONLINE_PAYMENT_METHODS.get(method, method)
+    announce(db, inv.client_id, "invoice.paid",
+             {"invoice": inv.number, "amount": amount, "currency": currency, "method": method,
+              "reference": reference, "status": inv.status, "customer": inv.to_contact or ""})
+    if not client or not (client.email or "").strip():
+        return
+    if str(tenant_setting(db, inv.client_id, "notify_online_payments", "1")).lower() in ("0", "false", "no", "off"):
+        return
+    base = (os.getenv("APP_BASE_URL") or "https://www.aniprotech.com").rstrip("/")
+    left = money(inv.due or 0)
+    subject = f"{inv.number} paid: {currency} {amount:,.2f} by {how}"
+    text_body = (f"{inv.to_contact or 'Your customer'} paid {currency} {amount:,.2f} on invoice {inv.number} by {how}.\n"
+                 + (f"Reference: {reference}\n" if reference else "")
+                 + (f"{currency} {left:,.2f} is still outstanding on it.\n" if left > 0 else "The invoice is paid in full.\n")
+                 + f"\nOpen it: {base}/app.html#/invoices/{inv.number}\n\n"
+                 "To stop these, switch off online payment notices under Settings > Payments.")
+    try:
+        send_email_background(client.email, subject, text_body, platform_from_address(db), None, client_id=inv.client_id)
+    except Exception:                                           # noqa: BLE001
+        logger.exception("Could not send the payment notice for %s", inv.number)
+
+
+def _stripe_session_settles(db, inv, session):
+    """Record a paid Stripe session against its invoice. Returns (recorded,
+    reason) - the reason is why it was refused, or "" when it was not."""
+    currency = (inv.currency or "GBP").upper()
+    expected = to_minor_units(money(inv.due or 0), currency)
+    if session.get("payment_status") != "paid":
+        return False, "not paid"
+    if (session.get("client_reference_id") or "") != inv.tracking_id:
+        return False, "another invoice"
+    if int(session.get("amount_total") or 0) < expected:
+        return False, "short"
+    amount = money(inv.due or 0)
+    reference = session.get("payment_intent") or session.get("id") or ""
+    recorded = record_invoice_payment(db, inv, amount, "stripe", reference, note="Paid online by the customer")
+    if recorded:
+        online_payment_recorded(db, inv, "stripe", amount, reference)
+    return recorded, ""
+
+
+def _order_age_minutes(order, now):
+    try:
+        opened = datetime.strptime(order.created_at, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return 10 ** 6
+    return (now - opened).total_seconds() / 60.0
+
+
+SWEEP_AFTER_MINUTES = 10           # the customer's own return gets this long first
+SWEEP_GIVE_UP_HOURS = 48           # a gateway order older than this is not coming back
+
+
+def sweep_stripe_order(db, order, inv, now):
+    _pub, secret, _mode = collecting_keys(db, inv.client_id, "stripe")
+    if not secret:
+        return "no keys"
+    resp = httpx.get(f"https://api.stripe.com/v1/checkout/sessions/{order.provider_order_id}", auth=(secret, ""), timeout=20.0)
+    if resp.status_code >= 400:
+        return f"HTTP {resp.status_code}"
+    session = resp.json()
+    if session.get("status") == "expired":
+        order.status = "expired"
+        return "expired"
+    recorded, why = _stripe_session_settles(db, inv, session)
+    if recorded:
+        order.status, order.provider_payment_id = "paid", (session.get("payment_intent") or "")[:120]
+        order.paid_at = now.strftime("%Y-%m-%d %H:%M:%S")
+        return "paid"
+    if why == "not paid":
+        return "open"
+    order.status = "refused"
+    return why
+
+
+def sweep_razorpay_order(db, order, inv, now):
+    key_id, secret, mode = collecting_keys(db, inv.client_id, "razorpay")
+    if not (key_id and secret):
+        return "no keys"
+    resp = httpx.get(f"https://api.razorpay.com/v1/orders/{order.provider_order_id}/payments", auth=(key_id, secret), timeout=20.0)
+    if resp.status_code >= 400:
+        return f"HTTP {resp.status_code}"
+    items = (resp.json() or {}).get("items") or []
+    good = [p for p in items if p.get("status") == "captured" and int(p.get("amount") or 0) >= (order.amount_minor or 0)
+            and (p.get("currency") or "").upper() == (order.currency or "").upper()]
+    if not good:
+        return "open"
+    payment_id = good[0].get("id") or ""
+    amount = money((order.amount_minor or 0) / 100.0)
+    recorded = record_invoice_payment(db, inv, amount, "razorpay", payment_id, note="Paid online by the customer")
+    if recorded:
+        order.status, order.provider_payment_id = "paid", payment_id
+        order.paid_at = now.strftime("%Y-%m-%d %H:%M:%S")
+        if mode == "platform":
+            record_settlement(db, inv, int(round(amount * 100)), (inv.currency or "INR"), payment_id)
+        online_payment_recorded(db, inv, "razorpay", amount, payment_id)
+        return "paid"
+    return "already"
+
+
+def _paypal_capture_settles(db, inv, order, data, now):
+    """The capture PayPal returned, checked and recorded. Shared by the
+    customer's return and the sweep so both believe exactly the same things."""
+    if data.get("status") != "COMPLETED":
+        return False, "not completed"
     units = data.get("purchase_units") or []
     unit = units[0] if units else {}
     if (unit.get("reference_id") or "") != inv.tracking_id:
-        logger.warning("Rejected a PayPal capture raised against another invoice (%s)", inv.number)
-        raise HTTPException(status_code=400, detail="That payment could not be verified")
-    captures = ((unit.get("payments") or {}).get("captures") or [])
-    done = [c for c in captures if c.get("status") == "COMPLETED"]
+        return False, "another invoice"
+    done = [c for c in ((unit.get("payments") or {}).get("captures") or []) if c.get("status") == "COMPLETED"]
     if not done:
-        raise HTTPException(status_code=400, detail="That payment has not completed")
+        return False, "not completed"
     cap = done[0]
     got = cap.get("amount") or {}
     currency = (order.currency or inv.currency or "GBP").upper()
@@ -28567,18 +28707,104 @@ def capture_paypal_invoice_payment(tracking_id: str, body: dict = None, db: Sess
     except (TypeError, ValueError):
         got_minor = 0
     if (got.get("currency_code") or "").upper() != currency or got_minor < (order.amount_minor or 0):
-        logger.warning("Rejected a PayPal capture short of the amount due on %s", inv.number)
-        raise HTTPException(status_code=400, detail="That payment could not be verified")
-
+        return False, "short"
     amount = (order.amount_minor or 0) if currency in STRIPE_ZERO_DECIMAL else money((order.amount_minor or 0) / 100.0)
-    capture_id = cap.get("id") or order_id
+    capture_id = cap.get("id") or order.provider_order_id
     recorded = record_invoice_payment(db, inv, amount, "paypal", capture_id, note="Paid online by the customer")
     if recorded:
-        order.status = "paid"
-        order.provider_payment_id = capture_id
-        order.paid_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        order.status, order.provider_payment_id = "paid", capture_id
+        order.paid_at = now.strftime("%Y-%m-%d %H:%M:%S")
+        online_payment_recorded(db, inv, "paypal", amount, capture_id)
+    return recorded, ""
+
+
+def sweep_paypal_order(db, order, inv, now):
+    cid, secret, live = paypal_keys(db, inv.client_id)
+    if not cid:
+        return "no keys"
+    base_url = paypal_base_url(live)
+    token, _why = paypal_token(base_url, cid, secret)
+    if not token:
+        return "no token"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    resp = httpx.get(f"{base_url}/v2/checkout/orders/{order.provider_order_id}", headers=headers, timeout=20.0)
+    if resp.status_code >= 400:
+        return f"HTTP {resp.status_code}"
+    data = resp.json()
+    status = data.get("status")
+    if status == "APPROVED":
+        # The customer approved and never came back. Take it now, as the
+        # return would have.
+        resp = httpx.post(f"{base_url}/v2/checkout/orders/{order.provider_order_id}/capture",
+                          headers=dict(headers, **{"PayPal-Request-Id": f"cap-{order.provider_order_id}"}), json={}, timeout=25.0)
+        if resp.status_code >= 400:
+            return f"capture HTTP {resp.status_code}"
+        data = resp.json()
+        status = data.get("status")
+    if status == "COMPLETED":
+        recorded, why = _paypal_capture_settles(db, inv, order, data, now)
+        if recorded:
+            return "paid"
+        if why:
+            order.status = "refused"
+        return why or "already"
+    if status in ("VOIDED", "EXPIRED"):
+        order.status = "expired"
+        return "expired"
+    return "open"
+
+
+SWEEPERS = {"stripe": sweep_stripe_order, "razorpay": sweep_razorpay_order, "paypal": sweep_paypal_order}
+
+
+def sweep_online_payments(db, now=None):
+    """Ask each gateway about every order still open. Returns a tally."""
+    now = now or datetime.now()
+    since = (now - timedelta(hours=SWEEP_GIVE_UP_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+    tally = {"checked": 0, "paid": 0, "expired": 0, "open": 0, "errors": 0}
+    rows = db.query(models.DBInvoicePaymentOrder).filter(
+        models.DBInvoicePaymentOrder.status == "created",
+        models.DBInvoicePaymentOrder.provider.in_(list(SWEEPERS))).order_by(models.DBInvoicePaymentOrder.id).limit(500).all()
+    for order in rows:
+        age = _order_age_minutes(order, now)
+        if age < SWEEP_AFTER_MINUTES:
+            continue
+        if (order.created_at or "") < since:
+            order.status = "expired"
+            tally["expired"] += 1
+            continue
+        inv = db.get(models.DBInvoice, order.invoice_id)
+        if not inv or inv.client_id != order.client_id:
+            order.status = "expired"
+            continue
+        if inv.status == "Paid" or (inv.due or 0) <= 0:
+            # Settled some other way while this was open. Nothing to take.
+            order.status = "expired"
+            tally["expired"] += 1
+            continue
+        tally["checked"] += 1
+        try:
+            result = SWEEPERS[order.provider](db, order, inv, now)
+        except Exception as exc:                                # noqa: BLE001
+            logger.warning("Sweep of %s order %s failed: %s", order.provider, order.provider_order_id, exc)
+            tally["errors"] += 1
+            continue
+        if result == "paid":
+            tally["paid"] += 1
+            logger.info("Sweep settled %s from a %s order the customer never confirmed", inv.number, order.provider)
+        elif result == "expired":
+            tally["expired"] += 1
+        elif result == "open":
+            tally["open"] += 1
+        db.commit()
     db.commit()
-    return {"paid": True, "already_recorded": not recorded, "invoice_number": inv.number, "status": inv.status}
+    return tally
+
+
+@scheduled_job("online_payment_sweep", period_key_fn=lambda now: now.strftime("%Y-%m-%d %H:%M"))
+def job_online_payment_sweep(db, now):
+    t = sweep_online_payments(db, now)
+    return f"{t['checked']} asked, {t['paid']} paid, {t['expired']} closed, {t['open']} still open, {t['errors']} errors"
 
 
 # Serve frontend

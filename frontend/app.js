@@ -567,6 +567,7 @@ function showView(viewId) {
     if (viewId === 'settings-view' && typeof buildSettingsSections === 'function') buildSettingsSections();
     if (viewId === 'settings-view' && typeof loadPaymentGateways === 'function') loadPaymentGateways();
     if (viewId === 'settings-view' && typeof loadAccounts === 'function') loadAccounts();
+    if (viewId === 'settings-view' && typeof loadOnlinePaymentNotice === 'function') loadOnlinePaymentNotice();
     if (viewId === 'settings-view' && typeof loadBrandingThemes === 'function') loadBrandingThemes();
     if (viewId === 'settings-view' && typeof loadAuditLogs === 'function') loadAuditLogs();
     if (viewId === 'settings-view' && typeof loadIntegrations === 'function') loadIntegrations();
@@ -15346,6 +15347,28 @@ async function savePaymentGateway(provider) {
     } catch (e) { showToast('Could not save those keys', 'error'); }
 }
 window.savePaymentGateway = savePaymentGateway;
+
+// Whether the business is emailed on each online payment. Off means quiet,
+// not unrecorded.
+async function loadOnlinePaymentNotice() {
+    var box = document.getElementById('notify-online-payments');
+    if (!box) return;
+    try {
+        var all = await fetchJson('/api/settings');
+        var v = String(all.notify_online_payments == null ? '1' : all.notify_online_payments).toLowerCase();
+        box.checked = ['0', 'false', 'no', 'off'].indexOf(v) === -1;
+    } catch (e) { /* leave the default */ }
+}
+window.loadOnlinePaymentNotice = loadOnlinePaymentNotice;
+
+async function saveOnlinePaymentNotice(box) {
+    try {
+        await fetchJson('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ notify_online_payments: box.checked ? '1' : '0' }) });
+        showToast(box.checked ? 'You will be emailed on each online payment' : 'Online payment emails switched off', 'success');
+    } catch (e) { showToast(e.message, 'error'); box.checked = !box.checked; }
+}
+window.saveOnlinePaymentNotice = saveOnlinePaymentNotice;
 
 // Ask the provider whether the saved keys work, before a customer does.
 async function checkPaymentGateway(provider) {
