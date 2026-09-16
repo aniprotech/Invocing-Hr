@@ -43,7 +43,12 @@ function boot(opts) {
         if (p.startsWith('/api/accounts/') && method === 'DELETE') return give({ message: 'Closed - 1 receipt names it, so it stays on record', closed: true });
         if (p === '/api/invoices/INV-1/payments' && method === 'POST') return give({ message: 'Payment recorded', due: 0 });
         if (p === '/api/invoices/INV-1' && method === 'GET') return give({ number: 'INV-1', due: 0, paid: 50, status: 'Paid', is_overdue: false, line_items: [], company: {},
-            payments: [{ id: 4, amount: 50, paid_on: '2026-09-10', method: 'bank_transfer', reference: 'TXN1', account_id: 1, account_name: 'HDFC <b>current</b>' }] });
+            payments: [{ id: 4, amount: 50, paid_on: '2026-09-10', method: 'bank_transfer', reference: 'TXN1', account_id: 1, account_name: 'HDFC <b>current</b>', refunded: 0 },
+                       { id: 5, amount: 30, paid_on: '2026-09-11', method: 'stripe', reference: 'pi_1', account_id: 3, account_name: 'Stripe', refunded: 10 },
+                       { id: 6, amount: 20, paid_on: '2026-09-12', method: 'cash', reference: '', account_id: 2, account_name: 'Cash box', refunded: 20 }],
+            refunds: [{ id: 1, payment_id: 5, amount: 10, reason: 'One <i>item</i> back', method: 'stripe', provider_refund_id: 're_1', status: 'pending', refunded_on: '2026-09-12' },
+                      { id: 2, payment_id: 6, amount: 20, reason: '', method: 'recorded', provider_refund_id: '', status: 'done', refunded_on: '2026-09-13' }], refunded_total: 30 });
+        if (p === '/api/invoices/INV-1/payments/5/refund' && method === 'POST') return give({ message: 'Refunded', refund: { id: 3 }, status: 'Partially Paid', paid: 40, due: 60 });
         if (p === '/api/payment-gateways' && method === 'GET') return give({ gateways: [
             { provider: 'razorpay', label: 'Razorpay', public_key: 'rzp_test_x', secret_key: '****', has_secret: true, is_active: true, is_live: false, updated_at: '' },
             { provider: 'stripe', label: 'Stripe (cards)', public_key: '', secret_key: '', has_secret: false, is_active: false, is_live: false, updated_at: '' },
@@ -156,6 +161,45 @@ function boot(opts) {
         await w.checkPaymentGateway('razorpay');
         await wait(30);
         check('a refusal is shown as one', /✗ Razorpay refused the keys/.test(doc.getElementById('gw-result-razorpay').textContent));
+    }
+    {
+        const { w, doc, sent, forms } = boot({ form: { amount: '15', reason: 'Late delivery', how: 'gateway', tell: 'yes' } });
+        await w.viewInvoice('INV-1');
+        await wait(40);
+        const host = doc.getElementById('view-inv-payments');
+        const text = host.textContent.replace(/\s+/g, ' ');
+        check('each receipt shows what was refunded, and the refunds sit under it with reason as text',
+            /£10\.00 refunded/.test(text) && /Refund via Stripe \(processing\) · One <i>item<\/i> back · re_1/.test(text) && !host.querySelector('i') && /−£20\.00/.test(text), text.slice(0, 300));
+        const buttons = host.querySelectorAll('[data-refund-payment]');
+        check('  a Refund button on receipts with something left, none on one fully refunded',
+            buttons.length === 2 && !host.querySelector('[data-refund-payment="6"]'));
+        check('  a refunded receipt cannot be reversed away', host.querySelectorAll('[title="Reverse payment"]').length === 1);
+        host.querySelector('[data-refund-payment="5"]').click();
+        await wait(40);
+        const f = forms[forms.length - 1];
+        check('refunding a card receipt asks amount (what is left), reason, through-the-gateway or record-only, and whether to tell the customer',
+            f && f[0].name === 'amount' && f[0].value === '20.00' && f[1].name === 'reason' && f[2].name === 'how' && f[2].options.length === 2 && f[3].name === 'tell', f && JSON.stringify(f.map(x => x.name)));
+        const post = sent.find(s => s.url === '/api/invoices/INV-1/payments/5/refund' && s.method === 'POST');
+        check('  and posts the amount, reason and choices', post && JSON.stringify(bodyOf(post)) === '{"amount":15,"reason":"Late delivery","through_gateway":true,"tell_customer":true}', post && post.body);
+    }
+    {
+        const { w, doc, sent, forms } = boot({ form: { amount: '25', reason: '', tell: 'no' } });
+        await w.viewInvoice('INV-1');
+        await wait(40);
+        doc.querySelector('[data-refund-payment="4"]').click();
+        await wait(40);
+        const f = forms[forms.length - 1];
+        check('a bank-transfer receipt has no gateway choice', f && f.every(x => x.name !== 'how'));
+        const post = sent.find(s => s.url === '/api/invoices/INV-1/payments/4/refund');
+        check('  and is recorded, not sent anywhere, with the customer left alone when asked', post && bodyOf(post).through_gateway === false && bodyOf(post).tell_customer === false, post && post.body);
+    }
+    {
+        const { w, doc, sent } = boot({ form: { amount: '999', reason: '', tell: 'yes' } });
+        await w.viewInvoice('INV-1');
+        await wait(40);
+        doc.querySelector('[data-refund-payment="4"]').click();
+        await wait(40);
+        check('more than the receipt has left is refused before it is sent', !sent.some(s => /\/refund$/.test(s.url)));
     }
     {
         const { w, doc, sent } = boot();

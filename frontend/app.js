@@ -2547,12 +2547,26 @@ function renderInvoicePayments(inv) {
             html += '<tr style="border-bottom:1px solid var(--border-color);">' +
                     '<td style="padding:6px 0;">' + esc(p.paid_on || '') + '</td>' +
                     '<td style="padding:6px 0;color:var(--text-secondary);">' + esc(PAYMENT_METHOD_LABELS[p.method] || p.method || '') +
-                    (p.account_name ? ' \u2192 ' + esc(p.account_name) : '') +
+                    // "Stripe -> Stripe" says nothing; the gateway's own account is implied.
+                    (p.account_name && p.account_name !== (PAYMENT_METHOD_LABELS[p.method] || p.method) ? ' \u2192 ' + esc(p.account_name) : '') +
                     (p.reference ? ' &middot; ' + esc(p.reference) : '') + '</td>' +
-                    '<td style="padding:6px 0;text-align:right;font-weight:600;">' + sym + (p.amount || 0).toFixed(2) + '</td>' +
-                    '<td style="padding:6px 0;text-align:right;width:32px;">' +
+                    '<td style="padding:6px 0;text-align:right;font-weight:600;">' + sym + (p.amount || 0).toFixed(2) +
+                    (p.refunded ? '<div style="font-size:0.72rem;font-weight:400;color:var(--text-secondary);">' + sym + Number(p.refunded).toFixed(2) + ' refunded</div>' : '') + '</td>' +
+                    '<td style="padding:6px 0;text-align:right;width:92px;white-space:nowrap;">' +
+                    ((p.amount || 0) - (p.refunded || 0) > 0.005
+                        ? '<button type="button" class="btn btn-outline btn-sm" style="padding:2px 8px;font-size:0.72rem;" data-refund-payment="' + p.id + '">Refund</button> '
+                        : '') +
+                    (p.refunded ? '' :
                     '<button type="button" title="Reverse payment" style="background:none;border:none;cursor:pointer;color:var(--danger-color);" ' +
-                    'onclick="reversePayment(\'' + esc(jsq(inv.number)) + '\',' + p.id + ')">&times;</button></td></tr>';
+                    'onclick="reversePayment(\'' + esc(jsq(inv.number)) + '\',' + p.id + ')">&times;</button>') + '</td></tr>';
+            (inv.refunds || []).filter(function (r) { return r.payment_id === p.id; }).forEach(function (r) {
+                html += '<tr style="border-bottom:1px solid var(--border-color);color:var(--text-secondary);font-size:0.8rem;">' +
+                    '<td style="padding:4px 0 4px 14px;">' + esc(r.refunded_on || '') + '</td>' +
+                    '<td style="padding:4px 0;">\u21a9 Refund' + (r.method && r.method !== 'recorded' ? ' via ' + esc(PAYMENT_METHOD_LABELS[r.method] || r.method) : '') +
+                    (r.status === 'pending' ? ' (processing)' : '') +
+                    (r.reason ? ' &middot; ' + esc(r.reason) : '') + (r.provider_refund_id ? ' &middot; ' + esc(r.provider_refund_id) : '') + '</td>' +
+                    '<td style="padding:4px 0;text-align:right;">\u2212' + sym + (r.amount || 0).toFixed(2) + '</td><td></td></tr>';
+            });
         });
         html += '<tr><td colspan="2" style="padding:6px 0;font-weight:700;">Outstanding</td>' +
                 '<td colspan="2" style="padding:6px 0;text-align:right;font-weight:700;">' + sym + (inv.due || 0).toFixed(2) + '</td></tr>';
@@ -2560,8 +2574,47 @@ function renderInvoicePayments(inv) {
     }
     host.innerHTML = html;
     host.style.display = html ? 'block' : 'none';
+    host.querySelectorAll('[data-refund-payment]').forEach(function (b) {
+        b.addEventListener('click', function () { refundPayment(inv.number, Number(b.getAttribute('data-refund-payment'))); });
+    });
 }
 window.renderInvoicePayments = renderInvoicePayments;
+
+// Giving some or all of a receipt back. Through the gateway that took it
+// when there was one, or recorded when the money went back by hand.
+var _viewPayments = [];
+async function refundPayment(number, paymentId) {
+    var p = _viewPayments.filter(function (x) { return x.id === paymentId; })[0];
+    if (!p) return;
+    var sym = getCurrencySymbol();
+    var left = Math.round(((p.amount || 0) - (p.refunded || 0)) * 100) / 100;
+    var online = ['stripe', 'razorpay', 'paypal'].indexOf(p.method) !== -1;
+    var label = PAYMENT_METHOD_LABELS[p.method] || p.method;
+    var fields = [
+        { name: 'amount', label: 'Amount to refund', type: 'number', value: left.toFixed(2), required: true, hint: sym + left.toFixed(2) + ' of this receipt is left' },
+        { name: 'reason', label: 'Reason', type: 'text', placeholder: 'Shown to the customer', value: '' }
+    ];
+    if (online) {
+        fields.push({ name: 'how', label: 'How', type: 'select', value: 'gateway',
+            options: [{ value: 'gateway', label: 'Send it back through ' + label }, { value: 'record', label: 'Record only - already refunded in ' + label }] });
+    }
+    fields.push({ name: 'tell', label: 'Tell the customer', type: 'select', value: 'yes', options: [{ value: 'yes', label: 'Email them a note' }, { value: 'no', label: 'Say nothing' }] });
+    var out = await uiForm(fields, { title: 'Refund', confirmText: 'Refund',
+        message: online ? 'The money goes back the way it came, and the invoice shows it as owed again.' : 'For a receipt paid back by hand: the invoice shows the amount as owed again.' });
+    if (!out) return;
+    var amount = parseFloat(out.amount);
+    if (isNaN(amount) || amount <= 0) { showToast('Enter an amount greater than zero', 'error'); return; }
+    if (amount - left > 0.005) { showToast('Only ' + sym + left.toFixed(2) + ' of this receipt is left to refund', 'error'); return; }
+    try {
+        var data = await fetchJson('/api/invoices/' + encodeURIComponent(number) + '/payments/' + paymentId + '/refund', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ amount: amount, reason: out.reason || '', through_gateway: online && out.how !== 'record', tell_customer: out.tell !== 'no' }) });
+        showToast(data.message || 'Refunded', 'success');
+        fetchInvoices();
+        viewInvoice(number);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.refundPayment = refundPayment;
 
 // --- View Invoice ---
 async function viewInvoice(number) {
@@ -2573,6 +2626,7 @@ async function viewInvoice(number) {
         _viewCurrency = inv.currency || '';
         _viewTrackingId = inv.tracking_id || '';
         _viewOutstanding = inv.due || 0;
+        _viewPayments = inv.payments || [];
         renderInvoicePayments(inv);
         if (typeof showInvoiceDelivery === 'function') showInvoiceDelivery(inv);
         document.getElementById('view-inv-title').textContent = 'Invoice ' + inv.number;

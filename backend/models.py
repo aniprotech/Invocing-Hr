@@ -2570,3 +2570,27 @@ class DBKudos(Base):
     message = Column(Text, default="")
     value = Column(String, default="")
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"), index=True)
+
+
+class DBRefund(Base):
+    """Money given back against a receipt. Through the gateway that took it
+    when there was one, otherwise written down after the business paid it
+    back by hand. The receipt it belongs to keeps its own amount; what is
+    left of it is the amount less these."""
+    __tablename__ = "refunds"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=False, index=True)
+    payment_id = Column(Integer, ForeignKey("payments.id"), nullable=False, index=True)
+    amount = Column(Float, default=0.0)
+    reason = Column(String, default="")
+    # The receipt's method, so a refund reads "card" next to a card receipt;
+    # "recorded" when the money went back some other way.
+    method = Column(String, default="")
+    provider_refund_id = Column(String, default="")
+    status = Column(String, default="done")          # done | pending
+    account_id = Column(Integer, ForeignKey("money_accounts.id"), nullable=True)
+    refunded_on = Column(String, default="")
+    created_by = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))

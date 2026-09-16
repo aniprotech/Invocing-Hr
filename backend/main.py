@@ -2758,6 +2758,7 @@ def superadmin_delete_client(client_id: int, request: Request, db: Session = Dep
         raise HTTPException(status_code=404, detail="Client not found")
     invoice_ids = db.query(models.DBInvoice.id).filter(models.DBInvoice.client_id == client_id)
     db.query(models.DBLineItem).filter(models.DBLineItem.invoice_id.in_(invoice_ids)).delete(synchronize_session=False)
+    db.query(models.DBRefund).filter(models.DBRefund.invoice_id.in_(invoice_ids)).delete(synchronize_session=False)
     db.query(models.DBPayment).filter(models.DBPayment.invoice_id.in_(invoice_ids)).delete(synchronize_session=False)
     db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client_id).delete()
     db.query(models.DBContact).filter(models.DBContact.client_id == client_id).delete()
@@ -3565,6 +3566,10 @@ def get_invoice(number: str, request: Request, db: Session = Depends(get_db)):
         models.DBPayment.invoice_id == inv.id
     ).order_by(models.DBPayment.id.asc()).all()
     acct_names = account_names(db, inv.client_id)
+    refunds = db.query(models.DBRefund).filter(models.DBRefund.invoice_id == inv.id).order_by(models.DBRefund.id.asc()).all()
+    refunded_by_payment = {}
+    for r in refunds:
+        refunded_by_payment[r.payment_id] = money(refunded_by_payment.get(r.payment_id, 0.0) + (r.amount or 0))
 
     # Whether the last attempt to email this actually arrived. Recording a
     # failure and showing nothing leaves it as silent as pretending it went.
@@ -3595,7 +3600,10 @@ def get_invoice(number: str, request: Request, db: Session = Depends(get_db)):
             "id": p.id, "amount": p.amount, "paid_on": p.paid_on,
             "method": p.method, "reference": p.reference, "note": p.note,
             "account_id": p.account_id, "account_name": acct_names.get(p.account_id, ""),
+            "refunded": refunded_by_payment.get(p.id, 0.0),
         } for p in payments],
+        "refunds": [refund_to_dict(r, acct_names) for r in refunds],
+        "refunded_total": money(sum((r.amount or 0) for r in refunds)),
         "status": inv.status,
         "sent": inv.sent,
         "tax_type": inv.tax_type,
@@ -5331,6 +5339,7 @@ def delete_invoice(number: str, request: Request, db: Session = Depends(get_db))
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
     db.query(models.DBLineItem).filter(models.DBLineItem.invoice_id == inv.id).delete()
+    db.query(models.DBRefund).filter(models.DBRefund.invoice_id == inv.id).delete()
     db.query(models.DBPayment).filter(models.DBPayment.invoice_id == inv.id).delete()
     log_audit(db, client.id, "invoice_deleted", "invoice", inv.id, inv.number, f"Contact: {inv.to_contact}", request)
     db.delete(inv)
@@ -5422,6 +5431,8 @@ def delete_invoice_payment(number: str, payment_id: int, request: Request, db: S
     ).first()
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
+    if db.query(models.DBRefund).filter(models.DBRefund.payment_id == payment.id).count():
+        raise HTTPException(status_code=400, detail="Part of this receipt has been refunded; it stays on record")
     inv.paid = money(max(0.0, (inv.paid or 0) - (payment.amount or 0)))
     inv.due = money((inv.due or 0) + (payment.amount or 0))
     inv.status = "Partially Paid" if (inv.paid or 0) > 0.005 else ("Sent" if inv.sent else "Draft")
@@ -26805,7 +26816,7 @@ API_KEY_LIMIT = 10
 WEBHOOK_LIMIT = 10
 WEBHOOK_EVENTS = ("employee.created", "employee.updated", "employee.left",
                   "leave.requested", "leave.decided", "probation.decided", "pay.changed",
-                  "review.completed", "kudos.given", "invoice.paid")
+                  "review.completed", "kudos.given", "invoice.paid", "invoice.refunded")
 WEBHOOK_MAX_ATTEMPTS = 5
 WEBHOOK_BACKOFF_MINUTES = (0, 1, 5, 30, 120)
 
@@ -28200,6 +28211,14 @@ def account_totals(db, client_id, today=None):
             t["last_month"] = money(t["last_month"] + amt)
         if (p.paid_on or "") > t["last_on"]:
             t["last_on"] = p.paid_on or ""
+    for r in db.query(models.DBRefund).filter(models.DBRefund.client_id == client_id).all():
+        t = out.setdefault(r.account_id, {"this_month": 0.0, "last_month": 0.0, "all_time": 0.0, "count": 0, "last_on": ""})
+        amt = float(r.amount or 0)
+        t["all_time"] = money(t["all_time"] - amt)
+        if (r.refunded_on or "").startswith(this_month):
+            t["this_month"] = money(t["this_month"] - amt)
+        elif (r.refunded_on or "").startswith(last_month):
+            t["last_month"] = money(t["last_month"] - amt)
     return out
 
 
@@ -28805,6 +28824,155 @@ def sweep_online_payments(db, now=None):
 def job_online_payment_sweep(db, now):
     t = sweep_online_payments(db, now)
     return f"{t['checked']} asked, {t['paid']} paid, {t['expired']} closed, {t['open']} still open, {t['errors']} errors"
+
+
+# ============================================================================
+# Refunds
+# ============================================================================
+# Giving money back used to mean the gateway's own dashboard and then
+# "reverse payment" here, which said the money had never arrived. It had.
+# A refund is its own row against the receipt it undoes: sent through the
+# gateway that took the payment when there was one, or written down when
+# the business paid it back by hand. The invoice's paid and due move back
+# by the amount, the customer is told, and the receipt keeps its history.
+
+REFUNDABLE_ONLINE = ("stripe", "razorpay", "paypal")
+
+
+def refund_to_dict(r, names=None):
+    names = names or {}
+    return {"id": r.id, "payment_id": r.payment_id, "amount": r.amount, "reason": r.reason or "",
+            "method": r.method or "", "provider_refund_id": r.provider_refund_id or "", "status": r.status or "done",
+            "account_id": r.account_id, "account_name": names.get(r.account_id, ""),
+            "refunded_on": r.refunded_on or "", "created_by": r.created_by or "", "created_at": r.created_at or ""}
+
+
+def refunded_so_far(db, payment_id):
+    return money(sum((r.amount or 0) for r in db.query(models.DBRefund).filter(models.DBRefund.payment_id == payment_id).all()))
+
+
+def gateway_refund(db, client_id, payment, amount, currency, reason):
+    """Ask the gateway that took the receipt to give some of it back.
+    Returns (provider refund id, status) or raises with the provider's words."""
+    minor = to_minor_units(amount, currency)
+    if payment.method == "stripe":
+        _pub, secret, _mode = collecting_keys(db, client_id, "stripe")
+        if not secret:
+            raise HTTPException(status_code=400, detail="Stripe keys are no longer set - record the refund instead")
+        if not (payment.reference or "").startswith("pi_"):
+            raise HTTPException(status_code=400, detail="This receipt has no Stripe payment behind it - record the refund instead")
+        resp = httpx.post("https://api.stripe.com/v1/refunds", auth=(secret, ""),
+                          data={"payment_intent": payment.reference, "amount": minor, "metadata[reason]": reason[:200]}, timeout=25.0)
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=502, detail="Stripe refused the refund: " + stripe_complaint(resp))
+        body = resp.json()
+        return body.get("id") or "", "done" if body.get("status") == "succeeded" else "pending"
+    if payment.method == "razorpay":
+        key_id, secret, _mode = collecting_keys(db, client_id, "razorpay")
+        if not (key_id and secret):
+            raise HTTPException(status_code=400, detail="Razorpay keys are no longer set - record the refund instead")
+        if not (payment.reference or "").startswith("pay_"):
+            raise HTTPException(status_code=400, detail="This receipt has no Razorpay payment behind it - record the refund instead")
+        resp = httpx.post(f"https://api.razorpay.com/v1/payments/{payment.reference}/refund", auth=(key_id, secret),
+                          json={"amount": minor, "notes": {"reason": reason[:200]}}, timeout=25.0)
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=502, detail="Razorpay refused the refund: " + razorpay_complaint(resp, currency))
+        body = resp.json()
+        return body.get("id") or "", "done" if body.get("status") == "processed" else "pending"
+    if payment.method == "paypal":
+        cid, secret, live = paypal_keys(db, client_id)
+        if not cid:
+            raise HTTPException(status_code=400, detail="PayPal keys are no longer set - record the refund instead")
+        base_url = paypal_base_url(live)
+        token, why = paypal_token(base_url, cid, secret)
+        if not token:
+            raise HTTPException(status_code=502, detail="PayPal refused the credentials: " + why)
+        resp = httpx.post(f"{base_url}/v2/payments/captures/{payment.reference}/refund",
+                          headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                                   "PayPal-Request-Id": f"ref-{payment.id}-{minor}-{refunded_so_far(db, payment.id)}"},
+                          json={"amount": {"value": paypal_amount(amount, currency), "currency_code": currency},
+                                "note_to_payer": reason[:255]} if reason else
+                          {"amount": {"value": paypal_amount(amount, currency), "currency_code": currency}},
+                          timeout=25.0)
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=502, detail="PayPal refused the refund: " + paypal_refusal(resp))
+        body = resp.json()
+        return body.get("id") or "", "done" if body.get("status") == "COMPLETED" else "pending"
+    raise HTTPException(status_code=400, detail="That receipt was not taken online - record the refund instead")
+
+
+def _refund_status_after(inv):
+    # Money was taken against it, so it was issued: never back to Draft.
+    inv.status = "Partially Paid" if (inv.paid or 0) > 0.005 else "Awaiting Payment"
+
+
+@app.post("/api/invoices/{number}/payments/{payment_id}/refund")
+def refund_invoice_payment(number: str, payment_id: int, request: Request, body: dict = None,
+                           db: Session = Depends(get_db)):
+    """Give some or all of a receipt back. Through the gateway when the
+    receipt came through one and the caller asks; otherwise recorded."""
+    client = get_client_user(request, db)
+    body = body or {}
+    inv = db.query(models.DBInvoice).filter(models.DBInvoice.number == number, models.DBInvoice.client_id == client.id).first()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    payment = db.query(models.DBPayment).filter(models.DBPayment.id == payment_id, models.DBPayment.invoice_id == inv.id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    left = money((payment.amount or 0) - refunded_so_far(db, payment.id))
+    try:
+        amount = money(float(body.get("amount") if body.get("amount") not in (None, "") else left))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Enter an amount")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Enter an amount greater than zero")
+    if amount > left + 0.005:
+        raise HTTPException(status_code=400, detail=f"Only {left:.2f} of this receipt is left to refund")
+    reason = str(body.get("reason") or "").strip()[:300]
+    through_gateway = bool(body.get("through_gateway", payment.method in REFUNDABLE_ONLINE))
+    currency = (inv.currency or client.currency or "GBP").upper()
+
+    provider_id, status = "", "done"
+    if through_gateway:
+        provider_id, status = gateway_refund(db, client.id, payment, amount, currency, reason)
+
+    refund = models.DBRefund(
+        client_id=client.id, invoice_id=inv.id, payment_id=payment.id, amount=amount, reason=reason,
+        method=payment.method if through_gateway else "recorded", provider_refund_id=provider_id[:120], status=status,
+        account_id=payment.account_id, refunded_on=str(body.get("refunded_on") or date.today().isoformat())[:10],
+        created_by=(client.email or "")[:120])
+    db.add(refund)
+    inv.paid = money(max(0.0, (inv.paid or 0) - amount))
+    inv.due = money((inv.due or 0) + amount)
+    _refund_status_after(inv)
+    log_audit(db, client.id, "invoice_refunded", "invoice", inv.id, inv.number,
+              f"Amount: {amount:.2f} via {refund.method}" + (f" ({provider_id})" if provider_id else "") + (f" - {reason}" if reason else ""), request)
+    db.flush()
+    announce(db, client.id, "invoice.refunded",
+             {"invoice": inv.number, "amount": amount, "currency": currency, "method": refund.method,
+              "provider_refund_id": provider_id, "reason": reason, "status": inv.status, "customer": inv.to_contact or ""})
+    db.commit()
+
+    told = False
+    if body.get("tell_customer", True) and (inv.email or "").strip() and validate_email_address(inv.email):
+        company = client.company_name or client.contact_name or "Your supplier"
+        how = {"stripe": "to your card", "razorpay": "to the account you paid from", "paypal": "to your PayPal account"}.get(refund.method, "")
+        text_body = (f"Hello {inv.to_contact or ''},\n\n"
+                     f"{company} has refunded {currency} {amount:,.2f} on invoice {inv.number}"
+                     + (f" {how}" if how else "") + ".\n"
+                     + (f"Reason: {reason}\n" if reason else "")
+                     + ("It can take a few working days to show.\n" if how else "")
+                     + f"\nKind regards,\n{company}\n")
+        try:
+            send_email_background(inv.email, f"Refund of {currency} {amount:,.2f} on invoice {inv.number}", text_body,
+                                  f"{company} <{platform_from_address(db)}>", None, client_id=client.id)
+            told = True
+        except Exception:                                       # noqa: BLE001
+            logger.exception("Could not send the refund note for %s", inv.number)
+
+    return {"message": "Refunded" if status == "done" else "Refund sent - the provider is still processing it",
+            "refund": refund_to_dict(refund, account_names(db, client.id)),
+            "status": inv.status, "paid": inv.paid, "due": inv.due, "customer_told": told}
 
 
 # Serve frontend
