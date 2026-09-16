@@ -28975,6 +28975,342 @@ def refund_invoice_payment(number: str, payment_id: int, request: Request, body:
             "status": inv.status, "paid": inv.paid, "due": inv.due, "customer_told": told}
 
 
+# ============================================================================
+# Ageing by customer, and statements
+# ============================================================================
+# The ageing report bucketed invoices but never people, and a debtor is a
+# person: the question is "who owes us, and how long have they owed it".
+# So the same buckets per customer, as of any date, with days sales
+# outstanding on top and a spreadsheet out the side. And a statement:
+# one customer's invoices, payments and refunds in date order with a
+# running balance, on screen, as a file, in an email, and - if the
+# business wants - sent on the first of every month to everybody with a
+# balance. It is the page every customer asks for before they pay.
+
+AGE_BUCKETS = ("current", "1_30", "31_60", "61_90", "over_90")
+
+
+def _age_bucket(days):
+    if days <= 0:
+        return "current"
+    if days <= 30:
+        return "1_30"
+    if days <= 60:
+        return "31_60"
+    if days <= 90:
+        return "61_90"
+    return "over_90"
+
+
+def _outstanding_as_of(inv, payments, refunds, as_of):
+    """What was owed on this invoice at the end of a day: its total, less
+    receipts on or before that day, plus refunds on or before it."""
+    total = money((inv.paid or 0) + (inv.due or 0))
+    got = sum((p.amount or 0) for p in payments if (p.paid_on or p.created_at or "")[:10] <= as_of)
+    back = sum((r.amount or 0) for r in refunds if (r.refunded_on or r.created_at or "")[:10] <= as_of)
+    return money(max(0.0, total - got + back))
+
+
+def ageing_by_customer(db, client, as_of=None):
+    """Rows per customer, per currency, bucketed by how late as of a day."""
+    as_of = as_of or date.today().isoformat()
+    base = base_currency(client)
+    invoices = [i for i in db.query(models.DBInvoice).filter(
+        models.DBInvoice.client_id == client.id, models.DBInvoice.status.notin_(["Draft", "Void"])).all()
+        if (i.issue_date or "")[:10] <= as_of]
+    ids = [i.id for i in invoices]
+    pays, refs = {}, {}
+    if ids:
+        for p in db.query(models.DBPayment).filter(models.DBPayment.invoice_id.in_(ids)).all():
+            pays.setdefault(p.invoice_id, []).append(p)
+        for r in db.query(models.DBRefund).filter(models.DBRefund.invoice_id.in_(ids)).all():
+            refs.setdefault(r.invoice_id, []).append(r)
+    day = _parse_date(as_of) or date.today()
+    contacts = {(c.name or "").strip().lower(): c for c in db.query(models.DBContact).filter(models.DBContact.client_id == client.id).all()}
+    rows = {}
+    per_invoice = []
+    for inv in invoices:
+        owed = _outstanding_as_of(inv, pays.get(inv.id, []), refs.get(inv.id, []), as_of)
+        if owed <= 0:
+            continue
+        due = _parse_date(inv.due_date)
+        late = max(0, (day - due).days) if due else 0
+        bucket = _age_bucket(late)
+        cur = ((inv.currency or "") or base).upper()
+        name = (inv.to_contact or "Unnamed").strip() or "Unnamed"
+        key = (name.lower(), cur)
+        known = contacts.get(name.lower())
+        # The customer record's address first; the one typed on an invoice
+        # may be a one-off or out of date.
+        row = rows.setdefault(key, {"contact": name, "currency": cur, "email": (known.email if known and known.email else inv.email) or "",
+                                    "contact_id": known.id if known else None,
+                                    "invoices": 0, "oldest_days": 0, "total": 0.0, **{b: 0.0 for b in AGE_BUCKETS}})
+        row[bucket] = money(row[bucket] + owed)
+        row["total"] = money(row["total"] + owed)
+        row["invoices"] += 1
+        row["oldest_days"] = max(row["oldest_days"], late)
+        if not row["email"] and inv.email:
+            row["email"] = inv.email
+        per_invoice.append({"number": inv.number, "contact": name, "due_date": inv.due_date, "issue_date": inv.issue_date,
+                            "outstanding": owed, "days_overdue": late, "bucket": bucket, "currency": cur})
+    customer_rows = sorted(rows.values(), key=lambda r: (r["currency"] != base, -r["total"]))
+    per_invoice.sort(key=lambda r: r["days_overdue"], reverse=True)
+    return customer_rows, per_invoice, base
+
+
+def days_sales_outstanding(db, client, as_of=None, window_days=90):
+    """Receivables over the last window's sales, times the window. The
+    usual reading: how many days' worth of sales are sitting unpaid."""
+    as_of = as_of or date.today().isoformat()
+    base = base_currency(client)
+    since = ((_parse_date(as_of) or date.today()) - timedelta(days=window_days)).isoformat()
+    sales = 0.0
+    for i in db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id,
+                                               models.DBInvoice.status.notin_(["Draft", "Void"])).all():
+        if ((i.currency or "") or base).upper() != base:
+            continue
+        if since < (i.issue_date or "")[:10] <= as_of:
+            sales += (i.paid or 0) + (i.due or 0)
+    rows, _per, _base = ageing_by_customer(db, client, as_of)
+    owed = sum(r["total"] for r in rows if r["currency"] == base)
+    if sales <= 0:
+        return None, money(sales), money(owed)
+    return round(owed / sales * window_days, 1), money(sales), money(owed)
+
+
+@app.get("/api/reports/ageing")
+def ageing_report(request: Request, as_of: str = "", db: Session = Depends(get_db)):
+    """Who owes what, and for how long, as of a day."""
+    client = get_client_user(request, db)
+    as_of = _clean_ymd(as_of, "as_of") or date.today().isoformat()
+    rows, per_invoice, base = ageing_by_customer(db, client, as_of)
+    dso, sales, owed = days_sales_outstanding(db, client, as_of)
+    buckets = {b: money(sum(r[b] for r in rows if r["currency"] == base)) for b in AGE_BUCKETS}
+    return {"as_of": as_of, "currency": base, "buckets": buckets, "total_outstanding": owed,
+            "customers": rows, "invoices": per_invoice,
+            "dso": dso, "sales_90d": sales, "customers_owing": sum(1 for r in rows if r["currency"] == base),
+            "other_currencies": sorted({r["currency"] for r in rows if r["currency"] != base})}
+
+
+@app.get("/api/reports/ageing.csv")
+def ageing_csv(request: Request, as_of: str = "", detail: int = 0, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    as_of = _clean_ymd(as_of, "as_of") or date.today().isoformat()
+    rows, per_invoice, base = ageing_by_customer(db, client, as_of)
+    if detail:
+        return _csv_response(f"ageing-invoices-{as_of}.csv",
+                             ["invoice", "customer", "currency", "issued", "due", "days_overdue", "bucket", "outstanding"],
+                             [[r["number"], r["contact"], r["currency"], r["issue_date"], r["due_date"], r["days_overdue"], r["bucket"], r["outstanding"]] for r in per_invoice])
+    return _csv_response(f"ageing-{as_of}.csv",
+                         ["customer", "email", "currency", "invoices", "current", "1_30", "31_60", "61_90", "over_90", "total", "oldest_days"],
+                         [[r["contact"], r["email"], r["currency"], r["invoices"], r["current"], r["1_30"], r["31_60"], r["61_90"], r["over_90"], r["total"], r["oldest_days"]] for r in rows])
+
+
+# --- statements ---------------------------------------------------------------------
+
+def _contact_invoices(db, client_id, contact):
+    name = (contact.name or "").strip().lower()
+    return [i for i in db.query(models.DBInvoice).filter(
+        models.DBInvoice.client_id == client_id, models.DBInvoice.status.notin_(["Draft", "Void"])).all()
+        if (i.to_contact or "").strip().lower() == name]
+
+
+def statement_for(db, client, contact, start, end):
+    """One customer's account between two days, per currency: the balance
+    brought forward, every invoice, receipt and refund in order, and the
+    balance carried out. Overdue is what is past due at the end."""
+    invoices = _contact_invoices(db, client.id, contact)
+    base = base_currency(client)
+    ids = [i.id for i in invoices]
+    pays = db.query(models.DBPayment).filter(models.DBPayment.invoice_id.in_(ids)).all() if ids else []
+    refs = db.query(models.DBRefund).filter(models.DBRefund.invoice_id.in_(ids)).all() if ids else []
+    by_inv = {i.id: i for i in invoices}
+    events = []
+    for i in invoices:
+        total = money((i.paid or 0) + (i.due or 0))
+        events.append({"date": (i.issue_date or i.created_at or "")[:10], "kind": "invoice", "ref": i.number,
+                       "description": f"Invoice {i.number}" + (f", due {i.due_date}" if i.due_date else ""),
+                       "debit": total, "credit": 0.0, "currency": ((i.currency or "") or base).upper(), "number": i.number, "order": 0})
+    for p in pays:
+        i = by_inv[p.invoice_id]
+        events.append({"date": (p.paid_on or p.created_at or "")[:10], "kind": "payment", "ref": p.reference or "",
+                       "description": f"Payment on {i.number}" + (f" ({PAYMENT_METHOD_WORDS.get(p.method, p.method)})" if p.method else ""),
+                       "debit": 0.0, "credit": money(p.amount or 0), "currency": ((i.currency or "") or base).upper(), "number": i.number, "order": 1})
+    for r in refs:
+        i = by_inv[r.invoice_id]
+        events.append({"date": (r.refunded_on or r.created_at or "")[:10], "kind": "refund", "ref": r.provider_refund_id or "",
+                       "description": f"Refund on {i.number}" + (f": {r.reason}" if r.reason else ""),
+                       "debit": money(r.amount or 0), "credit": 0.0, "currency": ((i.currency or "") or base).upper(), "number": i.number, "order": 2})
+    events.sort(key=lambda e: (e["date"], e["order"], e["ref"]))
+    out = []
+    day_end = _parse_date(end) or date.today()
+    for cur in sorted({e["currency"] for e in events}, key=lambda c: (c != base, c)):
+        mine = [e for e in events if e["currency"] == cur]
+        opening = money(sum(e["debit"] - e["credit"] for e in mine if e["date"] < start))
+        balance = opening
+        lines = []
+        for e in mine:
+            if e["date"] < start or e["date"] > end:
+                continue
+            balance = money(balance + e["debit"] - e["credit"])
+            lines.append(dict({k: v for k, v in e.items() if k != "order"}, balance=balance))
+        overdue = 0.0
+        for i in invoices:
+            if ((i.currency or "") or base).upper() != cur:
+                continue
+            owed = _outstanding_as_of(i, [p for p in pays if p.invoice_id == i.id], [r for r in refs if r.invoice_id == i.id], end)
+            due = _parse_date(i.due_date)
+            if owed > 0 and due and due < day_end:
+                overdue = money(overdue + owed)
+        out.append({"currency": cur, "opening_balance": opening, "lines": lines, "closing_balance": balance, "overdue": overdue,
+                    "invoiced": money(sum(l["debit"] for l in lines if l["kind"] == "invoice")),
+                    "received": money(sum(l["credit"] for l in lines))})
+    return out
+
+
+PAYMENT_METHOD_WORDS = {"bank_transfer": "bank transfer", "card": "card", "cash": "cash", "cheque": "cheque", "direct_debit": "direct debit",
+                        "manual": "marked paid", "stripe": "card", "razorpay": "Razorpay", "gocardless": "bank debit", "paypal": "PayPal", "other": "other"}
+
+
+def _statement_period(start, end):
+    end = _clean_ymd(end, "end") or date.today().isoformat()
+    start = _clean_ymd(start, "start") or ((_parse_date(end) or date.today()) - timedelta(days=90)).isoformat()
+    if start > end:
+        start, end = end, start
+    return start, end
+
+
+def _contact_or_404(db, client, contact_id):
+    contact = db.query(models.DBContact).filter(models.DBContact.id == contact_id, models.DBContact.client_id == client.id).first()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return contact
+
+
+@app.get("/api/contacts/{contact_id}/statement")
+def customer_statement(contact_id: int, request: Request, start: str = "", end: str = "", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    contact = _contact_or_404(db, client, contact_id)
+    start, end = _statement_period(start, end)
+    return {"contact": {"id": contact.id, "name": contact.name or "", "email": contact.email or ""},
+            "company": client.company_name or "", "start": start, "end": end,
+            "statements": statement_for(db, client, contact, start, end)}
+
+
+@app.get("/api/contacts/{contact_id}/statement.csv")
+def customer_statement_csv(contact_id: int, request: Request, start: str = "", end: str = "", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    contact = _contact_or_404(db, client, contact_id)
+    start, end = _statement_period(start, end)
+    rows = []
+    for st in statement_for(db, client, contact, start, end):
+        rows.append([start, "opening balance", "", "", st["currency"], "", "", st["opening_balance"]])
+        for l in st["lines"]:
+            rows.append([l["date"], l["kind"], l["number"], l["description"], st["currency"], l["debit"] or "", l["credit"] or "", l["balance"]])
+        rows.append([end, "closing balance", "", "", st["currency"], "", "", st["closing_balance"]])
+    safe = "".join(ch if ch.isalnum() else "-" for ch in (contact.name or "customer"))[:40]
+    return _csv_response(f"statement-{safe}-{start}-{end}.csv",
+                         ["date", "kind", "invoice", "description", "currency", "debit", "credit", "balance"], rows)
+
+
+def statement_email(client, contact, start, end, statements, note=""):
+    company = client.company_name or client.contact_name or "Your supplier"
+    esc_ = html_mod.escape
+    parts_t, parts_h = [], []
+    for st in statements:
+        cur = st["currency"]
+        parts_t.append(f"\n{cur}\nBalance brought forward {start}: {st['opening_balance']:,.2f}")
+        rows_h = ""
+        for l in st["lines"]:
+            parts_t.append(f"{l['date']}  {l['description']}  " + (f"{l['debit']:,.2f}" if l['debit'] else f"-{l['credit']:,.2f}") + f"  balance {l['balance']:,.2f}")
+            rows_h += (f"<tr><td style='padding:6px 8px;border-bottom:1px solid #e2e8f0;white-space:nowrap'>{esc_(l['date'])}</td>"
+                       f"<td style='padding:6px 8px;border-bottom:1px solid #e2e8f0'>{esc_(l['description'])}</td>"
+                       f"<td style='padding:6px 8px;border-bottom:1px solid #e2e8f0;text-align:right'>{l['debit']:,.2f}</td>" if l['debit'] else
+                       f"<tr><td style='padding:6px 8px;border-bottom:1px solid #e2e8f0;white-space:nowrap'>{esc_(l['date'])}</td>"
+                       f"<td style='padding:6px 8px;border-bottom:1px solid #e2e8f0'>{esc_(l['description'])}</td>"
+                       f"<td style='padding:6px 8px;border-bottom:1px solid #e2e8f0;text-align:right'></td>")
+            rows_h += (f"<td style='padding:6px 8px;border-bottom:1px solid #e2e8f0;text-align:right'>{l['credit']:,.2f}</td>" if l['credit'] else
+                       "<td style='padding:6px 8px;border-bottom:1px solid #e2e8f0'></td>")
+            rows_h += f"<td style='padding:6px 8px;border-bottom:1px solid #e2e8f0;text-align:right'>{l['balance']:,.2f}</td></tr>"
+        parts_t.append(f"Balance at {end}: {st['closing_balance']:,.2f}" + (f" (of which overdue {st['overdue']:,.2f})" if st['overdue'] else ""))
+        parts_h.append(
+            f"<h3 style='margin:18px 0 6px;font-size:15px'>{esc_(cur)}</h3>"
+            f"<p style='margin:0 0 8px;color:#475569'>Balance brought forward {esc_(start)}: <strong>{st['opening_balance']:,.2f}</strong></p>"
+            "<table style='width:100%;border-collapse:collapse;font-size:13px'><thead><tr>"
+            "<th style='text-align:left;padding:6px 8px;border-bottom:2px solid #cbd5e1'>Date</th><th style='text-align:left;padding:6px 8px;border-bottom:2px solid #cbd5e1'>Detail</th>"
+            "<th style='text-align:right;padding:6px 8px;border-bottom:2px solid #cbd5e1'>Charged</th><th style='text-align:right;padding:6px 8px;border-bottom:2px solid #cbd5e1'>Received</th>"
+            f"<th style='text-align:right;padding:6px 8px;border-bottom:2px solid #cbd5e1'>Balance</th></tr></thead><tbody>{rows_h}</tbody></table>"
+            f"<p style='margin:10px 0 0;font-size:15px'>Balance at {esc_(end)}: <strong>{st['closing_balance']:,.2f}</strong>"
+            + (f" <span style='color:#b91c1c'>(of which overdue {st['overdue']:,.2f})</span>" if st['overdue'] else "") + "</p>")
+    text = (f"Hello {contact.name or ''},\n\nYour statement of account with {company} from {start} to {end}.\n"
+            + (f"\n{note}\n" if note else "") + "\n".join(parts_t) + f"\n\nKind regards,\n{company}\n")
+    html = (f"<div style='font-family:Arial,Helvetica,sans-serif;max-width:640px;margin:0 auto;padding:24px;color:#0f172a'>"
+            f"<h2 style='margin:0 0 4px'>Statement of account</h2><p style='margin:0 0 12px;color:#475569'>{esc_(company)} &middot; {esc_(start)} to {esc_(end)}</p>"
+            f"<p>Hello {esc_(contact.name or '')},</p>" + (f"<p>{esc_(note)}</p>" if note else "") + "".join(parts_h)
+            + f"<p style='margin-top:18px'>Kind regards,<br>{esc_(company)}</p></div>")
+    subject = f"Statement of account from {company}: {start} to {end}"
+    return subject, text, html
+
+
+@app.post("/api/contacts/{contact_id}/statement/send")
+def send_customer_statement(contact_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Email the statement to the customer, from the business."""
+    client = get_client_user(request, db)
+    if not email_is_verified(client):
+        raise HTTPException(status_code=403, detail="Confirm your email address before sending statements.")
+    contact = _contact_or_404(db, client, contact_id)
+    body = body or {}
+    to = (body.get("to") or contact.email or "").strip()
+    if not to:
+        # The customer record may have no address while their invoices do.
+        to = next((i.email for i in _contact_invoices(db, client.id, contact) if (i.email or "").strip()), "")
+    if not to or not validate_email_address(to):
+        raise HTTPException(status_code=400, detail="This customer has no email address")
+    start, end = _statement_period(body.get("start", ""), body.get("end", ""))
+    statements = statement_for(db, client, contact, start, end)
+    if not any(st["lines"] or st["opening_balance"] for st in statements):
+        raise HTTPException(status_code=400, detail="Nothing on the statement for that period")
+    subject, text, html = statement_email(client, contact, start, end, statements, str(body.get("note") or "").strip()[:500])
+    ok, why = send_email_background(to, subject, text, f"{client.company_name or client.contact_name or 'Statement'} <{platform_from_address(db)}>",
+                                    html, client_id=client.id)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"Could not send: {why}")
+    log_audit(db, client.id, "statement_sent", "contact", contact.id, contact.name or "", f"{start} to {end} to {to}", request)
+    db.commit()
+    return {"message": f"Statement sent to {to}", "to": to, "start": start, "end": end}
+
+
+@scheduled_job("monthly_statements")
+def job_monthly_statements(db, now):
+    """On the first of the month, last month's statement to every customer
+    who owed something at the end of it - for businesses that asked."""
+    if now.day != 1:
+        return "not the first"
+    end = (now.date().replace(day=1) - timedelta(days=1))
+    start = end.replace(day=1)
+    sent = 0
+    for client in db.query(models.DBClient).filter(models.DBClient.is_active == True).all():  # noqa: E712
+        if str(tenant_setting(db, client.id, "monthly_statements", "0")).lower() not in ("1", "true", "yes", "on"):
+            continue
+        if not email_is_verified(client):
+            continue
+        for contact in db.query(models.DBContact).filter(models.DBContact.client_id == client.id).all():
+            to = (contact.email or "").strip()
+            if not to or not validate_email_address(to):
+                continue
+            statements = statement_for(db, client, contact, start.isoformat(), end.isoformat())
+            if not any(st["closing_balance"] > 0.005 for st in statements):
+                continue
+            subject, text, html = statement_email(client, contact, start.isoformat(), end.isoformat(), statements)
+            ok, _why = send_email_background(to, subject, text, f"{client.company_name or client.contact_name or 'Statement'} <{platform_from_address(db)}>",
+                                             html, client_id=client.id)
+            if ok:
+                sent += 1
+                log_audit(db, client.id, "statement_sent", "contact", contact.id, contact.name or "", f"{start} to {end} to {to} (monthly)")
+    db.commit()
+    return f"{sent} sent"
+
+
 # Serve frontend
 frontend_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 if os.path.exists(frontend_path):

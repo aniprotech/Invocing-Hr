@@ -88,7 +88,7 @@ function bootApp(opts) {
             json: () => Promise.resolve(b) });
         if (p === '/api/auth/me') return give({ user: { email: 'a@b' }, client_id: 1 });
         if (p === '/api/client/me') return give({ id: 1, modules: ['invoicing', 'hr'] });
-        if (p === '/api/reports/aged-receivables') return give(opts.aged || AGED);
+        if (p === '/api/reports/aged-receivables' || p === '/api/reports/ageing') return give(opts.aged || AGED);
         if (p === '/api/my/login-history') return give(opts.logins || LOGINS);
         return give(p.endsWith('s') ? [] : {});
     };
@@ -153,8 +153,8 @@ const text = (w, id) => (w.document.getElementById(id) || {}).textContent || '';
 
         check('the reports screen has aged receivables',
             !!w.document.getElementById('rpt-aged-btn'));
-        check('and asks the endpoint that was never called',
-            sent.some(s => s.url === '/api/reports/aged-receivables'));
+        check('and asks the ageing endpoint',
+            sent.some(s => s.url === '/api/reports/ageing'));
         check('bucketed by how late it is',
             /1-30 days/.test(buckets) && /Over 90 days/.test(buckets),
             buckets.slice(0, 120));

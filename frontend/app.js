@@ -10093,10 +10093,17 @@ async function loadAgedReceivables() {
     var buckets = document.getElementById('aged-buckets');
     if (buckets) buckets.innerHTML =
         '<div style="padding:16px;color:var(--text-secondary);">Loading...</div>';
+    var asOf = (document.getElementById('aged-asof') || {}).value || '';
+    var q = asOf ? '?as_of=' + encodeURIComponent(asOf) : '';
+    var csv = document.getElementById('aged-csv'), csvDetail = document.getElementById('aged-csv-detail');
+    if (csv) csv.href = '/api/reports/ageing.csv' + q;
+    if (csvDetail) csvDetail.href = '/api/reports/ageing.csv' + (q ? q + '&detail=1' : '?detail=1');
     try {
-        var res = await fetch('/api/reports/aged-receivables', { credentials: 'same-origin' });
+        var res = await fetch('/api/reports/ageing' + q, { credentials: 'same-origin' });
         if (!res.ok) throw new Error('Failed');
-        renderAgedReceivables(await res.json());
+        var data = await res.json();
+        renderAgedReceivables(data);
+        renderAgedCustomers(data);
     } catch (e) {
         if (buckets) buckets.innerHTML =
             '<div style="padding:16px;color:var(--danger-color);">Could not load the report.</div>';
@@ -10132,7 +10139,13 @@ function renderAgedReceivables(data) {
         '<div style="text-align:center;padding:14px 0 4px;border-top:1px solid var(--border-color);">' +
         '<span style="font-size:0.82rem;color:var(--text-secondary);">Total outstanding</span> ' +
         '<strong style="font-size:1.1rem;margin-left:8px;">' +
-        formatCurrency(data.total_outstanding || 0, data.currency) + '</strong></div>';
+        formatCurrency(data.total_outstanding || 0, data.currency) + '</strong>' +
+        (data.dso != null
+            ? '<span style="font-size:0.82rem;color:var(--text-secondary);margin-left:18px;">DSO</span> <strong style="font-size:1.1rem;margin-left:8px;" title="Days sales outstanding: receivables over the last 90 days\u2019 sales, times 90">' + data.dso + ' days</strong>'
+            : '') +
+        (data.customers_owing != null ? '<span style="font-size:0.82rem;color:var(--text-secondary);margin-left:18px;">' + data.customers_owing + ' customer' + (data.customers_owing === 1 ? '' : 's') + ' owing</span>' : '') +
+        (data.other_currencies && data.other_currencies.length ? '<div style="font-size:0.75rem;color:var(--text-secondary);margin-top:6px;">Also owed in ' + data.other_currencies.map(esc).join(', ') + ' - listed below, never added in.</div>' : '') +
+        '</div>';
 
     var rows = data.invoices || [];
     if (!rows.length) {
@@ -10158,6 +10171,42 @@ function renderAgedReceivables(data) {
                 formatCurrency(r.outstanding, r.currency) + '</td></tr>';
         }).join('') + '</tbody></table></div>';
 }
+
+// The buckets per customer. Biggest debtor first; each name opens the
+// customer, and Statement opens theirs ready to send.
+function renderAgedCustomers(data) {
+    var host = document.getElementById('aged-customers');
+    var note = document.getElementById('aged-customers-note');
+    if (!host) return;
+    var rows = data.customers || [];
+    if (note) note.textContent = data.as_of ? 'as of ' + data.as_of : '';
+    if (!rows.length) {
+        host.innerHTML = '<div style="padding:20px;color:var(--text-secondary);">Nobody owes anything.</div>';
+        return;
+    }
+    host.innerHTML = '<div class="table-responsive"><table class="data-table"><thead><tr><th style="min-width:150px;white-space:nowrap;">Customer</th>' +
+        AGED_BUCKETS.map(function (pair) { return '<th class="text-right" style="white-space:nowrap;">' + pair[1] + '</th>'; }).join('') +
+        '<th class="text-right">Total</th><th class="text-right" style="white-space:nowrap;">Oldest</th><th></th></tr></thead><tbody>' +
+        rows.map(function (r) {
+            var name = r.contact_id
+                ? '<a href="#" onclick="openCustomer(' + r.contact_id + ');return false;">' + esc(r.contact) + '</a>'
+                : esc(r.contact);
+            return '<tr><td>' + name + (r.currency !== data.currency ? ' <span style="font-size:0.72rem;color:var(--text-secondary);">' + esc(r.currency) + '</span>' : '') +
+                '<div style="font-size:0.72rem;color:var(--text-secondary);">' + r.invoices + ' invoice' + (r.invoices === 1 ? '' : 's') + '</div></td>' +
+                AGED_BUCKETS.map(function (pair) {
+                    var v = r[pair[0]] || 0;
+                    var colour = pair[0] === 'current' || !v ? 'var(--text-secondary)' : 'var(--danger-color)';
+                    return '<td class="text-right" style="white-space:nowrap;color:' + colour + ';">' + (v ? formatCurrency(v, r.currency) : '\u2013') + '</td>';
+                }).join('') +
+                '<td class="text-right" style="font-weight:700;white-space:nowrap;">' + formatCurrency(r.total, r.currency) + '</td>' +
+                '<td class="text-right" style="white-space:nowrap;">' + (r.oldest_days ? '<span style="color:var(--danger-color);">' + r.oldest_days + 'd</span>' : '<span style="color:var(--text-secondary);">not due</span>') + '</td>' +
+                '<td class="text-right" style="white-space:nowrap;">' + (r.contact_id ? '<button class="btn btn-outline btn-sm" data-statement-for="' + r.contact_id + '">Statement</button>' : '') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    host.querySelectorAll('[data-statement-for]').forEach(function (b) {
+        b.addEventListener('click', function () { openCustomer(Number(b.getAttribute('data-statement-for'))); });
+    });
+}
+window.renderAgedCustomers = renderAgedCustomers;
 
 async function loadProfitLoss() {
     showReportsTab('pl');
@@ -14264,9 +14313,20 @@ async function openCustomer(contactId) {
 }
 window.openCustomer = openCustomer;
 
+var _statementContactId = null;
+
 function renderCustomer(d) {
     var c = d.contact || {}, s = d.summary || {};
     document.getElementById('cust-name').textContent = c.name || 'Customer';
+    _statementContactId = c.id || null;
+    var st = document.getElementById('stmt-start'), en = document.getElementById('stmt-end');
+    if (st && en) {
+        var today = new Date();
+        var ago = new Date(today.getTime() - 90 * 86400000);
+        en.value = today.toISOString().slice(0, 10);
+        st.value = ago.toISOString().slice(0, 10);
+    }
+    loadStatement();
 
     var sub = [c.email, c.phone_number].filter(Boolean).join(' · ');
     document.getElementById('cust-summary').innerHTML =
@@ -15332,6 +15392,76 @@ async function closeAccount(id) {
 }
 window.closeAccount = closeAccount;
 
+// --- The customer's statement ------------------------------------------------
+// Invoices, receipts and refunds in date order with a running balance, one
+// table per currency. Never added across currencies.
+
+async function loadStatement() {
+    var host = document.getElementById('cust-statement');
+    if (!host || !_statementContactId) return;
+    var start = (document.getElementById('stmt-start') || {}).value || '';
+    var end = (document.getElementById('stmt-end') || {}).value || '';
+    var q = '?start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end);
+    var csv = document.getElementById('stmt-csv');
+    if (csv) csv.href = '/api/contacts/' + _statementContactId + '/statement.csv' + q;
+    host.innerHTML = '<div style="padding:12px;color:var(--text-secondary);">Loading...</div>';
+    try {
+        var d = await fetchJson('/api/contacts/' + _statementContactId + '/statement' + q);
+        if (!d.statements.length) {
+            host.innerHTML = '<p style="color:var(--text-secondary);font-size:0.85rem;padding:8px 0;">Nothing on account yet.</p>';
+            return;
+        }
+        host.innerHTML = d.statements.map(function (st) {
+            var cur = st.currency;
+            return '<div style="margin-bottom:18px;">' +
+                (d.statements.length > 1 ? '<div style="font-size:0.8rem;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);margin:0 0 6px;">' + esc(cur) + '</div>' : '') +
+                '<div class="table-responsive"><table class="data-table" style="font-size:0.85rem;"><thead><tr><th>Date</th><th>Detail</th><th class="text-right">Charged</th><th class="text-right">Received</th><th class="text-right">Balance</th></tr></thead><tbody>' +
+                '<tr><td>' + esc(d.start) + '</td><td style="color:var(--text-secondary);">Balance brought forward</td><td></td><td></td><td class="text-right">' + formatCurrency(st.opening_balance, cur) + '</td></tr>' +
+                st.lines.map(function (l) {
+                    return '<tr><td style="white-space:nowrap;">' + esc(l.date) + '</td>' +
+                        '<td>' + (l.number ? '<a href="#" onclick="viewInvoice(\'' + esc(jsq(l.number)) + '\');return false;">' + esc(l.description) + '</a>' : esc(l.description)) +
+                        (l.ref && l.kind !== 'invoice' ? ' <span style="color:var(--text-secondary);font-size:0.75rem;">' + esc(l.ref) + '</span>' : '') + '</td>' +
+                        '<td class="text-right">' + (l.debit ? formatCurrency(l.debit, cur) : '') + '</td>' +
+                        '<td class="text-right">' + (l.credit ? formatCurrency(l.credit, cur) : '') + '</td>' +
+                        '<td class="text-right">' + formatCurrency(l.balance, cur) + '</td></tr>';
+                }).join('') +
+                '<tr><td>' + esc(d.end) + '</td><td style="font-weight:700;">Balance carried forward</td><td class="text-right" style="color:var(--text-secondary);">' + formatCurrency(st.invoiced, cur) + '</td><td class="text-right" style="color:var(--text-secondary);">' + formatCurrency(st.received, cur) + '</td>' +
+                '<td class="text-right" style="font-weight:700;">' + formatCurrency(st.closing_balance, cur) + '</td></tr>' +
+                '</tbody></table></div>' +
+                (st.overdue ? '<p style="margin:8px 0 0;font-size:0.82rem;color:var(--danger-color);">' + formatCurrency(st.overdue, cur) + ' of this is past its due date.</p>' : '') +
+                '</div>';
+        }).join('');
+    } catch (e) {
+        host.innerHTML = '<p style="color:var(--danger-text);font-size:0.85rem;">' + esc(e.message) + '</p>';
+    }
+}
+window.loadStatement = loadStatement;
+
+async function sendStatement() {
+    if (!_statementContactId) return;
+    var start = (document.getElementById('stmt-start') || {}).value || '';
+    var end = (document.getElementById('stmt-end') || {}).value || '';
+    var out = await uiForm([
+        { name: 'note', label: 'A line at the top', type: 'textarea', placeholder: 'Please settle the balance below by the end of the month.' }
+    ], { title: 'Send statement', confirmText: 'Send', message: 'Emailed to the customer from your business name, for ' + start + ' to ' + end + '.' });
+    if (!out) return;
+    try {
+        var d = await fetchJson('/api/contacts/' + _statementContactId + '/statement/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ start: start, end: end, note: out.note || '' }) });
+        showToast(d.message || 'Sent', 'success');
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.sendStatement = sendStatement;
+
+async function saveMonthlyStatements(box) {
+    try {
+        await fetchJson('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ monthly_statements: box.checked ? '1' : '0' }) });
+        showToast(box.checked ? 'Statements will go out on the first of each month' : 'Monthly statements switched off', 'success');
+    } catch (e) { showToast(e.message, 'error'); box.checked = !box.checked; }
+}
+window.saveMonthlyStatements = saveMonthlyStatements;
+
 // --- Getting paid ------------------------------------------------------------
 // The business's own keys, collecting into the business's own account. The
 // platform's keys are separate and take wallet top-ups; these two must never
@@ -15411,6 +15541,8 @@ async function loadOnlinePaymentNotice() {
         var all = await fetchJson('/api/settings');
         var v = String(all.notify_online_payments == null ? '1' : all.notify_online_payments).toLowerCase();
         box.checked = ['0', 'false', 'no', 'off'].indexOf(v) === -1;
+        var monthly = document.getElementById('monthly-statements');
+        if (monthly) monthly.checked = ['1', 'true', 'yes', 'on'].indexOf(String(all.monthly_statements || '0').toLowerCase()) !== -1;
     } catch (e) { /* leave the default */ }
 }
 window.loadOnlinePaymentNotice = loadOnlinePaymentNotice;
