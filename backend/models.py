@@ -286,6 +286,62 @@ class DBLateFee(Base):
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
+class DBCreditNote(Base):
+    """A credit note against an invoice: the way a sent invoice is
+    corrected. What it credits comes off what the invoice is owed; anything
+    beyond that is the customer's to have back - set against another of
+    their invoices, or paid back - and the note keeps count of both."""
+    __tablename__ = "credit_notes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    number = Column(String, index=True)
+    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=False, index=True)
+    invoice_number = Column(String, default="")
+    to_contact = Column(String, default="")
+    email = Column(String, default="")
+    phone_number = Column(String, default="")
+    to_company = Column(String, default="")
+    to_address = Column(Text, default="")
+    to_tax_id = Column(String, default="")
+    issue_date = Column(String, default="")
+    reason = Column(String, default="")
+    status = Column(String, default="Issued", index=True)   # Issued | Void
+    sent = Column(String, default="")
+    tax_type = Column(String, default="exclusive")
+    currency = Column(String, default="")
+    total = Column(Float, default=0.0)
+    applied = Column(Float, default=0.0)        # taken off what the invoice was owed
+    allocated = Column(Float, default=0.0)      # set against other invoices
+    refunded = Column(Float, default=0.0)       # paid back to the customer
+    refunded_on = Column(String, default="")
+    refund_method = Column(String, default="")
+    refund_reference = Column(String, default="")
+    refund_account_id = Column(Integer, ForeignKey("money_accounts.id"), nullable=True)
+    voided_on = Column(String, default="")
+    void_reason = Column(String, default="")
+    created_by = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    line_items = relationship("DBCreditNoteLineItem", back_populates="credit_note", cascade="all, delete-orphan")
+
+
+class DBCreditNoteLineItem(Base):
+    __tablename__ = "credit_note_line_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    credit_note_id = Column(Integer, ForeignKey("credit_notes.id"), index=True)
+    name = Column(String, default="")
+    description = Column(String, default="")
+    qty = Column(Float, default=1.0)
+    price = Column(Float, default=0.0)
+    disc = Column(Float, default=0.0)
+    account = Column(String, default="200 - Sales")
+    tax_rate = Column(String, default="20% (VAT on Income)")
+
+    credit_note = relationship("DBCreditNote", back_populates="line_items")
+
+
 class DBInterviewReminder(Base):
     """One interview reminder actually sent, so nobody is nudged twice."""
     __tablename__ = "interview_reminders"

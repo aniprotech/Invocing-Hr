@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=181">
-    <link rel="stylesheet" href="mobile.css?v=181">
+    <link rel="stylesheet" href="styles.css?v=182">
+    <link rel="stylesheet" href="mobile.css?v=182">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,11 +57,11 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=181">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=181">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=181">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=181">
-    <script src="/dialogs.js?v=181"></script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=182">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=182">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=182">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=182">
+    <script src="/dialogs.js?v=182"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -116,6 +116,7 @@
                         <div class="nav-group-menu">
                             <a href="#/invoices" class="nav-item" id="nav-invoices" data-portal="invoicing">Invoices</a>
                             <a href="#/quotes" class="nav-item" id="nav-quotes" data-portal="invoicing">Quotes</a>
+                            <a href="#/credit-notes" class="nav-item" id="nav-credit-notes" data-portal="invoicing">Credit notes</a>
                             <a href="#/pipeline" class="nav-item" id="nav-pipeline" data-portal="invoicing">Pipeline</a>
                             <a href="#/recurring" class="nav-item" id="nav-recurring" data-portal="invoicing">Recurring</a>
                             <a href="#/contacts" class="nav-item" id="nav-contacts" data-portal="invoicing">Contacts</a>
@@ -872,6 +873,113 @@
                     </div>
                 </div>
 
+                <div id="credit-notes-view" class="view-section dashboard" style="display:none;">
+                    <div class="invoices-header-area">
+                        <div>
+                            <h1>Credit notes</h1>
+                            <p class="subtitle">The way a sent invoice is corrected</p>
+                        </div>
+                    </div>
+                    <div class="widget">
+                        <div class="table-actions">
+                            <span id="credit-note-count" style="font-size:0.85rem;color:var(--text-secondary);">0 items</span>
+                            <div style="display:flex;gap:8px;">
+                                <input type="text" id="credit-note-search" placeholder="Search credit notes..." class="search-input" onkeyup="renderCreditNotes()">
+                            </div>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Number</th>
+                                        <th>Against</th>
+                                        <th>To</th>
+                                        <th>Date</th>
+                                        <th>Reason</th>
+                                        <th class="text-right">Credited</th>
+                                        <th class="text-right">Left</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="credit-notes-table-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="view-credit-note-view" class="view-section dashboard" style="display:none;">
+                    <div class="invoices-header-area">
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <span style="color:var(--text-secondary);font-size:0.9rem;cursor:pointer;" onclick="showView('credit-notes-view')">Credit notes</span>
+                            <span style="color:var(--text-secondary);font-size:0.9rem;">/</span>
+                            <h1 id="view-cn-title">Credit note</h1>
+                            <span class="status-pill" id="view-cn-status">-</span>
+                        </div>
+                        <div class="invoices-actions">
+                            <button class="btn btn-outline" onclick="downloadCreditNotePDF()">Download PDF</button>
+                            <button class="btn btn-outline" id="cn-send-btn" onclick="sendCreditNoteEmail()">Send Email</button>
+                            <button class="btn btn-outline" id="cn-allocate-btn" onclick="allocateCreditNote()">Set against an invoice</button>
+                            <button class="btn btn-outline" id="cn-refund-btn" onclick="refundCreditNote()">Pay back</button>
+                            <button class="btn btn-outline" id="cn-void-btn" onclick="voidCreditNote()" style="color:var(--danger-color);border-color:var(--danger-color);">Withdraw</button>
+                        </div>
+                    </div>
+                    <div class="glass-widget">
+                        <div class="widget-content" style="padding:32px;">
+                            <div id="view-cn-state" style="margin-bottom:20px;padding:12px 16px;border-radius:var(--radius-md);background:rgba(255, 255, 255, 0.03);border:1px solid var(--border-color);font-size:0.9rem;"></div>
+                            <div class="invoice-top-grid grid-3" style="margin-bottom:28px;">
+                                <div>
+                                    <label style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);">Credit to</label>
+                                    <div style="margin-top:4px;font-size:1.1rem;font-weight:600;" id="view-cn-contact">-</div>
+                                    <div style="margin-top:2px;font-weight:600;font-size:0.95rem;" id="view-cn-to-company"></div>
+                                    <div style="margin-top:2px;color:var(--text-secondary);font-size:0.9rem;white-space:pre-line;" id="view-cn-to-address"></div>
+                                    <div style="margin-top:4px;color:var(--text-secondary);font-size:0.9rem;" id="view-cn-email-display">-</div>
+                                    <div style="margin-top:4px;color:var(--text-secondary);font-size:0.9rem;" id="view-cn-phone-display">-</div>
+                                    <div style="margin-top:4px;color:var(--text-secondary);font-size:0.9rem;" id="view-cn-to-taxid"></div>
+                                </div>
+                                <div>
+                                    <label style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);">Credit note</label>
+                                    <div style="margin-top:4px;font-weight:600;" id="view-cn-number-val">-</div>
+                                    <div style="margin-top:4px;color:var(--text-secondary);font-size:0.9rem;">Against: <a href="#" id="view-cn-invoice-link"><span id="view-cn-due-date">-</span></a></div>
+                                    <div style="margin-top:4px;color:var(--text-secondary);font-size:0.9rem;">Issued: <span id="view-cn-issue-date">-</span></div>
+                                    <div style="margin-top:4px;color:var(--text-secondary);font-size:0.9rem;">Reason: <span id="view-cn-ref">-</span></div>
+                                </div>
+                                <div>
+                                    <label style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);">From</label>
+                                    <div style="margin-top:4px;font-weight:600;" id="view-cn-company-name"></div>
+                                    <div style="margin-top:4px;color:var(--text-secondary);font-size:0.9rem;white-space:pre-line;" id="view-cn-company-address"></div>
+                                    <div style="margin-top:4px;color:var(--text-secondary);font-size:0.9rem;" id="view-cn-company-email"></div>
+                                    <div style="margin-top:4px;color:var(--text-secondary);font-size:0.9rem;" id="view-cn-company-phone"></div>
+                                    <div style="margin-top:4px;color:var(--text-secondary);font-size:0.9rem;" id="view-cn-company-abn"></div>
+                                </div>
+                            </div>
+                            <div class="line-items-container" style="border:1px solid var(--border-color);border-radius:var(--radius-md);overflow-x:auto;margin-bottom:24px;">
+                                <table class="line-items-table" style="width:100%;border-collapse:collapse;font-size:0.85rem;min-width:600px;">
+                                    <thead style="background-color:rgba(255, 255, 255, 0.02);border-bottom:1px solid var(--border-color);">
+                                        <tr>
+                                            <th style="padding:12px 16px;text-align:left;min-width:120px;">Name</th>
+                                            <th style="padding:12px 16px;text-align:left;min-width:200px;">Description</th>
+                                            <th style="padding:12px 16px;text-align:right;min-width:60px;">Qty</th>
+                                            <th style="padding:12px 16px;text-align:right;min-width:80px;">Price</th>
+                                            <th style="padding:12px 16px;text-align:right;min-width:60px;">Disc</th>
+                                            <th style="padding:12px 16px;min-width:80px;">Tax</th>
+                                            <th style="padding:12px 16px;text-align:right;min-width:90px;">Amount</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="view-cn-line-items-body"></tbody>
+                                </table>
+                            </div>
+                            <div style="display:flex;justify-content:flex-end;">
+                                <div style="width:320px;font-size:0.95rem;">
+                                    <div style="display:flex;justify-content:space-between;padding:8px 0;"><span>Subtotal</span><span><span id="view-cn-due-currency"></span><span id="view-cn-summary-subtotal">0.00</span></span></div>
+                                    <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border-color);margin-bottom:8px;"><span>Total VAT</span><span id="view-cn-summary-vat">0.00</span></div>
+                                    <div style="display:flex;justify-content:space-between;padding:8px 0;font-weight:700;font-size:1.15rem;"><span>Total credited</span><span id="view-cn-summary-total">0.00</span></div>
+                                </div>
+                            </div>
+                            <span id="view-cn-bank-content" style="display:none;"></span>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- ========== CREATE INVOICE ========== -->
                 <div id="create-invoice-view" class="view-section dashboard" style="display:none;">
                     <div class="invoices-header-area">
@@ -1054,6 +1162,7 @@
                                  the server refuses that edit, so offering it would be a
                                  button whose only outcome is an error. -->
                             <button class="btn btn-outline invoice-action-btn" id="view-invoice-edit-btn" onclick="editInvoice(this.dataset.number)">Edit</button>
+                            <button class="btn btn-outline invoice-action-btn" id="view-invoice-credit-btn" onclick="openCreditNoteModal()">Credit note</button>
                             <button class="btn btn-outline invoice-action-btn" id="view-invoice-delete-btn" onclick="deleteInvoice(this.dataset.number)" style="color:var(--danger-color);border-color:var(--danger-color);">Delete</button>
                         </div>
                     </div>
@@ -1092,6 +1201,7 @@
                             </div>
                             <div id="view-inv-payments" style="display:none;padding:16px;background:rgba(255, 255, 255, 0.04);border-radius:var(--radius-md);margin-bottom:24px;"></div>
                             <div id="view-inv-chasing" style="display:none;padding:16px;background:rgba(255, 255, 255, 0.04);border-radius:var(--radius-md);margin-bottom:24px;"></div>
+                            <div id="view-inv-credits" style="display:none;padding:16px;background:rgba(255, 255, 255, 0.04);border-radius:var(--radius-md);margin-bottom:24px;"></div>
                             <div id="view-inv-open-tracking" style="display:none;padding:12px 16px;background:rgba(56, 189, 248, 0.05);border:1px solid rgba(226, 232, 240, 0.15);border-radius:var(--radius-md);margin-bottom:24px;font-size:0.85rem;align-items:center;gap:24px;">
                                 <div>
                                     <span style="color:var(--text-secondary);">Email Opens:</span>
@@ -1415,6 +1525,30 @@
                 </div>
 
                 <!-- ========== ADD CONTACT MODAL ========== -->
+                <div id="credit-note-modal" class="modal-overlay" style="display:none;">
+                    <div class="modal" style="max-width:640px;">
+                        <div class="modal-header">
+                            <h3 id="credit-note-modal-title">Credit note</h3>
+                            <button class="modal-close" onclick="closeCreditNoteModal()">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <p class="bt-note" id="credit-note-modal-note">Tick the lines to credit and how much of each. What it credits comes off what the invoice is owed; anything beyond that is the customer's to have back.</p>
+                            <div class="table-responsive" style="margin-bottom:14px;">
+                                <table class="data-table" style="font-size:0.85rem;">
+                                    <thead><tr><th></th><th>Line</th><th class="text-right">Qty</th><th class="text-right">Price</th><th class="text-right">Credit</th></tr></thead>
+                                    <tbody id="credit-note-lines"></tbody>
+                                </table>
+                            </div>
+                            <div style="display:flex;justify-content:flex-end;font-weight:700;margin-bottom:14px;">Credit total: <span id="credit-note-total" style="margin-left:8px;">0.00</span></div>
+                            <div class="form-group"><label>Reason</label><input type="text" id="credit-note-reason" class="form-control" maxlength="500" placeholder="Shown to the customer, e.g. Short delivery"></div>
+                            <label class="bcheck" style="display:flex;gap:8px;align-items:center;"><input type="checkbox" id="credit-note-send" checked> Email it to the customer with the PDF</label>
+                        </div>
+                        <div class="modal-footer">
+                            <button class="btn btn-outline" onclick="closeCreditNoteModal()">Cancel</button>
+                            <button class="btn btn-primary" id="credit-note-issue" onclick="issueCreditNote()">Issue credit note</button>
+                        </div>
+                    </div>
+                </div>
                 <div id="add-contact-modal" class="modal-overlay" style="display:none;">
                     <div class="modal" style="max-width:480px;">
                         <div class="modal-header">
@@ -4674,8 +4808,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="feed.js?v=181"></script>
-    <script src="app.js?v=181"></script>
+    <script src="feed.js?v=182"></script>
+    <script src="app.js?v=182"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
@@ -4903,7 +5037,7 @@
             </div>
         </div>
     </div>
-    <script src="/install-hint.js?v=181"></script>
-    <script src="/pwa.js?v=181"></script>
+    <script src="/install-hint.js?v=182"></script>
+    <script src="/pwa.js?v=182"></script>
 </body>
 </html>

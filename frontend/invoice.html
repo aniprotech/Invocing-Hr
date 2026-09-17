@@ -92,12 +92,12 @@
     }
   </style>
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-    <link rel="stylesheet" href="/mobile.css?v=181">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=181">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=181">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=181">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=181">
-    <script src="/dialogs.js?v=181"></script>
+    <link rel="stylesheet" href="/mobile.css?v=182">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=182">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=182">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=182">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=182">
+    <script src="/dialogs.js?v=182"></script>
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="aniprotech">
     <meta property="og:title" content="Your invoice">
@@ -209,6 +209,9 @@
         '<div class="totals">' +
           '<div><span>Subtotal</span><span>' + money(sym, inv.subtotal) + '</span></div>' +
           '<div><span>Tax</span><span>' + money(sym, inv.tax) + '</span></div>' +
+          (inv.credit_notes || []).map(function (c) {
+            return '<div><span>Credit note ' + esc(c.number) + (c.reason ? ' \u2014 ' + esc(c.reason) : '') + '</span><span style="white-space:nowrap;">−' + money(sym, c.amount) + '</span></div>';
+          }).join('') +
           (inv.paid ? '<div><span>Paid</span><span>-' + money(sym, inv.paid) + '</span></div>' : '') +
           '<div class="grand"><span>' + (inv.is_settled ? 'Total' : 'Amount due') + '</span>' +
           '<span>' + money(sym, inv.is_settled ? inv.total : inv.amount_due) + '</span></div>' +

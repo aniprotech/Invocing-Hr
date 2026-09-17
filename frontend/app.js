@@ -318,6 +318,8 @@ var NAV_FOR_VIEW = {
     'quotes-view': 'nav-quotes',
     'create-quote-view': 'nav-quotes',
     'view-quote-view': 'nav-quotes',
+    'credit-notes-view': 'nav-credit-notes',
+    'view-credit-note-view': 'nav-credit-notes',
     'bank-view': 'nav-bank',
     'chasing-view': 'nav-chasing',
     'bills-view': 'nav-bills',
@@ -369,6 +371,7 @@ var ROUTE_SLUGS = {
     'invoices-view': 'invoices',
     'create-invoice-view': 'invoices/new',
     'quotes-view': 'quotes',
+    'credit-notes-view': 'credit-notes',
     'create-quote-view': 'quotes/new',
     'sales-pipeline-view': 'pipeline',
     'recurring-view': 'recurring',
@@ -418,6 +421,7 @@ window.VIEW_FOR_SLUG = VIEW_FOR_SLUG;
 var DETAIL_ROUTES = [
     { re: /^invoices\/([^/]+)$/, open: function (id) { showView('invoices-view'); if (typeof viewInvoice === 'function') viewInvoice(decodeURIComponent(id)); } },
     { re: /^quotes\/([^/]+)$/,   open: function (id) { showView('quotes-view');   if (typeof viewQuote === 'function') viewQuote(decodeURIComponent(id)); } },
+    { re: /^credit-notes\/([^/]+)$/, open: function (id) { showView('credit-notes-view'); if (typeof viewCreditNote === 'function') viewCreditNote(decodeURIComponent(id)); } },
     { re: /^people\/(\d+)$/,     open: function (id) { if (typeof openEmployee === 'function') openEmployee(Number(id)); else showView('employees-view'); } },
     { re: /^contacts\/(\d+)$/,   open: function (id) { if (typeof openCustomer === 'function') openCustomer(Number(id)); else showView('contacts-view'); } }
 ];
@@ -517,7 +521,7 @@ window.startRouter = startRouter;
 
 // --- View Switcher ---
 function showView(viewId) {
-    if (viewId !== 'view-invoice-view' && viewId !== 'view-quote-view') _viewCurrency = '';
+    if (viewId !== 'view-invoice-view' && viewId !== 'view-quote-view' && viewId !== 'view-credit-note-view') _viewCurrency = '';
     document.querySelectorAll('.view-section').forEach(function(el) {
         el.classList.remove('active');
         el.style.display = 'none';
@@ -550,6 +554,7 @@ function showView(viewId) {
     if (typeof closeNavGroups === 'function') closeNavGroups();
     if (viewId === 'invoices-view' && typeof fetchInvoices === 'function') fetchInvoices();
     if (viewId === 'quotes-view' && typeof fetchQuotes === 'function') fetchQuotes();
+    if (viewId === 'credit-notes-view' && typeof fetchCreditNotes === 'function') fetchCreditNotes();
     if (viewId === 'sales-pipeline-view' && typeof loadSalesPipeline === 'function') loadSalesPipeline();
     if (viewId === 'recurring-view' && typeof loadRecurring === 'function') loadRecurring();
     // Dates and currency are filled before the number is fetched, because the
@@ -2526,7 +2531,7 @@ var _viewBillTo = {}, _viewBillFrom = {};
 // The codes the ledger stores, in words. "bank_transfer" is a database value,
 // not something to show a person.
 var PAYMENT_METHOD_LABELS = { bank_transfer: 'Bank transfer', card: 'Card', cash: 'Cash', cheque: 'Cheque', direct_debit: 'Direct debit',
-    other: 'Other', manual: 'Marked as paid', stripe: 'Stripe', razorpay: 'Razorpay', gocardless: 'GoCardless', paypal: 'PayPal' };
+    other: 'Other', manual: 'Marked as paid', stripe: 'Stripe', razorpay: 'Razorpay', gocardless: 'GoCardless', paypal: 'PayPal', credit_note: 'Credit note' };
 
 function renderInvoicePayments(inv) {
     var host = document.getElementById('view-inv-payments');
@@ -2562,7 +2567,7 @@ function renderInvoicePayments(inv) {
                     '<td style="padding:6px 0;text-align:right;font-weight:600;">' + sym + (p.amount || 0).toFixed(2) +
                     (p.refunded ? '<div style="font-size:0.72rem;font-weight:400;color:var(--text-secondary);">' + sym + Number(p.refunded).toFixed(2) + ' refunded</div>' : '') + '</td>' +
                     '<td style="padding:6px 0;text-align:right;width:92px;white-space:nowrap;">' +
-                    ((p.amount || 0) - (p.refunded || 0) > 0.005
+                    ((p.amount || 0) - (p.refunded || 0) > 0.005 && p.method !== 'credit_note'
                         ? '<button type="button" class="btn btn-outline btn-sm" style="padding:2px 8px;font-size:0.72rem;" data-refund-payment="' + p.id + '">Refund</button> '
                         : '') +
                     (p.refunded ? '' :
@@ -2588,6 +2593,316 @@ function renderInvoicePayments(inv) {
     });
 }
 window.renderInvoicePayments = renderInvoicePayments;
+
+// ---------------------------------------------------------------------------
+// Credit notes: the way a sent invoice is corrected. Issued from the invoice
+// page against some or all of its lines; what it credits comes off what the
+// invoice is owed, and anything beyond that is the customer's to have back -
+// set against another of their invoices, or paid back.
+// ---------------------------------------------------------------------------
+var _viewInvoice = null;
+var _creditNotes = [];
+var currentCreditNote = null;
+
+function creditNoteStatusClass(cn) {
+    if (cn.status === 'Void') return 'status-void';
+    if (cn.unapplied > 0) return 'status-awaiting-payment';
+    return 'status-issued';
+}
+
+function creditNoteStateWords(cn, sym) {
+    if (cn.status === 'Void') return 'Withdrawn' + (cn.voided_on ? ' on ' + cn.voided_on : '') + (cn.void_reason ? ': ' + cn.void_reason : '');
+    var parts = [];
+    if (cn.applied > 0) parts.push(sym + Number(cn.applied).toFixed(2) + ' taken off ' + cn.invoice_number);
+    if (cn.allocated > 0) parts.push(sym + Number(cn.allocated).toFixed(2) + ' set against ' + ((cn.allocations || []).map(function (a) { return a.invoice_number; }).join(', ') || 'other invoices'));
+    if (cn.refunded > 0) parts.push(sym + Number(cn.refunded).toFixed(2) + ' paid back' + (cn.refunded_on ? ' on ' + cn.refunded_on : '') + (cn.refund_method ? ' by ' + (PAYMENT_METHOD_LABELS[cn.refund_method] || cn.refund_method).toLowerCase() : ''));
+    if (cn.unapplied > 0) parts.push(sym + Number(cn.unapplied).toFixed(2) + ' still the customer\'s to have back');
+    return parts.join(' · ') || 'Issued';
+}
+
+async function fetchCreditNotes() {
+    try { _creditNotes = await fetchJson('/api/credit-notes'); }
+    catch (e) { _creditNotes = []; }
+    renderCreditNotes();
+}
+window.fetchCreditNotes = fetchCreditNotes;
+
+function renderCreditNotes() {
+    var tbody = document.getElementById('credit-notes-table-body');
+    if (!tbody) return;
+    var q = ((document.getElementById('credit-note-search') || {}).value || '').toLowerCase();
+    var rows = _creditNotes.filter(function (c) {
+        return !q || [c.number, c.invoice_number, c.to, c.reason].join(' ').toLowerCase().indexOf(q) !== -1;
+    });
+    var count = document.getElementById('credit-note-count');
+    if (count) count.textContent = rows.length + ' item' + (rows.length === 1 ? '' : 's');
+    if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="8" style="padding:32px;text-align:center;color:var(--text-secondary);">No credit notes yet. Open an invoice and press Credit note when something on it needs correcting.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = rows.map(function (c) {
+        var sym = currencySymbolFor(c.currency);
+        return '<tr style="cursor:pointer;" data-cn-open="' + esc(c.number) + '">' +
+            '<td style="font-weight:600;">' + esc(c.number) + '</td>' +
+            '<td>' + esc(c.invoice_number) + '</td>' +
+            '<td>' + esc(c.to) + '</td>' +
+            '<td>' + esc(c.date) + '</td>' +
+            '<td style="color:var(--text-secondary);">' + esc(c.reason || '') + '</td>' +
+            '<td class="text-right" style="font-weight:600;">' + sym + Number(c.total || 0).toFixed(2) + '</td>' +
+            '<td class="text-right">' + (c.unapplied > 0 ? sym + Number(c.unapplied).toFixed(2) : '-') + '</td>' +
+            '<td><span class="status-pill ' + creditNoteStatusClass(c) + '">' + esc(c.status === 'Void' ? 'Withdrawn' : (c.unapplied > 0 ? 'Credit to use' : 'Issued')) + '</span></td></tr>';
+    }).join('');
+    tbody.querySelectorAll('[data-cn-open]').forEach(function (tr) {
+        tr.addEventListener('click', function () { viewCreditNote(tr.getAttribute('data-cn-open')); });
+    });
+}
+window.renderCreditNotes = renderCreditNotes;
+
+async function viewCreditNote(number) {
+    try {
+        var cn = await fetchJson('/api/credit-notes/' + encodeURIComponent(number));
+        currentCreditNote = cn;
+        _viewCurrency = cn.currency || _appCurrency;
+        var sym = currencySymbolFor(cn.currency);
+        function put(id, text) { var el = document.getElementById(id); if (el) el.textContent = text; }
+        put('view-cn-title', 'Credit note ' + cn.number);
+        put('view-cn-number-val', cn.number);
+        put('view-cn-contact', cn.to || '-');
+        put('view-cn-to-company', cn.to_company || '');
+        put('view-cn-to-address', cn.to_address || '');
+        put('view-cn-to-taxid', cn.to_tax_id ? 'Tax ID: ' + cn.to_tax_id : '');
+        put('view-cn-email-display', cn.email || '');
+        put('view-cn-phone-display', cn.phone_number || '');
+        put('view-cn-issue-date', cn.date || '-');
+        put('view-cn-due-date', cn.invoice_number || '-');
+        put('view-cn-ref', cn.reason || '-');
+        put('view-cn-company-name', (cn.company && cn.company.name) || '');
+        put('view-cn-company-address', (cn.company && cn.company.address) || '');
+        put('view-cn-company-email', (cn.company && cn.company.email) || '');
+        put('view-cn-company-phone', (cn.company && cn.company.phone_number) || '');
+        put('view-cn-company-abn', (cn.company && cn.company.abn) || '');
+        put('view-cn-summary-subtotal', Number(cn.subtotal || 0).toFixed(2));
+        put('view-cn-summary-vat', Number(cn.tax_total || 0).toFixed(2));
+        put('view-cn-summary-total', Number(cn.total || 0).toFixed(2));
+        put('view-cn-due-currency', sym);
+        var link = document.getElementById('view-cn-invoice-link');
+        if (link) link.onclick = function (e) { e.preventDefault(); viewInvoice(cn.invoice_number); };
+        var statusEl = document.getElementById('view-cn-status');
+        if (statusEl) { statusEl.textContent = cn.status === 'Void' ? 'Withdrawn' : 'Issued'; statusEl.className = 'status-pill ' + creditNoteStatusClass(cn); }
+        var state = document.getElementById('view-cn-state');
+        if (state) state.textContent = creditNoteStateWords(cn, sym) + (cn.sent ? ' · Sent ' + cn.sent : '');
+        var tbody = document.getElementById('view-cn-line-items-body');
+        if (tbody) {
+            tbody.innerHTML = (cn.line_items || []).map(function (li) {
+                return '<tr>' +
+                    '<td style="padding:12px 16px;word-wrap:break-word;max-width:200px;vertical-align:top;">' + esc(li.name || '') + '</td>' +
+                    '<td style="padding:12px 16px;word-wrap:break-word;max-width:280px;vertical-align:top;">' + esc(li.description || '') + '</td>' +
+                    '<td style="padding:12px 16px;text-align:right;vertical-align:top;">' + esc(li.qty) + '</td>' +
+                    '<td style="padding:12px 16px;text-align:right;vertical-align:top;">' + Number(li.price || 0).toFixed(2) + '</td>' +
+                    '<td style="padding:12px 16px;text-align:right;vertical-align:top;">' + (li.disc || 0) + '%</td>' +
+                    '<td style="padding:12px 16px;vertical-align:top;">' + esc(li.tax_rate || 'No Tax') + '</td>' +
+                    '<td style="padding:12px 16px;text-align:right;font-weight:600;vertical-align:top;">' + Number(li.amount || 0).toFixed(2) + '</td></tr>';
+            }).join('');
+        }
+        var live = cn.status !== 'Void';
+        var show = function (id, on) { var el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
+        show('cn-send-btn', live && !!cn.email);
+        show('cn-allocate-btn', live && cn.unapplied > 0);
+        show('cn-refund-btn', live && cn.unapplied > 0);
+        show('cn-void-btn', live && !(cn.allocated > 0) && !(cn.refunded > 0));
+        showView('view-credit-note-view');
+        setRoute('credit-notes/' + encodeURIComponent(cn.number));
+    } catch (e) { showToast(e.message || 'Credit note not found', 'error'); }
+}
+window.viewCreditNote = viewCreditNote;
+
+function downloadCreditNotePDF() {
+    if (!currentCreditNote) { showToast('No credit note loaded', 'error'); return; }
+    try { generateInvoicePDF(false, 'credit_note').save(currentCreditNote.number + '.pdf'); }
+    catch (e) { showToast('PDF generation failed: ' + e.message, 'error'); }
+}
+window.downloadCreditNotePDF = downloadCreditNotePDF;
+
+async function sendCreditNoteEmail(number, message) {
+    number = number || (currentCreditNote && currentCreditNote.number);
+    if (!number) return;
+    var pdfB64 = '';
+    try {
+        if (currentCreditNote && currentCreditNote.number === number && document.getElementById('view-cn-line-items-body')) {
+            pdfB64 = (generateInvoicePDF(false, 'credit_note').output('datauristring').split('base64,')[1]) || '';
+        }
+    } catch (e) { pdfB64 = ''; }
+    try {
+        var data = await fetchJson('/api/credit-notes/' + encodeURIComponent(number) + '/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ logo_data: localStorage.getItem('company_logo') || '', pdf_data: pdfB64, message: message || '' }) });
+        showToast(data.message || 'Credit note sent', 'success');
+        if (currentCreditNote && currentCreditNote.number === number) viewCreditNote(number);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.sendCreditNoteEmail = sendCreditNoteEmail;
+
+async function allocateCreditNote() {
+    var cn = currentCreditNote;
+    if (!cn) return;
+    var sym = currencySymbolFor(cn.currency);
+    var out = await uiForm([
+        { name: 'invoice_number', label: 'Invoice', type: 'text', required: true, placeholder: 'INV-0042', hint: 'One of ' + cn.to + '\'s unpaid invoices' },
+        { name: 'amount', label: 'Amount', type: 'number', value: Number(cn.unapplied).toFixed(2), hint: sym + Number(cn.unapplied).toFixed(2) + ' is left on this credit note' }
+    ], { title: 'Set the credit against an invoice', confirmText: 'Set against it', message: 'It counts as paid on that invoice, by credit note.' });
+    if (!out) return;
+    try {
+        var data = await fetchJson('/api/credit-notes/' + encodeURIComponent(cn.number) + '/allocate', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ invoice_number: (out.invoice_number || '').trim(), amount: out.amount ? parseFloat(out.amount) : null }) });
+        showToast(data.message || 'Done', 'success');
+        fetchInvoices();
+        viewCreditNote(cn.number);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.allocateCreditNote = allocateCreditNote;
+
+async function refundCreditNote() {
+    var cn = currentCreditNote;
+    if (!cn) return;
+    var sym = currencySymbolFor(cn.currency);
+    var accounts = [];
+    try { accounts = ((await fetchJson('/api/accounts')).accounts || []).filter(function (a) { return a.active; }); } catch (e) { accounts = []; }
+    var fields = [
+        { name: 'amount', label: 'Amount paid back', type: 'number', value: Number(cn.unapplied).toFixed(2), required: true, hint: sym + Number(cn.unapplied).toFixed(2) + ' is left on this credit note' },
+        { name: 'method', label: 'How', type: 'select', value: 'bank_transfer', options: [{ value: 'bank_transfer', label: 'Bank transfer' }, { value: 'cash', label: 'Cash' }, { value: 'cheque', label: 'Cheque' }, { value: 'card', label: 'Card' }, { value: 'other', label: 'Other' }] },
+        { name: 'reference', label: 'Reference', type: 'text', placeholder: 'Optional', value: '' }
+    ];
+    if (accounts.length) fields.push({ name: 'account_id', label: 'Paid from', type: 'select', value: String((accounts.filter(function (a) { return a.is_default; })[0] || accounts[0]).id), options: accounts.map(function (a) { return { value: String(a.id), label: a.name }; }) });
+    var out = await uiForm(fields, { title: 'Pay the credit back', confirmText: 'Record', message: 'For money already sent back to the customer by hand.' });
+    if (!out) return;
+    try {
+        var data = await fetchJson('/api/credit-notes/' + encodeURIComponent(cn.number) + '/refund', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ amount: parseFloat(out.amount), method: out.method, reference: out.reference || '', account_id: out.account_id ? Number(out.account_id) : null }) });
+        showToast(data.message || 'Recorded', 'success');
+        viewCreditNote(cn.number);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.refundCreditNote = refundCreditNote;
+
+async function voidCreditNote() {
+    var cn = currentCreditNote;
+    if (!cn) return;
+    var reason = await uiPrompt('Why is it being withdrawn? (optional)', '', { title: 'Withdraw ' + cn.number, confirmText: 'Withdraw' });
+    if (reason === null || reason === undefined) return;
+    try {
+        var data = await fetchJson('/api/credit-notes/' + encodeURIComponent(cn.number) + '/void', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: reason || '' }) });
+        showToast(data.message || 'Withdrawn', 'success');
+        fetchInvoices();
+        viewCreditNote(cn.number);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.voidCreditNote = voidCreditNote;
+
+// --- from the invoice page ----------------------------------------------------
+
+function renderInvoiceCredits(inv) {
+    var host = document.getElementById('view-inv-credits');
+    if (!host) return;
+    var notes = inv.credit_notes || [];
+    var btn = document.getElementById('view-invoice-credit-btn');
+    if (btn) btn.style.display = (['Draft', 'Void'].indexOf(inv.status) === -1) ? 'inline-block' : 'none';
+    if (!notes.length) { host.style.display = 'none'; host.innerHTML = ''; return; }
+    var sym = getCurrencySymbol();
+    host.innerHTML = '<div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;color:var(--text-secondary);margin-bottom:6px;">Credit notes</div>' +
+        '<table style="width:100%;font-size:0.85rem;border-collapse:collapse;">' + notes.map(function (c) {
+            return '<tr style="border-bottom:1px solid var(--border-color);' + (c.status === 'Void' ? 'color:var(--text-secondary);text-decoration:line-through;' : '') + '">' +
+                '<td style="padding:6px 0;"><a href="#" data-inv-cn="' + esc(c.number) + '" style="font-weight:600;">' + esc(c.number) + '</a></td>' +
+                '<td style="padding:6px 0;color:var(--text-secondary);">' + esc(c.date) + (c.reason ? ' · ' + esc(c.reason) : '') + (c.unapplied > 0 ? ' · ' + sym + Number(c.unapplied).toFixed(2) + ' to have back' : '') + '</td>' +
+                '<td style="padding:6px 0;text-align:right;font-weight:600;">-' + sym + Number(c.total || 0).toFixed(2) + '</td></tr>';
+        }).join('') + '</table>';
+    host.style.display = 'block';
+    host.querySelectorAll('[data-inv-cn]').forEach(function (a) {
+        a.addEventListener('click', function (e) { e.preventDefault(); viewCreditNote(a.getAttribute('data-inv-cn')); });
+    });
+}
+window.renderInvoiceCredits = renderInvoiceCredits;
+
+function openCreditNoteModal() {
+    var inv = _viewInvoice;
+    if (!inv) return;
+    var modal = document.getElementById('credit-note-modal');
+    var tbody = document.getElementById('credit-note-lines');
+    if (!modal || !tbody) return;
+    document.getElementById('credit-note-modal-title').textContent = 'Credit note against ' + inv.number;
+    document.getElementById('credit-note-reason').value = '';
+    document.getElementById('credit-note-send').checked = !!inv.email;
+    tbody.innerHTML = (inv.line_items || []).map(function (li, i) {
+        return '<tr data-cn-line="' + i + '">' +
+            '<td><input type="checkbox" data-cn-pick checked></td>' +
+            '<td>' + esc(li.name || '') + (li.name && li.description ? ' — ' : '') + esc(li.description || '') + '<div style="font-size:0.75rem;color:var(--text-secondary);">' + esc(li.tax_rate || 'No Tax') + (li.disc ? ' · ' + li.disc + '% off' : '') + '</div></td>' +
+            '<td class="text-right"><input type="number" class="form-control" data-cn-qty min="0.01" max="' + Number(li.qty || 0) + '" step="0.01" value="' + Number(li.qty || 0) + '" style="width:80px;display:inline-block;padding:4px 8px;"> <span style="color:var(--text-secondary);font-size:0.75rem;">of ' + Number(li.qty || 0) + '</span></td>' +
+            '<td class="text-right">' + Number(li.price || 0).toFixed(2) + '</td>' +
+            '<td class="text-right" data-cn-amount>' + Number(li.amount || 0).toFixed(2) + '</td></tr>';
+    }).join('');
+    tbody.querySelectorAll('[data-cn-pick],[data-cn-qty]').forEach(function (el) { el.addEventListener('input', updateCreditNoteTotal); el.addEventListener('change', updateCreditNoteTotal); });
+    updateCreditNoteTotal();
+    modal.style.display = 'flex';
+}
+window.openCreditNoteModal = openCreditNoteModal;
+
+function closeCreditNoteModal() { var m = document.getElementById('credit-note-modal'); if (m) m.style.display = 'none'; }
+window.closeCreditNoteModal = closeCreditNoteModal;
+
+function creditNoteLinesChosen() {
+    var inv = _viewInvoice;
+    var out = [];
+    document.querySelectorAll('#credit-note-lines [data-cn-line]').forEach(function (tr) {
+        var li = (inv.line_items || [])[Number(tr.getAttribute('data-cn-line'))];
+        if (!li || !tr.querySelector('[data-cn-pick]').checked) return;
+        var qty = parseFloat(tr.querySelector('[data-cn-qty]').value);
+        if (isNaN(qty) || qty <= 0) return;
+        qty = Math.min(qty, Number(li.qty || 0));
+        out.push({ name: li.name || '', description: li.description || '', qty: qty, price: li.price, disc: li.disc || 0, account: li.account, tax_rate: li.tax_rate });
+    });
+    return out;
+}
+
+function updateCreditNoteTotal() {
+    var inv = _viewInvoice;
+    if (!inv) return;
+    var total = 0;
+    document.querySelectorAll('#credit-note-lines [data-cn-line]').forEach(function (tr) {
+        var li = (inv.line_items || [])[Number(tr.getAttribute('data-cn-line'))];
+        var picked = tr.querySelector('[data-cn-pick]').checked;
+        var qty = parseFloat(tr.querySelector('[data-cn-qty]').value);
+        if (!li || isNaN(qty) || qty < 0) qty = 0;
+        qty = Math.min(qty, Number(li ? li.qty : 0));
+        var net = qty * Number(li ? li.price : 0) * (1 - (Number(li ? li.disc : 0) || 0) / 100);
+        var rate = Number(li ? li.tax_percent : 0) / 100;
+        var line = inv.tax_type === 'exclusive' ? net * (1 + rate) : net;
+        tr.querySelector('[data-cn-amount]').textContent = (picked ? line : 0).toFixed(2);
+        if (picked) total += line;
+    });
+    var el = document.getElementById('credit-note-total');
+    if (el) el.textContent = getCurrencySymbol() + total.toFixed(2);
+}
+window.updateCreditNoteTotal = updateCreditNoteTotal;
+
+async function issueCreditNote() {
+    var inv = _viewInvoice;
+    if (!inv) return;
+    var lines = creditNoteLinesChosen();
+    if (!lines.length) { showToast('Tick at least one line to credit', 'error'); return; }
+    var reason = (document.getElementById('credit-note-reason').value || '').trim();
+    var send = document.getElementById('credit-note-send').checked;
+    var btn = document.getElementById('credit-note-issue');
+    if (btn) btn.disabled = true;
+    try {
+        var cn = await fetchJson('/api/credit-notes', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ invoice_number: inv.number, reason: reason, line_items: lines }) });
+        closeCreditNoteModal();
+        showToast(cn.number + ' issued', 'success');
+        fetchInvoices();
+        await viewCreditNote(cn.number);
+        if (send && cn.email) await sendCreditNoteEmail(cn.number, '');
+    } catch (e) { showToast(e.message, 'error'); }
+    finally { if (btn) btn.disabled = false; }
+}
+window.issueCreditNote = issueCreditNote;
 
 // ---------------------------------------------------------------------------
 // Chasing: the reminder sequence a business sets, and the late fee at the
@@ -2916,8 +3231,10 @@ async function viewInvoice(number) {
         _viewTrackingId = inv.tracking_id || '';
         _viewOutstanding = inv.due || 0;
         _viewPayments = inv.payments || [];
+        _viewInvoice = inv;
         renderInvoicePayments(inv);
         renderInvoiceChasing(inv);
+        renderInvoiceCredits(inv);
         if (typeof showInvoiceDelivery === 'function') showInvoiceDelivery(inv);
         document.getElementById('view-inv-title').textContent = 'Invoice ' + inv.number;
         document.getElementById('view-inv-number-val').textContent = inv.number;
@@ -3017,6 +3334,8 @@ async function viewInvoice(number) {
         var backBtn = document.getElementById('preview-back-btn');
         if (backBtn) backBtn.style.display = 'none';
         document.querySelectorAll('.invoice-action-btn').forEach(function(btn) { btn.style.display = 'inline-block'; });
+        var creditBtn = document.getElementById('view-invoice-credit-btn');
+        if (creditBtn) creditBtn.style.display = (['Draft', 'Void'].indexOf(inv.status) === -1) ? 'inline-block' : 'none';
 
         // Editing is offered only while nothing has been paid against it. The
         // server refuses the rest - money already received is a fact, and
@@ -3246,6 +3565,13 @@ var PDF_DOC_TYPES = {
         // The quote's expiry occupies the slot an invoice uses for its due date.
         dateOutLabel: 'Valid Until', bank: false, paymentAdvice: false,
     },
+    credit_note: {
+        p: 'view-cn-', s: 'view-cn-summary-', body: 'view-cn-line-items-body',
+        heading: 'CREDIT NOTE', dateLabel: 'Credit Note Date',
+        numberLabel: 'Credit Note Number', totalLabel: 'Total Credited',
+        // The invoice it is against occupies the slot an invoice uses for its due date.
+        dateOutLabel: 'Against Invoice', bank: false, paymentAdvice: false,
+    },
 };
 
 function generateInvoicePDF(isDummy, kind) {
@@ -3401,6 +3727,7 @@ function generateInvoicePDF(isDummy, kind) {
     // ── Left column: the document title, in the brand colour ──
     var heading = cfg.heading;
     if (kind === 'quote') heading = th.quote_title || cfg.heading;
+    else if (kind === 'credit_note') heading = cfg.heading;
     else heading = th.approved_invoice_title || cfg.heading;
     doc.setFontSize(26); doc.setFont(TF,'bold');
     doc.setTextColor(brandRGB[0], brandRGB[1], brandRGB[2]);

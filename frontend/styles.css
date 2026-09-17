@@ -158,6 +158,8 @@ h1, h2, h3, h4, p, td, th, li, .stat-value { overflow-wrap: anywhere; }
 .status-sent { background: rgba(56, 189, 248, 0.15); color: #38bdf8; }
 .status-awaiting-payment { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
 .status-paid { background: rgba(52, 211, 153, 0.15); color: #34d399; }
+.status-credited, .status-issued { background: rgba(148, 163, 184, 0.2); color: var(--text-secondary); }
+.status-void { background: rgba(148, 163, 184, 0.12); color: var(--text-secondary); text-decoration: line-through; }
 
 /* ===== LAYOUT ===== */
 .layout { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }

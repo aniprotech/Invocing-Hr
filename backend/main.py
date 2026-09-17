@@ -3242,6 +3242,12 @@ def _mark_delivered(db, row):
             if ps.status == "Draft":
                 ps.status = "Sent"
             ps.sent = today
+    elif row.kind == "credit_note":
+        cn = db.query(models.DBCreditNote).filter(
+            models.DBCreditNote.number == row.reference,
+            models.DBCreditNote.client_id == row.client_id).first()
+        if cn:
+            cn.sent = today
 
 
 def delivery_to_dict(row):
@@ -3610,6 +3616,9 @@ def get_invoice(number: str, request: Request, db: Session = Depends(get_db)):
         "refunds": [refund_to_dict(r, acct_names) for r in refunds],
         "refunded_total": money(sum((r.amount or 0) for r in refunds)),
         "chasing": chasing_for_invoice(db, inv, overdue_days),
+        "credit_notes": [credit_note_to_dict(c, client, db) for c in db.query(models.DBCreditNote).filter(
+            models.DBCreditNote.invoice_id == inv.id).order_by(models.DBCreditNote.id.asc()).all()],
+        "credited": credited_on_invoice(db, inv),
         "status": inv.status,
         "sent": inv.sent,
         "tax_type": inv.tax_type,
@@ -5503,6 +5512,11 @@ def delete_invoice_payment(number: str, payment_id: int, request: Request, db: S
         raise HTTPException(status_code=404, detail="Payment not found")
     if db.query(models.DBRefund).filter(models.DBRefund.payment_id == payment.id).count():
         raise HTTPException(status_code=400, detail="Part of this receipt has been refunded; it stays on record")
+    if payment.method == "credit_note":
+        note = db.query(models.DBCreditNote).filter(models.DBCreditNote.client_id == client.id,
+                                                    models.DBCreditNote.number == (payment.reference or "")).first()
+        if note:
+            note.allocated = money(max(0.0, (note.allocated or 0) - (payment.amount or 0)))
     inv.paid = money(max(0.0, (inv.paid or 0) - (payment.amount or 0)))
     inv.due = money((inv.due or 0) + (payment.amount or 0))
     inv.status = "Partially Paid" if (inv.paid or 0) > 0.005 else ("Sent" if inv.sent else "Draft")
@@ -21886,7 +21900,10 @@ def public_invoice_payload(db: Session, inv, client):
         "total": money(total),
         "paid": money(inv.paid or 0),
         "amount_due": money(inv.due or 0),
-        "is_settled": inv.status == "Paid" or (inv.due or 0) <= 0,
+        "is_settled": inv.status in ("Paid", "Credited") or (inv.due or 0) <= 0,
+        "credit_notes": [{"number": c.number, "date": c.issue_date or "", "amount": money(c.total or 0), "reason": c.reason or ""}
+                         for c in db.query(models.DBCreditNote).filter(models.DBCreditNote.invoice_id == inv.id,
+                                                                       models.DBCreditNote.status != "Void").order_by(models.DBCreditNote.id.asc()).all()],
         "line_items": [
             {"name": li.name or "", "description": li.description or "", "qty": li.qty,
              "price": money(li.price), "amount": money((li.qty or 0) * (li.price or 0))}
@@ -27012,7 +27029,7 @@ WEBHOOK_LIMIT = 10
 WEBHOOK_EVENTS = ("employee.created", "employee.updated", "employee.left",
                   "leave.requested", "leave.decided", "probation.decided", "pay.changed",
                   "review.completed", "kudos.given", "invoice.paid", "invoice.refunded",
-                  "invoice.late_fee")
+                  "invoice.late_fee", "credit_note.issued")
 WEBHOOK_MAX_ATTEMPTS = 5
 WEBHOOK_BACKOFF_MINUTES = (0, 1, 5, 30, 120)
 
@@ -28400,6 +28417,8 @@ def account_totals(db, client_id, today=None):
     out = {}
     rows = db.query(models.DBPayment).filter(models.DBPayment.client_id == client_id).all()
     for p in rows:
+        if p.method == "credit_note":
+            continue
         t = out.setdefault(p.account_id, {"this_month": 0.0, "last_month": 0.0, "all_time": 0.0, "count": 0, "last_on": ""})
         amt = float(p.amount or 0)
         t["all_time"] = money(t["all_time"] + amt)
@@ -28410,7 +28429,10 @@ def account_totals(db, client_id, today=None):
             t["last_month"] = money(t["last_month"] + amt)
         if (p.paid_on or "") > t["last_on"]:
             t["last_on"] = p.paid_on or ""
-    for r in db.query(models.DBRefund).filter(models.DBRefund.client_id == client_id).all():
+    backs = [(r.account_id, r.amount, r.refunded_on) for r in db.query(models.DBRefund).filter(models.DBRefund.client_id == client_id).all()]
+    backs += [(c.refund_account_id, c.refunded, c.refunded_on) for c in db.query(models.DBCreditNote).filter(
+        models.DBCreditNote.client_id == client_id, models.DBCreditNote.refunded > 0).all()]
+    for r in [type("Back", (), {"account_id": a, "amount": amt, "refunded_on": on})() for a, amt, on in backs]:
         t = out.setdefault(r.account_id, {"this_month": 0.0, "last_month": 0.0, "all_time": 0.0, "count": 0, "last_on": ""})
         amt = float(r.amount or 0)
         t["all_time"] = money(t["all_time"] - amt)
@@ -29118,6 +29140,8 @@ def refund_invoice_payment(number: str, payment_id: int, request: Request, body:
     payment = db.query(models.DBPayment).filter(models.DBPayment.id == payment_id, models.DBPayment.invoice_id == inv.id).first()
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
+    if payment.method == "credit_note":
+        raise HTTPException(status_code=400, detail="That was a credit note set against this invoice, not money; reverse it and the credit goes back on the note")
     left = money((payment.amount or 0) - refunded_so_far(db, payment.id))
     try:
         amount = money(float(body.get("amount") if body.get("amount") not in (None, "") else left))
@@ -29323,14 +29347,30 @@ def statement_for(db, client, contact, start, end):
     ids = [i.id for i in invoices]
     pays = db.query(models.DBPayment).filter(models.DBPayment.invoice_id.in_(ids)).all() if ids else []
     refs = db.query(models.DBRefund).filter(models.DBRefund.invoice_id.in_(ids)).all() if ids else []
+    notes = db.query(models.DBCreditNote).filter(models.DBCreditNote.invoice_id.in_(ids),
+                                                  models.DBCreditNote.status != "Void").all() if ids else []
     by_inv = {i.id: i for i in invoices}
+    applied_by_inv = {}
+    for c in notes:
+        applied_by_inv[c.invoice_id] = money(applied_by_inv.get(c.invoice_id, 0.0) + (c.applied or 0))
     events = []
     for i in invoices:
-        total = money((i.paid or 0) + (i.due or 0))
+        total = money((i.paid or 0) + (i.due or 0) + applied_by_inv.get(i.id, 0.0))
         events.append({"date": (i.issue_date or i.created_at or "")[:10], "kind": "invoice", "ref": i.number,
                        "description": f"Invoice {i.number}" + (f", due {i.due_date}" if i.due_date else ""),
                        "debit": total, "credit": 0.0, "currency": ((i.currency or "") or base).upper(), "number": i.number, "order": 0})
+    for c in notes:
+        i = by_inv[c.invoice_id]
+        events.append({"date": (c.issue_date or c.created_at or "")[:10], "kind": "credit_note", "ref": c.number,
+                       "description": f"Credit note {c.number} against {i.number}" + (f": {c.reason}" if c.reason else ""),
+                       "debit": 0.0, "credit": money(c.total or 0), "currency": ((i.currency or "") or base).upper(), "number": i.number, "order": 1})
+        if (c.refunded or 0) > 0:
+            events.append({"date": (c.refunded_on or c.created_at or "")[:10], "kind": "refund", "ref": c.refund_reference or c.number,
+                           "description": f"Credit {c.number} paid back" + (f" ({PAYMENT_METHOD_WORDS.get(c.refund_method, c.refund_method)})" if c.refund_method else ""),
+                           "debit": money(c.refunded or 0), "credit": 0.0, "currency": ((i.currency or "") or base).upper(), "number": i.number, "order": 2})
     for p in pays:
+        if p.method == "credit_note":
+            continue      # a credit set against this invoice was counted when the note was
         i = by_inv[p.invoice_id]
         events.append({"date": (p.paid_on or p.created_at or "")[:10], "kind": "payment", "ref": p.reference or "",
                        "description": f"Payment on {i.number}" + (f" ({PAYMENT_METHOD_WORDS.get(p.method, p.method)})" if p.method else ""),
@@ -29368,7 +29408,8 @@ def statement_for(db, client, contact, start, end):
 
 
 PAYMENT_METHOD_WORDS = {"bank_transfer": "bank transfer", "card": "card", "cash": "cash", "cheque": "cheque", "direct_debit": "direct debit",
-                        "manual": "marked paid", "stripe": "card", "razorpay": "Razorpay", "gocardless": "bank debit", "paypal": "PayPal", "other": "other"}
+                        "manual": "marked paid", "stripe": "card", "razorpay": "Razorpay", "gocardless": "bank debit", "paypal": "PayPal", "other": "other",
+                        "credit_note": "credit note"}
 
 
 def _statement_period(start, end):
@@ -31007,6 +31048,422 @@ def chasing_overview(request: Request, db: Session = Depends(get_db)):
             "overdue": sum(1 for r in rows if r["days"] > 0),
             "paused": sum(1 for r in rows if r["paused"] or not r["chased"]),
             "owed": money(sum((r["due"] or 0) for r in rows if r["days"] > 0))}
+
+
+# ============================================================================
+# CREDIT NOTES - the way a sent invoice is corrected
+#
+# An invoice that has gone out is a record; editing it is not. A credit note
+# is its own numbered document against the invoice: what it credits comes
+# off what the invoice is owed, and whatever is beyond that - the customer
+# had already paid - is theirs to have back, set against another of their
+# invoices or paid back, and the note keeps count of both.
+# ============================================================================
+
+CREDIT_NOTE_MAX_LINES = 200
+
+
+def credit_note_prefix_for(db, client_id):
+    raw = str(tenant_setting(db, client_id, "credit_note_prefix", "CN-")).strip()
+    cleaned = "".join(c for c in raw if c.isalnum() or c in "-_/")[:12]
+    return cleaned or "CN-"
+
+
+def credited_on_invoice(db, inv):
+    """What credit notes have taken off this invoice so far."""
+    rows = db.query(models.DBCreditNote).filter(models.DBCreditNote.invoice_id == inv.id,
+                                                 models.DBCreditNote.status != "Void").all()
+    return money(sum((c.applied or 0) for c in rows))
+
+
+def credit_notes_total_on_invoice(db, inv):
+    rows = db.query(models.DBCreditNote).filter(models.DBCreditNote.invoice_id == inv.id,
+                                                 models.DBCreditNote.status != "Void").all()
+    return money(sum((c.total or 0) for c in rows))
+
+
+def _credit_lines(body_lines, inv):
+    """The lines to credit: those sent, checked; or the whole invoice."""
+    if body_lines is None:
+        return [{"name": li.name or "", "description": li.description or "", "qty": li.qty or 0, "price": li.price or 0,
+                 "disc": li.disc or 0, "account": li.account or "200 - Sales", "tax_rate": li.tax_rate or "No Tax"}
+                for li in (inv.line_items or [])]
+    if not isinstance(body_lines, list) or not body_lines:
+        raise HTTPException(status_code=400, detail="A credit note needs at least one line")
+    if len(body_lines) > CREDIT_NOTE_MAX_LINES:
+        raise HTTPException(status_code=400, detail=f"A credit note cannot have more than {CREDIT_NOTE_MAX_LINES} lines")
+    out = []
+    for idx, raw in enumerate(body_lines, start=1):
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail=f"Line {idx}: not a line")
+        try:
+            qty = float(raw.get("qty") if raw.get("qty") is not None else 1)
+            price = float(raw.get("price") or 0)
+            disc = float(raw.get("disc") or 0)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"Line {idx}: quantity, price and discount must be numbers")
+        if qty <= 0:
+            raise HTTPException(status_code=400, detail=f"Line {idx}: quantity must be more than zero")
+        if price < 0:
+            raise HTTPException(status_code=400, detail=f"Line {idx}: price cannot be negative")
+        if disc < 0 or disc > 100:
+            raise HTTPException(status_code=400, detail=f"Line {idx}: discount must be between 0 and 100")
+        out.append({"name": str(raw.get("name") or "")[:200], "description": str(raw.get("description") or "")[:1000],
+                    "qty": qty, "price": price, "disc": disc, "account": str(raw.get("account") or "200 - Sales")[:100],
+                    "tax_rate": str(raw.get("tax_rate") or "No Tax")[:60]})
+    return out
+
+
+class _Line:
+    def __init__(self, d):
+        self.qty, self.price, self.disc, self.tax_rate = d["qty"], d["price"], d["disc"], d["tax_rate"]
+
+
+def credit_note_unapplied(cn):
+    return money(max(0.0, (cn.total or 0) - (cn.applied or 0) - (cn.allocated or 0) - (cn.refunded or 0)))
+
+
+def credit_note_to_dict(cn, client, db, detail=False):
+    subtotal, tax_total, total = compute_invoice_totals(cn.line_items, cn.tax_type)
+    data = {
+        "id": cn.id, "number": cn.number, "invoice_number": cn.invoice_number or "", "invoice_id": cn.invoice_id,
+        "to": cn.to_contact or "", "email": cn.email or "", "phone_number": cn.phone_number or "",
+        "to_company": cn.to_company or "", "to_address": cn.to_address or "", "to_tax_id": cn.to_tax_id or "",
+        "bill_to": bill_to_dict(cn),
+        "date": cn.issue_date or "", "reason": cn.reason or "", "status": cn.status or "Issued", "sent": cn.sent or "",
+        "tax_type": cn.tax_type or "exclusive", "currency": cn.currency or (client.currency if client else ""),
+        "subtotal": subtotal, "tax_total": tax_total, "total": money(cn.total or 0),
+        "applied": money(cn.applied or 0), "allocated": money(cn.allocated or 0), "refunded": money(cn.refunded or 0),
+        "unapplied": credit_note_unapplied(cn) if cn.status != "Void" else 0.0,
+        "refunded_on": cn.refunded_on or "", "refund_method": cn.refund_method or "", "refund_reference": cn.refund_reference or "",
+        "voided_on": cn.voided_on or "", "void_reason": cn.void_reason or "",
+        "created_by": cn.created_by or "", "created_at": cn.created_at or "",
+    }
+    if not detail:
+        return data
+    settings_rows = db.query(models.DBSettings).filter(models.DBSettings.client_id == cn.client_id).all()
+    settings_map = {s.key: s.value for s in settings_rows}
+    data["company"] = {
+        "name": settings_map.get("company_name", "") or (client.company_name if client else ""),
+        "email": settings_map.get("email", "") or (client.email if client else ""),
+        "phone_number": settings_map.get("phone_number", "") or (client.phone_number if client else ""),
+        "address": settings_map.get("company_address", "") or (client.address if client else ""),
+        "website": settings_map.get("company_website", "") or (client.website if client else ""),
+        "abn": settings_map.get("company_abn", "") or (client.abn if client else ""),
+        "logo_url": client.logo_url if client else "",
+    }
+    data["company"]["tax_id"] = data["company"]["abn"]
+    data["line_items"] = [{
+        "name": li.name or "", "description": li.description or "", "qty": li.qty, "price": li.price, "disc": li.disc,
+        "account": li.account, "tax_rate": li.tax_rate, "tax_percent": round(parse_tax_rate(li.tax_rate) * 100, 4),
+        "amount": money(line_net_amount(li.qty, li.price, li.disc)),
+    } for li in cn.line_items]
+    acct_names = account_names(db, cn.client_id)
+    data["refund_account_name"] = acct_names.get(cn.refund_account_id, "") if cn.refund_account_id else ""
+    allocations = db.query(models.DBPayment).filter(models.DBPayment.client_id == cn.client_id,
+                                                    models.DBPayment.method == "credit_note",
+                                                    models.DBPayment.reference == cn.number).order_by(models.DBPayment.id.asc()).all()
+    inv_numbers = {}
+    for p in allocations:
+        if p.invoice_id not in inv_numbers:
+            row = db.query(models.DBInvoice).filter(models.DBInvoice.id == p.invoice_id).first()
+            inv_numbers[p.invoice_id] = row.number if row else ""
+    data["allocations"] = [{"payment_id": p.id, "invoice_number": inv_numbers.get(p.invoice_id, ""), "amount": money(p.amount or 0),
+                            "on": p.paid_on or ""} for p in allocations]
+    return data
+
+
+def _credit_note_or_404(db, client, number):
+    cn = db.query(models.DBCreditNote).filter(models.DBCreditNote.number == number,
+                                             models.DBCreditNote.client_id == client.id).first()
+    if not cn:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+    return cn
+
+
+def _settle_invoice_after_credit(inv):
+    """Status after a credit took something off what was owed."""
+    if (inv.due or 0) <= 0.005:
+        inv.due = 0.0
+        inv.status = "Paid" if (inv.paid or 0) > 0.005 else "Credited"
+    elif inv.status == "Credited":
+        inv.status = "Partially Paid" if (inv.paid or 0) > 0.005 else ("Sent" if inv.sent else "Awaiting Payment")
+
+
+@app.post("/api/credit-notes")
+def create_credit_note(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Issue a credit note against an invoice: the whole of it, or the lines sent."""
+    client = get_client_user(request, db)
+    body = body or {}
+    number = str(body.get("invoice_number") or "").strip()
+    inv = db.query(models.DBInvoice).filter(models.DBInvoice.number == number, models.DBInvoice.client_id == client.id).first() if number else None
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if inv.status in ("Draft", "Void"):
+        raise HTTPException(status_code=400, detail="A draft can be edited; a void invoice has nothing to credit")
+    lines = _credit_lines(body.get("line_items"), inv)
+    subtotal, tax, total = compute_invoice_totals([_Line(d) for d in lines], inv.tax_type)
+    if total <= 0:
+        raise HTTPException(status_code=400, detail="A credit note must credit something")
+    invoice_total = money((inv.paid or 0) + (inv.due or 0) + credited_on_invoice(db, inv))
+    room = money(invoice_total - credit_notes_total_on_invoice(db, inv))
+    if total > room + 0.005:
+        raise HTTPException(status_code=400, detail=f"That credits {total:.2f}; only {room:.2f} of this invoice is left to credit")
+    issue_date = _clean_ymd(body.get("issue_date"), "Date") if body.get("issue_date") else date.today().isoformat()
+    reason = str(body.get("reason") or "").strip()[:500]
+
+    applied = money(min(total, inv.due or 0))
+    inv.due = money((inv.due or 0) - applied)
+    _settle_invoice_after_credit(inv)
+
+    cn = models.DBCreditNote(
+        client_id=client.id, number=next_sequence_number(db, models.DBCreditNote, client.id, credit_note_prefix_for(db, client.id)),
+        invoice_id=inv.id, invoice_number=inv.number,
+        to_contact=inv.to_contact or "", email=inv.email or "", phone_number=inv.phone_number or "",
+        to_company=inv.to_company or "", to_address=inv.to_address or "", to_tax_id=inv.to_tax_id or "",
+        issue_date=issue_date, reason=reason, status="Issued", tax_type=inv.tax_type or "exclusive",
+        currency=inv.currency or (client.currency or ""), total=total, applied=applied,
+        created_by=client.email or "")
+    db.add(cn)
+    db.flush()
+    for d in lines:
+        db.add(models.DBCreditNoteLineItem(credit_note_id=cn.id, **d))
+    log_audit(db, client.id, "credit_note_issued", "credit_note", cn.id, cn.number,
+              f"{total:.2f} against {inv.number}" + (f": {reason}" if reason else ""), request)
+    announce(db, client.id, "credit_note.issued", {
+        "number": cn.number, "invoice_number": inv.number, "customer": inv.to_contact or "", "total": total,
+        "applied": applied, "unapplied": credit_note_unapplied(cn), "currency": cn.currency or "", "reason": reason})
+    db.commit()
+    db.refresh(cn)
+    return credit_note_to_dict(cn, client, db, detail=True)
+
+
+@app.get("/api/credit-notes")
+def list_credit_notes(request: Request, invoice: str = "", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    q = db.query(models.DBCreditNote).filter(models.DBCreditNote.client_id == client.id)
+    if invoice:
+        q = q.filter(models.DBCreditNote.invoice_number == invoice)
+    rows = q.order_by(models.DBCreditNote.id.desc()).all()
+    return [credit_note_to_dict(c, client, db) for c in rows]
+
+
+@app.get("/api/credit-notes/{number}")
+def get_credit_note(number: str, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    return credit_note_to_dict(_credit_note_or_404(db, client, number), client, db, detail=True)
+
+
+@app.post("/api/credit-notes/{number}/allocate")
+def allocate_credit_note(number: str, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Set what is left of the credit against another of the customer's invoices."""
+    client = get_client_user(request, db)
+    cn = _credit_note_or_404(db, client, number)
+    body = body or {}
+    if cn.status == "Void":
+        raise HTTPException(status_code=400, detail="This credit note is void")
+    left = credit_note_unapplied(cn)
+    if left <= 0:
+        raise HTTPException(status_code=400, detail="Nothing is left on this credit note")
+    target_number = str(body.get("invoice_number") or "").strip()
+    target = db.query(models.DBInvoice).filter(models.DBInvoice.number == target_number, models.DBInvoice.client_id == client.id).first() if target_number else None
+    if not target:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if target.id == cn.invoice_id:
+        raise HTTPException(status_code=400, detail="The credit already came off that invoice")
+    if target.status in ("Draft", "Void", "Paid", "Credited") or (target.due or 0) <= 0:
+        raise HTTPException(status_code=400, detail="That invoice has nothing owed on it")
+    same = ((target.to_contact or "").strip().lower() == (cn.to_contact or "").strip().lower()
+            or (cn.email and (target.email or "").strip().lower() == cn.email.strip().lower()))
+    if not same:
+        raise HTTPException(status_code=400, detail="A credit belongs to the customer it was given to; that invoice is somebody else's")
+    if (target.currency or client.currency or "").upper() != (cn.currency or client.currency or "").upper():
+        raise HTTPException(status_code=400, detail="That invoice is in a different currency")
+    if body.get("amount") not in (None, ""):
+        try:
+            amount = money(float(body["amount"]))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Enter an amount")
+    else:
+        amount = money(min(left, target.due or 0))
+    if amount <= 0 or amount > left + 0.005 or amount > (target.due or 0) + 0.005:
+        raise HTTPException(status_code=400, detail=f"Between 0.01 and {min(left, target.due or 0):.2f}")
+    payment = models.DBPayment(client_id=client.id, invoice_id=target.id, amount=amount, paid_on=date.today().isoformat(),
+                               method="credit_note", reference=cn.number, note=f"Credit note {cn.number} set against this invoice",
+                               account_id=None)
+    db.add(payment)
+    target.paid = money((target.paid or 0) + amount)
+    target.due = money((target.due or 0) - amount)
+    apply_payment_status(target)
+    cn.allocated = money((cn.allocated or 0) + amount)
+    log_audit(db, client.id, "credit_note_allocated", "credit_note", cn.id, cn.number, f"{amount:.2f} set against {target.number}", request)
+    db.commit()
+    return {"message": f"{amount:.2f} set against {target.number}", "credit_note": credit_note_to_dict(cn, client, db, detail=True),
+            "invoice": {"number": target.number, "status": target.status, "paid": target.paid, "due": target.due}}
+
+
+@app.post("/api/credit-notes/{number}/refund")
+def refund_credit_note(number: str, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """What is left of the credit, paid back to the customer by hand."""
+    client = get_client_user(request, db)
+    cn = _credit_note_or_404(db, client, number)
+    body = body or {}
+    if cn.status == "Void":
+        raise HTTPException(status_code=400, detail="This credit note is void")
+    left = credit_note_unapplied(cn)
+    if left <= 0:
+        raise HTTPException(status_code=400, detail="Nothing is left on this credit note")
+    if body.get("amount") not in (None, ""):
+        try:
+            amount = money(float(body["amount"]))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Enter an amount")
+    else:
+        amount = left
+    if amount <= 0 or amount > left + 0.005:
+        raise HTTPException(status_code=400, detail=f"Between 0.01 and {left:.2f}")
+    method = str(body.get("method") or "bank_transfer").strip().lower()[:30]
+    account_id = resolve_account(db, client.id, body.get("account_id"))
+    cn.refunded = money((cn.refunded or 0) + amount)
+    cn.refunded_on = _clean_ymd(body.get("refunded_on"), "Date") if body.get("refunded_on") else date.today().isoformat()
+    cn.refund_method = method
+    cn.refund_reference = str(body.get("reference") or "").strip()[:120]
+    cn.refund_account_id = account_id or cn.refund_account_id
+    log_audit(db, client.id, "credit_note_refunded", "credit_note", cn.id, cn.number, f"{amount:.2f} paid back ({method})", request)
+    db.commit()
+    return {"message": f"{amount:.2f} paid back", "credit_note": credit_note_to_dict(cn, client, db, detail=True)}
+
+
+@app.post("/api/credit-notes/{number}/void")
+def void_credit_note(number: str, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Withdraw a credit note issued in error: what it took off the invoice goes back on."""
+    client = get_client_user(request, db)
+    cn = _credit_note_or_404(db, client, number)
+    if cn.status == "Void":
+        raise HTTPException(status_code=400, detail="Already void")
+    if (cn.allocated or 0) > 0.005 or (cn.refunded or 0) > 0.005:
+        raise HTTPException(status_code=400, detail="Part of this credit has been set against an invoice or paid back; it stays on record")
+    inv = db.query(models.DBInvoice).filter(models.DBInvoice.id == cn.invoice_id).first()
+    if inv:
+        inv.due = money((inv.due or 0) + (cn.applied or 0))
+        if inv.status in ("Paid", "Credited") and (inv.due or 0) > 0.005:
+            inv.status = "Partially Paid" if (inv.paid or 0) > 0.005 else ("Sent" if inv.sent else "Awaiting Payment")
+    cn.status = "Void"
+    cn.voided_on = date.today().isoformat()
+    cn.void_reason = str((body or {}).get("reason") or "").strip()[:300]
+    log_audit(db, client.id, "credit_note_voided", "credit_note", cn.id, cn.number, cn.void_reason, request)
+    db.commit()
+    return {"message": f"{cn.number} withdrawn", "credit_note": credit_note_to_dict(cn, client, db, detail=True),
+            "invoice": {"number": inv.number, "status": inv.status, "due": inv.due} if inv else None}
+
+
+class SendCreditNoteEmail(BaseModel):
+    logo_data: Optional[str] = ""
+    pdf_data: Optional[str] = ""
+    message: Optional[str] = ""
+
+
+@app.post("/api/credit-notes/{number}/send")
+def send_credit_note_email(number: str, background_tasks: BackgroundTasks, request: Request,
+                           payload: Optional[SendCreditNoteEmail] = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    payload = payload or SendCreditNoteEmail()
+    cn = _credit_note_or_404(db, client, number)
+    if not email_is_verified(client):
+        raise HTTPException(status_code=403, detail="Confirm your email address before sending documents.")
+    if cn.status == "Void":
+        raise HTTPException(status_code=400, detail="This credit note is void")
+    if not cn.email or not validate_email_address(cn.email):
+        raise HTTPException(status_code=400, detail="This credit note has no email address to go to")
+    from_email = platform_from_address()
+    if not from_email:
+        raise HTTPException(status_code=400, detail="No sender email configured.")
+    ready, missing = email_delivery_ready(db, client.id)
+    if not ready:
+        raise HTTPException(status_code=503, detail=f"This credit note cannot be emailed at the moment - {missing}.")
+
+    settings_rows = db.query(models.DBSettings).filter(models.DBSettings.client_id == cn.client_id).all()
+    settings_map = {s.key: s.value for s in settings_rows}
+    company_name = settings_map.get("company_name", "") or client.company_name or "Accounts"
+    company_email = settings_map.get("email", "") or client.email or ""
+    company_phone = settings_map.get("phone_number", "") or client.phone_number or ""
+    company_address = settings_map.get("company_address", "") or client.address or ""
+    cur = currency_symbol((cn.currency or client.currency or "GBP").upper())
+    logo_data = payload.logo_data or client.logo_url or ""
+    logo_html = (f'<div style="margin-bottom:24px;"><img src="{esc(logo_data)}" style="max-height:48px;max-width:200px;"></div>') if logo_data else ""
+    subtotal, tax_total, total = compute_invoice_totals(cn.line_items, cn.tax_type)
+    left = credit_note_unapplied(cn)
+    note = str(payload.message or "").strip()[:1000]
+
+    rows_html = "".join(
+        f'<div style="padding:12px 20px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;">'
+        f'<div><div style="font-size:14px;font-weight:700;color:#1e293b;">{esc(li.name) or esc(li.description) or "Credit"}</div>'
+        f'{f"<div style=font-size:12px;color:#64748b;>{esc(li.description)}</div>" if li.name and li.description else ""}'
+        f'<div style="font-size:12px;color:#94a3b8;">Qty {li.qty:g} @ {cur}{(li.price or 0):.2f}</div></div>'
+        f'<div style="font-size:15px;font-weight:800;color:#0f172a;">{cur}{line_net_amount(li.qty, li.price, li.disc):.2f}</div></div>'
+        for li in cn.line_items)
+    what = (f"It takes {cur}{(cn.applied or 0):.2f} off what invoice {cn.invoice_number} was owed" if (cn.applied or 0) > 0 else "")
+    if left > 0:
+        what += (", and " if what else "") + f"{cur}{left:.2f} is yours to have back - we will set it against your next invoice or pay it back, as you prefer"
+    if (cn.refunded or 0) > 0:
+        what += (", and " if what else "") + f"{cur}{(cn.refunded or 0):.2f} has been paid back to you"
+    what = (what + ".") if what else ""
+
+    subject = f"Credit note {cn.number} against invoice {cn.invoice_number} from {company_name}"
+    body = (f"Hello {cn.to_contact},\n\nPlease find credit note {cn.number} from {company_name}, against invoice {cn.invoice_number}"
+            + (f", for {cur}{total:.2f}" if total else "") + ".\n"
+            + (f"\nReason: {cn.reason}\n" if cn.reason else "")
+            + (f"\n{what}\n" if what else "")
+            + (f"\n{note}\n" if note else "")
+            + "\nItems credited:\n"
+            + "".join(f"  - {(li.name + ' - ' if li.name else '')}{li.description} x{li.qty:g} @ {cur}{(li.price or 0):.2f}\n" for li in cn.line_items)
+            + f"\nTotal credited: {cur}{total:.2f}\n\nKind regards,\n{company_name}\n{company_address}\n{company_email}\n{company_phone}\n")
+    html_body = f"""
+    <!DOCTYPE html><html><body style="font-family: Arial, Helvetica, sans-serif; color:#1e293b; line-height:1.6; margin:0; padding:0; background-color:#f1f5f9;">
+      <div style="max-width:600px; margin:0 auto; padding:40px 20px;">
+        <div style="background:#ffffff; border-radius:12px; overflow:hidden;">
+          <div style="background-color:#0f172a; padding:40px; text-align:center;">
+            {logo_html}
+            <div style="font-size:13px;letter-spacing:2px;text-transform:uppercase;color:#94a3b8;">Credit note</div>
+            <div style="font-size:30px;font-weight:800;color:#ffffff;margin-top:6px;">{esc(cn.number)}</div>
+            <div style="font-size:15px;color:#cbd5e1;margin-top:8px;">against invoice {esc(cn.invoice_number)}</div>
+          </div>
+          <div style="padding:32px 28px;">
+            <p style="margin:0 0 18px;font-size:15px;">Hello {esc(cn.to_contact)},</p>
+            <p style="margin:0 0 18px;font-size:15px;color:#475569;">Please find our credit note against invoice <strong>{esc(cn.invoice_number)}</strong>{f", for <strong>{cur}{total:.2f}</strong>" if total else ""}.</p>
+            {f'<p style="margin:0 0 18px;font-size:15px;color:#475569;"><strong>Reason:</strong> {esc(cn.reason)}</p>' if cn.reason else ''}
+            {f'<p style="margin:0 0 18px;font-size:15px;color:#475569;">{esc(what)}</p>' if what else ''}
+            {f'<p style="margin:0 0 18px;font-size:15px;color:#475569;white-space:pre-wrap;">{esc(note)}</p>' if note else ''}
+            <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:24px;">
+              <div style="background-color:#f8fafc;padding:10px 20px;border-bottom:2px solid #e2e8f0;display:flex;justify-content:space-between;">
+                <span style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;">Item credited</span>
+                <span style="font-size:11px;font-weight:700;text-transform:uppercase;color:#64748b;">Amount</span>
+              </div>
+              {rows_html}
+            </div>
+            <div style="background:#0f172a;border-radius:10px;padding:20px 24px;margin-bottom:24px;">
+              <div style="display:flex;justify-content:space-between;color:#94a3b8;font-size:13px;margin-bottom:6px;"><span>Subtotal</span><span>{cur}{subtotal:.2f}</span></div>
+              <div style="display:flex;justify-content:space-between;color:#94a3b8;font-size:13px;margin-bottom:10px;"><span>Tax</span><span>{cur}{tax_total:.2f}</span></div>
+              <div style="display:flex;justify-content:space-between;color:#ffffff;font-size:20px;font-weight:800;border-top:1px solid #334155;padding-top:12px;"><span>Total credited</span><span>{cur}{total:.2f}</span></div>
+            </div>
+          </div>
+          <div style="background:#f8fafc;padding:22px 28px;text-align:center;border-top:1px solid #e2e8f0;">
+            <div style="font-size:14px;font-weight:700;color:#0f172a;">{esc(company_name)}</div>
+            <div style="font-size:12px;color:#64748b;margin-top:4px;">{esc(company_address)}{' &middot; ' if company_address and company_email else ''}{esc(company_email)}{' &middot; ' if company_phone else ''}{esc(company_phone)}</div>
+          </div>
+        </div>
+      </div>
+    </body></html>
+    """
+    pdf_b64 = payload.pdf_data or None
+    pdf_filename = f"{cn.number}.pdf" if pdf_b64 else "credit-note.pdf"
+    charge = require_credit(db, client.id, "invoice_send", 1, cn.number)
+    delivery = start_delivery(db, client.id, "credit_note", cn.number, cn.email, charge)
+    background_tasks.add_task(deliver_and_record, delivery.id, cn.email, subject, body, f"{company_name} <{from_email}>",
+                              html_body, pdf_b64, pdf_filename, logo_data, client_id=client.id)
+    log_audit(db, client.id, "credit_note_sent", "credit_note", cn.id, cn.number, f"Sent to {cn.email}", request)
+    db.commit()
+    return {"message": f"Credit note sent to {cn.email}", "delivery_id": delivery.id}
 
 
 # Serve frontend
