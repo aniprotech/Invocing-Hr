@@ -101,6 +101,9 @@ class DBInvoice(Base):
     tracking_id = Column(String, unique=True, index=True, default=lambda: str(uuid.uuid4()))
     open_count = Column(Integer, default=0)
     last_opened = Column(String, default="")
+    # Reminders and late fees held off on this one invoice while something
+    # is sorted out - a query, a dispute, a promise to pay on Friday.
+    chase_paused = Column(Boolean, default=False)
 
     line_items = relationship("DBLineItem", back_populates="invoice")
     client = relationship("DBClient", back_populates="invoices")
@@ -260,6 +263,27 @@ class DBInvoiceReminder(Base):
     stage_days = Column(Integer, default=0)
     sent_to = Column(String, default="")
     sent_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBLateFee(Base):
+    """A late payment fee added to an invoice under the business's policy,
+    or by hand. The fee is a line on the invoice; this is the record of why
+    it is there, and of it being let off when it was."""
+    __tablename__ = "late_fees"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=False, index=True)
+    line_item_id = Column(Integer, nullable=True)
+    amount = Column(Float, default=0.0)
+    days_overdue = Column(Integer, default=0)
+    basis = Column(String, default="")               # "2% of 500.00" | "flat"
+    applied_on = Column(String, default="")
+    applied_by = Column(String, default="policy")    # policy | who pressed the button
+    waived_on = Column(String, default="")
+    waived_by = Column(String, default="")
+    waived_why = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
 class DBInterviewReminder(Base):
@@ -448,6 +472,11 @@ class DBContact(Base):
     company = Column(String, default="")
     address = Column(Text, default="")
     tax_id = Column(String, default="")
+    # Whether this customer is chased at all, and whether a late fee is ever
+    # added for them. Off for the one who always pays on the 30th, or the one
+    # whose contract says no fees. NULL on old rows means yes.
+    chase = Column(Boolean, default=True)
+    late_fees = Column(Boolean, default=True)
 
     client = relationship("DBClient", back_populates="contacts")
 

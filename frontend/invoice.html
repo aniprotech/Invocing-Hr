@@ -92,12 +92,12 @@
     }
   </style>
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-    <link rel="stylesheet" href="/mobile.css?v=180">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=180">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=180">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=180">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=180">
-    <script src="/dialogs.js?v=180"></script>
+    <link rel="stylesheet" href="/mobile.css?v=181">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=181">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=181">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=181">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=181">
+    <script src="/dialogs.js?v=181"></script>
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="aniprotech">
     <meta property="og:title" content="Your invoice">
@@ -152,7 +152,9 @@
       var sym = inv.currency_symbol || '';
       var late = !inv.is_settled && inv.days_overdue > 0;
       var rows = (inv.line_items || []).map(function (li) {
-        return '<tr><td>' + esc(li.description) + '</td>' +
+        // A named line - a late payment fee, say - reads as its name first.
+        var label = li.name ? (li.description ? li.name + ' \u2014 ' + li.description : li.name) : li.description;
+        return '<tr><td>' + esc(label) + '</td>' +
           '<td class="num">' + esc(li.qty) + '</td>' +
           '<td class="num">' + money(sym, li.price) + '</td>' +
           '<td class="num">' + money(sym, li.amount) + '</td></tr>';

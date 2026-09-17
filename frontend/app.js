@@ -319,6 +319,7 @@ var NAV_FOR_VIEW = {
     'create-quote-view': 'nav-quotes',
     'view-quote-view': 'nav-quotes',
     'bank-view': 'nav-bank',
+    'chasing-view': 'nav-chasing',
     'bills-view': 'nav-bills',
     'insights-view': 'nav-insights',
     'reports-view': 'nav-reports',
@@ -372,6 +373,7 @@ var ROUTE_SLUGS = {
     'sales-pipeline-view': 'pipeline',
     'recurring-view': 'recurring',
     'bank-view': 'bank',
+    'chasing-view': 'chasing',
     'bills-view': 'bills',
     'wallet-view': 'wallet',
     'insights-view': 'insights',
@@ -570,6 +572,7 @@ function showView(viewId) {
     if (viewId === 'settings-view' && typeof loadPaymentGateways === 'function') loadPaymentGateways();
     if (viewId === 'settings-view' && typeof loadAccounts === 'function') loadAccounts();
     if (viewId === 'settings-view' && typeof loadOnlinePaymentNotice === 'function') loadOnlinePaymentNotice();
+    if (viewId === 'settings-view' && typeof loadDunning === 'function') loadDunning();
     if (viewId === 'settings-view' && typeof loadBrandingThemes === 'function') loadBrandingThemes();
     if (viewId === 'settings-view' && typeof loadAuditLogs === 'function') loadAuditLogs();
     if (viewId === 'settings-view' && typeof loadIntegrations === 'function') loadIntegrations();
@@ -2586,6 +2589,286 @@ function renderInvoicePayments(inv) {
 }
 window.renderInvoicePayments = renderInvoicePayments;
 
+// ---------------------------------------------------------------------------
+// Chasing: the reminder sequence a business sets, and the late fee at the
+// end of it. The schedule lives under Settings > Payments; what is being
+// chased has its own page; each invoice shows what went and what is next.
+// ---------------------------------------------------------------------------
+var DUNNING_TONES = [{ value: 'gentle', label: 'Gentle' }, { value: 'firm', label: 'Firm' }, { value: 'final', label: 'Final notice' }];
+var _dunning = null;
+
+function dunningStepRow(st, i, sample) {
+    var before = st.days < 0, n = Math.abs(st.days);
+    return '<div class="dunning-step" data-dunning-step="' + i + '" style="display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-color);font-size:0.9rem;">' +
+        '<input type="number" class="form-control" data-dunning-n min="0" max="365" value="' + n + '" style="width:80px;" aria-label="Days">' +
+        '<select class="form-control" data-dunning-when style="width:auto;" aria-label="Before or after">' +
+            '<option value="after"' + (before ? '' : ' selected') + '>days after the due date</option>' +
+            '<option value="before"' + (before ? ' selected' : '') + '>days before the due date</option></select>' +
+        '<select class="form-control" data-dunning-tone style="width:auto;" aria-label="Tone">' +
+            DUNNING_TONES.map(function (t) { return '<option value="' + t.value + '"' + (t.value === st.tone ? ' selected' : '') + '>' + t.label + '</option>'; }).join('') + '</select>' +
+        '<input type="text" class="form-control" data-dunning-message maxlength="500" value="' + esc(st.message || '') + '" placeholder="Your own sentence (optional)" style="flex:1;min-width:180px;">' +
+        '<button type="button" class="btn btn-outline btn-sm" data-dunning-remove="' + i + '" title="Remove this step">&times;</button>' +
+        (sample ? '<div style="flex-basis:100%;font-size:0.78rem;color:var(--text-secondary);">' + esc(sample.subject) + ' &mdash; ' + esc(sample.opening) + '</div>' : '') +
+        '</div>';
+}
+
+function renderDunningSteps(policy) {
+    var host = document.getElementById('dunning-steps');
+    if (!host) return;
+    var samples = policy.samples || [];
+    host.innerHTML = (policy.steps || []).map(function (st, i) {
+        var sample = samples.filter(function (s) { return s.days === st.days; })[0];
+        return dunningStepRow(st, i, sample);
+    }).join('') || '<p class="bt-note">No steps: nothing goes out on its own.</p>';
+    host.querySelectorAll('[data-dunning-remove]').forEach(function (b) {
+        b.addEventListener('click', function () {
+            var steps = readDunningSteps();
+            steps.splice(Number(b.getAttribute('data-dunning-remove')), 1);
+            renderDunningSteps({ steps: steps, samples: [] });
+        });
+    });
+}
+
+function readDunningSteps() {
+    var out = [];
+    document.querySelectorAll('#dunning-steps [data-dunning-step]').forEach(function (row) {
+        var n = parseInt(row.querySelector('[data-dunning-n]').value, 10);
+        if (isNaN(n)) n = 0;
+        var before = row.querySelector('[data-dunning-when]').value === 'before';
+        out.push({ days: before ? -n : n, tone: row.querySelector('[data-dunning-tone]').value, message: row.querySelector('[data-dunning-message]').value.trim() });
+    });
+    return out;
+}
+
+function addDunningStep() {
+    var steps = readDunningSteps();
+    var last = steps.length ? Math.max.apply(null, steps.map(function (s) { return s.days; })) : 0;
+    steps.push({ days: last + 7, tone: steps.length ? 'firm' : 'gentle', message: '' });
+    renderDunningSteps({ steps: steps, samples: [] });
+}
+window.addDunningStep = addDunningStep;
+
+function fillDunningFee(fee) {
+    fee = fee || {};
+    var on = document.getElementById('late-fee-enabled');
+    if (!on) return;
+    on.checked = !!fee.enabled;
+    document.getElementById('late-fee-kind').value = fee.kind || 'percent';
+    document.getElementById('late-fee-value').value = fee.value ? fee.value : '';
+    document.getElementById('late-fee-after').value = fee.after_days == null ? 14 : fee.after_days;
+    document.getElementById('late-fee-repeat').value = fee.repeat || 'once';
+}
+
+async function loadDunning() {
+    if (!document.getElementById('dunning-widget')) return;
+    try {
+        _dunning = await fetchJson('/api/dunning');
+        document.getElementById('dunning-enabled').checked = _dunning.enabled !== false;
+        renderDunningSteps(_dunning);
+        fillDunningFee(_dunning.late_fee);
+    } catch (e) { /* the widget keeps its defaults */ }
+}
+window.loadDunning = loadDunning;
+
+async function saveDunning() {
+    var body = {
+        enabled: !!document.getElementById('dunning-enabled').checked,
+        steps: readDunningSteps(),
+        late_fee: {
+            enabled: !!document.getElementById('late-fee-enabled').checked,
+            kind: document.getElementById('late-fee-kind').value,
+            value: parseFloat(document.getElementById('late-fee-value').value) || 0,
+            after_days: parseInt(document.getElementById('late-fee-after').value, 10) || 0,
+            repeat: document.getElementById('late-fee-repeat').value
+        }
+    };
+    if (body.late_fee.enabled && !(body.late_fee.value > 0)) { showToast('Set the fee before switching it on', 'error'); return; }
+    try {
+        _dunning = await fetchJson('/api/dunning', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        renderDunningSteps(_dunning);
+        fillDunningFee(_dunning.late_fee);
+        showToast('Chasing saved', 'success');
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.saveDunning = saveDunning;
+
+// --- the Chasing page -------------------------------------------------------
+
+function chasingState(r) {
+    if (r.paused) return '<span class="status-pill status-draft">Held</span>';
+    if (!r.chased) return '<span class="status-pill status-draft">' + esc(r.why_not || 'Not chased') + '</span>';
+    if (r.days > 0) return '<span class="status-pill" style="background:rgba(244, 63, 94, 0.12);color:var(--danger-color);">' + r.days + ' day' + (r.days === 1 ? '' : 's') + ' overdue</span>';
+    if (r.days === 0) return '<span class="status-pill status-sent">Due today</span>';
+    return '<span class="status-pill status-sent">Due in ' + (-r.days) + ' day' + (r.days === -1 ? '' : 's') + '</span>';
+}
+
+async function loadChasingView() {
+    var host = document.getElementById('chasing-list');
+    var tiles = document.getElementById('chasing-tiles');
+    if (!host) return;
+    try {
+        var d = await fetchJson('/api/chasing');
+        var sym = getCurrencySymbol();
+        function tile(label, value, sub, tone) {
+            return '<div class="stat-card"><span class="stat-label">' + label + '</span><span class="stat-value"' + (tone ? ' style="color:' + tone + ';"' : '') + '>' + value + '</span>' +
+                (sub ? '<span style="font-size:0.75rem;color:var(--text-secondary);">' + sub + '</span>' : '') + '</div>';
+        }
+        var fee = d.late_fee || {};
+        tiles.innerHTML = tile('Overdue', d.overdue || 0, sym + Number(d.owed || 0).toFixed(2) + ' owed', d.overdue ? 'var(--danger-color)' : '') +
+            tile('Reminders', d.enabled === false ? 'Off' : 'On', d.enabled === false ? 'nothing goes out on its own' : 'each step once per invoice') +
+            tile('Late fee', fee.enabled ? (fee.kind === 'percent' ? Number(fee.value).toFixed(fee.value % 1 ? 2 : 0) + '%' : sym + Number(fee.value).toFixed(2)) : 'Off',
+                fee.enabled ? 'after ' + fee.after_days + ' days' + (fee.repeat === 'monthly' ? ', monthly' : '') : 'set under Settings') +
+            tile('Held', d.paused || 0, 'paused or opted out');
+        if (!(d.rows || []).length) {
+            host.innerHTML = '<div class="widget" style="padding:40px;text-align:center;color:var(--text-secondary);">Nothing to chase. Every sent invoice is either paid or not yet near its due date.</div>';
+            return;
+        }
+        host.innerHTML = '<div class="widget"><div class="table-responsive"><table class="data-table"><thead><tr><th>Invoice</th><th>Customer</th><th class="text-right">Owed</th><th>Due</th><th>State</th><th>Said so far</th><th></th></tr></thead><tbody>' +
+            d.rows.map(function (r) {
+                return '<tr><td><a href="#" data-chasing-open="' + esc(r.number) + '" style="font-weight:600;">' + esc(r.number) + '</a></td>' +
+                    '<td>' + esc(r.customer) + (r.email ? '<div style="font-size:0.75rem;color:var(--text-secondary);">' + esc(r.email) + '</div>' : '<div style="font-size:0.75rem;color:var(--warning-color);">no email</div>') + '</td>' +
+                    '<td class="text-right" style="font-weight:600;">' + sym + Number(r.due || 0).toFixed(2) + (r.late_fees ? '<div style="font-size:0.72rem;font-weight:400;color:var(--text-secondary);">incl. ' + sym + Number(r.late_fees).toFixed(2) + ' late fee</div>' : '') + '</td>' +
+                    '<td style="white-space:nowrap;">' + esc(r.due_date || '') + '</td>' +
+                    '<td>' + chasingState(r) + '</td>' +
+                    '<td style="font-size:0.85rem;">' + (r.reminders ? r.reminders + ' reminder' + (r.reminders === 1 ? '' : 's') + '<div style="font-size:0.75rem;color:var(--text-secondary);">last: ' + esc(r.last_label) + ' on ' + esc(r.last_reminder) + '</div>' : '<span style="color:var(--text-secondary);">nothing yet</span>') + '</td>' +
+                    '<td class="text-right" style="white-space:nowrap;">' +
+                        (r.email ? '<button class="btn btn-outline btn-sm" data-chasing-chase="' + esc(r.number) + '">Chase now</button> ' : '') +
+                        '<button class="btn btn-outline btn-sm" data-chasing-pause="' + esc(r.number) + '" data-paused="' + (r.paused ? '1' : '0') + '">' + (r.paused ? 'Resume' : 'Hold') + '</button>' +
+                    '</td></tr>';
+            }).join('') + '</tbody></table></div></div>';
+        host.querySelectorAll('[data-chasing-open]').forEach(function (a) {
+            a.addEventListener('click', function (e) { e.preventDefault(); viewInvoice(a.getAttribute('data-chasing-open')); });
+        });
+        host.querySelectorAll('[data-chasing-chase]').forEach(function (b) {
+            b.addEventListener('click', function () { chaseInvoiceNow(b.getAttribute('data-chasing-chase'), loadChasingView); });
+        });
+        host.querySelectorAll('[data-chasing-pause]').forEach(function (b) {
+            b.addEventListener('click', function () { pauseInvoiceChasing(b.getAttribute('data-chasing-pause'), b.getAttribute('data-paused') !== '1', loadChasingView); });
+        });
+    } catch (e) {
+        host.innerHTML = '<div class="widget" style="padding:24px;color:var(--danger-color);">' + esc(e.message) + '</div>';
+    }
+}
+window.loadChasingView = loadChasingView;
+
+async function chaseInvoiceNow(number, after) {
+    var out = await uiForm([
+        { name: 'tone', label: 'Tone', type: 'select', value: '', options: [{ value: '', label: 'Whatever the schedule says for today' }].concat(DUNNING_TONES) },
+        { name: 'message', label: 'Add a sentence', type: 'text', placeholder: 'Optional', value: '' }
+    ], { title: 'Send a reminder now', confirmText: 'Send', message: 'Goes to the email on the invoice, and counts as the step for today.' });
+    if (!out) return;
+    try {
+        var data = await fetchJson('/api/invoices/' + encodeURIComponent(number) + '/chase', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tone: out.tone || '', message: out.message || '' }) });
+        showToast(data.message || 'Reminder sent', 'success');
+        if (after) after();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.chaseInvoiceNow = chaseInvoiceNow;
+
+async function pauseInvoiceChasing(number, paused, after) {
+    try {
+        var data = await fetchJson('/api/invoices/' + encodeURIComponent(number) + '/chase/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paused: !!paused }) });
+        showToast(data.message || (paused ? 'Held' : 'Resumed'), 'success');
+        if (after) after();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.pauseInvoiceChasing = pauseInvoiceChasing;
+
+async function addLateFeeNow(number, policyFee, owed) {
+    var sym = getCurrencySymbol();
+    var suggested = policyFee && policyFee.value > 0 ? (policyFee.kind === 'percent' ? Math.round(owed * policyFee.value) / 100 : policyFee.value) : 0;
+    var out = await uiForm([
+        { name: 'amount', label: 'Fee', type: 'number', value: suggested ? suggested.toFixed(2) : '', required: true,
+          hint: suggested ? 'Your policy: ' + (policyFee.kind === 'percent' ? policyFee.value + '% of ' + sym + owed.toFixed(2) : sym + Number(policyFee.value).toFixed(2)) : 'No late fee set under Settings; type one' },
+        { name: 'tell', label: 'Tell the customer', type: 'select', value: 'yes', options: [{ value: 'yes', label: 'Email them a note' }, { value: 'no', label: 'Say nothing' }] }
+    ], { title: 'Add a late fee', confirmText: 'Add', message: 'Goes on the invoice as its own line. It can be let off later.' });
+    if (!out) return;
+    var amount = parseFloat(out.amount);
+    if (isNaN(amount) || amount <= 0) { showToast('Enter an amount greater than zero', 'error'); return; }
+    try {
+        var data = await fetchJson('/api/invoices/' + encodeURIComponent(number) + '/late-fee', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ amount: amount, tell_customer: out.tell !== 'no' }) });
+        showToast(data.message || 'Late fee added', 'success');
+        fetchInvoices();
+        viewInvoice(number);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.addLateFeeNow = addLateFeeNow;
+
+async function waiveLateFee(number, feeId) {
+    var reason = await uiPrompt('Why is it being let off? (optional)', '', { title: 'Let the fee off', confirmText: 'Let it off' });
+    if (reason === null || reason === undefined) return;
+    try {
+        var data = await fetchJson('/api/invoices/' + encodeURIComponent(number) + '/late-fees/' + feeId + '/waive', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: reason || '' }) });
+        showToast(data.message || 'Let off', 'success');
+        fetchInvoices();
+        viewInvoice(number);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.waiveLateFee = waiveLateFee;
+
+// What the invoice page says about chasing: what went, what is next, the
+// fees on it, and the buttons to do it by hand.
+function renderInvoiceChasing(inv) {
+    var host = document.getElementById('view-inv-chasing');
+    if (!host) return;
+    var c = inv.chasing;
+    var open = c && ['Paid', 'Void', 'Draft'].indexOf(inv.status) === -1 && (inv.due || 0) > 0;
+    if (!c || (!open && !(c.reminders || []).length && !(c.late_fees || []).length)) { host.style.display = 'none'; host.innerHTML = ''; return; }
+    var sym = getCurrencySymbol();
+    var html = '<div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;color:var(--text-secondary);margin-bottom:6px;">Chasing</div>';
+    var lines = [];
+    if (c.paused) lines.push('<span style="color:var(--warning-color);font-weight:600;">Held</span> &mdash; no reminders or late fees until it is resumed.');
+    else if (!c.chased) lines.push('<span style="color:var(--text-secondary);">Not chased: ' + esc(c.why_not) + '.</span>' + (c.customer_id ? ' <a href="#/contacts">Change on the contact</a>' : ''));
+    else if (c.next) lines.push('Next: <strong>' + esc(c.next.label) + '</strong> on ' + esc(c.next.on) + '.');
+    else if (open && !inv.email) lines.push('<span style="color:var(--warning-color);">No email on the invoice, so nothing can go out.</span>');
+    else if (open && c.policy && c.policy.enabled === false) lines.push('<span style="color:var(--text-secondary);">Reminders are switched off under Settings.</span>');
+    else if (open) lines.push('<span style="color:var(--text-secondary);">Every step has gone.</span>');
+    if (open && c.fees_allowed && c.late_fee_next && c.policy && c.policy.late_fee && c.policy.late_fee.enabled) {
+        var f = c.policy.late_fee;
+        lines.push('Late fee of ' + (f.kind === 'percent' ? f.value + '% of what is owed' : sym + Number(f.value).toFixed(2)) + ' due to go on ' + esc(c.late_fee_next) + '.');
+    } else if (open && !c.fees_allowed && !c.paused) {
+        lines.push('<span style="color:var(--text-secondary);">No late fees: ' + esc(c.fee_why_not) + '.</span>');
+    }
+    html += '<div style="font-size:0.85rem;margin-bottom:8px;">' + lines.join('<br>') + '</div>';
+    if ((c.reminders || []).length) {
+        html += '<div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:8px;">' + c.reminders.map(function (r) {
+            return esc((r.sent_at || '').slice(0, 10)) + ' &middot; ' + esc(r.label) + ' &rarr; ' + esc(r.sent_to);
+        }).join('<br>') + '</div>';
+    }
+    if ((c.late_fees || []).length) {
+        html += '<table style="width:100%;font-size:0.82rem;border-collapse:collapse;margin-bottom:8px;">' + c.late_fees.map(function (f) {
+            return '<tr style="border-bottom:1px solid var(--border-color);' + (f.waived_on ? 'color:var(--text-secondary);text-decoration:line-through;' : '') + '">' +
+                '<td style="padding:4px 0;">' + esc(f.applied_on) + '</td><td style="padding:4px 0;">Late fee' + (f.basis && f.basis !== 'flat' && f.basis !== 'typed' ? ' &middot; ' + esc(f.basis) : '') + ' &middot; ' + f.days_overdue + ' days overdue' +
+                (f.waived_on ? ' &middot; let off ' + esc(f.waived_on) + (f.waived_why ? ' (' + esc(f.waived_why) + ')' : '') : '') + '</td>' +
+                '<td style="padding:4px 0;text-align:right;font-weight:600;">' + sym + Number(f.amount || 0).toFixed(2) + '</td>' +
+                '<td style="padding:4px 0;text-align:right;width:70px;">' + (f.waived_on || !open ? '' : '<button type="button" class="btn btn-outline btn-sm" style="padding:2px 8px;font-size:0.72rem;" data-fee-waive="' + f.id + '">Let off</button>') + '</td></tr>';
+        }).join('') + '</table>';
+    }
+    if (open) {
+        html += '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+            (inv.email ? '<button type="button" class="btn btn-outline btn-sm" data-chase-now>Send a reminder now</button>' : '') +
+            '<button type="button" class="btn btn-outline btn-sm" data-chase-pause="' + (c.paused ? '0' : '1') + '">' + (c.paused ? 'Resume reminders' : 'Hold reminders') + '</button>' +
+            (inv.days_overdue > 0 ? '<button type="button" class="btn btn-outline btn-sm" data-fee-add>Add a late fee</button>' : '') +
+            '</div>';
+    }
+    host.innerHTML = html;
+    host.style.display = 'block';
+    var chaseBtn = host.querySelector('[data-chase-now]');
+    if (chaseBtn) chaseBtn.addEventListener('click', function () { chaseInvoiceNow(inv.number, function () { viewInvoice(inv.number); }); });
+    var pauseBtn = host.querySelector('[data-chase-pause]');
+    if (pauseBtn) pauseBtn.addEventListener('click', function () { pauseInvoiceChasing(inv.number, pauseBtn.getAttribute('data-chase-pause') === '1', function () { viewInvoice(inv.number); }); });
+    var feeBtn = host.querySelector('[data-fee-add]');
+    if (feeBtn) feeBtn.addEventListener('click', function () { addLateFeeNow(inv.number, c.policy && c.policy.late_fee, inv.due || 0); });
+    host.querySelectorAll('[data-fee-waive]').forEach(function (b) {
+        b.addEventListener('click', function () { waiveLateFee(inv.number, Number(b.getAttribute('data-fee-waive'))); });
+    });
+}
+window.renderInvoiceChasing = renderInvoiceChasing;
+
 // Giving some or all of a receipt back. Through the gateway that took it
 // when there was one, or recorded when the money went back by hand.
 var _viewPayments = [];
@@ -2634,6 +2917,7 @@ async function viewInvoice(number) {
         _viewOutstanding = inv.due || 0;
         _viewPayments = inv.payments || [];
         renderInvoicePayments(inv);
+        renderInvoiceChasing(inv);
         if (typeof showInvoiceDelivery === 'function') showInvoiceDelivery(inv);
         document.getElementById('view-inv-title').textContent = 'Invoice ' + inv.number;
         document.getElementById('view-inv-number-val').textContent = inv.number;
@@ -7712,6 +7996,7 @@ showView = function(viewId) {
     if (viewId === 'wallet-view') loadWallet();
     if (viewId === 'bills-view') loadBills();
     if (viewId === 'bank-view') loadBankView();
+    if (viewId === 'chasing-view') loadChasingView();
     if (viewId === 'contacts-view') loadContacts();
 };
 window.showView = showView;
@@ -10016,6 +10301,8 @@ function showAddContactModal() {
     document.getElementById('contact-name').value = '';
     document.getElementById('contact-email').value = '';
     document.getElementById('contact-phone').value = '';
+    ['contact-company', 'contact-address', 'contact-taxid'].forEach(function (id) { var el = document.getElementById(id); if (el) el.value = ''; });
+    ['contact-chase', 'contact-late-fees'].forEach(function (id) { var el = document.getElementById(id); if (el) el.checked = true; });
     document.getElementById('add-contact-modal').style.display = 'flex';
 }
 window.showAddContactModal = showAddContactModal;
@@ -10035,6 +10322,9 @@ async function saveContact() {
         address: ((document.getElementById('contact-address') || {}).value || '').trim(),
         tax_id: ((document.getElementById('contact-taxid') || {}).value || '').trim()
     };
+    var chaseBox = document.getElementById('contact-chase'), feeBox = document.getElementById('contact-late-fees');
+    if (chaseBox) billing.chase = !!chaseBox.checked;
+    if (feeBox) billing.late_fees = !!feeBox.checked;
     if (!name) { showToast('Contact name required', 'error'); return; }
     try {
         if (editId) {
@@ -10062,6 +10352,9 @@ async function editContact(id) {
     document.getElementById('contact-phone').value = c.phone_number || c.phone || '';
     var setv = function (id, v) { var el = document.getElementById(id); if (el) el.value = v || ''; };
     setv('contact-company', c.company); setv('contact-address', c.address); setv('contact-taxid', c.tax_id);
+    var chaseBox = document.getElementById('contact-chase'), feeBox = document.getElementById('contact-late-fees');
+    if (chaseBox) chaseBox.checked = c.chase !== false;
+    if (feeBox) feeBox.checked = c.late_fees !== false;
     document.getElementById('add-contact-modal').style.display = 'flex';
 }
 window.editContact = editContact;

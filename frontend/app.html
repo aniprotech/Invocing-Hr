@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=180">
-    <link rel="stylesheet" href="mobile.css?v=180">
+    <link rel="stylesheet" href="styles.css?v=181">
+    <link rel="stylesheet" href="mobile.css?v=181">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,11 +57,11 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=180">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=180">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=180">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=180">
-    <script src="/dialogs.js?v=180"></script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=181">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=181">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=181">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=181">
+    <script src="/dialogs.js?v=181"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -125,6 +125,7 @@
                         <button type="button" class="nav-item nav-group-toggle" aria-expanded="false">Money</button>
                         <div class="nav-group-menu">
                             <a href="#/bank" class="nav-item" id="nav-bank" data-portal="invoicing">Bank</a>
+                            <a href="#/chasing" class="nav-item" id="nav-chasing" data-portal="invoicing">Chasing</a>
                             <a href="#/bills" class="nav-item" id="nav-bills" data-portal="invoicing">Bills</a>
                             <a href="#/insights" class="nav-item" id="nav-insights" data-portal="invoicing">Insights</a>
                             <a href="#/reports" class="nav-item" id="nav-reports" data-portal="invoicing">Reports</a>
@@ -1090,6 +1091,7 @@
                                 <div id="view-inv-bank-content" style="white-space:pre-wrap;"></div>
                             </div>
                             <div id="view-inv-payments" style="display:none;padding:16px;background:rgba(255, 255, 255, 0.04);border-radius:var(--radius-md);margin-bottom:24px;"></div>
+                            <div id="view-inv-chasing" style="display:none;padding:16px;background:rgba(255, 255, 255, 0.04);border-radius:var(--radius-md);margin-bottom:24px;"></div>
                             <div id="view-inv-open-tracking" style="display:none;padding:12px 16px;background:rgba(56, 189, 248, 0.05);border:1px solid rgba(226, 232, 240, 0.15);border-radius:var(--radius-md);margin-bottom:24px;font-size:0.85rem;align-items:center;gap:24px;">
                                 <div>
                                     <span style="color:var(--text-secondary);">Email Opens:</span>
@@ -1175,6 +1177,20 @@
                         <button class="tab" onclick="switchBankTab('imports', this)">Files</button>
                     </div>
                     <div id="bank-list"></div>
+                </div>
+
+                <div id="chasing-view" class="view-section dashboard" style="display:none;">
+                    <div class="invoices-header-area">
+                        <div>
+                            <h1>Chasing</h1>
+                            <p class="subtitle">What is overdue, what has been said, and what goes next</p>
+                        </div>
+                        <div class="invoices-actions" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                            <a class="btn btn-outline" href="#/settings" onclick="window._settingsSection='payments'">Reminder schedule</a>
+                        </div>
+                    </div>
+                    <div class="grid-4 mb-24" id="chasing-tiles"></div>
+                    <div id="chasing-list"></div>
                 </div>
 
                 <div id="bills-view" class="view-section dashboard" style="display:none;">
@@ -1414,6 +1430,10 @@
                             <div class="form-group"><label>Company</label><input type="text" id="contact-company" class="form-control" placeholder="The company they bill for"></div>
                             <div class="form-group"><label>Billing address</label><textarea id="contact-address" class="form-control" rows="3" placeholder="Street, city, postcode"></textarea></div>
                             <div class="form-group"><label>Tax ID (GSTIN / VAT / ABN)</label><input type="text" id="contact-taxid" class="form-control" placeholder="Optional"></div>
+                            <div class="form-group" style="display:flex;gap:18px;flex-wrap:wrap;">
+                                <label class="bcheck" style="display:flex;gap:8px;align-items:center;margin:0;"><input type="checkbox" id="contact-chase" checked> Send payment reminders</label>
+                                <label class="bcheck" style="display:flex;gap:8px;align-items:center;margin:0;"><input type="checkbox" id="contact-late-fees" checked> Charge late fees</label>
+                            </div>
                         </div>
                         <div class="modal-footer">
                             <button class="btn btn-outline" onclick="closeAddContactModal()">Cancel</button>
@@ -1812,6 +1832,51 @@
                                     Payments made on a gateway's page are recorded within fifteen minutes even if the customer
                                     closes the tab before coming back. Integrations can listen for <code>invoice.paid</code> under Integrations.
                                 </p>
+                            </div>
+                        </div>
+                        <!-- Chasing: the reminders that go out on their own, and the late fee. -->
+                        <div class="glass-widget" style="margin-bottom:24px;" id="dunning-widget">
+                            <div class="widget-header">
+                                <h3>Chasing and late fees</h3>
+                                <label class="bcheck" style="display:flex;gap:8px;align-items:center;font-size:0.85rem;margin:0;">
+                                    <input type="checkbox" id="dunning-enabled" checked> Send reminders
+                                </label>
+                            </div>
+                            <div class="widget-content">
+                                <p class="bt-note">
+                                    Each step goes to the customer once per invoice, in the tone you pick: a nudge before the
+                                    due date, a firmer word after it, a final notice. Add your own sentence to any step. Switch
+                                    a customer off under Contacts; hold one invoice from its own page.
+                                </p>
+                                <div id="dunning-steps"></div>
+                                <button class="btn btn-outline btn-sm" type="button" id="dunning-add-step" onclick="addDunningStep()">+ Step</button>
+                                <div style="margin-top:20px;font-weight:600;">Late fee</div>
+                                <p class="bt-note">
+                                    Goes on the invoice as its own line once it is this many days overdue, and the customer is
+                                    told. A percent is of the amount outstanding. Reminders before then say it is coming;
+                                    any fee can be let off from the invoice page.
+                                </p>
+                                <div class="dunning-fee" style="display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;font-size:0.9rem;">
+                                    <label class="bcheck" style="display:flex;gap:8px;align-items:center;margin:0;">
+                                        <input type="checkbox" id="late-fee-enabled"> Charge
+                                    </label>
+                                    <input type="number" id="late-fee-value" class="form-control" min="0" step="0.01" placeholder="2" style="width:90px;" aria-label="Fee">
+                                    <select id="late-fee-kind" class="form-control" style="width:auto;" aria-label="Fee kind">
+                                        <option value="percent">% of what is owed</option>
+                                        <option value="flat">flat amount</option>
+                                    </select>
+                                    <span>once an invoice is</span>
+                                    <input type="number" id="late-fee-after" class="form-control" min="0" max="365" value="14" style="width:80px;" aria-label="Grace days">
+                                    <span>days overdue,</span>
+                                    <select id="late-fee-repeat" class="form-control" style="width:auto;" aria-label="How often">
+                                        <option value="once">once</option>
+                                        <option value="monthly">and again every month it stays unpaid</option>
+                                    </select>
+                                </div>
+                                <div style="margin-top:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+                                    <button class="btn btn-primary btn-sm" type="button" id="dunning-save" onclick="saveDunning()">Save</button>
+                                    <a href="#/chasing" style="font-size:0.85rem;">See what is being chased &rarr;</a>
+                                </div>
                             </div>
                         </div>
                     </section>
@@ -4609,8 +4674,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="feed.js?v=180"></script>
-    <script src="app.js?v=180"></script>
+    <script src="feed.js?v=181"></script>
+    <script src="app.js?v=181"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
@@ -4838,7 +4903,7 @@
             </div>
         </div>
     </div>
-    <script src="/install-hint.js?v=180"></script>
-    <script src="/pwa.js?v=180"></script>
+    <script src="/install-hint.js?v=181"></script>
+    <script src="/pwa.js?v=181"></script>
 </body>
 </html>

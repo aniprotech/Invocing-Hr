@@ -1749,6 +1749,19 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 60: {sys.exc_info()[1]}")
 
+            # 61. Chasing: whether a customer is chased and charged late
+            # fees, and an invoice's reminders held off for a while.
+            try:
+                for ddl in (
+                    "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS chase BOOLEAN DEFAULT TRUE",
+                    "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS late_fees BOOLEAN DEFAULT TRUE",
+                    "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS chase_paused BOOLEAN DEFAULT FALSE",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 61: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

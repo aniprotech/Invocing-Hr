@@ -3609,6 +3609,7 @@ def get_invoice(number: str, request: Request, db: Session = Depends(get_db)):
         } for p in payments],
         "refunds": [refund_to_dict(r, acct_names) for r in refunds],
         "refunded_total": money(sum((r.amount or 0) for r in refunds)),
+        "chasing": chasing_for_invoice(db, inv, overdue_days),
         "status": inv.status,
         "sent": inv.sent,
         "tax_type": inv.tax_type,
@@ -4199,7 +4200,8 @@ def get_open_stats(number: str, request: Request, db: Session = Depends(get_db))
 
 def contact_to_dict(c):
     return {"id": c.id, "name": c.name or "", "email": c.email or "", "phone_number": c.phone_number or "",
-            "company": c.company or "", "address": c.address or "", "tax_id": c.tax_id or ""}
+            "company": c.company or "", "address": c.address or "", "tax_id": c.tax_id or "",
+            "chase": c.chase is not False, "late_fees": c.late_fees is not False}
 
 
 def _billing_fields(body):
@@ -4284,7 +4286,8 @@ def create_contact(request: Request, body: dict = None, db: Session = Depends(ge
         return contact_to_dict(existing)
     company, address, tax_id = _billing_fields(body)
     contact = models.DBContact(name=body["name"], email=body.get("email", ""), phone_number=body.get("phone_number", ""), client_id=client.id,
-                               company=company or "", address=address or "", tax_id=tax_id or "")
+                               company=company or "", address=address or "", tax_id=tax_id or "",
+                               chase=_flag_on(body.get("chase"), True), late_fees=_flag_on(body.get("late_fees"), True))
     db.add(contact)
     db.commit()
     db.refresh(contact)
@@ -4305,6 +4308,8 @@ def update_contact(contact_id: int, request: Request, body: dict = None, db: Ses
         if company is not None: contact.company = company
         if address is not None: contact.address = address
         if tax_id is not None: contact.tax_id = tax_id
+        if "chase" in body: contact.chase = _flag_on(body.get("chase"), True)
+        if "late_fees" in body: contact.late_fees = _flag_on(body.get("late_fees"), True)
         db.commit()
         db.refresh(contact)
     return contact_to_dict(contact)
@@ -5576,6 +5581,8 @@ def update_invoice(number: str, invoice: InvoiceCreate, request: Request, db: Se
             qty=item.qty, price=item.price, disc=item.disc or 0.0,
             account=item.account, tax_rate=item.tax_rate,
         ))
+    db.flush()
+    reconcile_late_fees(db, inv, client)
     log_audit(db, client.id, "invoice_updated", "invoice", inv.id, inv.number, f"Total: {total:.2f}", request)
     db.commit()
     return get_invoice(inv.number, request, db)
@@ -6218,10 +6225,9 @@ def reminder_stage_for(days_overdue):
 
 @scheduled_job("overdue_reminders")
 def job_overdue_reminders(db, now):
-    """Chase invoices that have gone past their due date.
-
-    A paid, part-paid or void invoice is never chased, and each rung of the
-    ladder goes out at most once per invoice.
+    """Send each business's reminder sequence: the steps it set under
+    Chasing, or the default ladder. A paid, part-paid or void invoice is
+    never chased, and each step goes out at most once per invoice.
     """
     today = now.date()
     sent = 0
@@ -6231,84 +6237,28 @@ def job_overdue_reminders(db, now):
         models.DBInvoice.due_date != "",
     ).all()
 
+    policies = {}
     for inv in candidates:
         due_date = _parse_date(inv.due_date)
-        if not due_date or due_date >= today:
+        if not due_date:
             continue
-        stage = reminder_stage_for((today - due_date).days)
-        if stage is None or not inv.email or not validate_email_address(inv.email):
+        policy = policies.get(inv.client_id)
+        if policy is None:
+            policy = policies[inv.client_id] = dunning_policy_for(db, inv.client_id)
+        if not policy["enabled"]:
             continue
-
-        already = db.query(models.DBInvoiceReminder).filter(
-            models.DBInvoiceReminder.invoice_id == inv.id,
-            models.DBInvoiceReminder.stage_days == stage,
-        ).first()
-        if already:
-            continue
-
-        settings_rows = db.query(models.DBSettings).filter(
-            models.DBSettings.client_id == inv.client_id).all()
-        settings_map = {s.key: s.value for s in settings_rows}
-        inv_client = db.query(models.DBClient).filter(
-            models.DBClient.id == inv.client_id).first()
-        company = (settings_map.get("company_name", "")
-                   or (inv_client.company_name if inv_client else "") or "Accounts")
-        cur = currency_symbol((inv.currency or "GBP").upper())
         days = (today - due_date).days
-
-        subject = f"Reminder: invoice {inv.number} is {days} day(s) overdue"
-        text_body = (
-            f"Hello {inv.to_contact},\n\n"
-            f"Invoice {inv.number} for {cur}{inv.due:.2f} was due on {inv.due_date} "
-            f"and is now {days} day(s) overdue.\n\n"
-            "If you have already paid, please ignore this note.\n\n"
-            f"Kind regards,\n{company}\n"
-        )
-        html_body = f"""
-        <!DOCTYPE html><html><body style="font-family:Arial,Helvetica,sans-serif;background:#f1f5f9;margin:0;padding:0;">
-          <div style="max-width:520px;margin:0 auto;padding:40px 20px;">
-            <div style="background:#fff;border-radius:12px;overflow:hidden;">
-              <div style="background:#0f172a;padding:28px;text-align:center;">
-                <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#94a3b8;">Payment reminder</div>
-                <div style="font-size:24px;font-weight:800;color:#fff;margin-top:6px;">{esc(inv.number)}</div>
-              </div>
-              <div style="padding:26px;">
-                <p style="margin:0 0 16px;font-size:15px;">Hello {esc(inv.to_contact)},</p>
-                <p style="margin:0 0 18px;font-size:15px;color:#475569;">
-                  Invoice <strong>{esc(inv.number)}</strong> for
-                  <strong>{cur}{inv.due:.2f}</strong> was due on
-                  <strong>{esc(inv.due_date)}</strong>, which is {days} day(s) ago.
-                </p>
-                <p style="margin:0;font-size:13px;color:#64748b;">
-                  If you have already paid, please ignore this note.
-                </p>
-              </div>
-              <div style="background:#f8fafc;padding:18px;text-align:center;border-top:1px solid #e2e8f0;">
-                <div style="font-size:13px;font-weight:700;color:#0f172a;">{esc(company)}</div>
-              </div>
-            </div>
-          </div>
-        </body></html>
-        """
-
-        from_email = platform_from_address()
-        # Recorded before sending, and the unique index means a second worker
-        # racing this cannot send the same rung twice.
-        db.add(models.DBInvoiceReminder(
-            client_id=inv.client_id, invoice_id=inv.id,
-            stage_days=stage, sent_to=inv.email,
-        ))
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
+        step = dunning_step_reached(policy["steps"], days)
+        if step is None or not inv.email or not validate_email_address(inv.email):
             continue
-
-        send_email_background(
-            inv.email, subject, text_body, f"{company} <{from_email}>",
-            html_body, None, "", "", client_id=inv.client_id,
-        )
-        sent += 1
+        # A reminder sent by hand at day 3 stands in for the schedule's day-1
+        # step: the sequence only ever moves forward from the last one sent.
+        if step["days"] <= last_stage_sent(db, inv):
+            continue
+        if not invoice_is_chased(db, inv)[0]:
+            continue
+        if send_dunning_reminder(db, inv, step, days, today):
+            sent += 1
 
     return f"{sent} reminder(s) sent"
 
@@ -6617,8 +6567,7 @@ def invoice_reminders(number: str, request: Request, db: Session = Depends(get_d
     rows = db.query(models.DBInvoiceReminder).filter(
         models.DBInvoiceReminder.invoice_id == inv.id
     ).order_by(models.DBInvoiceReminder.stage_days.asc()).all()
-    return [{"stage_days": r.stage_days, "sent_to": r.sent_to, "sent_at": r.sent_at}
-            for r in rows]
+    return [reminder_to_dict(r) for r in rows]
 
 
 # ============================================================================
@@ -21939,7 +21888,7 @@ def public_invoice_payload(db: Session, inv, client):
         "amount_due": money(inv.due or 0),
         "is_settled": inv.status == "Paid" or (inv.due or 0) <= 0,
         "line_items": [
-            {"description": li.description or "", "qty": li.qty,
+            {"name": li.name or "", "description": li.description or "", "qty": li.qty,
              "price": money(li.price), "amount": money((li.qty or 0) * (li.price or 0))}
             for li in (inv.line_items or [])
         ],
@@ -27062,7 +27011,8 @@ API_KEY_LIMIT = 10
 WEBHOOK_LIMIT = 10
 WEBHOOK_EVENTS = ("employee.created", "employee.updated", "employee.left",
                   "leave.requested", "leave.decided", "probation.decided", "pay.changed",
-                  "review.completed", "kudos.given", "invoice.paid", "invoice.refunded")
+                  "review.completed", "kudos.given", "invoice.paid", "invoice.refunded",
+                  "invoice.late_fee")
 WEBHOOK_MAX_ATTEMPTS = 5
 WEBHOOK_BACKOFF_MINUTES = (0, 1, 5, 30, 120)
 
@@ -30360,6 +30310,703 @@ def delete_bank_import(import_id: int, request: Request, db: Session = Depends(g
     db.delete(imp)
     db.commit()
     return {"message": "Removed"}
+
+
+# ============================================================================
+# CHASING - the reminder sequence a business sets, and the late fee at the
+# end of it
+#
+# The old ladder chased at 1, 7, 14 and 30 days in one voice. A business
+# now sets its own steps - a nudge before the due date, a firm word after,
+# a final notice - in a tone per step, with its own sentence if it wants
+# one. A customer can be left out of it; an invoice can be paused while
+# something is sorted out. After a grace period a late fee can go on the
+# invoice on its own, once or every month, and it can be let off.
+# ============================================================================
+
+DUNNING_TONES = ("gentle", "firm", "final")
+DUNNING_MAX_STEPS = 8
+DUNNING_DAYS_RANGE = (-30, 365)
+# The ladder businesses had before they could set one; a business that never
+# touches Chasing keeps exactly this.
+DEFAULT_DUNNING_STEPS = (
+    {"days": 1, "tone": "gentle", "message": ""},
+    {"days": 7, "tone": "firm", "message": ""},
+    {"days": 14, "tone": "firm", "message": ""},
+    {"days": 30, "tone": "final", "message": ""},
+)
+LATE_FEE_KINDS = ("percent", "flat")
+LATE_FEE_REPEATS = ("once", "monthly")
+LATE_FEE_REPEAT_DAYS = 30
+LATE_FEE_LINE_NAME = "Late payment fee"
+LATE_FEE_MAX_PERCENT = 25.0
+
+
+def _flag_on(value, default=False):
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def dunning_policy_for(db, client_id):
+    """The business's chasing policy: its steps and its late fee rule."""
+    steps = list(DEFAULT_DUNNING_STEPS)
+    raw = tenant_setting(db, client_id, "dunning_steps", "")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            steps = validate_dunning_steps(parsed)
+        except (ValueError, TypeError, HTTPException):
+            steps = list(DEFAULT_DUNNING_STEPS)
+    try:
+        value = float(tenant_setting(db, client_id, "late_fee_value", "0") or 0)
+    except ValueError:
+        value = 0.0
+    try:
+        after = int(float(tenant_setting(db, client_id, "late_fee_after_days", "14") or 14))
+    except ValueError:
+        after = 14
+    kind = tenant_setting(db, client_id, "late_fee_kind", "percent")
+    repeat = tenant_setting(db, client_id, "late_fee_repeat", "once")
+    return {
+        "enabled": _flag_on(tenant_setting(db, client_id, "dunning_enabled", "1"), True),
+        "steps": [dict(st) for st in steps],
+        "late_fee": {
+            "enabled": _flag_on(tenant_setting(db, client_id, "late_fee_enabled", "0"), False) and value > 0,
+            "kind": kind if kind in LATE_FEE_KINDS else "percent",
+            "value": money(value),
+            "after_days": max(0, after),
+            "repeat": repeat if repeat in LATE_FEE_REPEATS else "once",
+        },
+    }
+
+
+def validate_dunning_steps(raw):
+    """The steps as sent, checked and put in order. Days before the due date
+    are negative, the due day is 0."""
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="steps must be a list")
+    if len(raw) > DUNNING_MAX_STEPS:
+        raise HTTPException(status_code=400, detail=f"At most {DUNNING_MAX_STEPS} steps")
+    out, seen = [], set()
+    for st in raw:
+        if not isinstance(st, dict):
+            raise HTTPException(status_code=400, detail="Each step needs days and a tone")
+        try:
+            days = int(st.get("days"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Each step needs a whole number of days")
+        if days < DUNNING_DAYS_RANGE[0] or days > DUNNING_DAYS_RANGE[1]:
+            raise HTTPException(status_code=400, detail=f"A step must be between {DUNNING_DAYS_RANGE[0]} and {DUNNING_DAYS_RANGE[1]} days from the due date")
+        if days in seen:
+            raise HTTPException(status_code=400, detail=f"Two steps on day {days}")
+        seen.add(days)
+        tone = str(st.get("tone") or "gentle").strip().lower()
+        if tone not in DUNNING_TONES:
+            raise HTTPException(status_code=400, detail=f"Tone must be one of {', '.join(DUNNING_TONES)}")
+        message = str(st.get("message") or "").strip()[:500]
+        out.append({"days": days, "tone": tone, "message": message})
+    out.sort(key=lambda x: x["days"])
+    return out
+
+
+def validate_late_fee(raw):
+    raw = raw if isinstance(raw, dict) else {}
+    enabled = _flag_on(raw.get("enabled"), False)
+    kind = str(raw.get("kind") or "percent").strip().lower()
+    if kind not in LATE_FEE_KINDS:
+        raise HTTPException(status_code=400, detail="A late fee is a percent of what is owed, or a flat amount")
+    try:
+        value = float(raw.get("value") or 0)
+        after = int(float(raw.get("after_days") if raw.get("after_days") not in (None, "") else 14))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="The fee and the grace days must be numbers")
+    if value < 0 or (kind == "percent" and value > LATE_FEE_MAX_PERCENT):
+        raise HTTPException(status_code=400, detail=f"A percent fee is between 0 and {LATE_FEE_MAX_PERCENT:g}")
+    if enabled and value <= 0:
+        raise HTTPException(status_code=400, detail="Set the fee before switching it on")
+    if after < 0 or after > 365:
+        raise HTTPException(status_code=400, detail="Grace days must be between 0 and 365")
+    repeat = str(raw.get("repeat") or "once").strip().lower()
+    if repeat not in LATE_FEE_REPEATS:
+        raise HTTPException(status_code=400, detail="A fee is charged once, or monthly while unpaid")
+    return {"enabled": enabled, "kind": kind, "value": money(value), "after_days": after, "repeat": repeat}
+
+
+def dunning_step_reached(steps, days_from_due):
+    """The furthest step reached, so a gap in ticks does not skip a chase."""
+    reached = [st for st in steps if days_from_due >= st["days"]]
+    return max(reached, key=lambda st: st["days"]) if reached else None
+
+
+def step_label(days, tone=""):
+    if days < 0:
+        base = f"{-days} day{'s' if days != -1 else ''} before due"
+    elif days == 0:
+        base = "On the due day"
+    else:
+        base = f"{days} day{'s' if days != 1 else ''} overdue"
+    return f"{base} ({tone})" if tone else base
+
+
+def reminder_to_dict(r):
+    return {"stage_days": r.stage_days, "sent_to": r.sent_to, "sent_at": r.sent_at,
+            "label": step_label(r.stage_days or 0)}
+
+
+def last_stage_sent(db, inv):
+    """The furthest step already sent for this invoice; very negative if none."""
+    last = db.query(func.max(models.DBInvoiceReminder.stage_days)).filter(
+        models.DBInvoiceReminder.invoice_id == inv.id).scalar()
+    return last if last is not None else -10 ** 6
+
+
+def contact_for_invoice(db, inv):
+    """The customer record behind an invoice: the name it was billed to, or
+    failing that the address it went to."""
+    q = db.query(models.DBContact).filter(models.DBContact.client_id == inv.client_id)
+    row = q.filter(models.DBContact.name == (inv.to_contact or "")).first() if inv.to_contact else None
+    if not row and inv.email:
+        row = q.filter(func.lower(models.DBContact.email) == inv.email.strip().lower()).first()
+    return row
+
+
+def invoice_is_chased(db, inv, for_fee=False, contact=None):
+    """Whether the sequence (or the fee) applies to this invoice, and why not."""
+    if inv.chase_paused:
+        return False, "paused"
+    contact = contact or contact_for_invoice(db, inv)
+    if contact is not None:
+        if contact.chase is False:
+            return False, "customer not chased"
+        if for_fee and contact.late_fees is False:
+            return False, "no late fees for this customer"
+    return True, ""
+
+
+def _company_name_for(db, client_id):
+    row = db.query(models.DBClient).filter(models.DBClient.id == client_id).first()
+    return (tenant_setting(db, client_id, "company_name", "") or (row.company_name if row else "") or "Accounts")
+
+
+def _fee_wording(fee, cur):
+    if fee["kind"] == "percent":
+        return f"{fee['value']:g}% of the amount outstanding"
+    return f"{cur}{fee['value']:.2f}"
+
+
+def reminder_copy(step, inv, company, cur, days, fee_total=0.0, fee_policy=None, link="", public_note=""):
+    """Subject, text and HTML for one step, in its tone."""
+    tone = step.get("tone", "gentle")
+    number = inv.number
+    owed = f"{cur}{(inv.due or 0):.2f}"
+    when = inv.due_date or ""
+    if days < 0:
+        n = -days
+        subject = f"Invoice {number} is due on {when}"
+        opening = (f"A quick note that invoice {number} for {owed} is due in {n} day{'s' if n != 1 else ''}, on {when}."
+                   if tone == "gentle" else
+                   f"Invoice {number} for {owed} falls due in {n} day{'s' if n != 1 else ''}, on {when}. Please make sure payment reaches us by then.")
+    elif days == 0:
+        subject = f"Invoice {number} is due today"
+        opening = f"Invoice {number} for {owed} is due today, {when}."
+    elif tone == "gentle":
+        subject = f"Reminder: invoice {number} is {days} day{'s' if days != 1 else ''} overdue"
+        opening = f"Invoice {number} for {owed} was due on {when} and is now {days} day{'s' if days != 1 else ''} overdue."
+    elif tone == "firm":
+        subject = f"Overdue: invoice {number} is {days} days past due"
+        opening = (f"Our records show invoice {number} for {owed}, due on {when}, is still unpaid {days} days later. "
+                   "Please arrange payment now, or let us know if there is a problem with it.")
+    else:
+        subject = f"Final notice: invoice {number}"
+        opening = (f"This is a final reminder for invoice {number} for {owed}, which was due on {when} and is now {days} days overdue. "
+                   "Unless payment reaches us within 7 days we will take further steps to recover the amount.")
+
+    paras = [opening]
+    if fee_total > 0:
+        paras.append(f"This amount includes a late payment fee of {cur}{fee_total:.2f}.")
+    elif fee_policy and fee_policy.get("enabled") and days < fee_policy.get("after_days", 0):
+        paras.append(f"A late payment fee of {_fee_wording(fee_policy, cur)} applies to invoices more than {fee_policy['after_days']} days overdue.")
+    if step.get("message"):
+        paras.append(step["message"])
+    if link:
+        paras.append(f"View and pay online: {link}")
+    if tone != "final":
+        paras.append("If you have already paid, please ignore this note.")
+
+    text_body = f"Hello {inv.to_contact},\n\n" + "\n\n".join(paras) + f"\n\nKind regards,\n{company}\n"
+    header = {"gentle": ("Payment reminder", "#0f172a"), "firm": ("Overdue invoice", "#b45309"), "final": ("Final notice", "#9f1239")}[tone]
+    if days < 0:
+        header = ("Due soon", "#0f172a")
+    body_html = "".join(
+        f'<p style="margin:0 0 16px;font-size:15px;color:#475569;">{esc(p)}</p>' if not p.startswith("View and pay online: ")
+        else f'<p style="margin:0 0 16px;font-size:15px;"><a href="{esc(link)}" style="color:#0284c7;font-weight:600;">View and pay this invoice online &rarr;</a></p>'
+        for p in paras)
+    html_body = f"""
+        <!DOCTYPE html><html><body style="font-family:Arial,Helvetica,sans-serif;background:#f1f5f9;margin:0;padding:0;">
+          <div style="max-width:520px;margin:0 auto;padding:40px 20px;">
+            <div style="background:#fff;border-radius:12px;overflow:hidden;">
+              <div style="background:{header[1]};padding:28px;text-align:center;">
+                <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#e2e8f0;">{header[0]}</div>
+                <div style="font-size:24px;font-weight:800;color:#fff;margin-top:6px;">{esc(number)}</div>
+              </div>
+              <div style="padding:26px;">
+                <p style="margin:0 0 16px;font-size:15px;">Hello {esc(inv.to_contact)},</p>
+                {body_html}
+              </div>
+              <div style="background:#f8fafc;padding:18px;text-align:center;border-top:1px solid #e2e8f0;">
+                <div style="font-size:13px;font-weight:700;color:#0f172a;">{esc(company)}</div>
+              </div>
+            </div>
+          </div>
+        </body></html>
+        """
+    return subject, text_body, html_body
+
+
+def late_fee_total_for(db, inv):
+    rows = db.query(models.DBLateFee).filter(models.DBLateFee.invoice_id == inv.id,
+                                             models.DBLateFee.waived_on == "").all()
+    return money(sum((r.amount or 0) for r in rows))
+
+
+def invoice_public_link(inv):
+    base = (os.getenv("APP_BASE_URL", "") or "").rstrip("/")
+    return f"{base}/invoice.html?id={inv.tracking_id}" if base and inv.tracking_id else ""
+
+
+def send_dunning_reminder(db, inv, step, days, today, request=None, by="policy"):
+    """Record the step, then send it. The unique index means two workers
+    cannot send the same step twice; a step already sent is left alone."""
+    already = db.query(models.DBInvoiceReminder).filter(
+        models.DBInvoiceReminder.invoice_id == inv.id,
+        models.DBInvoiceReminder.stage_days == step["days"]).first()
+    if already:
+        return False
+    company = _company_name_for(db, inv.client_id)
+    cur = currency_symbol((inv.currency or "GBP").upper())
+    policy = dunning_policy_for(db, inv.client_id)
+    subject, text_body, html_body = reminder_copy(
+        step, inv, company, cur, days, late_fee_total_for(db, inv), policy["late_fee"], invoice_public_link(inv))
+    db.add(models.DBInvoiceReminder(client_id=inv.client_id, invoice_id=inv.id,
+                                    stage_days=step["days"], sent_to=inv.email))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return False
+    from_email = platform_from_address(db)
+    send_email_background(inv.email, subject, text_body, f"{company} <{from_email}>",
+                          html_body, None, "", "", client_id=inv.client_id)
+    log_audit(db, inv.client_id, "invoice_chased", "invoice", inv.id, inv.number,
+              f"{step_label(step['days'], step.get('tone', ''))} to {inv.email}" + ("" if by == "policy" else f" by {by}"), request)
+    db.commit()
+    return True
+
+
+def late_fees_due_count(fee, days_overdue):
+    """How many fees the rule says this invoice has earned by now."""
+    if not fee.get("enabled") or days_overdue < fee.get("after_days", 0) or days_overdue <= 0:
+        return 0
+    if fee.get("repeat") == "monthly":
+        return 1 + (days_overdue - fee["after_days"]) // LATE_FEE_REPEAT_DAYS
+    return 1
+
+
+def late_fee_amount(fee, inv):
+    """(amount, basis) for one fee on this invoice under the rule."""
+    if fee["kind"] == "percent":
+        base = money(inv.due or 0)
+        return money(base * fee["value"] / 100.0), f"{fee['value']:g}% of {base:.2f}"
+    return money(fee["value"]), "flat"
+
+
+def apply_late_fee(db, inv, amount, basis, days, today, by="policy", request=None):
+    """Put the fee on the invoice as its own line and write down why."""
+    line = models.DBLineItem(invoice_id=inv.id, name=LATE_FEE_LINE_NAME,
+                             description=f"{days} days overdue" + (f" - {basis}" if basis and basis != "flat" else ""),
+                             qty=1.0, price=amount, disc=0.0, account="Late fees", tax_rate="No Tax")
+    db.add(line)
+    db.flush()
+    inv.due = money((inv.due or 0) + amount)
+    fee = models.DBLateFee(client_id=inv.client_id, invoice_id=inv.id, line_item_id=line.id,
+                           amount=amount, days_overdue=days, basis=basis,
+                           applied_on=today.isoformat(), applied_by=by)
+    db.add(fee)
+    db.flush()
+    log_audit(db, inv.client_id, "late_fee_applied", "invoice", inv.id, inv.number,
+              f"{amount:.2f} ({basis}) after {days} days" + ("" if by == "policy" else f" by {by}"), request)
+    announce(db, inv.client_id, "invoice.late_fee", {
+        "invoice_id": inv.id, "number": inv.number, "customer": inv.to_contact or "",
+        "amount": amount, "basis": basis, "days_overdue": days, "now_due": inv.due, "currency": inv.currency or ""})
+    return fee
+
+
+def late_fee_to_dict(f):
+    return {"id": f.id, "amount": f.amount, "days_overdue": f.days_overdue, "basis": f.basis or "",
+            "applied_on": f.applied_on or "", "applied_by": f.applied_by or "policy",
+            "waived_on": f.waived_on or "", "waived_by": f.waived_by or "", "waived_why": f.waived_why or ""}
+
+
+def tell_customer_about_fee(db, inv, fee):
+    if not inv.email or not validate_email_address(inv.email):
+        return
+    company = _company_name_for(db, inv.client_id)
+    cur = currency_symbol((inv.currency or "GBP").upper())
+    subject = f"A late payment fee has been added to invoice {inv.number}"
+    link = invoice_public_link(inv)
+    text_body = (f"Hello {inv.to_contact},\n\n"
+                 f"Invoice {inv.number} was due on {inv.due_date} and is now {fee.days_overdue} days overdue, so a late payment fee of "
+                 f"{cur}{fee.amount:.2f} has been added under our payment terms. The amount now due is {cur}{(inv.due or 0):.2f}.\n\n"
+                 + (f"View and pay online: {link}\n\n" if link else "")
+                 + f"If you have already paid, please let us know and we will take the fee off.\n\nKind regards,\n{company}\n")
+    html_body = f"""
+        <!DOCTYPE html><html><body style="font-family:Arial,Helvetica,sans-serif;background:#f1f5f9;margin:0;padding:0;">
+          <div style="max-width:520px;margin:0 auto;padding:40px 20px;">
+            <div style="background:#fff;border-radius:12px;overflow:hidden;">
+              <div style="background:#b45309;padding:28px;text-align:center;">
+                <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#e2e8f0;">Late payment fee</div>
+                <div style="font-size:24px;font-weight:800;color:#fff;margin-top:6px;">{esc(inv.number)}</div>
+              </div>
+              <div style="padding:26px;">
+                <p style="margin:0 0 16px;font-size:15px;">Hello {esc(inv.to_contact)},</p>
+                <p style="margin:0 0 16px;font-size:15px;color:#475569;">Invoice <strong>{esc(inv.number)}</strong> was due on <strong>{esc(inv.due_date)}</strong> and is now {fee.days_overdue} days overdue, so a late payment fee of <strong>{cur}{fee.amount:.2f}</strong> has been added under our payment terms.</p>
+                <p style="margin:0 0 16px;font-size:15px;color:#475569;">The amount now due is <strong>{cur}{(inv.due or 0):.2f}</strong>.</p>
+                {f'<p style="margin:0 0 16px;font-size:15px;"><a href="{esc(link)}" style="color:#0284c7;font-weight:600;">View and pay this invoice online &rarr;</a></p>' if link else ''}
+                <p style="margin:0;font-size:13px;color:#64748b;">If you have already paid, please let us know and we will take the fee off.</p>
+              </div>
+              <div style="background:#f8fafc;padding:18px;text-align:center;border-top:1px solid #e2e8f0;">
+                <div style="font-size:13px;font-weight:700;color:#0f172a;">{esc(company)}</div>
+              </div>
+            </div>
+          </div>
+        </body></html>
+        """
+    from_email = platform_from_address(db)
+    send_email_background(inv.email, subject, text_body, f"{company} <{from_email}>",
+                          html_body, None, "", "", client_id=inv.client_id)
+
+
+@scheduled_job("late_fees")
+def job_late_fees(db, now):
+    """Add the late fee the business's rule says is due, once per invoice
+    (or once a month while it stays unpaid), and tell the customer."""
+    today = now.date()
+    applied = 0
+    candidates = db.query(models.DBInvoice).filter(
+        models.DBInvoice.status.notin_(["Paid", "Void", "Draft"]),
+        models.DBInvoice.due > 0,
+        models.DBInvoice.due_date != "",
+    ).all()
+    policies = {}
+    for inv in candidates:
+        policy = policies.get(inv.client_id)
+        if policy is None:
+            policy = policies[inv.client_id] = dunning_policy_for(db, inv.client_id)
+        fee_rule = policy["late_fee"]
+        if not fee_rule["enabled"]:
+            continue
+        days = invoice_overdue_days(inv, today)
+        earned = late_fees_due_count(fee_rule, days)
+        if earned == 0:
+            continue
+        if not invoice_is_chased(db, inv, for_fee=True)[0]:
+            continue
+        have = db.query(models.DBLateFee).filter(models.DBLateFee.invoice_id == inv.id).count()
+        if have >= earned:
+            continue
+        amount, basis = late_fee_amount(fee_rule, inv)
+        if amount <= 0:
+            continue
+        fee = apply_late_fee(db, inv, amount, basis, days, today)
+        db.commit()
+        tell_customer_about_fee(db, inv, fee)
+        applied += 1
+    return f"{applied} late fee(s) applied"
+
+
+def reconcile_late_fees(db, inv, client=None):
+    """After the lines of an invoice are replaced: a fee whose line is still
+    there keeps its record; one whose line was taken off is a fee let off."""
+    fees = db.query(models.DBLateFee).filter(models.DBLateFee.invoice_id == inv.id,
+                                             models.DBLateFee.waived_on == "").all()
+    if not fees:
+        return
+    lines = [li for li in db.query(models.DBLineItem).filter(models.DBLineItem.invoice_id == inv.id).all()
+             if (li.name or "") == LATE_FEE_LINE_NAME]
+    taken = set()
+    for fee in fees:
+        match = next((li for li in lines if li.id not in taken and abs((li.price or 0) - (fee.amount or 0)) < 0.005), None)
+        if match:
+            taken.add(match.id)
+            fee.line_item_id = match.id
+        else:
+            fee.waived_on = date.today().isoformat()
+            fee.waived_by = (client.email if client else "") or "edit"
+            fee.waived_why = "Taken off when the invoice was edited"
+
+
+def chasing_for_invoice(db, inv, overdue_days=None):
+    """What the invoice page shows about chasing: what went, what is next,
+    whether it is held, and the fees on it."""
+    policy = dunning_policy_for(db, inv.client_id)
+    contact = contact_for_invoice(db, inv)
+    reminders = db.query(models.DBInvoiceReminder).filter(models.DBInvoiceReminder.invoice_id == inv.id).order_by(
+        models.DBInvoiceReminder.sent_at.asc(), models.DBInvoiceReminder.id.asc()).all()
+    fees = db.query(models.DBLateFee).filter(models.DBLateFee.invoice_id == inv.id).order_by(models.DBLateFee.id.asc()).all()
+    chased, why = invoice_is_chased(db, inv, contact=contact)
+    fee_ok, fee_why = invoice_is_chased(db, inv, for_fee=True, contact=contact)
+    due_date = _parse_date(inv.due_date)
+    nxt = None
+    open_invoice = inv.status not in ("Paid", "Void", "Draft") and (inv.due or 0) > 0
+    if policy["enabled"] and chased and open_invoice and due_date and inv.email:
+        last = max((r.stage_days for r in reminders), default=-10 ** 6)
+        today = date.today()
+        days = (today - due_date).days
+        for st in policy["steps"]:
+            if st["days"] <= last:
+                continue
+            on = due_date + timedelta(days=st["days"])
+            if on < today and dunning_step_reached(policy["steps"], days) is not st:
+                continue      # a step already passed over by a later one
+            nxt = {"days": st["days"], "tone": st["tone"], "on": max(on, today).isoformat(), "label": step_label(st["days"], st["tone"])}
+            break
+    fee_next = None
+    rule = policy["late_fee"]
+    if rule["enabled"] and fee_ok and open_invoice and due_date:
+        live = [f for f in fees]
+        n = len(live)
+        if rule["repeat"] == "once" and n == 0:
+            fee_next = (due_date + timedelta(days=rule["after_days"])).isoformat()
+        elif rule["repeat"] == "monthly":
+            fee_next = (due_date + timedelta(days=rule["after_days"] + n * LATE_FEE_REPEAT_DAYS)).isoformat()
+    return {
+        "paused": bool(inv.chase_paused),
+        "chased": chased, "why_not": why,
+        "fees_allowed": fee_ok, "fee_why_not": fee_why,
+        "customer_id": contact.id if contact else None,
+        "reminders": [reminder_to_dict(r) for r in reminders],
+        "next": nxt,
+        "late_fees": [late_fee_to_dict(f) for f in fees],
+        "late_fee_total": money(sum((f.amount or 0) for f in fees if not f.waived_on)),
+        "late_fee_next": fee_next,
+        "policy": {"enabled": policy["enabled"], "steps": len(policy["steps"]), "late_fee": rule},
+    }
+
+
+def _dunning_samples(policy, cur="£"):
+    """What each step reads like, for the settings page."""
+    class _Fake:
+        number = "INV-0042"
+        to_contact = "Alex"
+        due = 1250.0
+        due_date = "2026-03-31"
+        currency = ""
+    out = []
+    for st in policy["steps"]:
+        subject, text, _ = reminder_copy(st, _Fake(), "Your company", cur, st["days"], 0.0, policy["late_fee"], "")
+        paras = text.split("\n\n")
+        opening = " ".join(paras[1:-1]) if len(paras) > 2 else text
+        out.append({"days": st["days"], "tone": st["tone"], "label": step_label(st["days"], st["tone"]),
+                    "subject": subject, "opening": opening})
+    return out
+
+
+@app.get("/api/dunning")
+def get_dunning(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    policy = dunning_policy_for(db, client.id)
+    cur = currency_symbol((client.currency or "GBP").upper())
+    policy["samples"] = _dunning_samples(policy, cur)
+    policy["tones"] = list(DUNNING_TONES)
+    policy["defaults"] = [dict(st) for st in DEFAULT_DUNNING_STEPS]
+    return policy
+
+
+@app.put("/api/dunning")
+def put_dunning(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    current = dunning_policy_for(db, client.id)
+    steps = validate_dunning_steps(body["steps"]) if "steps" in body else current["steps"]
+    if not steps:
+        raise HTTPException(status_code=400, detail="Keep at least one step, or switch chasing off")
+    fee = validate_late_fee(body["late_fee"]) if "late_fee" in body else current["late_fee"]
+    enabled = _flag_on(body.get("enabled"), current["enabled"]) if "enabled" in body else current["enabled"]
+    values = {
+        "dunning_enabled": "1" if enabled else "0",
+        "dunning_steps": json.dumps(steps),
+        "late_fee_enabled": "1" if fee["enabled"] else "0",
+        "late_fee_kind": fee["kind"],
+        "late_fee_value": f"{fee['value']:.2f}",
+        "late_fee_after_days": str(fee["after_days"]),
+        "late_fee_repeat": fee["repeat"],
+    }
+    for key, value in values.items():
+        row = db.query(models.DBSettings).filter(models.DBSettings.client_id == client.id, models.DBSettings.key == key).first()
+        if row:
+            row.value = value
+        else:
+            db.add(models.DBSettings(client_id=client.id, key=key, value=value))
+    log_audit(db, client.id, "dunning_updated", "settings", None, "Chasing",
+              f"{len(steps)} step(s), {'on' if enabled else 'off'}; late fee {'on' if fee['enabled'] else 'off'}", request)
+    db.commit()
+    return get_dunning(request, db)
+
+
+def _chaseable_invoice(db, client, number):
+    inv = db.query(models.DBInvoice).filter(models.DBInvoice.number == number, models.DBInvoice.client_id == client.id).first()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    return inv
+
+
+@app.post("/api/invoices/{number}/chase")
+def chase_invoice_now(number: str, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Send a reminder now, in the tone asked for, whatever the schedule says."""
+    client = get_client_user(request, db)
+    inv = _chaseable_invoice(db, client, number)
+    body = body or {}
+    if inv.status in ("Paid", "Void", "Draft") or (inv.due or 0) <= 0:
+        raise HTTPException(status_code=400, detail="Only an unpaid, sent invoice can be chased")
+    if not inv.email or not validate_email_address(inv.email):
+        raise HTTPException(status_code=400, detail="This invoice has no email address to chase")
+    due_date = _parse_date(inv.due_date)
+    if not due_date:
+        raise HTTPException(status_code=400, detail="This invoice has no due date")
+    today = date.today()
+    days = (today - due_date).days
+    tone = str(body.get("tone") or "").strip().lower()
+    if tone and tone not in DUNNING_TONES:
+        raise HTTPException(status_code=400, detail=f"Tone must be one of {', '.join(DUNNING_TONES)}")
+    if not tone:
+        reached = dunning_step_reached(dunning_policy_for(db, client.id)["steps"], days)
+        tone = reached["tone"] if reached else ("gentle" if days <= 7 else "firm")
+    step = {"days": days, "tone": tone, "message": str(body.get("message") or "").strip()[:500]}
+    if not send_dunning_reminder(db, inv, step, days, today, request, by=client.email or "you"):
+        raise HTTPException(status_code=409, detail="A reminder already went for this invoice today")
+    return {"message": f"Reminder sent to {inv.email}", "chasing": chasing_for_invoice(db, inv)}
+
+
+@app.post("/api/invoices/{number}/chase/pause")
+def pause_invoice_chasing(number: str, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    inv = _chaseable_invoice(db, client, number)
+    paused = _flag_on((body or {}).get("paused"), True)
+    inv.chase_paused = paused
+    log_audit(db, client.id, "invoice_chase_paused" if paused else "invoice_chase_resumed", "invoice", inv.id, inv.number, "", request)
+    db.commit()
+    return {"message": "Reminders and late fees held for this invoice" if paused else "Reminders back on for this invoice",
+            "chasing": chasing_for_invoice(db, inv)}
+
+
+@app.post("/api/invoices/{number}/late-fee")
+def add_late_fee_now(number: str, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Put a late fee on now: the policy's amount, or the one typed."""
+    client = get_client_user(request, db)
+    inv = _chaseable_invoice(db, client, number)
+    body = body or {}
+    if inv.status in ("Paid", "Void", "Draft") or (inv.due or 0) <= 0:
+        raise HTTPException(status_code=400, detail="Only an unpaid, sent invoice can carry a late fee")
+    today = date.today()
+    days = invoice_overdue_days(inv, today)
+    if days <= 0:
+        raise HTTPException(status_code=400, detail="This invoice is not overdue yet")
+    rule = dunning_policy_for(db, client.id)["late_fee"]
+    if body.get("amount") not in (None, ""):
+        try:
+            amount = money(float(body["amount"]))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Enter an amount")
+        basis = "typed"
+    elif rule["value"] > 0:
+        amount, basis = late_fee_amount(rule, inv)
+    else:
+        raise HTTPException(status_code=400, detail="Enter an amount, or set a late fee under Settings > Payments")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="The fee must be more than zero")
+    if amount > money(inv.due or 0) * (LATE_FEE_MAX_PERCENT / 100.0) + 0.005 and basis == "typed" and rule["kind"] != "flat":
+        pass  # a typed fee is the business's call; the cap is on the percent rule
+    fee = apply_late_fee(db, inv, amount, basis, days, today, by=client.email or "you", request=request)
+    db.commit()
+    if _flag_on(body.get("tell_customer"), True):
+        tell_customer_about_fee(db, inv, fee)
+    return {"message": f"Late fee of {amount:.2f} added", "fee": late_fee_to_dict(fee),
+            "invoice": {"number": inv.number, "due": inv.due, "status": inv.status},
+            "chasing": chasing_for_invoice(db, inv)}
+
+
+@app.post("/api/invoices/{number}/late-fees/{fee_id}/waive")
+def waive_late_fee(number: str, fee_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Let a fee off: the line comes off the invoice and the record says why."""
+    client = get_client_user(request, db)
+    inv = _chaseable_invoice(db, client, number)
+    fee = db.query(models.DBLateFee).filter(models.DBLateFee.id == fee_id, models.DBLateFee.invoice_id == inv.id,
+                                            models.DBLateFee.client_id == client.id).first()
+    if not fee:
+        raise HTTPException(status_code=404, detail="Late fee not found")
+    if fee.waived_on:
+        raise HTTPException(status_code=400, detail="This fee was already let off")
+    if fee.line_item_id:
+        db.query(models.DBLineItem).filter(models.DBLineItem.id == fee.line_item_id,
+                                           models.DBLineItem.invoice_id == inv.id).delete()
+    inv.due = money(max(0.0, (inv.due or 0) - (fee.amount or 0)))
+    apply_payment_status(inv)
+    fee.waived_on = date.today().isoformat()
+    fee.waived_by = client.email or "you"
+    fee.waived_why = str((body or {}).get("reason") or "").strip()[:300]
+    log_audit(db, client.id, "late_fee_waived", "invoice", inv.id, inv.number,
+              f"{fee.amount:.2f} let off" + (f": {fee.waived_why}" if fee.waived_why else ""), request)
+    db.commit()
+    return {"message": f"Late fee of {fee.amount:.2f} let off", "fee": late_fee_to_dict(fee),
+            "invoice": {"number": inv.number, "due": inv.due, "status": inv.status},
+            "chasing": chasing_for_invoice(db, inv)}
+
+
+@app.get("/api/chasing")
+def chasing_overview(request: Request, db: Session = Depends(get_db)):
+    """What is being chased: every open, overdue-or-nearly invoice with what
+    went and what is next, so the whole picture is on one page."""
+    client = get_client_user(request, db)
+    policy = dunning_policy_for(db, client.id)
+    today = date.today()
+    invoices = db.query(models.DBInvoice).filter(
+        models.DBInvoice.client_id == client.id,
+        models.DBInvoice.status.notin_(["Paid", "Void", "Draft"]),
+        models.DBInvoice.due > 0).all()
+    reminders_by = {}
+    for r in db.query(models.DBInvoiceReminder).filter(models.DBInvoiceReminder.client_id == client.id).all():
+        reminders_by.setdefault(r.invoice_id, []).append(r)
+    fees_by = {}
+    for f in db.query(models.DBLateFee).filter(models.DBLateFee.client_id == client.id, models.DBLateFee.waived_on == "").all():
+        fees_by[f.invoice_id] = money(fees_by.get(f.invoice_id, 0.0) + (f.amount or 0))
+    contacts = {c.name: c for c in db.query(models.DBContact).filter(models.DBContact.client_id == client.id).all()}
+    rows = []
+    for inv in invoices:
+        due_date = _parse_date(inv.due_date)
+        if not due_date:
+            continue
+        days = (today - due_date).days
+        if days < -7:
+            continue
+        sent = sorted(reminders_by.get(inv.id, []), key=lambda r: r.sent_at or "")
+        contact = contacts.get(inv.to_contact or "")
+        chased, why = invoice_is_chased(db, inv, contact=contact)
+        rows.append({
+            "number": inv.number, "customer": inv.to_contact or "", "email": inv.email or "",
+            "due": inv.due, "currency": inv.currency or "", "due_date": inv.due_date, "days": days,
+            "reminders": len(sent), "last_reminder": sent[-1].sent_at[:10] if sent else "",
+            "last_label": step_label(sent[-1].stage_days or 0) if sent else "",
+            "paused": bool(inv.chase_paused), "chased": chased, "why_not": why,
+            "late_fees": fees_by.get(inv.id, 0.0),
+        })
+    rows.sort(key=lambda r: -r["days"])
+    return {"enabled": policy["enabled"], "late_fee": policy["late_fee"], "rows": rows,
+            "overdue": sum(1 for r in rows if r["days"] > 0),
+            "paused": sum(1 for r in rows if r["paused"] or not r["chased"]),
+            "owed": money(sum((r["due"] or 0) for r in rows if r["days"] > 0))}
 
 
 # Serve frontend
