@@ -14175,6 +14175,7 @@ async function viewQuote(number) {
             statusEl.className = 'status-pill ' + quoteStatusClass(q.status);
         }
 
+        renderQuoteAnswer(q);
         var linked = document.getElementById('view-quote-invoice-link');
         if (linked) {
             if (q.invoice_number) {
@@ -15971,6 +15972,56 @@ async function copyInvoiceLink() {
 }
 window.copyInvoiceLink = copyInvoiceLink;
 
+// The quote's own page for the customer: where it is read and answered.
+function quoteCustomerLink(q) {
+    q = q || currentQuote;
+    if (!q || !q.tracking_id) return '';
+    return window.location.origin + '/quote.html?id=' + encodeURIComponent(q.tracking_id);
+}
+window.quoteCustomerLink = quoteCustomerLink;
+
+async function copyQuoteLink() {
+    var url = quoteCustomerLink();
+    if (!url) { showToast('Open a quote first', 'error'); return; }
+    try {
+        await navigator.clipboard.writeText(url);
+        showToast('Link copied - your customer can read and accept the quote there', 'success');
+    } catch (e) {
+        window.prompt('Copy this link for your customer:', url);
+    }
+}
+window.copyQuoteLink = copyQuoteLink;
+
+// What the customer did on their page, if anything.
+function renderQuoteAnswer(q) {
+    var host = document.getElementById('view-quote-answer');
+    if (!host) return;
+    var html = '';
+    if (q.accepted_by && q.status !== 'Declined') {
+        html = '<span style="color:var(--success-color);font-weight:600;">Accepted online</span> by ' + esc(q.accepted_by) + (q.accepted_at ? ' on ' + esc(q.accepted_at.slice(0, 10)) : '') +
+            (q.invoice_number ? ' &middot; invoice ' + esc(q.invoice_number) + ' raised' : '') + '.';
+    } else if (q.status === 'Declined' && (q.declined_reason || q.accepted_by)) {
+        html = '<span style="color:var(--danger-color);font-weight:600;">Declined online</span>' + (q.accepted_by ? ' by ' + esc(q.accepted_by) : '') + (q.decided_at ? ' on ' + esc(q.decided_at) : '') +
+            (q.declined_reason ? ': &ldquo;' + esc(q.declined_reason) + '&rdquo;' : '') + '.';
+    } else if (q.open_count > 0) {
+        html = 'Opened by the customer ' + q.open_count + ' time' + (q.open_count === 1 ? '' : 's') + (q.last_opened ? ', last ' + esc(q.last_opened.slice(0, 16)) : '') + ' &middot; not answered yet.';
+    } else if (q.tracking_id && q.status !== 'Invoiced') {
+        html = '<span style="color:var(--text-secondary);">Not opened by the customer yet. Send it, or copy the link.</span>';
+    }
+    host.innerHTML = html;
+    host.style.display = html ? 'block' : 'none';
+}
+window.renderQuoteAnswer = renderQuoteAnswer;
+
+async function saveQuoteAcceptInvoice(box) {
+    try {
+        await fetchJson('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ quote_accept_raises_invoice: box.checked ? '1' : '0' }) });
+        showToast(box.checked ? 'An accepted quote raises its invoice' : 'You will raise the invoice yourself', 'success');
+    } catch (e) { showToast(e.message, 'error'); box.checked = !box.checked; }
+}
+window.saveQuoteAcceptInvoice = saveQuoteAcceptInvoice;
+
 
 // --- The bank statement ----------------------------------------------------------
 // A file from the bank, each line of money in set against the invoices it
@@ -16422,6 +16473,8 @@ async function loadOnlinePaymentNotice() {
         box.checked = ['0', 'false', 'no', 'off'].indexOf(v) === -1;
         var monthly = document.getElementById('monthly-statements');
         if (monthly) monthly.checked = ['1', 'true', 'yes', 'on'].indexOf(String(all.monthly_statements || '0').toLowerCase()) !== -1;
+        var qa = document.getElementById('quote-accept-invoice');
+        if (qa) qa.checked = ['0', 'false', 'no', 'off'].indexOf(String(all.quote_accept_raises_invoice == null ? '1' : all.quote_accept_raises_invoice).toLowerCase()) === -1;
     } catch (e) { /* leave the default */ }
 }
 window.loadOnlinePaymentNotice = loadOnlinePaymentNotice;

@@ -1762,6 +1762,26 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 61: {sys.exc_info()[1]}")
 
+            # 62. A quote has a page of its own for the customer, who can
+            # accept or decline it there; the quote remembers who did, when,
+            # and from where. Quotes that exist get a link too.
+            try:
+                for ddl in (
+                    "ALTER TABLE quotes ADD COLUMN IF NOT EXISTS tracking_id VARCHAR",
+                    "ALTER TABLE quotes ADD COLUMN IF NOT EXISTS open_count INTEGER DEFAULT 0",
+                    "ALTER TABLE quotes ADD COLUMN IF NOT EXISTS last_opened VARCHAR DEFAULT ''",
+                    "ALTER TABLE quotes ADD COLUMN IF NOT EXISTS accepted_by VARCHAR DEFAULT ''",
+                    "ALTER TABLE quotes ADD COLUMN IF NOT EXISTS accepted_at VARCHAR DEFAULT ''",
+                    "ALTER TABLE quotes ADD COLUMN IF NOT EXISTS accepted_ip VARCHAR DEFAULT ''",
+                    "ALTER TABLE quotes ADD COLUMN IF NOT EXISTS declined_reason VARCHAR DEFAULT ''",
+                    "UPDATE quotes SET tracking_id = gen_random_uuid()::text WHERE tracking_id IS NULL OR tracking_id = ''",
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_quotes_tracking_id ON quotes (tracking_id)",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 62: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

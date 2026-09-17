@@ -483,6 +483,14 @@ class DBQuote(Base):
     # converted twice.
     invoice_number = Column(String, default="")
     decided_at = Column(String, default="")
+    # The customer's own page for it, and what they did there.
+    tracking_id = Column(String, unique=True, index=True, default=lambda: str(uuid.uuid4()))
+    open_count = Column(Integer, default=0)
+    last_opened = Column(String, default="")
+    accepted_by = Column(String, default="")
+    accepted_at = Column(String, default="")
+    accepted_ip = Column(String, default="")
+    declined_reason = Column(String, default="")
 
     line_items = relationship("DBQuoteLineItem", back_populates="quote")
 

@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Quote - aniprotech</title>
+  <style>
+    /* The customer has no account and no stake in this product, so the page is
+       plain paper: their quote, legible, printable, and a place to say yes. */
+    :root {
+      --ink: #14161d;
+      --muted: #5b6070;
+      --line: #e4e6ec;
+      --paper: #ffffff;
+      --ground: #f4f5f8;
+      --brand: #0284c7;
+      --good: #0f6b4f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--ground); color: var(--ink);
+      font-family: 'Poppins', system-ui, -apple-system, "Segoe UI", sans-serif;
+      line-height: 1.55; -webkit-font-smoothing: antialiased;
+    }
+    .sheet {
+      max-width: 780px; margin: 32px auto; background: var(--paper);
+      border-radius: 14px; padding: 40px;
+      box-shadow: 0 1px 2px rgba(20, 22, 29, .06), 0 12px 40px -20px rgba(20, 22, 29, .3);
+    }
+    @media (max-width: 640px) { .sheet { margin: 0; border-radius: 0; padding: 22px; } }
+    .top { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+    .title { font-size: 1.7rem; font-weight: 700; letter-spacing: .4px; margin: 0; }
+    .logo { max-height: 56px; max-width: 190px; }
+    .muted { color: var(--muted); }
+    .small { font-size: .85rem; }
+    .banner {
+      margin: 22px 0; padding: 14px 16px; border-radius: 10px;
+      background: #f6f7fa; border-left: 3px solid var(--brand);
+      display: flex; justify-content: space-between; gap: 14px; flex-wrap: wrap; align-items: baseline;
+    }
+    .banner.done { border-left-color: var(--good); }
+    .banner.dead { border-left-color: #a63321; }
+    .due { font-size: 1.5rem; font-weight: 700; }
+    .cols { display: flex; gap: 28px; flex-wrap: wrap; margin: 22px 0; }
+    .cols > div { flex: 1 1 200px; }
+    .label { font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+    .scroll { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: .93rem; }
+    th { text-align: left; padding: 9px 8px; border-bottom: 2px solid var(--ink); font-size: .74rem; letter-spacing: .08em; text-transform: uppercase; }
+    td { padding: 10px 8px; border-bottom: 1px solid var(--line); }
+    .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .totals { margin-left: auto; margin-top: 16px; max-width: 300px; }
+    .totals div { display: flex; justify-content: space-between; padding: 4px 0; }
+    .totals .grand { border-top: 2px solid var(--ink); margin-top: 6px; padding-top: 9px; font-weight: 700; font-size: 1.05rem; }
+    .terms { margin-top: 22px; padding: 12px 14px; border-radius: 8px; background: #f6f7fa; white-space: pre-wrap; font-size: .9rem; }
+    .answer { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--line); }
+    .answer input[type=text] {
+      width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; font: inherit; margin-top: 6px;
+    }
+    .answer label.tick { display: flex; gap: 10px; align-items: flex-start; margin: 14px 0; font-size: .92rem; }
+    .actions { margin-top: 18px; display: flex; gap: 10px; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+      padding: 11px 18px; border-radius: 10px; font: inherit; font-weight: 600;
+      border: 1px solid var(--line); background: #fff; color: var(--ink); text-decoration: none;
+    }
+    .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+    .btn[disabled] { opacity: .5; cursor: default; }
+    .note { margin-top: 10px; font-size: .88rem; color: var(--muted); }
+    .foot { text-align: center; color: var(--muted); font-size: .85rem; margin: 22px 0 40px; }
+    #state { max-width: 780px; margin: 60px auto; text-align: center; color: var(--muted); }
+    @media print { body { background: #fff; } .sheet { box-shadow: none; margin: 0; max-width: none; } .answer, .actions { display: none; } }
+  </style>
+  <link rel="stylesheet" href="/mobile.css?v=183">
+  <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=183">
+  <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=183">
+  <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=183">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=183">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="aniprotech">
+  <meta property="og:title" content="Your quote">
+  <meta property="og:description" content="View and accept this quote online.">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Your quote">
+  <meta name="twitter:description" content="View and accept this quote online.">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="aniprotech">
+</head>
+<body>
+  <div id="state">Loading your quote...</div>
+  <div id="sheet" class="sheet" hidden></div>
+  <p class="foot" id="foot" hidden></p>
+
+  <script>
+    function esc(v) {
+      return String(v == null ? '' : v)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+    function money(sym, n) { return sym + Number(n || 0).toFixed(2); }
+
+    // The link is the whole address: /quote.html?id=<tracking id>
+    var id = new URLSearchParams(location.search).get('id') || '';
+    var quote = null;
+
+    async function load() {
+      var state = document.getElementById('state');
+      if (!id) { state.textContent = 'This link is missing its quote.'; return; }
+      try {
+        var res = await fetch('/api/public/quotes/' + encodeURIComponent(id));
+        if (res.status === 404) {
+          state.textContent = 'This quote is no longer available. If you think that is wrong, reply to the email it came from.';
+          return;
+        }
+        if (!res.ok) throw new Error('http ' + res.status);
+        quote = await res.json();
+      } catch (e) {
+        state.textContent = 'Could not load this quote. Please try again shortly.';
+        return;
+      }
+      render();
+      document.getElementById('state').hidden = true;
+      document.getElementById('sheet').hidden = false;
+      var foot = document.getElementById('foot');
+      if (quote.footer_note) { foot.textContent = quote.footer_note; foot.hidden = false; }
+    }
+
+    function bannerFor(q) {
+      if (q.status === 'Invoiced' || q.status === 'Accepted') {
+        return '<div class="banner done"><div><div class="label">Accepted</div><div class="due">' + money(q.currency_symbol, q.total) + '</div></div>' +
+          '<div style="text-align:right;"><div class="label">By</div><div>' + esc(q.accepted_by || q.to.name) + (q.accepted_at ? ' on ' + esc(q.accepted_at) : '') + '</div>' +
+          (q.invoice ? '<div class="small"><a href="' + esc(q.invoice.link) + '">Invoice ' + esc(q.invoice.number) + ' &rarr;</a></div>' : '') + '</div></div>';
+      }
+      if (q.status === 'Declined') {
+        return '<div class="banner dead"><div><div class="label">Declined</div><div class="due">' + money(q.currency_symbol, q.total) + '</div></div>' +
+          '<div style="text-align:right;"><div class="label">Status</div><div>Thank you for letting us know</div></div></div>';
+      }
+      if (q.status === 'Expired') {
+        return '<div class="banner dead"><div><div class="label">Expired</div><div class="due">' + money(q.currency_symbol, q.total) + '</div></div>' +
+          '<div style="text-align:right;"><div class="label">Was valid until</div><div>' + esc(q.expiry_date) + '</div><div class="small">Reply to the email for a fresh one</div></div></div>';
+      }
+      return '<div class="banner"><div><div class="label">Quote total</div><div class="due">' + money(q.currency_symbol, q.total) + '</div></div>' +
+        '<div style="text-align:right;"><div class="label">Valid until</div><div>' + esc(q.expiry_date) + '</div></div></div>';
+    }
+
+    function render() {
+      var q = quote, sym = q.currency_symbol || '';
+      var rows = (q.line_items || []).map(function (li) {
+        var label = li.name ? (li.description ? li.name + ' — ' + li.description : li.name) : li.description;
+        return '<tr><td>' + esc(label) + '</td><td class="num">' + esc(li.qty) + '</td>' +
+          '<td class="num">' + money(sym, li.price) + '</td><td class="num">' + money(sym, li.amount) + '</td></tr>';
+      }).join('');
+      document.title = q.number + ' - ' + (q.from.company || 'Quote');
+      document.getElementById('sheet').innerHTML =
+        '<div class="top"><div>' +
+          '<h1 class="title" style="color:' + esc(q.brand_color) + ';">' + esc(q.title) + '</h1>' +
+          '<p class="muted small" style="margin:4px 0 0;">' + esc(q.number) + (q.reference ? ' &middot; ' + esc(q.reference) : '') + '</p>' +
+          (q.subject ? '<p style="margin:10px 0 0;font-weight:600;">' + esc(q.subject) + '</p>' : '') +
+        '</div><div style="text-align:right;">' +
+          (q.logo ? '<img class="logo" src="' + esc(q.logo) + '" alt="">' : '') +
+          '<p class="small" style="margin:6px 0 0;"><strong>' + esc(q.from.company) + '</strong><br>' + esc(q.from.address).replace(/\n/g, '<br>') +
+          (q.from.email ? '<br>' + esc(q.from.email) : '') + (q.from.phone ? '<br>' + esc(q.from.phone) : '') + (q.from.tax_id ? '<br>Tax ID ' + esc(q.from.tax_id) : '') + '</p>' +
+        '</div></div>' +
+        bannerFor(q) +
+        '<div class="cols">' +
+          '<div><div class="label">Prepared for</div>' + esc(q.to.name) + (q.to.company ? '<br>' + esc(q.to.company) : '') +
+            (q.to.address ? '<br><span class="small">' + esc(q.to.address).replace(/\n/g, '<br>') + '</span>' : '') + '</div>' +
+          '<div><div class="label">Issued</div>' + esc(q.issue_date) + '</div>' +
+          '<div><div class="label">Valid until</div>' + esc(q.expiry_date) + '</div>' +
+        '</div>' +
+        (q.summary ? '<p style="margin:0 0 8px;">' + esc(q.summary).replace(/\n/g, '<br>') + '</p>' : '') +
+        '<div class="scroll"><table><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+        '<div class="totals">' +
+          '<div><span>Subtotal</span><span>' + money(sym, q.subtotal) + '</span></div>' +
+          '<div><span>Tax</span><span>' + money(sym, q.tax) + '</span></div>' +
+          '<div class="grand"><span>Total</span><span>' + money(sym, q.total) + '</span></div>' +
+        '</div>' +
+        (q.terms ? '<div class="terms"><div class="label">Terms</div>' + esc(q.terms) + '</div>' : '') +
+        (q.can_answer ? '<div class="answer" id="answer">' +
+            '<div class="label">Your answer</div>' +
+            '<p style="margin:6px 0 0;">Happy with this? Type your name and accept, and ' + esc(q.from.company || 'we') + ' will take it from there.</p>' +
+            '<input type="text" id="who" maxlength="120" placeholder="Your full name" autocomplete="name">' +
+            '<label class="tick"><input type="checkbox" id="agree"> I accept quote ' + esc(q.number) + ' for ' + money(sym, q.total) + (q.terms ? ' on the terms above' : '') + '.</label>' +
+            '<div class="actions">' +
+              '<button class="btn primary" id="acceptBtn" onclick="answer(\'accept\')">Accept quote</button>' +
+              '<button class="btn" id="declineBtn" onclick="answer(\'decline\')">Decline</button>' +
+              '<button class="btn" onclick="window.print()">Print or save as PDF</button>' +
+            '</div>' +
+            '<p class="note" id="answerNote"></p>' +
+          '</div>'
+          : '<div class="actions"><button class="btn" onclick="window.print()">Print or save as PDF</button></div>');
+    }
+
+    async function answer(kind) {
+      var who = (document.getElementById('who').value || '').trim();
+      var note = document.getElementById('answerNote');
+      var body = { name: who };
+      if (kind === 'accept') {
+        if (!who) { note.textContent = 'Type your name to accept.'; return; }
+        if (!document.getElementById('agree').checked) { note.textContent = 'Tick the box to accept.'; return; }
+      } else {
+        var reason = window.prompt('Tell us why, if you like (optional):', '');
+        if (reason === null) return;
+        body.reason = reason;
+      }
+      var accept = document.getElementById('acceptBtn'), decline = document.getElementById('declineBtn');
+      accept.disabled = true; decline.disabled = true;
+      note.textContent = kind === 'accept' ? 'Accepting…' : 'Sending…';
+      try {
+        var res = await fetch('/api/public/quotes/' + encodeURIComponent(id) + '/' + kind, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) { note.textContent = data.detail || 'That did not go through. Please try again.'; accept.disabled = false; decline.disabled = false; return; }
+        quote = data.quote || quote;
+        render();
+      } catch (e) {
+        note.textContent = 'That did not go through. Please try again.';
+        accept.disabled = false; decline.disabled = false;
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>

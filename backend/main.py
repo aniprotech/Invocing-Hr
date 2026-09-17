@@ -8075,6 +8075,12 @@ def quote_to_dict(q, client, db, detail=False):
         "currency": q.currency or (client.currency if client else ""),
         "invoice_number": q.invoice_number or "",
         "decided_at": q.decided_at or "",
+        "tracking_id": q.tracking_id or "",
+        "open_count": q.open_count or 0,
+        "last_opened": q.last_opened or "",
+        "accepted_by": q.accepted_by or "",
+        "accepted_at": q.accepted_at or "",
+        "declined_reason": q.declined_reason or "",
     }
     if not detail:
         return data
@@ -8439,8 +8445,11 @@ Valid Until: {q.expiry_date}
     body += f"""
 Total: {cur_symbol}{total:.2f}
 
-This quote is valid until {q.expiry_date}. Reply to this email to accept it or
-ask us anything about it.
+This quote is valid until {q.expiry_date}.
+
+View it and accept it online: {quote_public_link(q, request)}
+
+Or reply to this email to ask us anything about it.
 
 Best regards,
 {company_name}
@@ -8501,8 +8510,11 @@ Powered by Aniprotech"""
 
               {f'<div style="border-left:3px solid #e2e8f0;padding:4px 0 4px 14px;color:#64748b;font-size:13px;margin-bottom:24px;white-space:pre-wrap;">{esc(q.terms)}</div>' if q.terms else ''}
 
-              <p style="margin:0;font-size:14px;color:#475569;">
-                Happy with this? Just reply to this email to accept, and we will raise the invoice.
+              <p style="margin:0 0 18px;text-align:center;">
+                <a href="{esc(quote_public_link(q, request))}" style="display:inline-block;background:#0284c7;color:#ffffff;font-weight:700;font-size:15px;padding:12px 26px;border-radius:8px;text-decoration:none;">View and accept this quote &rarr;</a>
+              </p>
+              <p style="margin:0;font-size:14px;color:#475569;text-align:center;">
+                Or reply to this email to ask us anything about it.
               </p>
             </div>
             <div style="background:#f8fafc;padding:22px 28px;text-align:center;border-top:1px solid #e2e8f0;">
@@ -27029,7 +27041,7 @@ WEBHOOK_LIMIT = 10
 WEBHOOK_EVENTS = ("employee.created", "employee.updated", "employee.left",
                   "leave.requested", "leave.decided", "probation.decided", "pay.changed",
                   "review.completed", "kudos.given", "invoice.paid", "invoice.refunded",
-                  "invoice.late_fee", "credit_note.issued")
+                  "invoice.late_fee", "credit_note.issued", "quote.accepted", "quote.declined")
 WEBHOOK_MAX_ATTEMPTS = 5
 WEBHOOK_BACKOFF_MINUTES = (0, 1, 5, 30, 120)
 
@@ -31464,6 +31476,184 @@ def send_credit_note_email(number: str, background_tasks: BackgroundTasks, reque
     log_audit(db, client.id, "credit_note_sent", "credit_note", cn.id, cn.number, f"Sent to {cn.email}", request)
     db.commit()
     return {"message": f"Credit note sent to {cn.email}", "delivery_id": delivery.id}
+
+
+# ============================================================================
+# QUOTES, ANSWERED ONLINE - the customer's own page for a quote
+#
+# A quote went out as an email that said "reply to accept". Now it has a
+# page of its own, reached by a link nobody can guess, where the customer
+# reads it and accepts or declines it with their name. Acceptance is
+# written down - who, when, from where - and, if the business wants,
+# raises the invoice there and then. The page says so when the quote has
+# expired, and offers nothing once it has been answered.
+# ============================================================================
+
+def quote_public_link(q, request=None):
+    base = (os.getenv("APP_BASE_URL", "") or (str(request.base_url) if request is not None else "")).rstrip("/")
+    return f"{base}/quote.html?id={q.tracking_id}" if base and q.tracking_id else ""
+
+
+def quote_accept_raises_invoice(db, client_id):
+    return _flag_on(tenant_setting(db, client_id, "quote_accept_raises_invoice", "1"), True)
+
+
+def public_quote_payload(db, q, client, request=None):
+    """Exactly what the customer is entitled to see, and nothing else."""
+    sub, tax, total = compute_invoice_totals(q.line_items, q.tax_type)
+    currency = (q.currency or client.currency or "GBP").upper()
+    theme = default_theme_for(db, client.id)
+    status = quote_display_status(q)
+    invoice = None
+    if q.invoice_number:
+        row = db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id,
+                                                models.DBInvoice.number == q.invoice_number).first()
+        if row and row.status not in ("Draft", "Void"):
+            invoice = {"number": row.number, "due": money(row.due or 0), "status": row.status,
+                       "link": f"{(os.getenv('APP_BASE_URL', '') or (str(request.base_url) if request is not None else '')).rstrip('/')}/invoice.html?id={row.tracking_id}"}
+    return {
+        "number": q.number,
+        "title": (theme.quote_title if theme and getattr(theme, "quote_title", "") else "") or "QUOTE",
+        "subject": q.title or "",
+        "summary": q.summary or "",
+        "terms": q.terms or "",
+        "status": status,
+        "issue_date": q.issue_date or "",
+        "expiry_date": q.expiry_date or "",
+        "reference": q.ref or "",
+        "currency": currency,
+        "currency_symbol": currency_symbol(currency),
+        "subtotal": money(sub), "tax": money(tax), "total": money(total),
+        "line_items": [{"name": li.name or "", "description": li.description or "", "qty": li.qty,
+                        "price": money(li.price), "amount": money(line_net_amount(li.qty, li.price, li.disc))}
+                       for li in (q.line_items or [])],
+        "from": {"company": client.company_name or "", "address": client.address or "", "email": client.email or "",
+                 "phone": client.phone_number or "", "tax_id": client.abn or ""},
+        "to": {"name": q.to_contact or "", "company": q.to_company or "", "address": q.to_address or "", "tax_id": q.to_tax_id or ""},
+        "can_answer": status in ("Sent", "Draft"),
+        "accepted_by": q.accepted_by or "", "accepted_at": (q.accepted_at or "")[:10],
+        "declined_reason": q.declined_reason or "",
+        "invoice": invoice,
+        "brand_color": (theme.brand_color if theme else "") or "#0284c7",
+        "logo": (theme.logo_data if theme else "") or client.logo_url or "",
+        "footer_note": (theme.footer_note if theme else "") or "",
+    }
+
+
+def _public_quote(db, tracking_id):
+    q = db.query(models.DBQuote).filter(models.DBQuote.tracking_id == tracking_id).first() if tracking_id else None
+    if not q:
+        raise HTTPException(status_code=404, detail="That quote is not available")
+    client = db.query(models.DBClient).filter(models.DBClient.id == q.client_id).first()
+    if not client:
+        raise HTTPException(status_code=404, detail="That quote is not available")
+    return q, client
+
+
+@app.get("/api/public/quotes/{tracking_id}")
+def public_quote(tracking_id: str, request: Request, db: Session = Depends(get_db)):
+    """One quote, for the person it was sent to. No session, no account."""
+    q, client = _public_quote(db, tracking_id)
+    q.open_count = (q.open_count or 0) + 1
+    q.last_opened = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    db.commit()
+    return public_quote_payload(db, q, client, request)
+
+
+def _tell_business_about_quote(db, client, q, what, who, extra=""):
+    """The business hears the moment a customer answers."""
+    to = (client.email or "").strip()
+    if not to or not validate_email_address(to):
+        return
+    cur = currency_symbol((q.currency or client.currency or "GBP").upper())
+    _, _, total = compute_invoice_totals(q.line_items, q.tax_type)
+    subject = f"Quote {q.number} {what} by {who or q.to_contact}"
+    body = (f"Quote {q.number} for {q.to_contact} ({cur}{total:.2f}) was {what} online"
+            + (f" by {who}" if who else "") + f" on {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n"
+            + (f"\n{extra}\n" if extra else "") + "\nOpen it in aniprotech to see the details.\n")
+    send_email_background(to, subject, body, platform_from_address(db), None, None, "", "", client_id=client.id)
+
+
+@app.post("/api/public/quotes/{tracking_id}/accept")
+def public_accept_quote(tracking_id: str, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """The customer accepts: their name is the signature."""
+    q, client = _public_quote(db, tracking_id)
+    body = body or {}
+    name = str(body.get("name") or "").strip()[:120]
+    if not name:
+        raise HTTPException(status_code=400, detail="Type your name to accept")
+    if q.status == "Invoiced" or q.status == "Accepted":
+        raise HTTPException(status_code=409, detail="This quote has already been accepted")
+    if q.status == "Declined":
+        raise HTTPException(status_code=409, detail="This quote was declined; ask us for a fresh one")
+    if quote_is_expired(q):
+        raise HTTPException(status_code=410, detail=f"This quote expired on {q.expiry_date}; ask us for a fresh one")
+    ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else ""))[:64]
+    now = datetime.now()
+    q.status = "Accepted"
+    q.decided_at = now.strftime("%Y-%m-%d")
+    q.accepted_by = name
+    q.accepted_at = now.strftime("%Y-%m-%d %H:%M:%S")
+    q.accepted_ip = ip
+    note = str(body.get("note") or "").strip()[:500]
+    log_audit(db, client.id, "quote_accepted_online", "quote", q.id, q.number, f"By {name} from {ip}" + (f": {note}" if note else ""), request)
+    invoice_number = ""
+    if quote_accept_raises_invoice(db, client.id) and q.line_items:
+        invoice_number = raise_invoice_from_quote(db, client, q, request)
+    db.commit()
+    announce(db, client.id, "quote.accepted", {"number": q.number, "customer": q.to_contact or "", "accepted_by": name,
+                                                "note": note, "invoice_number": invoice_number})
+    db.commit()
+    _tell_business_about_quote(db, client, q, "accepted", name, (f"Their note: {note}\n" if note else "") + (f"Invoice {invoice_number} has been raised." if invoice_number else "No invoice raised - raise one from the quote when you are ready."))
+    return {"message": "Accepted - thank you", "quote": public_quote_payload(db, q, client, request)}
+
+
+@app.post("/api/public/quotes/{tracking_id}/decline")
+def public_decline_quote(tracking_id: str, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    q, client = _public_quote(db, tracking_id)
+    body = body or {}
+    if q.status in ("Invoiced", "Accepted"):
+        raise HTTPException(status_code=409, detail="This quote has already been accepted")
+    if q.status == "Declined":
+        raise HTTPException(status_code=409, detail="This quote was already declined")
+    if quote_is_expired(q):
+        raise HTTPException(status_code=410, detail=f"This quote expired on {q.expiry_date}")
+    name = str(body.get("name") or "").strip()[:120]
+    reason = str(body.get("reason") or "").strip()[:500]
+    q.status = "Declined"
+    q.decided_at = datetime.now().strftime("%Y-%m-%d")
+    q.declined_reason = reason
+    if name:
+        q.accepted_by = name
+    log_audit(db, client.id, "quote_declined_online", "quote", q.id, q.number, (f"By {name}" if name else "Online") + (f": {reason}" if reason else ""), request)
+    announce(db, client.id, "quote.declined", {"number": q.number, "customer": q.to_contact or "", "by": name, "reason": reason})
+    db.commit()
+    _tell_business_about_quote(db, client, q, "declined", name, f"Their reason: {reason}" if reason else "")
+    return {"message": "Declined - thank you for letting us know", "quote": public_quote_payload(db, q, client, request)}
+
+
+def raise_invoice_from_quote(db, client, q, request=None):
+    """The invoice an accepted quote becomes: sent to nobody yet, but not a
+    draft - the customer agreed to it, so it is owed."""
+    subtotal, tax, total = compute_invoice_totals(q.line_items, q.tax_type)
+    issue_date = date.today().isoformat()
+    due_date = (date.today() + timedelta(days=payment_terms_for(db, client.id))).isoformat()
+    inv_number = next_sequence_number(db, models.DBInvoice, client.id, invoice_prefix_for(db, client.id))
+    invoice = models.DBInvoice(
+        client_id=client.id, number=inv_number, ref=q.ref or q.number, to_contact=q.to_contact,
+        email=q.email or "", phone_number=q.phone_number or "",
+        to_company=q.to_company or "", to_address=q.to_address or "", to_tax_id=q.to_tax_id or "",
+        issue_date=issue_date, due_date=due_date, paid=0.0, due=round(total, 2),
+        status="Awaiting Payment", sent="", tax_type=q.tax_type, currency=q.currency or (client.currency or ""), bank_details="")
+    db.add(invoice)
+    db.flush()
+    for li in q.line_items:
+        db.add(models.DBLineItem(invoice_id=invoice.id, name=li.name or "", description=li.description, qty=li.qty,
+                                 price=li.price, disc=li.disc or 0.0, account=li.account, tax_rate=li.tax_rate))
+    q.status = "Invoiced"
+    q.invoice_number = inv_number
+    log_audit(db, client.id, "quote_converted", "quote", q.id, q.number, f"Invoice {inv_number} raised on acceptance", request)
+    return inv_number
 
 
 # Serve frontend
