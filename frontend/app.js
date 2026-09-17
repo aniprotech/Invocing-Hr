@@ -318,6 +318,7 @@ var NAV_FOR_VIEW = {
     'quotes-view': 'nav-quotes',
     'create-quote-view': 'nav-quotes',
     'view-quote-view': 'nav-quotes',
+    'bank-view': 'nav-bank',
     'bills-view': 'nav-bills',
     'insights-view': 'nav-insights',
     'reports-view': 'nav-reports',
@@ -370,6 +371,7 @@ var ROUTE_SLUGS = {
     'create-quote-view': 'quotes/new',
     'sales-pipeline-view': 'pipeline',
     'recurring-view': 'recurring',
+    'bank-view': 'bank',
     'bills-view': 'bills',
     'wallet-view': 'wallet',
     'insights-view': 'insights',
@@ -7709,6 +7711,7 @@ showView = function(viewId) {
     }
     if (viewId === 'wallet-view') loadWallet();
     if (viewId === 'bills-view') loadBills();
+    if (viewId === 'bank-view') loadBankView();
     if (viewId === 'contacts-view') loadContacts();
 };
 window.showView = showView;
@@ -15348,6 +15351,208 @@ async function copyInvoiceLink() {
 }
 window.copyInvoiceLink = copyInvoiceLink;
 
+
+// --- The bank statement ----------------------------------------------------------
+// A file from the bank, each line of money in set against the invoices it
+// was probably for. Confident matches are one click, or all at once.
+
+var _bankTab = 'unmatched';
+var _bankAccounts = [];
+
+function switchBankTab(tab, btn) {
+    _bankTab = tab;
+    document.querySelectorAll('#bank-tabs .tab').forEach(function (t) { t.classList.remove('active'); });
+    if (btn) btn.classList.add('active');
+    loadBankView();
+}
+window.switchBankTab = switchBankTab;
+
+async function loadBankView() {
+    var host = document.getElementById('bank-list');
+    var tiles = document.getElementById('bank-tiles');
+    if (!host) return;
+    var sel = document.getElementById('bank-account');
+    var accountId = sel && sel.value ? Number(sel.value) : 0;
+    try {
+        if (_bankTab === 'imports') {
+            var d0 = await fetchJson('/api/bank/imports');
+            host.innerHTML = d0.imports.length ? '<div class="widget"><div class="table-responsive"><table class="data-table"><thead><tr><th>When</th><th>File</th><th>Account</th><th class="text-right">Lines</th><th class="text-right">Duplicates skipped</th><th></th></tr></thead><tbody>' +
+                d0.imports.map(function (i) {
+                    return '<tr><td style="white-space:nowrap;">' + esc((i.created_at || '').slice(0, 16)) + '</td><td>' + esc(i.filename || i.kind) + '</td><td>' + esc(i.account || '') + '</td>' +
+                        '<td class="text-right">' + i.lines + '</td><td class="text-right">' + i.duplicates + '</td>' +
+                        '<td class="text-right"><button class="btn btn-outline btn-sm" data-bank-import-remove="' + i.id + '">Remove</button></td></tr>';
+                }).join('') + '</tbody></table></div></div>' :
+                '<div class="widget" style="padding:40px;text-align:center;color:var(--text-secondary);">No statements imported yet.</div>';
+            host.querySelectorAll('[data-bank-import-remove]').forEach(function (b) {
+                b.addEventListener('click', async function () {
+                    if (!await uiConfirm('Remove this file and its lines? Refused if any line has been recorded against an invoice.', { title: 'Remove import', confirmText: 'Remove', danger: true })) return;
+                    try { await fetchJson('/api/bank/imports/' + b.getAttribute('data-bank-import-remove'), { method: 'DELETE' }); showToast('Removed', 'success'); loadBankView(); }
+                    catch (e) { showToast(e.message, 'error'); }
+                });
+            });
+            return;
+        }
+        var d = await fetchJson('/api/bank/lines?status=' + encodeURIComponent(_bankTab) + (accountId ? '&account_id=' + accountId : ''));
+        _bankAccounts = d.accounts || [];
+        if (sel && !sel.options.length) {
+            sel.innerHTML = '<option value="">All accounts</option>' + _bankAccounts.map(function (a) { return '<option value="' + a.id + '">' + esc(a.name) + '</option>'; }).join('');
+        }
+        var sym = getCurrencySymbol();
+        var c = d.counts || {};
+        function tile(label, value, sub, tone) {
+            return '<div class="stat-card"><span class="stat-label">' + label + '</span><span class="stat-value"' + (tone ? ' style="color:' + tone + ';"' : '') + '>' + value + '</span>' +
+                (sub ? '<span style="font-size:0.75rem;color:var(--text-secondary);">' + sub + '</span>' : '') + '</div>';
+        }
+        tiles.innerHTML = tile('To match', c.unmatched || 0, sym + Number(d.unmatched_total || 0).toFixed(2) + ' unexplained', c.unmatched ? 'var(--warning-color)' : '') +
+            tile('Confident matches', d.auto || 0, 'one click each, or all at once', d.auto ? 'var(--success-color)' : '') +
+            tile('Matched', c.matched || 0, 'recorded against invoices') +
+            tile('Money out', c.out || 0, 'kept for the record');
+        var btn = document.getElementById('bank-record-all');
+        if (btn) btn.style.display = d.auto ? 'inline-flex' : 'none';
+        if (!d.lines.length) {
+            host.innerHTML = '<div class="widget" style="padding:40px;text-align:center;color:var(--text-secondary);">' +
+                (_bankTab === 'unmatched' ? 'Nothing waiting. Import a statement - a CSV from any bank, or an OFX - and each line of money in is set against your open invoices.' : 'Nothing here.') + '</div>';
+            return;
+        }
+        host.innerHTML = '<div class="widget"><div class="table-responsive"><table class="data-table"><thead><tr><th style="white-space:nowrap;">Date</th><th>Narrative</th><th class="text-right" style="white-space:nowrap;">Amount</th>' +
+            (_bankTab === 'unmatched' ? '<th>Probably for</th>' : '<th>Recorded as</th>') + '<th></th></tr></thead><tbody>' +
+            d.lines.map(function (l) { return bankLineRow(l, sym); }).join('') + '</tbody></table></div></div>';
+        host.querySelectorAll('[data-bank-record]').forEach(function (b) {
+            b.addEventListener('click', function () { recordBankLine(Number(b.getAttribute('data-bank-record')), b.getAttribute('data-bank-number')); });
+        });
+        host.querySelectorAll('[data-bank-pick]').forEach(function (b) {
+            b.addEventListener('click', function () { pickInvoiceForLine(Number(b.getAttribute('data-bank-pick'))); });
+        });
+        host.querySelectorAll('[data-bank-link]').forEach(function (b) {
+            b.addEventListener('click', async function () {
+                try { await fetchJson('/api/bank/lines/' + b.getAttribute('data-bank-link') + '/link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ payment_id: Number(b.getAttribute('data-bank-payment')) }) }); showToast('Linked to the receipt already on the books', 'success'); loadBankView(); }
+                catch (e) { showToast(e.message, 'error'); }
+            });
+        });
+        host.querySelectorAll('[data-bank-ignore]').forEach(function (b) {
+            b.addEventListener('click', async function () {
+                var note = await uiPrompt('Why? A loan, a transfer between your own accounts, a refund from a supplier...', '', { title: 'Ignore this line', confirmText: 'Ignore' });
+                if (note === null) return;
+                try { await fetchJson('/api/bank/lines/' + b.getAttribute('data-bank-ignore') + '/ignore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note: note || '' }) }); loadBankView(); }
+                catch (e) { showToast(e.message, 'error'); }
+            });
+        });
+        host.querySelectorAll('[data-bank-restore]').forEach(function (b) {
+            b.addEventListener('click', async function () {
+                try { await fetchJson('/api/bank/lines/' + b.getAttribute('data-bank-restore') + '/restore', { method: 'POST' }); loadBankView(); }
+                catch (e) { showToast(e.message, 'error'); }
+            });
+        });
+    } catch (e) {
+        host.innerHTML = '<div class="widget" style="padding:20px;color:var(--danger-text);">' + esc(e.message) + '</div>';
+    }
+}
+window.loadBankView = loadBankView;
+
+var BANK_CONF = { auto: ['Confident', 'var(--success-color)'], likely: ['Likely', 'var(--warning-color)'], possible: ['Possible', 'var(--text-secondary)'] };
+
+function bankLineRow(l, sym) {
+    var amount = '<td class="text-right" style="white-space:nowrap;font-weight:600;color:' + (l.amount < 0 ? 'var(--danger-color)' : 'var(--success-color)') + ';">' + (l.amount < 0 ? '\u2212' : '') + sym + Math.abs(l.amount).toFixed(2) +
+        (l.allocated && l.remaining > 0 ? '<div style="font-size:0.72rem;font-weight:400;color:var(--text-secondary);">' + sym + l.remaining.toFixed(2) + ' unexplained</div>' : '') + '</td>';
+    var narrative = '<td>' + esc(l.description) + (l.reference ? ' <span style="color:var(--text-secondary);font-size:0.78rem;">' + esc(l.reference) + '</span>' : '') +
+        (l.note ? '<div style="font-size:0.75rem;color:var(--text-secondary);">' + esc(l.note) + '</div>' : '') + '</td>';
+    var head = '<tr><td style="white-space:nowrap;">' + esc(l.date) + '</td>' + narrative + amount;
+    if (l.status === 'unmatched') {
+        var s0 = (l.suggestions || [])[0];
+        var pick = '';
+        if (l.already_recorded) {
+            pick = '<span style="color:var(--text-secondary);">Already typed in: ' + sym + Number(l.already_recorded.amount).toFixed(2) + ' on ' + esc(l.already_recorded.paid_on) + (l.already_recorded.reference ? ' \u00b7 ' + esc(l.already_recorded.reference) : '') + '</span>';
+        } else if (s0) {
+            var conf = BANK_CONF[s0.confidence] || BANK_CONF.possible;
+            pick = '<strong>' + esc(s0.number) + '</strong> \u00b7 ' + esc(s0.contact) + ' \u00b7 ' + sym + Number(s0.due).toFixed(2) + ' owed' +
+                '<div style="font-size:0.75rem;color:' + conf[1] + ';">' + conf[0] + ': ' + esc(s0.why) + '</div>' +
+                ((l.suggestions || []).length > 1 ? '<div style="font-size:0.72rem;color:var(--text-secondary);">or ' + l.suggestions.slice(1, 3).map(function (x) { return esc(x.number); }).join(', ') + '</div>' : '');
+        } else {
+            pick = '<span style="color:var(--text-secondary);">No open invoice fits</span>';
+        }
+        var actions = l.already_recorded
+            ? '<button class="btn btn-outline btn-sm" data-bank-link="' + l.id + '" data-bank-payment="' + l.already_recorded.payment_id + '">Same one</button> '
+            : (s0 ? '<button class="btn ' + (s0.confidence === 'auto' ? 'btn-primary' : 'btn-outline') + ' btn-sm" data-bank-record="' + l.id + '" data-bank-number="' + esc(s0.number) + '">Record</button> ' : '');
+        actions += '<button class="btn btn-outline btn-sm" data-bank-pick="' + l.id + '">Choose\u2026</button> <button class="btn btn-outline btn-sm" data-bank-ignore="' + l.id + '">Ignore</button>';
+        return head + '<td>' + pick + '</td><td class="text-right" style="white-space:nowrap;">' + actions + '</td></tr>';
+    }
+    var recorded = l.status === 'matched' ? ((l.payment_ids || []).length ? (l.payment_ids.length === 1 ? 'a receipt' : l.payment_ids.length + ' receipts') : '') : l.status === 'ignored' ? 'ignored' : 'money out';
+    var restore = (l.status === 'ignored') ? '<button class="btn btn-outline btn-sm" data-bank-restore="' + l.id + '">Back to the list</button>' : '';
+    return head + '<td style="color:var(--text-secondary);">' + recorded + '</td><td class="text-right">' + restore + '</td></tr>';
+}
+
+async function recordBankLine(lineId, number) {
+    try {
+        var out = await fetchJson('/api/bank/lines/' + lineId + '/record', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoice_number: number }) });
+        showToast(out.message + (out.invoice && out.invoice.status === 'Paid' ? ' - paid in full' : ''), 'success');
+        loadBankView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.recordBankLine = recordBankLine;
+
+async function pickInvoiceForLine(lineId) {
+    var number = await uiPrompt('Which invoice is this for? Type its number.', '', { title: 'Choose an invoice', confirmText: 'Record', placeholder: 'INV-0044' });
+    if (!number) return;
+    recordBankLine(lineId, number.trim());
+}
+window.pickInvoiceForLine = pickInvoiceForLine;
+
+async function recordAllBankLines() {
+    if (!await uiConfirm('Record every line that has exactly one confident match - the amount agrees and the invoice number or customer name is in the narrative. Lines with a doubt are left for you.', { title: 'Record confident matches', confirmText: 'Record them' })) return;
+    try {
+        var out = await fetchJson('/api/bank/record-all', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        showToast(out.recorded + ' recorded' + (out.left ? ', ' + out.left + ' left to look at' : ''), 'success');
+        loadBankView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.recordAllBankLines = recordAllBankLines;
+
+function importBankStatement() {
+    var input = document.getElementById('bank-file');
+    if (input) { input.value = ''; input.click(); }
+}
+window.importBankStatement = importBankStatement;
+
+function bankFileChosen(input) {
+    var f = input && input.files && input.files[0];
+    if (!f) return;
+    var reader = new FileReader();
+    reader.onload = function () { previewBankStatement(String(reader.result || ''), f.name); };
+    reader.readAsText(f);
+}
+window.bankFileChosen = bankFileChosen;
+
+// A dry run first, always: what would come in, what is already here, what
+// could not be read - then the same file for real, into a chosen account.
+async function previewBankStatement(text, filename) {
+    try {
+        if (!_bankAccounts.length) { try { _bankAccounts = ((await fetchJson('/api/accounts')).accounts || []).filter(function (a) { return a.active; }); } catch (e) { _bankAccounts = []; } }
+        var sel = document.getElementById('bank-account');
+        var preset = sel && sel.value ? sel.value : '';
+        var accountId = preset;
+        if (!accountId && _bankAccounts.length > 1) {
+            accountId = await uiChoose('Which account is this statement for?', _bankAccounts.map(function (a) { return { value: String(a.id), label: a.name }; }), { title: 'Import statement', confirmText: 'Next' });
+            if (!accountId) return;
+        } else if (!accountId && _bankAccounts.length === 1) {
+            accountId = String(_bankAccounts[0].id);
+        }
+        var body = { text: text, filename: filename || '', account_id: accountId ? Number(accountId) : null };
+        var dry = await fetchJson('/api/bank/import?dry_run=1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        var s = dry.summary;
+        var lines = [s.new + ' new line' + (s.new === 1 ? '' : 's') + ' (' + s.money_in + ' in, ' + s.money_out + ' out)' + (s.first ? ', ' + s.first + ' to ' + s.last : '') + '.'];
+        if (s.duplicates) lines.push(s.duplicates + ' already imported - skipped.');
+        if (s.unreadable) lines.push(s.unreadable + ' line' + (s.unreadable === 1 ? '' : 's') + ' could not be read (no date or amount).');
+        if (!accountId) lines.push('No account chosen: the receipts will not say where the money landed. Add one under Settings > Payments first if that matters.');
+        if (!s.new) { await uiAlert(lines.join('\n'), { title: 'Nothing to import' }); return; }
+        if (!await uiConfirm(lines.join('\n') + '\n\nEach line of money in will be set against your open invoices. Go ahead?', { title: 'Import ' + (filename || 'statement'), confirmText: 'Import' })) return;
+        var done = await fetchJson('/api/bank/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        showToast(done.summary.new + ' lines imported', 'success');
+        _bankTab = 'unmatched';
+        document.querySelectorAll('#bank-tabs .tab').forEach(function (t, i) { t.classList.toggle('active', i === 0); });
+        loadBankView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.previewBankStatement = previewBankStatement;
 
 // --- Where the money lands ----------------------------------------------------
 // The business's accounts. Named once, each receipt lands in one.

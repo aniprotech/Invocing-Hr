@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=179">
-    <link rel="stylesheet" href="mobile.css?v=179">
+    <link rel="stylesheet" href="styles.css?v=180">
+    <link rel="stylesheet" href="mobile.css?v=180">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,11 +57,11 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=179">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=179">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=179">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=179">
-    <script src="/dialogs.js?v=179"></script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=180">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=180">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=180">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=180">
+    <script src="/dialogs.js?v=180"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -124,6 +124,7 @@
                     <div class="nav-group" data-nav-group="Money">
                         <button type="button" class="nav-item nav-group-toggle" aria-expanded="false">Money</button>
                         <div class="nav-group-menu">
+                            <a href="#/bank" class="nav-item" id="nav-bank" data-portal="invoicing">Bank</a>
                             <a href="#/bills" class="nav-item" id="nav-bills" data-portal="invoicing">Bills</a>
                             <a href="#/insights" class="nav-item" id="nav-insights" data-portal="invoicing">Insights</a>
                             <a href="#/reports" class="nav-item" id="nav-reports" data-portal="invoicing">Reports</a>
@@ -1149,6 +1150,33 @@
                 </div>
 
                 <!-- ========== BILLS ========== -->
+                <!-- ========== THE BANK STATEMENT ==========
+                     Money that arrived by transfer, set against the invoices it
+                     was for. A file in; a short list of what is left to look at. -->
+                <div id="bank-view" class="view-section dashboard" style="display:none;">
+                    <div class="invoices-header-area">
+                        <div>
+                            <h1>Bank</h1>
+                            <p class="subtitle">Your statement, matched to your invoices</p>
+                        </div>
+                        <div class="invoices-actions" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                            <select id="bank-account" class="form-control" style="width:auto;padding:8px 12px;" onchange="loadBankView()"></select>
+                            <button class="btn btn-outline" id="bank-record-all" onclick="recordAllBankLines()">Record confident matches</button>
+                            <button class="btn btn-primary" onclick="importBankStatement()">Import statement</button>
+                            <input type="file" id="bank-file" accept=".csv,.ofx,.qfx,text/csv,text/plain" style="display:none;" onchange="bankFileChosen(this)">
+                        </div>
+                    </div>
+                    <div class="grid-4 mb-24" id="bank-tiles"></div>
+                    <div class="invoices-tabs" id="bank-tabs">
+                        <button class="tab active" onclick="switchBankTab('unmatched', this)">To match</button>
+                        <button class="tab" onclick="switchBankTab('matched', this)">Matched</button>
+                        <button class="tab" onclick="switchBankTab('out', this)">Money out</button>
+                        <button class="tab" onclick="switchBankTab('ignored', this)">Ignored</button>
+                        <button class="tab" onclick="switchBankTab('imports', this)">Files</button>
+                    </div>
+                    <div id="bank-list"></div>
+                </div>
+
                 <div id="bills-view" class="view-section dashboard" style="display:none;">
                     <div class="invoices-header-area">
                         <div><h1>Bills</h1><p class="subtitle">Track vendor bills and expenses</p></div>
@@ -4581,8 +4609,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="feed.js?v=179"></script>
-    <script src="app.js?v=179"></script>
+    <script src="feed.js?v=180"></script>
+    <script src="app.js?v=180"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
@@ -4810,7 +4838,7 @@
             </div>
         </div>
     </div>
-    <script src="/install-hint.js?v=179"></script>
-    <script src="/pwa.js?v=179"></script>
+    <script src="/install-hint.js?v=180"></script>
+    <script src="/pwa.js?v=180"></script>
 </body>
 </html>

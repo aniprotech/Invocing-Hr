@@ -5501,6 +5501,16 @@ def delete_invoice_payment(number: str, payment_id: int, request: Request, db: S
     inv.paid = money(max(0.0, (inv.paid or 0) - (payment.amount or 0)))
     inv.due = money((inv.due or 0) + (payment.amount or 0))
     inv.status = "Partially Paid" if (inv.paid or 0) > 0.005 else ("Sent" if inv.sent else "Draft")
+    # A receipt made from a bank statement line: the line goes back to waiting.
+    for line in db.query(models.DBBankLine).filter(models.DBBankLine.client_id == client.id,
+                                                   models.DBBankLine.payment_ids.like(f"%{payment.id}%")).all():
+        ids = [x for x in (line.payment_ids or "").split(",") if x and x != str(payment.id)]
+        if len(ids) == len([x for x in (line.payment_ids or "").split(",") if x]):
+            continue
+        line.payment_ids = ",".join(ids)
+        line.allocated = money(max(0.0, (line.allocated or 0) - (payment.amount or 0)))
+        line.status = "unmatched"
+        line.note = ""
     db.delete(payment)
     log_audit(db, client.id, "invoice_payment_reversed", "invoice", inv.id, inv.number,
               f"Amount: {payment.amount:.2f}", request)
@@ -29880,6 +29890,476 @@ def job_training_reminders(db, now):
         sent += 1
     db.commit()
     return f"{sent} sent"
+
+
+# ============================================================================
+# The bank statement
+# ============================================================================
+# Most money still arrives by bank transfer, and every one of those was
+# typed in by hand from a statement. Now the statement itself comes in -
+# a CSV from any bank, or an OFX/QFX - and each line of money in is set
+# against the open invoices: the amount, the invoice number in the
+# narrative, the customer's name. A confident match is one click, or all
+# of them at once; the rest are a short list to look at. A line already
+# typed in by hand is recognised, not recorded twice. Money out is kept
+# for the record and left alone.
+
+BANK_LINE_CAP = 5000
+
+
+def _parse_any_date(text):
+    """A date the way banks write them: 2026-09-14, 14/09/2026, 14-09-26,
+    14 Sep 2026, 20260914, Sep 14, 2026."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    t = t.split("T")[0].split(" ")[0] if re.match(r"^\d{4}-\d{2}-\d{2}", t) else t
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y", "%d-%m-%y", "%Y%m%d", "%d %b %Y", "%d %B %Y",
+                "%b %d, %Y", "%B %d, %Y", "%d-%b-%Y", "%d-%b-%y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(t[:8] if fmt == "%Y%m%d" else t, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_money(text):
+    """'1,234.50', '(120.00)', '-£45', '₹ 2,000.00 Cr' -> a float, or None."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    neg = t.startswith("(") and t.endswith(")") or t.lower().endswith(" dr") or t.lower().endswith("dr")
+    pos_mark = t.lower().endswith(" cr") or t.lower().endswith("cr")
+    cleaned = re.sub(r"[^0-9.\-]", "", t.replace(",", ""))
+    if cleaned in ("", "-", "."):
+        return None
+    try:
+        v = float(cleaned)
+    except ValueError:
+        return None
+    if neg and v > 0:
+        v = -v
+    if pos_mark and v < 0:
+        v = -v
+    return v
+
+
+_COL_ALIASES = {
+    "date": ("date", "transaction date", "txn date", "value date", "posting date", "booking date", "trans date", "posted"),
+    "description": ("description", "narrative", "narration", "details", "particulars", "transaction description", "memo", "payee", "name", "transaction details", "remarks"),
+    "reference": ("reference", "ref", "transaction reference", "ref no", "ref no.", "cheque no", "chq no", "utr", "transaction id"),
+    "amount": ("amount", "transaction amount", "value", "amt"),
+    "credit": ("credit", "paid in", "money in", "deposit", "deposits", "deposit amt", "deposit amt.", "credit amount", "credit amt", "cr", "in", "inflow", "received"),
+    "debit": ("debit", "paid out", "money out", "withdrawal", "withdrawals", "withdrawal amt", "withdrawal amt.", "debit amount", "debit amt", "dr", "out", "outflow", "spent"),
+    "balance": ("balance", "closing balance", "running balance", "bal"),
+}
+
+
+def _bank_columns(fieldnames):
+    """Which column is which, by the names banks use."""
+    found = {}
+    norm = {(f or "").strip().lower().replace("_", " "): f for f in fieldnames}
+    for key, names in _COL_ALIASES.items():
+        for n, original in norm.items():
+            if n in names and key not in found:
+                found[key] = original
+    if "date" not in found:
+        for n, original in norm.items():
+            if "date" in n:
+                found["date"] = original
+                break
+    if "description" not in found:
+        for n, original in norm.items():
+            if any(w in n for w in ("desc", "narrat", "detail", "particular", "memo")):
+                found["description"] = original
+                break
+    if "reference" not in found:
+        for n, original in norm.items():
+            if ("ref" in n or "utr" in n or "chq" in n or "cheque" in n) and original != found.get("description"):
+                found["reference"] = original
+                break
+    return found
+
+
+def parse_bank_csv(text):
+    import csv as _csv
+    import io as _io
+    text = (text or "").lstrip("﻿")
+    # Some banks put a few lines of account details above the header.
+    lines = text.splitlines()
+    start = 0
+    for i, l in enumerate(lines[:30]):
+        low = l.lower()
+        if ("date" in low) and ("," in l or ";" in l or "\t" in l) and any(w in low for w in ("amount", "credit", "debit", "paid", "money", "deposit", "withdraw", "desc", "narr", "particular")):
+            start = i
+            break
+    body = "\n".join(lines[start:])
+    try:
+        dialect = _csv.Sniffer().sniff(body[:4000], delimiters=",;\t")
+    except _csv.Error:
+        dialect = _csv.excel
+    reader = _csv.DictReader(_io.StringIO(body), dialect=dialect)
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="The file has no header row")
+    cols = _bank_columns(reader.fieldnames)
+    if "date" not in cols or not ({"amount", "credit", "debit"} & set(cols)):
+        raise HTTPException(status_code=400, detail="Could not find a date column and an amount (or paid in / paid out) column. "
+                                                    f"Columns seen: {', '.join(f for f in reader.fieldnames if f)[:200]}")
+    out, problems = [], 0
+    for i, row in enumerate(reader, start=2):
+        d = _parse_any_date(row.get(cols["date"]))
+        if not d:
+            problems += 1
+            continue
+        amount = None
+        if "amount" in cols:
+            amount = _parse_money(row.get(cols["amount"]))
+        if amount is None:
+            cr = _parse_money(row.get(cols["credit"])) if "credit" in cols else None
+            dr = _parse_money(row.get(cols["debit"])) if "debit" in cols else None
+            if cr is not None and cr != 0:
+                amount = abs(cr)
+            elif dr is not None and dr != 0:
+                amount = -abs(dr)
+        if amount is None or amount == 0:
+            problems += 1
+            continue
+        desc = (row.get(cols["description"]) if "description" in cols else "") or ""
+        ref = (row.get(cols["reference"]) if "reference" in cols else "") or ""
+        bal = _parse_money(row.get(cols["balance"])) if "balance" in cols else None
+        out.append({"date": d.isoformat(), "description": desc.strip()[:300], "reference": ref.strip()[:120], "amount": money(amount), "balance": bal})
+    return out, problems, {k: v for k, v in cols.items()}
+
+
+def parse_ofx(text):
+    """OFX/QFX: each <STMTTRN> block has DTPOSTED, TRNAMT, NAME/MEMO, FITID."""
+    out, problems = [], 0
+    for block in re.findall(r"<STMTTRN>(.*?)</STMTTRN>", text, flags=re.S | re.I):
+        def tag(name):
+            m = re.search(rf"<{name}>([^<\r\n]*)", block, flags=re.I)
+            return (m.group(1).strip() if m else "")
+        d = _parse_any_date(tag("DTPOSTED")[:8])
+        amt = _parse_money(tag("TRNAMT"))
+        if not d or amt is None or amt == 0:
+            problems += 1
+            continue
+        desc = " ".join(x for x in (tag("NAME"), tag("MEMO")) if x)
+        out.append({"date": d.isoformat(), "description": desc[:300], "reference": tag("FITID")[:120] or tag("CHECKNUM")[:120], "amount": money(amt), "balance": None})
+    if not out and not problems:
+        raise HTTPException(status_code=400, detail="No transactions found in the OFX file")
+    return out, problems, {"format": "ofx"}
+
+
+def parse_statement(text, filename=""):
+    if re.search(r"<STMTTRN>", text or "", flags=re.I) or (filename or "").lower().endswith((".ofx", ".qfx")):
+        return parse_ofx(text) + ("ofx",)
+    return parse_bank_csv(text) + ("csv",)
+
+
+def _fingerprint(account_id, line):
+    raw = f"{account_id or 0}|{line['date']}|{line['amount']:.2f}|{(line['description'] or '').strip().lower()}|{(line['reference'] or '').strip().lower()}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _norm(s):
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def match_suggestions(db, client_id, line, open_invoices, recent_payments):
+    """What this line is probably for. Returns (suggestions, already).
+    A suggestion: invoice, why, confidence auto|likely|possible.
+    `already` is a receipt typed in by hand that this line is the bank
+    side of, so it is recognised rather than recorded twice."""
+    amount = money(line.amount)
+    text = _norm(line.description + " " + line.reference)
+    for p in recent_payments:
+        if p.account_id not in (None, line.account_id):
+            continue
+        if abs((p.amount or 0) - amount) < 0.005 and p.method in ("bank_transfer", "manual", "other") and p.paid_on:
+            pd = _parse_date(p.paid_on)
+            ld = _parse_date(line.date)
+            if pd and ld and abs((pd - ld).days) <= 3:
+                return [], p
+    out = []
+    for inv in open_invoices:
+        due = money(inv.due or 0)
+        if due <= 0:
+            continue
+        number_hit = _norm(inv.number) in text if inv.number else False
+        name_tokens = [t for t in re.findall(r"[a-z0-9]{3,}", (inv.to_contact or "").lower()) if t not in ("ltd", "limited", "llp", "inc", "the", "and", "pvt", "plc")]
+        name_hit = any(t in text for t in name_tokens) if name_tokens else False
+        exact = abs(due - amount) < 0.005
+        partial = 0 < amount < due
+        score = (4 if exact else 0) + (3 if number_hit else 0) + (1 if name_hit else 0) + (1 if partial and (number_hit or name_hit) else 0)
+        if score == 0:
+            continue
+        if (exact and (number_hit or name_hit)) or (number_hit and (exact or partial)):
+            conf = "auto"
+        elif exact or (number_hit) or (name_hit and partial):
+            conf = "likely"
+        else:
+            conf = "possible"
+        why = ", ".join(w for w in (("exact amount" if exact else "part of the amount" if partial else ""), ("invoice number in narrative" if number_hit else ""), ("customer name in narrative" if name_hit else "")) if w)
+        out.append({"invoice_id": inv.id, "number": inv.number, "contact": inv.to_contact or "", "due": due, "due_date": inv.due_date or "",
+                    "currency": (inv.currency or "").upper(), "confidence": conf, "why": why, "score": score})
+    out.sort(key=lambda s: (-s["score"], s["due_date"]))
+    return out[:5], None
+
+
+def _open_invoices(db, client_id):
+    return db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client_id,
+                                             models.DBInvoice.status.notin_(["Draft", "Void", "Paid"]),
+                                             models.DBInvoice.due > 0).all()
+
+
+def _recent_payments(db, client_id, lines):
+    dates = [l.date for l in lines if l.date]
+    if not dates:
+        return []
+    lo = (_parse_date(min(dates)) - timedelta(days=4)).isoformat()
+    hi = (_parse_date(max(dates)) + timedelta(days=4)).isoformat()
+    return db.query(models.DBPayment).filter(models.DBPayment.client_id == client_id, models.DBPayment.paid_on >= lo,
+                                             models.DBPayment.paid_on <= hi).all()
+
+
+def bank_line_to_dict(l, names=None, suggestions=None, already=None):
+    d = {"id": l.id, "import_id": l.import_id, "account_id": l.account_id, "date": l.date, "description": l.description or "",
+         "reference": l.reference or "", "amount": l.amount, "balance": l.balance, "status": l.status, "allocated": l.allocated or 0.0,
+         "remaining": money((l.amount or 0) - (l.allocated or 0)) if (l.amount or 0) > 0 else 0.0,
+         "payment_ids": [int(x) for x in (l.payment_ids or "").split(",") if x.strip().isdigit()], "note": l.note or ""}
+    if suggestions is not None:
+        d["suggestions"] = suggestions
+    if already is not None:
+        d["already_recorded"] = {"payment_id": already.id, "amount": already.amount, "paid_on": already.paid_on, "reference": already.reference or ""}
+    return d
+
+
+@app.post("/api/bank/import")
+def import_bank_statement(request: Request, body: dict = None, dry_run: int = 0, db: Session = Depends(get_db)):
+    """A statement as text. With dry_run: what would come in, what is a
+    duplicate, what could not be read. Without: the lines are kept
+    against the account and matched."""
+    client = get_client_user(request, db)
+    body = body or {}
+    dry_run = bool(dry_run or body.get("dry_run"))
+    text = str(body.get("text") or "")
+    if len(text) > 4_000_000:
+        raise HTTPException(status_code=400, detail="That file is too large")
+    account_id = resolve_account(db, client.id, body.get("account_id")) if body.get("account_id") else default_account_id(db, client.id)
+    rows, problems, cols, kind = parse_statement(text, str(body.get("filename") or ""))
+    if len(rows) > BANK_LINE_CAP:
+        raise HTTPException(status_code=400, detail=f"Keep a file to {BANK_LINE_CAP} lines")
+    existing = {l.fingerprint for l in db.query(models.DBBankLine.fingerprint).filter(models.DBBankLine.client_id == client.id).all()}
+    fresh, dupes = [], 0
+    seen = set()
+    for r in rows:
+        fp = _fingerprint(account_id, r)
+        if fp in existing or fp in seen:
+            dupes += 1
+            continue
+        seen.add(fp)
+        fresh.append((fp, r))
+    money_in = sum(1 for _fp, r in fresh if r["amount"] > 0)
+    summary = {"rows": len(rows), "new": len(fresh), "duplicates": dupes, "unreadable": problems, "money_in": money_in,
+               "money_out": len(fresh) - money_in, "kind": kind, "columns": cols, "account_id": account_id,
+               "first": min((r["date"] for _fp, r in fresh), default=""), "last": max((r["date"] for _fp, r in fresh), default="")}
+    if dry_run:
+        return {"summary": summary, "sample": [dict(r, id=None) for _fp, r in fresh[:8]]}
+    if not fresh:
+        raise HTTPException(status_code=400, detail="Nothing new in that file" + (f" - {dupes} line{'s' if dupes != 1 else ''} already imported" if dupes else ""))
+    imp = models.DBBankImport(client_id=client.id, account_id=account_id, filename=str(body.get("filename") or "")[:200], kind=kind,
+                              lines=len(fresh), duplicates=dupes, imported_by=(client.email or "")[:120])
+    db.add(imp)
+    db.flush()
+    for fp, r in fresh:
+        db.add(models.DBBankLine(client_id=client.id, import_id=imp.id, account_id=account_id, date=r["date"], description=r["description"],
+                                 reference=r["reference"], amount=r["amount"], balance=r["balance"], fingerprint=fp,
+                                 status="unmatched" if r["amount"] > 0 else "out"))
+    log_audit(db, client.id, "bank_statement_imported", "bank_import", imp.id, imp.filename or kind,
+              f"{len(fresh)} lines, {dupes} duplicates skipped", request)
+    db.commit()
+    return {"summary": summary, "import_id": imp.id}
+
+
+@app.get("/api/bank/imports")
+def list_bank_imports(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    names = account_names(db, client.id)
+    rows = db.query(models.DBBankImport).filter(models.DBBankImport.client_id == client.id).order_by(models.DBBankImport.id.desc()).limit(50).all()
+    return {"imports": [{"id": i.id, "account_id": i.account_id, "account": names.get(i.account_id, ""), "filename": i.filename or "", "kind": i.kind,
+                         "lines": i.lines, "duplicates": i.duplicates, "created_at": i.created_at, "imported_by": i.imported_by or ""} for i in rows]}
+
+
+@app.get("/api/bank/lines")
+def list_bank_lines(request: Request, status: str = "unmatched", account_id: int = 0, import_id: int = 0, db: Session = Depends(get_db)):
+    """The lines, with what each one is probably for."""
+    client = get_client_user(request, db)
+    q = db.query(models.DBBankLine).filter(models.DBBankLine.client_id == client.id)
+    if status and status != "all":
+        q = q.filter(models.DBBankLine.status == status)
+    if account_id:
+        q = q.filter(models.DBBankLine.account_id == account_id)
+    if import_id:
+        q = q.filter(models.DBBankLine.import_id == import_id)
+    lines = q.order_by(models.DBBankLine.date.desc(), models.DBBankLine.id.desc()).limit(500).all()
+    names = account_names(db, client.id)
+    out = []
+    if status in ("unmatched", "all"):
+        open_inv = _open_invoices(db, client.id)
+        recent = _recent_payments(db, client.id, lines)
+        for l in lines:
+            if l.status == "unmatched":
+                sug, already = match_suggestions(db, client.id, l, open_inv, recent)
+                out.append(bank_line_to_dict(l, names, sug, already))
+            else:
+                out.append(bank_line_to_dict(l, names))
+    else:
+        out = [bank_line_to_dict(l, names) for l in lines]
+    counts = {}
+    for st, n in db.query(models.DBBankLine.status, sqlfunc.count(models.DBBankLine.id)).filter(models.DBBankLine.client_id == client.id).group_by(models.DBBankLine.status).all():
+        counts[st] = n
+    unmatched_total = money(sum((l.amount or 0) - (l.allocated or 0) for l in db.query(models.DBBankLine).filter(
+        models.DBBankLine.client_id == client.id, models.DBBankLine.status == "unmatched").all()))
+    return {"lines": out, "counts": counts, "unmatched_total": unmatched_total, "accounts": [{"id": k, "name": v} for k, v in names.items()],
+            "auto": sum(1 for l in out if l.get("suggestions") and l["suggestions"][0]["confidence"] == "auto" and not l.get("already_recorded"))}
+
+
+def _line_or_404(db, client_id, line_id):
+    l = db.query(models.DBBankLine).filter(models.DBBankLine.id == line_id, models.DBBankLine.client_id == client_id).first()
+    if not l:
+        raise HTTPException(status_code=404, detail="Line not found")
+    return l
+
+
+def record_line_against_invoice(db, client, line, inv, amount=None, request=None):
+    """A receipt from a bank line: the invoice's, dated the day the money
+    landed, in the account the statement came from, referenced by the
+    bank's own narrative. Never more than the line has left, never more
+    than the invoice is owed."""
+    left = money((line.amount or 0) - (line.allocated or 0))
+    if left <= 0:
+        raise HTTPException(status_code=400, detail="This line has been fully recorded")
+    owed = money(inv.due or 0)
+    if owed <= 0:
+        raise HTTPException(status_code=400, detail=f"{inv.number} has nothing outstanding")
+    take = money(min(left, owed) if amount is None else float(amount))
+    if take <= 0 or take > left + 0.005 or take > owed + 0.005:
+        raise HTTPException(status_code=400, detail=f"Amount must be between 0 and {min(left, owed):.2f}")
+    payment = models.DBPayment(client_id=client.id, invoice_id=inv.id, amount=take, paid_on=line.date, method="bank_transfer",
+                               reference=(line.reference or line.description or "")[:120], note="From the bank statement",
+                               account_id=line.account_id)
+    db.add(payment)
+    inv.paid = money((inv.paid or 0) + take)
+    inv.due = money(owed - take)
+    apply_payment_status(inv)
+    db.flush()
+    line.allocated = money((line.allocated or 0) + take)
+    line.payment_ids = ",".join([x for x in (line.payment_ids or "").split(",") if x] + [str(payment.id)])
+    if line.allocated >= (line.amount or 0) - 0.005:
+        line.status = "matched"
+    log_audit(db, client.id, "invoice_payment_recorded", "invoice", inv.id, inv.number,
+              f"Amount: {take:.2f} from bank line {line.date} {line.description[:60]}, remaining: {inv.due:.2f}", request)
+    return payment
+
+
+@app.post("/api/bank/lines/{line_id}/record")
+def record_bank_line(line_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    line = _line_or_404(db, client.id, line_id)
+    if line.status != "unmatched":
+        raise HTTPException(status_code=400, detail="This line is not waiting to be matched")
+    body = body or {}
+    number = str(body.get("invoice_number") or "").strip()
+    inv = db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id, models.DBInvoice.number == number).first() if number else None
+    if not inv and body.get("invoice_id"):
+        inv = db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id, models.DBInvoice.id == int(body["invoice_id"])).first()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    payment = record_line_against_invoice(db, client, line, inv, body.get("amount"), request)
+    db.commit()
+    return {"message": f"Recorded against {inv.number}", "payment_id": payment.id, "line": bank_line_to_dict(line), "invoice": {"number": inv.number, "status": inv.status, "due": inv.due}}
+
+
+@app.post("/api/bank/record-all")
+def record_all_confident(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Every unmatched line with one confident match, recorded in one go."""
+    client = get_client_user(request, db)
+    q = db.query(models.DBBankLine).filter(models.DBBankLine.client_id == client.id, models.DBBankLine.status == "unmatched")
+    if (body or {}).get("import_id"):
+        q = q.filter(models.DBBankLine.import_id == int(body["import_id"]))
+    lines = q.order_by(models.DBBankLine.date).all()
+    open_inv = _open_invoices(db, client.id)
+    recent = _recent_payments(db, client.id, lines)
+    done, skipped = 0, 0
+    for l in lines:
+        sug, already = match_suggestions(db, client.id, l, open_inv, recent)
+        if already or not sug or sug[0]["confidence"] != "auto" or (len(sug) > 1 and sug[1]["confidence"] == "auto"):
+            skipped += 1
+            continue
+        inv = next((i for i in open_inv if i.id == sug[0]["invoice_id"]), None)
+        if not inv or (inv.due or 0) <= 0:
+            skipped += 1
+            continue
+        record_line_against_invoice(db, client, l, inv, None, request)
+        done += 1
+    db.commit()
+    return {"recorded": done, "left": skipped}
+
+
+@app.post("/api/bank/lines/{line_id}/link")
+def link_bank_line(line_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """This line is the bank's side of a receipt already typed in."""
+    client = get_client_user(request, db)
+    line = _line_or_404(db, client.id, line_id)
+    pid = int((body or {}).get("payment_id") or 0)
+    p = db.query(models.DBPayment).filter(models.DBPayment.id == pid, models.DBPayment.client_id == client.id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    line.status, line.allocated, line.payment_ids = "matched", money(line.amount or 0), str(p.id)
+    line.note = "Already recorded by hand"
+    if not p.account_id and line.account_id:
+        p.account_id = line.account_id
+    db.commit()
+    return {"message": "Linked", "line": bank_line_to_dict(line)}
+
+
+@app.post("/api/bank/lines/{line_id}/ignore")
+def ignore_bank_line(line_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    line = _line_or_404(db, client.id, line_id)
+    if line.allocated and line.allocated > 0:
+        raise HTTPException(status_code=400, detail="Part of this line has been recorded; reverse those receipts first")
+    line.status, line.note = "ignored", str((body or {}).get("note") or "")[:200]
+    db.commit()
+    return {"message": "Ignored", "line": bank_line_to_dict(line)}
+
+
+@app.post("/api/bank/lines/{line_id}/restore")
+def restore_bank_line(line_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    line = _line_or_404(db, client.id, line_id)
+    if line.status not in ("ignored", "out"):
+        raise HTTPException(status_code=400, detail="Only an ignored line can be brought back")
+    line.status, line.note = ("unmatched" if (line.amount or 0) > 0 else "out"), ""
+    db.commit()
+    return {"message": "Back in the list", "line": bank_line_to_dict(line)}
+
+
+@app.delete("/api/bank/imports/{import_id}")
+def delete_bank_import(import_id: int, request: Request, db: Session = Depends(get_db)):
+    """A file brought in by mistake. Refused once any of its lines has
+    been recorded, because those receipts are on invoices now."""
+    client = get_client_user(request, db)
+    imp = db.query(models.DBBankImport).filter(models.DBBankImport.id == import_id, models.DBBankImport.client_id == client.id).first()
+    if not imp:
+        raise HTTPException(status_code=404, detail="Import not found")
+    used = db.query(models.DBBankLine).filter(models.DBBankLine.import_id == imp.id, models.DBBankLine.allocated > 0).count()
+    if used:
+        raise HTTPException(status_code=400, detail=f"{used} line{'s' if used != 1 else ''} of this file have been recorded against invoices")
+    db.query(models.DBBankLine).filter(models.DBBankLine.import_id == imp.id).delete(synchronize_session=False)
+    db.delete(imp)
+    db.commit()
+    return {"message": "Removed"}
 
 
 # Serve frontend

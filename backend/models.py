@@ -2648,3 +2648,42 @@ class DBCourseAssignment(Base):
     reminded_at = Column(String, default="")
     assigned_by = Column(String, default="")
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBBankImport(Base):
+    """One statement file brought in: which account, when, how many lines."""
+    __tablename__ = "bank_imports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    account_id = Column(Integer, ForeignKey("money_accounts.id"), nullable=True, index=True)
+    filename = Column(String, default="")
+    kind = Column(String, default="csv")             # csv | ofx
+    lines = Column(Integer, default=0)
+    duplicates = Column(Integer, default=0)
+    imported_by = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBBankLine(Base):
+    """One line of a bank statement. Money in is positive. It is matched to
+    an invoice and recorded as a receipt, ignored, or left for later."""
+    __tablename__ = "bank_lines"
+    __table_args__ = (UniqueConstraint("client_id", "fingerprint", name="uq_bank_line"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    import_id = Column(Integer, ForeignKey("bank_imports.id"), nullable=False, index=True)
+    account_id = Column(Integer, ForeignKey("money_accounts.id"), nullable=True, index=True)
+    date = Column(String, default="", index=True)
+    description = Column(String, default="")
+    reference = Column(String, default="")
+    amount = Column(Float, default=0.0)
+    balance = Column(Float, nullable=True)
+    # The same line in two files - an overlapping export - is one line.
+    fingerprint = Column(String, default="", index=True)
+    status = Column(String, default="unmatched", index=True)   # unmatched | matched | ignored | out
+    allocated = Column(Float, default=0.0)                       # recorded against invoices so far
+    payment_ids = Column(String, default="")                     # comma-separated receipts made from it
+    note = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
