@@ -31656,6 +31656,159 @@ def raise_invoice_from_quote(db, client, q, request=None):
     return inv_number
 
 
+# ============================================================================
+# THE INVOICE LIST AT SCALE - found, filtered, sorted, paged, exported, and
+# acted on in bulk
+#
+# The list came down whole and was filtered in the browser, which is fine
+# for fifty invoices and not for five thousand. These answer the question
+# asked - which ones, in what order, how many - and leave the rest on the
+# server. /api/invoices itself is unchanged for everything that reads it.
+# ============================================================================
+
+INVOICE_LIST_MAX = 200
+INVOICE_LIST_STATUSES = {
+    "draft": "Draft", "sent": "Sent", "awaiting-payment": "Awaiting Payment", "awaiting payment": "Awaiting Payment",
+    "partially-paid": "Partially Paid", "partially paid": "Partially Paid", "paid": "Paid", "credited": "Credited", "void": "Void",
+}
+INVOICE_LIST_SORTS = {"date": "issue_date", "due_date": "due_date", "number": "id", "amount": "due", "customer": "to_contact", "paid": "paid"}
+BULK_MAX = 100
+
+
+def _invoice_row(inv, client, today):
+    overdue_days = invoice_overdue_days(inv, today)
+    return {
+        "number": inv.number, "ref": inv.ref, "to": inv.to_contact, "email": inv.email, "phone_number": inv.phone_number,
+        "date": inv.issue_date, "due_date": inv.due_date, "paid": inv.paid, "due": inv.due,
+        "total": money((inv.paid or 0) + (inv.due or 0)), "status": inv.status, "sent": inv.sent, "tax_type": inv.tax_type,
+        "currency": inv.currency or (client.currency if client else ""), "open_count": inv.open_count or 0,
+        "last_opened": inv.last_opened or "", "is_overdue": overdue_days > 0, "days_overdue": overdue_days,
+    }
+
+
+def invoice_list_query(db, client, q="", status="", customer="", start="", end=""):
+    """The filtered set, before any order or page."""
+    today = date.today().isoformat()
+    query = db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id)
+    status = (status or "all").strip().lower()
+    if status == "overdue":
+        query = query.filter(models.DBInvoice.status.notin_(["Paid", "Void", "Draft", "Credited"]),
+                             models.DBInvoice.due > 0, models.DBInvoice.due_date != "", models.DBInvoice.due_date < today)
+    elif status == "unpaid":
+        query = query.filter(models.DBInvoice.status.notin_(["Paid", "Void", "Draft", "Credited"]), models.DBInvoice.due > 0)
+    elif status in INVOICE_LIST_STATUSES:
+        query = query.filter(models.DBInvoice.status == INVOICE_LIST_STATUSES[status])
+    elif status not in ("", "all"):
+        raise HTTPException(status_code=400, detail="Status must be one of: all, draft, sent, awaiting-payment, partially-paid, paid, overdue, unpaid, credited, void")
+    q = (q or "").strip()
+    if q:
+        like = f"%{q}%"
+        query = query.filter(or_(models.DBInvoice.number.ilike(like), models.DBInvoice.ref.ilike(like), models.DBInvoice.to_contact.ilike(like),
+                                 models.DBInvoice.email.ilike(like), models.DBInvoice.to_company.ilike(like)))
+    if customer:
+        query = query.filter(models.DBInvoice.to_contact == customer)
+    if start:
+        query = query.filter(models.DBInvoice.issue_date >= _clean_ymd(start, "From"))
+    if end:
+        query = query.filter(models.DBInvoice.issue_date <= _clean_ymd(end, "To"))
+    return query
+
+
+def invoice_list_order(query, sort="", direction=""):
+    column = getattr(models.DBInvoice, INVOICE_LIST_SORTS.get((sort or "number").strip().lower(), "id"))
+    if (sort or "").strip().lower() not in INVOICE_LIST_SORTS and (sort or "").strip():
+        raise HTTPException(status_code=400, detail="Sort by one of: " + ", ".join(INVOICE_LIST_SORTS))
+    asc = (direction or "desc").strip().lower() == "asc"
+    return query.order_by(column.asc() if asc else column.desc(), models.DBInvoice.id.desc())
+
+
+@app.get("/api/invoice-list")
+def invoice_list(request: Request, q: str = "", status: str = "all", customer: str = "", start: str = "", end: str = "",
+                 sort: str = "number", dir: str = "desc", limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
+    """A page of the invoices that match, with what the whole match adds up to."""
+    client = get_client_user(request, db)
+    limit = max(1, min(int(limit or 50), INVOICE_LIST_MAX))
+    offset = max(0, int(offset or 0))
+    query = invoice_list_query(db, client, q, status, customer, start, end)
+    today = date.today()
+    # The whole match, for the count and the money on it - cheap columns only.
+    summary = {"count": 0, "owed": 0.0, "overdue_owed": 0.0, "overdue_count": 0, "paid": 0.0}
+    for row in query.with_entities(models.DBInvoice.status, models.DBInvoice.due, models.DBInvoice.paid, models.DBInvoice.due_date).all():
+        summary["count"] += 1
+        summary["paid"] = money(summary["paid"] + (row.paid or 0))
+        if row.status not in ("Paid", "Void", "Draft", "Credited") and (row.due or 0) > 0:
+            summary["owed"] = money(summary["owed"] + (row.due or 0))
+            due = _parse_date(row.due_date)
+            if due and due < today:
+                summary["overdue_owed"] = money(summary["overdue_owed"] + (row.due or 0))
+                summary["overdue_count"] += 1
+    rows = invoice_list_order(query, sort, dir).offset(offset).limit(limit).all()
+    return {"items": [_invoice_row(inv, client, today) for inv in rows], "total": summary["count"], "offset": offset, "limit": limit,
+            "summary": summary, "currency": client.currency or ""}
+
+
+@app.get("/api/invoice-list.csv")
+def invoice_list_csv(request: Request, q: str = "", status: str = "all", customer: str = "", start: str = "", end: str = "",
+                     sort: str = "number", dir: str = "desc", db: Session = Depends(get_db)):
+    """The whole match as a file, for the accountant."""
+    client = get_client_user(request, db)
+    rows = invoice_list_order(invoice_list_query(db, client, q, status, customer, start, end), sort, dir).all()
+    today = date.today()
+    out = []
+    for inv in rows:
+        r = _invoice_row(inv, client, today)
+        out.append([r["number"], r["ref"] or "", r["to"] or "", r["email"] or "", r["date"] or "", r["due_date"] or "", r["status"],
+                    r["currency"], f"{r['total']:.2f}", f"{(r['paid'] or 0):.2f}", f"{(r['due'] or 0):.2f}", r["days_overdue"], r["sent"] or ""])
+    name = "invoices" + (f"-{status}" if status and status != "all" else "") + f"-{today.isoformat()}.csv"
+    return _csv_response(name, ["Number", "Ref", "Customer", "Email", "Issued", "Due date", "Status", "Currency", "Total", "Paid", "Due", "Days overdue", "Sent"], out)
+
+
+@app.post("/api/invoice-list/bulk")
+def invoice_list_bulk(request: Request, background_tasks: BackgroundTasks, body: dict = None, db: Session = Depends(get_db)):
+    """One action on many invoices, each on its own: what could not be done
+    is said, and the rest is done."""
+    client = get_client_user(request, db)
+    body = body or {}
+    numbers = body.get("numbers") or []
+    action = str(body.get("action") or "").strip().lower()
+    if not isinstance(numbers, list) or not numbers:
+        raise HTTPException(status_code=400, detail="Pick at least one invoice")
+    if len(numbers) > BULK_MAX:
+        raise HTTPException(status_code=400, detail=f"At most {BULK_MAX} at a time")
+    if action not in ("send", "chase", "mark_sent", "delete_drafts"):
+        raise HTTPException(status_code=400, detail="Action must be one of: send, chase, mark_sent, delete_drafts")
+    numbers = list(dict.fromkeys(str(n).strip() for n in numbers if str(n).strip()))
+    done, failed = [], []
+    for number in numbers:
+        try:
+            if action == "send":
+                send_invoice_email(number, background_tasks, request, SendInvoiceEmail(), db)
+            elif action == "chase":
+                chase_invoice_now(number, request, {}, db)
+            elif action == "mark_sent":
+                inv = db.query(models.DBInvoice).filter(models.DBInvoice.number == number, models.DBInvoice.client_id == client.id).first()
+                if not inv:
+                    raise HTTPException(status_code=404, detail="Invoice not found")
+                if inv.status not in ("Draft", "Awaiting Payment"):
+                    raise HTTPException(status_code=400, detail=f"Already {inv.status.lower()}")
+                inv.status = "Sent"
+                inv.sent = inv.sent or date.today().isoformat()
+                log_audit(db, client.id, "invoice_marked_sent", "invoice", inv.id, inv.number, "Marked sent by hand", request)
+                db.commit()
+            elif action == "delete_drafts":
+                inv = db.query(models.DBInvoice).filter(models.DBInvoice.number == number, models.DBInvoice.client_id == client.id).first()
+                if not inv:
+                    raise HTTPException(status_code=404, detail="Invoice not found")
+                if inv.status != "Draft":
+                    raise HTTPException(status_code=400, detail="Only a draft can be deleted this way")
+                delete_invoice(number, request, db)
+            done.append(number)
+        except HTTPException as exc:
+            db.rollback()
+            failed.append({"number": number, "why": str(exc.detail)})
+    return {"done": done, "failed": failed, "message": f"{len(done)} done" + (f", {len(failed)} could not be" if failed else "")}
+
+
 # Serve frontend
 frontend_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 if os.path.exists(frontend_path):

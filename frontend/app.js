@@ -2073,15 +2073,34 @@ function renderCashFlowChart(cashFlowData) {
 }
 
 // --- Invoices ---
-async function fetchInvoices() {
+// The list is the server's answer to a question - which ones, in what
+// order, how many - a page at a time, so five thousand invoices are no
+// slower than fifty. What is ticked can be sent, chased, marked or binned
+// in one go.
+var _invList = { status: 'all', q: '', sort: 'number', dir: 'desc', offset: 0, limit: 50, total: 0, summary: null, selected: {} };
+
+function invoiceListParams(paged) {
+    var p = new URLSearchParams();
+    p.set('status', (_invList.status || 'all').replace(/\s+/g, '-'));
+    if (_invList.q) p.set('q', _invList.q);
+    p.set('sort', _invList.sort);
+    p.set('dir', _invList.dir);
+    if (paged) { p.set('limit', String(_invList.limit)); p.set('offset', String(_invList.offset)); }
+    return p.toString();
+}
+
+async function fetchInvoices(more) {
+    if (!more) _invList.offset = 0;
+    else _invList.offset = allInvoices.length;
     try {
-        var response = await fetch('/api/invoices');
-        if (!response.ok) throw new Error('Failed');
-        allInvoices = await response.json();
+        var data = await fetchJson('/api/invoice-list?' + invoiceListParams(true));
+        allInvoices = more ? allInvoices.concat(data.items || []) : (data.items || []);
+        _invList.total = data.total || 0;
+        _invList.summary = data.summary || null;
         renderInvoices(allInvoices);
     } catch (error) {
         var tbody = document.getElementById('invoices-table-body');
-        if (tbody) tbody.innerHTML = '<tr><td colspan="10" class="loading">Failed to load invoices.</td></tr>';
+        if (tbody) tbody.innerHTML = '<tr><td colspan="11" class="loading">Failed to load invoices.</td></tr>';
     }
 }
 window.fetchInvoices = fetchInvoices;
@@ -2089,11 +2108,25 @@ window.fetchInvoices = fetchInvoices;
 function renderInvoices(invoices) {
     var tbody = document.getElementById('invoices-table-body');
     var countSpan = document.getElementById('invoice-count');
-    if (countSpan) countSpan.textContent = invoices.length + ' item' + (invoices.length !== 1 ? 's' : '');
+    var total = _invList.total || invoices.length;
+    if (countSpan) countSpan.textContent = (invoices.length < total ? invoices.length + ' of ' : '') + total + ' item' + (total !== 1 ? 's' : '');
+    var summary = document.getElementById('invoice-list-summary');
+    if (summary) {
+        var s = _invList.summary;
+        summary.textContent = s ? (formatCurrency(s.owed || 0) + ' owed' + (s.overdue_count ? ' \u00b7 ' + formatCurrency(s.overdue_owed || 0) + ' overdue on ' + s.overdue_count + ' invoice' + (s.overdue_count === 1 ? '' : 's') : '') + ' \u00b7 ' + formatCurrency(s.paid || 0) + ' received') : '';
+    }
+    var more = document.getElementById('invoice-load-more');
+    if (more) more.style.display = invoices.length < total ? 'inline-flex' : 'none';
+    document.querySelectorAll('[data-inv-sort]').forEach(function (th) {
+        var key = th.getAttribute('data-inv-sort');
+        th.textContent = th.textContent.replace(/\s*[\u25b2\u25bc]$/, '') + (key === _invList.sort ? (_invList.dir === 'asc' ? ' \u25b2' : ' \u25bc') : '');
+        if (!th._sortBound) { th._sortBound = true; th.addEventListener('click', function () { sortInvoices(key); }); }
+    });
     if (!tbody) return;
     tbody.innerHTML = '';
     if (invoices.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:40px;color:var(--text-secondary);">No invoices found.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:40px;color:var(--text-secondary);">No invoices found.</td></tr>';
+        updateInvoiceBulkBar();
         return;
     }
     invoices.forEach(function(inv) {
@@ -2106,31 +2139,103 @@ function renderInvoices(invoices) {
             dueCell = '<span style="color:var(--danger-text);font-weight:600;" title="' + inv.days_overdue +
                       ' days overdue">' + esc(inv.due_date) + ' &#9888;</span>';
         }
-        tbody.insertAdjacentHTML('beforeend', '<tr><td><a href="#" class="link" onclick="event.preventDefault();viewInvoice(\'' + esc(jsq(inv.number)) + '\')">' + esc(jsq(inv.number)) + '</a></td><td>' + esc(inv.ref || '-') + '</td><td>' + esc(inv.to) + '</td><td>' + esc(inv.date) + '</td><td>' + dueCell + '</td><td class="text-right">' + formatCurrency(inv.paid, inv.currency) + '</td><td class="text-right">' + formatCurrency(inv.due, inv.currency) + '</td><td><span class="status-pill status-' + statusClass + '">' + esc(inv.status) + '</span></td><td class="text-right">' + openBadge + '</td><td>' + esc(inv.sent || '-') + '</td></tr>');
+        tbody.insertAdjacentHTML('beforeend', '<tr><td><input type="checkbox" data-inv-pick="' + esc(inv.number) + '"' + (_invList.selected[inv.number] ? ' checked' : '') + ' aria-label="Select ' + esc(inv.number) + '"></td>' +
+            '<td><a href="#" class="link" onclick="event.preventDefault();viewInvoice(\'' + esc(jsq(inv.number)) + '\')">' + esc(jsq(inv.number)) + '</a></td><td>' + esc(inv.ref || '-') + '</td><td>' + esc(inv.to) + '</td><td>' + esc(inv.date) + '</td><td>' + dueCell + '</td><td class="text-right">' + formatCurrency(inv.paid, inv.currency) + '</td><td class="text-right">' + formatCurrency(inv.due, inv.currency) + '</td><td><span class="status-pill status-' + statusClass + '">' + esc(inv.status) + '</span></td><td class="text-right">' + openBadge + '</td><td>' + esc(inv.sent || '-') + '</td></tr>');
     });
+    tbody.querySelectorAll('[data-inv-pick]').forEach(function (box) {
+        box.addEventListener('change', function () { toggleInvoicePick(box.getAttribute('data-inv-pick'), box.checked); });
+    });
+    updateInvoiceBulkBar();
 }
 
 function filterInvoices(status, btn) {
     currentFilter = status;
+    _invList.status = status;
+    _invList.selected = {};
     document.querySelectorAll('.invoices-tabs .tab').forEach(function(t) { t.classList.remove('active'); });
     if (btn) btn.classList.add('active');
-    var filtered;
-    if (status === 'all') filtered = allInvoices;
-    // "overdue" is derived from the due date, not stored as a status.
-    else if (status === 'overdue') filtered = allInvoices.filter(function(inv) { return inv.is_overdue; });
-    else filtered = allInvoices.filter(function(inv) { return (inv.status || '').toLowerCase() === status; });
-    renderInvoices(filtered);
+    fetchInvoices();
 }
 window.filterInvoices = filterInvoices;
 
+var _invSearchTimer = null;
 function searchInvoices() {
-    var q = (document.getElementById('invoice-search').value || '').toLowerCase();
-    var filtered = allInvoices.filter(function(inv) {
-        return (inv.number || '').toLowerCase().indexOf(q) >= 0 || (inv.to || '').toLowerCase().indexOf(q) >= 0 || (inv.ref || '').toLowerCase().indexOf(q) >= 0 || (inv.email || '').toLowerCase().indexOf(q) >= 0;
-    });
-    renderInvoices(filtered);
+    var q = (document.getElementById('invoice-search').value || '').trim();
+    clearTimeout(_invSearchTimer);
+    _invSearchTimer = setTimeout(function () {
+        if (q === _invList.q) return;
+        _invList.q = q;
+        fetchInvoices();
+    }, 250);
 }
 window.searchInvoices = searchInvoices;
+
+function sortInvoices(key) {
+    if (_invList.sort === key) _invList.dir = _invList.dir === 'asc' ? 'desc' : 'asc';
+    else { _invList.sort = key; _invList.dir = key === 'customer' ? 'asc' : 'desc'; }
+    fetchInvoices();
+}
+window.sortInvoices = sortInvoices;
+
+function toggleInvoicePick(number, on) {
+    if (on) _invList.selected[number] = true; else delete _invList.selected[number];
+    updateInvoiceBulkBar();
+}
+window.toggleInvoicePick = toggleInvoicePick;
+
+function toggleAllInvoices(on) {
+    if (!on) _invList.selected = {};
+    document.querySelectorAll('#invoices-table-body [data-inv-pick]').forEach(function (box) {
+        box.checked = !!on;
+        if (on) _invList.selected[box.getAttribute('data-inv-pick')] = true;
+    });
+    var all = document.getElementById('invoice-pick-all');
+    if (all) all.checked = !!on;
+    updateInvoiceBulkBar();
+}
+window.toggleAllInvoices = toggleAllInvoices;
+
+function selectedInvoiceNumbers() { return Object.keys(_invList.selected); }
+
+function updateInvoiceBulkBar() {
+    var bar = document.getElementById('invoice-bulk-bar');
+    var n = selectedInvoiceNumbers().length;
+    if (bar) bar.style.display = n ? 'flex' : 'none';
+    var count = document.getElementById('invoice-bulk-count');
+    if (count) count.textContent = n + ' selected';
+    var all = document.getElementById('invoice-pick-all');
+    if (all && !n) all.checked = false;
+}
+
+var BULK_WORDS = {
+    send: { ask: 'Email {n} invoice(s) to their customers now?', title: 'Send by email', ok: 'Send' },
+    chase: { ask: 'Send a payment reminder for {n} invoice(s)? Paid, draft and unpaid-with-no-email ones are skipped.', title: 'Send reminders', ok: 'Send' },
+    mark_sent: { ask: 'Mark {n} invoice(s) as sent, without emailing them?', title: 'Mark sent', ok: 'Mark sent' },
+    delete_drafts: { ask: 'Delete the drafts among {n} selected? Anything already sent is left alone.', title: 'Delete drafts', ok: 'Delete', danger: true }
+};
+
+async function bulkInvoices(action) {
+    var numbers = selectedInvoiceNumbers();
+    if (!numbers.length) { showToast('Tick some invoices first', 'error'); return; }
+    var w = BULK_WORDS[action];
+    if (!w) return;
+    if (!await uiConfirm(w.ask.replace('{n}', numbers.length), { title: w.title, confirmText: w.ok, danger: !!w.danger })) return;
+    try {
+        var out = await fetchJson('/api/invoice-list/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ numbers: numbers, action: action }) });
+        showToast(out.message || 'Done', (out.failed || []).length ? 'info' : 'success');
+        if ((out.failed || []).length) {
+            await uiAlert((out.failed || []).map(function (f) { return f.number + ': ' + f.why; }).join('\n'), { title: (out.failed || []).length + ' could not be done' });
+        }
+        _invList.selected = {};
+        fetchInvoices();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.bulkInvoices = bulkInvoices;
+
+function exportInvoicesCsv() {
+    window.open('/api/invoice-list.csv?' + invoiceListParams(false), '_blank');
+}
+window.exportInvoicesCsv = exportInvoicesCsv;
 
 var searchDebounce = null;
 function handleGlobalSearch(e) {
