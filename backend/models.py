@@ -104,6 +104,8 @@ class DBInvoice(Base):
     # Reminders and late fees held off on this one invoice while something
     # is sorted out - a query, a dispute, a promise to pay on Friday.
     chase_paused = Column(Boolean, default=False)
+    # The day it is to be emailed, when that is later than now.
+    send_at = Column(String, default="")
 
     line_items = relationship("DBLineItem", back_populates="invoice")
     client = relationship("DBClient", back_populates="invoices")
@@ -541,6 +543,12 @@ class DBContact(Base):
     # whose contract says no fees. NULL on old rows means yes.
     chase = Column(Boolean, default=True)
     late_fees = Column(Boolean, default=True)
+    # This customer's own terms: how long they get to pay (blank means the
+    # business's default), the currency they are billed in, and the address
+    # copied on everything sent to them - their accounts desk, usually.
+    payment_terms_days = Column(Integer, nullable=True)
+    currency = Column(String, default="")
+    cc_email = Column(String, default="")
 
     client = relationship("DBClient", back_populates="contacts")
 

@@ -1782,6 +1782,20 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 62: {sys.exc_info()[1]}")
 
+            # 63. A customer's own terms, currency and copy address; and the
+            # day an invoice is to send itself.
+            try:
+                for ddl in (
+                    "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS payment_terms_days INTEGER",
+                    "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS currency VARCHAR DEFAULT ''",
+                    "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS cc_email VARCHAR DEFAULT ''",
+                    "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS send_at VARCHAR DEFAULT ''",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 63: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

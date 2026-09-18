@@ -2140,7 +2140,7 @@ function renderInvoices(invoices) {
                       ' days overdue">' + esc(inv.due_date) + ' &#9888;</span>';
         }
         tbody.insertAdjacentHTML('beforeend', '<tr><td><input type="checkbox" data-inv-pick="' + esc(inv.number) + '"' + (_invList.selected[inv.number] ? ' checked' : '') + ' aria-label="Select ' + esc(inv.number) + '"></td>' +
-            '<td><a href="#" class="link" onclick="event.preventDefault();viewInvoice(\'' + esc(jsq(inv.number)) + '\')">' + esc(jsq(inv.number)) + '</a></td><td>' + esc(inv.ref || '-') + '</td><td>' + esc(inv.to) + '</td><td>' + esc(inv.date) + '</td><td>' + dueCell + '</td><td class="text-right">' + formatCurrency(inv.paid, inv.currency) + '</td><td class="text-right">' + formatCurrency(inv.due, inv.currency) + '</td><td><span class="status-pill status-' + statusClass + '">' + esc(inv.status) + '</span></td><td class="text-right">' + openBadge + '</td><td>' + esc(inv.sent || '-') + '</td></tr>');
+            '<td><a href="#" class="link" onclick="event.preventDefault();viewInvoice(\'' + esc(jsq(inv.number)) + '\')">' + esc(jsq(inv.number)) + '</a></td><td>' + esc(inv.ref || '-') + '</td><td>' + esc(inv.to) + '</td><td>' + esc(inv.date) + '</td><td>' + dueCell + '</td><td class="text-right">' + formatCurrency(inv.paid, inv.currency) + '</td><td class="text-right">' + formatCurrency(inv.due, inv.currency) + '</td><td><span class="status-pill status-' + statusClass + '">' + esc(inv.status) + '</span></td><td class="text-right">' + openBadge + '</td><td>' + (inv.sent ? esc(inv.sent) : (inv.send_at ? '<span title="Will be sent on ' + esc(inv.send_at) + '" style="color:var(--primary-color);">&#9201; ' + esc(inv.send_at) + '</span>' : '-')) + '</td></tr>');
     });
     tbody.querySelectorAll('[data-inv-pick]').forEach(function (box) {
         box.addEventListener('change', function () { toggleInvoicePick(box.getAttribute('data-inv-pick'), box.checked); });
@@ -2926,6 +2926,64 @@ function renderInvoiceCredits(inv) {
 }
 window.renderInvoiceCredits = renderInvoiceCredits;
 
+// ---------------------------------------------------------------------------
+// A customer's own terms, applied when they are picked on a document; an
+// invoice told to send itself on a day.
+// ---------------------------------------------------------------------------
+function applyCustomerDefaults(stem, c) {
+    if (!c) return;
+    if (c.payment_terms_days != null && c.payment_terms_days !== '') {
+        var issueEl = document.getElementById(stem + '-issue-date');
+        var dueEl = document.getElementById(stem + '-due-date');
+        if (issueEl && dueEl && issueEl.value) {
+            var base = new Date(issueEl.value + 'T00:00:00');
+            base.setDate(base.getDate() + (parseInt(c.payment_terms_days, 10) || 0));
+            dueEl.value = localDate(base);
+        }
+    }
+    if (c.currency && typeof setCurrencyPickerDisplay === 'function') {
+        var picker = stem === 'inv' ? 'invCurrency' : (stem === 'quote' ? 'quoteCurrency' : '');
+        if (picker) setCurrencyPickerDisplay(picker, String(c.currency).toUpperCase());
+    }
+}
+window.applyCustomerDefaults = applyCustomerDefaults;
+
+function renderInvoiceSchedule(inv) {
+    var host = document.getElementById('view-inv-scheduled');
+    var btn = document.getElementById('view-invoice-later-btn');
+    if (btn) btn.style.display = (!inv.sent && ['Paid', 'Void', 'Credited'].indexOf(inv.status) === -1 && inv.email) ? 'inline-block' : 'none';
+    if (!host) return;
+    if (!inv.send_at || inv.sent) { host.style.display = 'none'; host.innerHTML = ''; return; }
+    host.innerHTML = '&#9201; Will be emailed to ' + esc(inv.email) + ' on <strong>' + esc(inv.send_at) + '</strong>. ' +
+        '<a href="#" data-unschedule style="margin-left:8px;">Cancel</a>';
+    host.style.display = 'block';
+    host.querySelector('[data-unschedule]').addEventListener('click', async function (e) {
+        e.preventDefault();
+        try {
+            await fetchJson('/api/invoices/' + encodeURIComponent(inv.number) + '/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ send_at: '' }) });
+            showToast('It will not send itself', 'success');
+            fetchInvoices();
+            viewInvoice(inv.number);
+        } catch (err) { showToast(err.message, 'error'); }
+    });
+}
+window.renderInvoiceSchedule = renderInvoiceSchedule;
+
+async function scheduleInvoiceSend() {
+    var inv = _viewInvoice;
+    if (!inv) return;
+    var tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+    var when = await uiPrompt('Email it to ' + (inv.email || 'the customer') + ' on which day? (YYYY-MM-DD)', inv.send_at || localDate(tomorrow), { title: 'Send later', confirmText: 'Schedule' });
+    if (!when) return;
+    try {
+        var out = await fetchJson('/api/invoices/' + encodeURIComponent(inv.number) + '/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ send_at: when.trim() }) });
+        showToast(out.message || 'Scheduled', 'success');
+        fetchInvoices();
+        viewInvoice(inv.number);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.scheduleInvoiceSend = scheduleInvoiceSend;
+
 function openCreditNoteModal() {
     var inv = _viewInvoice;
     if (!inv) return;
@@ -3340,6 +3398,7 @@ async function viewInvoice(number) {
         renderInvoicePayments(inv);
         renderInvoiceChasing(inv);
         renderInvoiceCredits(inv);
+        renderInvoiceSchedule(inv);
         if (typeof showInvoiceDelivery === 'function') showInvoiceDelivery(inv);
         document.getElementById('view-inv-title').textContent = 'Invoice ' + inv.number;
         document.getElementById('view-inv-number-val').textContent = inv.number;
@@ -3441,6 +3500,8 @@ async function viewInvoice(number) {
         document.querySelectorAll('.invoice-action-btn').forEach(function(btn) { btn.style.display = 'inline-block'; });
         var creditBtn = document.getElementById('view-invoice-credit-btn');
         if (creditBtn) creditBtn.style.display = (['Draft', 'Void'].indexOf(inv.status) === -1) ? 'inline-block' : 'none';
+        var laterBtn = document.getElementById('view-invoice-later-btn');
+        if (laterBtn) laterBtn.style.display = (!inv.sent && ['Paid', 'Void', 'Credited'].indexOf(inv.status) === -1 && inv.email) ? 'inline-block' : 'none';
 
         // Editing is offered only while nothing has been paid against it. The
         // server refuses the rest - money already received is a fact, and
@@ -4336,7 +4397,7 @@ async function refreshEmailPreview() {
         if (!toBox.value.trim() && data.to) toBox.value = data.to;
 
         document.getElementById('preview-subject').textContent = data.subject || '(no subject)';
-        document.getElementById('preview-to').textContent = 'To: ' + (toBox.value || data.to || '—');
+        document.getElementById('preview-to').textContent = 'To: ' + (toBox.value || data.to || '—') + (data.cc ? ' · Cc: ' + data.cc : '');
         document.getElementById('preview-body').textContent = data.body || '';
 
         var warn = document.getElementById('send-missing');
@@ -5876,6 +5937,7 @@ function setupContactAutocomplete(inputId, dropdownId, emailId, phoneId) {
                                 var el = document.getElementById(stem + '-' + pair[0]);
                                 if (el) el.value = pair[1] || '';
                             });
+                            applyCustomerDefaults(stem, c);
                             dropdown.classList.remove('show');
                         });
                         dropdown.appendChild(div);
@@ -10733,7 +10795,7 @@ function showAddContactModal() {
     document.getElementById('contact-name').value = '';
     document.getElementById('contact-email').value = '';
     document.getElementById('contact-phone').value = '';
-    ['contact-company', 'contact-address', 'contact-taxid'].forEach(function (id) { var el = document.getElementById(id); if (el) el.value = ''; });
+    ['contact-company', 'contact-address', 'contact-taxid', 'contact-terms', 'contact-currency', 'contact-cc'].forEach(function (id) { var el = document.getElementById(id); if (el) el.value = ''; });
     ['contact-chase', 'contact-late-fees'].forEach(function (id) { var el = document.getElementById(id); if (el) el.checked = true; });
     document.getElementById('add-contact-modal').style.display = 'flex';
 }
@@ -10757,6 +10819,12 @@ async function saveContact() {
     var chaseBox = document.getElementById('contact-chase'), feeBox = document.getElementById('contact-late-fees');
     if (chaseBox) billing.chase = !!chaseBox.checked;
     if (feeBox) billing.late_fees = !!feeBox.checked;
+    var termsBox = document.getElementById('contact-terms');
+    if (termsBox) billing.payment_terms_days = termsBox.value.trim() === '' ? null : parseInt(termsBox.value, 10);
+    var curBox = document.getElementById('contact-currency');
+    if (curBox) billing.currency = curBox.value.trim().toUpperCase();
+    var ccBox = document.getElementById('contact-cc');
+    if (ccBox) billing.cc_email = ccBox.value.trim();
     if (!name) { showToast('Contact name required', 'error'); return; }
     try {
         if (editId) {
@@ -10787,6 +10855,7 @@ async function editContact(id) {
     var chaseBox = document.getElementById('contact-chase'), feeBox = document.getElementById('contact-late-fees');
     if (chaseBox) chaseBox.checked = c.chase !== false;
     if (feeBox) feeBox.checked = c.late_fees !== false;
+    setv('contact-terms', c.payment_terms_days == null ? '' : String(c.payment_terms_days)); setv('contact-currency', c.currency); setv('contact-cc', c.cc_email);
     document.getElementById('add-contact-modal').style.display = 'flex';
 }
 window.editContact = editContact;
@@ -14864,7 +14933,7 @@ function renderRecurring() {
             '<td class="text-right"><strong>' + formatCurrency(r.total, r.currency) + '</strong></td>' +
             '<td class="text-right">' + (r.invoices_created || 0) + '</td>' +
             '<td><span class="status-pill ' + (r.is_active ? 'status-active' : 'status-terminated') + '">' +
-                (r.is_active ? 'Active' : 'Stopped') + '</span></td>' +
+                (r.is_active ? 'Active' : 'Stopped') + '</span>' + (r.auto_send ? ' <span class="status-pill status-sent" title="Each invoice is emailed as it is raised">Sends itself</span>' : '') + '</td>' +
             '<td class="text-right">' +
                 '<button class="btn btn-outline btn-sm" onclick="stopRecurring(' + r.id + ')">Stop</button>' +
             '</td></tr>';
@@ -14899,14 +14968,15 @@ async function makeInvoiceRecurring() {
     });
     if (!line_items.length) { showToast('Add at least one line item', 'error'); return; }
 
+    function val(id) { var el = document.getElementById(id); return el ? el.value : ''; }
     var frequency = await uiPrompt('How often? weekly, monthly, quarterly or yearly', 'monthly');
     if (!frequency) return;
     var firstIssue = await uiPrompt('First issue date (YYYY-MM-DD)',
         (document.getElementById('inv-issue-date') || {}).value ||
         localDate(new Date()));
     if (!firstIssue) return;
+    var autoSend = !!(val('inv-email') || '').trim() && await uiConfirm('Email each invoice to the customer as it is raised? Otherwise each one waits as a draft for you to send.', { title: 'Send itself?', confirmText: 'Yes, send each one', cancelText: 'No, keep as drafts' });
 
-    function val(id) { var el = document.getElementById(id); return el ? el.value : ''; }
     try {
         var res = await fetch('/api/recurring-invoices', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -14924,6 +14994,7 @@ async function makeInvoiceRecurring() {
                 frequency: (frequency || 'monthly').trim().toLowerCase(),
                 next_run: firstIssue.trim(),
                 payment_terms_days: 14,
+                auto_send: autoSend,
             }),
         });
         var data = await res.json().catch(function () { return {}; });

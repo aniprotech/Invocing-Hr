@@ -1629,6 +1629,7 @@ def preview_invoice_email(number: str, request: Request, body: dict = None,
 
     return {
         "to": inv.email or "",
+        "cc": contact_cc_for(db, inv),
         "subject": subject,
         "body": message,
         "missing": missing,
@@ -3619,6 +3620,7 @@ def get_invoice(number: str, request: Request, db: Session = Depends(get_db)):
         "credit_notes": [credit_note_to_dict(c, client, db) for c in db.query(models.DBCreditNote).filter(
             models.DBCreditNote.invoice_id == inv.id).order_by(models.DBCreditNote.id.asc()).all()],
         "credited": credited_on_invoice(db, inv),
+        "send_at": inv.send_at or "",
         "status": inv.status,
         "sent": inv.sent,
         "tax_type": inv.tax_type,
@@ -4065,7 +4067,7 @@ Powered by Aniprotech"""
         body = custom_body
 
     background_tasks.add_task(deliver_and_record, delivery.id, recipient, subject, body, from_header, html_body, pdf_b64, pdf_filename, logo_data, client_id=client.id,
-                              cc=clean_address_list(payload.cc), bcc=clean_address_list(payload.bcc))
+                              cc=merge_addresses(clean_address_list(payload.cc), contact_cc_for(db, inv), recipient), bcc=clean_address_list(payload.bcc))
 
     # A copy to the sender, so there is a record in their own mailbox. Sent as
     # a second message rather than a Bcc, because the Gmail send used here
@@ -4210,7 +4212,8 @@ def get_open_stats(number: str, request: Request, db: Session = Depends(get_db))
 def contact_to_dict(c):
     return {"id": c.id, "name": c.name or "", "email": c.email or "", "phone_number": c.phone_number or "",
             "company": c.company or "", "address": c.address or "", "tax_id": c.tax_id or "",
-            "chase": c.chase is not False, "late_fees": c.late_fees is not False}
+            "chase": c.chase is not False, "late_fees": c.late_fees is not False,
+            "payment_terms_days": c.payment_terms_days, "currency": (c.currency or "").upper(), "cc_email": c.cc_email or ""}
 
 
 def _billing_fields(body):
@@ -4297,6 +4300,7 @@ def create_contact(request: Request, body: dict = None, db: Session = Depends(ge
     contact = models.DBContact(name=body["name"], email=body.get("email", ""), phone_number=body.get("phone_number", ""), client_id=client.id,
                                company=company or "", address=address or "", tax_id=tax_id or "",
                                chase=_flag_on(body.get("chase"), True), late_fees=_flag_on(body.get("late_fees"), True))
+    _apply_contact_defaults(contact, body)
     db.add(contact)
     db.commit()
     db.refresh(contact)
@@ -4319,6 +4323,7 @@ def update_contact(contact_id: int, request: Request, body: dict = None, db: Ses
         if tax_id is not None: contact.tax_id = tax_id
         if "chase" in body: contact.chase = _flag_on(body.get("chase"), True)
         if "late_fees" in body: contact.late_fees = _flag_on(body.get("late_fees"), True)
+        _apply_contact_defaults(contact, body)
         db.commit()
         db.refresh(contact)
     return contact_to_dict(contact)
@@ -6207,6 +6212,7 @@ def job_recurring_invoices(db, now):
     """
     today = now.date()
     issued = 0
+    sent = 0
     templates = db.query(models.DBRecurringInvoice).filter(
         models.DBRecurringInvoice.is_active == True,          # noqa: E712
         models.DBRecurringInvoice.next_run != "",
@@ -6224,11 +6230,15 @@ def job_recurring_invoices(db, now):
                 break
             if not t.line_items:
                 break
-            issue_recurring_invoice(db, t, due_on)
+            raised = issue_recurring_invoice(db, t, due_on)
             issued += 1
             guard += 1
+            if t.auto_send and raised is not None and (raised.email or "").strip():
+                db.commit()
+                if system_send_invoice(db, raised):
+                    sent += 1
     db.commit()
-    return f"{issued} invoice(s) raised"
+    return f"{issued} invoice(s) raised" + (f", {sent} sent" if sent else "")
 
 
 def reminder_stage_for(days_overdue):
@@ -29532,7 +29542,7 @@ def send_customer_statement(contact_id: int, request: Request, body: dict = None
         raise HTTPException(status_code=400, detail="Nothing on the statement for that period")
     subject, text, html = statement_email(client, contact, start, end, statements, str(body.get("note") or "").strip()[:500])
     ok, why = send_email_background(to, subject, text, f"{client.company_name or client.contact_name or 'Statement'} <{platform_from_address(db)}>",
-                                    html, client_id=client.id)
+                                    html, client_id=client.id, cc=merge_addresses("", (contact.cc_email or "").strip(), to))
     if not ok:
         raise HTTPException(status_code=502, detail=f"Could not send: {why}")
     log_audit(db, client.id, "statement_sent", "contact", contact.id, contact.name or "", f"{start} to {end} to {to}", request)
@@ -30626,8 +30636,8 @@ def late_fee_total_for(db, inv):
 
 
 def invoice_public_link(inv):
-    base = (os.getenv("APP_BASE_URL", "") or "").rstrip("/")
-    return f"{base}/invoice.html?id={inv.tracking_id}" if base and inv.tracking_id else ""
+    base = (os.getenv("APP_BASE_URL", "") or "https://www.aniprotech.com").rstrip("/")
+    return f"{base}/invoice.html?id={inv.tracking_id}" if inv.tracking_id else ""
 
 
 def send_dunning_reminder(db, inv, step, days, today, request=None, by="policy"):
@@ -30652,7 +30662,7 @@ def send_dunning_reminder(db, inv, step, days, today, request=None, by="policy")
         return False
     from_email = platform_from_address(db)
     send_email_background(inv.email, subject, text_body, f"{company} <{from_email}>",
-                          html_body, None, "", "", client_id=inv.client_id)
+                          html_body, None, "", "", client_id=inv.client_id, cc=contact_cc_for(db, inv))
     log_audit(db, inv.client_id, "invoice_chased", "invoice", inv.id, inv.number,
               f"{step_label(step['days'], step.get('tone', ''))} to {inv.email}" + ("" if by == "policy" else f" by {by}"), request)
     db.commit()
@@ -31472,7 +31482,7 @@ def send_credit_note_email(number: str, background_tasks: BackgroundTasks, reque
     charge = require_credit(db, client.id, "invoice_send", 1, cn.number)
     delivery = start_delivery(db, client.id, "credit_note", cn.number, cn.email, charge)
     background_tasks.add_task(deliver_and_record, delivery.id, cn.email, subject, body, f"{company_name} <{from_email}>",
-                              html_body, pdf_b64, pdf_filename, logo_data, client_id=client.id)
+                              html_body, pdf_b64, pdf_filename, logo_data, client_id=client.id, cc=contact_cc_for(db, cn))
     log_audit(db, client.id, "credit_note_sent", "credit_note", cn.id, cn.number, f"Sent to {cn.email}", request)
     db.commit()
     return {"message": f"Credit note sent to {cn.email}", "delivery_id": delivery.id}
@@ -31490,8 +31500,8 @@ def send_credit_note_email(number: str, background_tasks: BackgroundTasks, reque
 # ============================================================================
 
 def quote_public_link(q, request=None):
-    base = (os.getenv("APP_BASE_URL", "") or (str(request.base_url) if request is not None else "")).rstrip("/")
-    return f"{base}/quote.html?id={q.tracking_id}" if base and q.tracking_id else ""
+    base = (os.getenv("APP_BASE_URL", "") or (str(request.base_url) if request is not None else "") or "https://www.aniprotech.com").rstrip("/")
+    return f"{base}/quote.html?id={q.tracking_id}" if q.tracking_id else ""
 
 
 def quote_accept_raises_invoice(db, client_id):
@@ -31575,7 +31585,7 @@ def _tell_business_about_quote(db, client, q, what, who, extra=""):
 
 
 @app.post("/api/public/quotes/{tracking_id}/accept")
-def public_accept_quote(tracking_id: str, request: Request, body: dict = None, db: Session = Depends(get_db)):
+def public_accept_quote(tracking_id: str, request: Request, background_tasks: BackgroundTasks, body: dict = None, db: Session = Depends(get_db)):
     """The customer accepts: their name is the signature."""
     q, client = _public_quote(db, tracking_id)
     body = body or {}
@@ -31600,6 +31610,10 @@ def public_accept_quote(tracking_id: str, request: Request, body: dict = None, d
     invoice_number = ""
     if quote_accept_raises_invoice(db, client.id) and q.line_items:
         invoice_number = raise_invoice_from_quote(db, client, q, request)
+        db.commit()
+        raised = db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id, models.DBInvoice.number == invoice_number).first()
+        if raised is not None and (raised.email or "").strip():
+            system_send_invoice(db, raised, base_url=str(request.base_url), background_tasks=background_tasks)
     db.commit()
     announce(db, client.id, "quote.accepted", {"number": q.number, "customer": q.to_contact or "", "accepted_by": name,
                                                 "note": note, "invoice_number": invoice_number})
@@ -31637,7 +31651,7 @@ def raise_invoice_from_quote(db, client, q, request=None):
     draft - the customer agreed to it, so it is owed."""
     subtotal, tax, total = compute_invoice_totals(q.line_items, q.tax_type)
     issue_date = date.today().isoformat()
-    due_date = (date.today() + timedelta(days=payment_terms_for(db, client.id))).isoformat()
+    due_date = (date.today() + timedelta(days=terms_for_customer(db, client.id, q.to_contact, q.email))).isoformat()
     inv_number = next_sequence_number(db, models.DBInvoice, client.id, invoice_prefix_for(db, client.id))
     invoice = models.DBInvoice(
         client_id=client.id, number=inv_number, ref=q.ref or q.number, to_contact=q.to_contact,
@@ -31683,6 +31697,7 @@ def _invoice_row(inv, client, today):
         "total": money((inv.paid or 0) + (inv.due or 0)), "status": inv.status, "sent": inv.sent, "tax_type": inv.tax_type,
         "currency": inv.currency or (client.currency if client else ""), "open_count": inv.open_count or 0,
         "last_opened": inv.last_opened or "", "is_overdue": overdue_days > 0, "days_overdue": overdue_days,
+        "send_at": inv.send_at or "",
     }
 
 
@@ -31807,6 +31822,175 @@ def invoice_list_bulk(request: Request, background_tasks: BackgroundTasks, body:
             db.rollback()
             failed.append({"number": number, "why": str(exc.detail)})
     return {"done": done, "failed": failed, "message": f"{len(done)} done" + (f", {len(failed)} could not be" if failed else "")}
+
+
+# ============================================================================
+# CUSTOMER DEFAULTS, SENDING LATER, AND INVOICES THAT SEND THEMSELVES
+#
+# A customer has terms of their own - thirty days, dollars, and an accounts
+# desk to copy in - and the business should not have to remember them on
+# every document. An invoice can be written today and sent on a date. A
+# recurring template marked auto-send actually sends. For all of that the
+# system needs to send an invoice the way a person does, without a person:
+# the same route, stood in for.
+# ============================================================================
+
+def _apply_contact_defaults(contact, body):
+    if "payment_terms_days" in body:
+        raw = body.get("payment_terms_days")
+        if raw in (None, ""):
+            contact.payment_terms_days = None
+        else:
+            try:
+                days = int(float(raw))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="Payment terms must be a number of days")
+            if days < 0 or days > 365:
+                raise HTTPException(status_code=400, detail="Payment terms must be between 0 and 365 days")
+            contact.payment_terms_days = days
+    if "currency" in body:
+        code = str(body.get("currency") or "").strip().upper()[:3]
+        if code and not code.isalpha():
+            raise HTTPException(status_code=400, detail="Currency is a three-letter code, like INR or USD")
+        contact.currency = code
+    if "cc_email" in body:
+        addr = str(body.get("cc_email") or "").strip()[:200]
+        if addr and not validate_email_address(addr):
+            raise HTTPException(status_code=400, detail=f"Invalid email address: {addr}")
+        contact.cc_email = addr
+
+
+def contact_for_document(db, client_id, name, email=""):
+    q = db.query(models.DBContact).filter(models.DBContact.client_id == client_id)
+    row = q.filter(models.DBContact.name == (name or "")).first() if name else None
+    if not row and email:
+        row = q.filter(func.lower(models.DBContact.email) == email.strip().lower()).first()
+    return row
+
+
+def terms_for_customer(db, client_id, name, email=""):
+    row = contact_for_document(db, client_id, name, email)
+    if row is not None and row.payment_terms_days is not None:
+        return row.payment_terms_days
+    return payment_terms_for(db, client_id)
+
+
+def contact_cc_for(db, doc):
+    """The copy address on the customer behind a document, if any."""
+    row = contact_for_document(db, doc.client_id, doc.to_contact or "", doc.email or "")
+    return (row.cc_email or "").strip() if row is not None else ""
+
+
+def merge_addresses(*parts):
+    """Addresses from several places, once each, never the recipient. The
+    last argument is the recipient."""
+    *sources, recipient = parts
+    seen, out = {(recipient or "").strip().lower()}, []
+    for src in sources:
+        for a in [x.strip() for x in str(src or "").replace(";", ",").split(",")]:
+            if a and a.lower() not in seen:
+                seen.add(a.lower())
+                out.append(a)
+    return ", ".join(out)
+
+
+class _State:
+    def __init__(self, client):
+        self.api_client = client
+
+
+class _SystemRequest:
+    """Stands in for a person's request when the system sends on the
+    business's behalf - the scheduler, a recurring template, an accepted
+    quote. get_client_user takes the business from request.state; the
+    rest is what the send route reads."""
+    def __init__(self, client, base_url=""):
+        self.state = _State(client)
+        self.session = {"user": {"email": "system"}}
+        # The live host when nothing says otherwise: a link that goes
+        # nowhere is worse than one that is occasionally wrong.
+        base = (os.getenv("APP_BASE_URL", "") or base_url or "https://www.aniprotech.com").rstrip("/")
+        self.base_url = base + "/"
+        self.client = None
+        self.headers = {}
+        self.method = "POST"
+
+
+class _RunNow:
+    """Background tasks, run here and now: a job has no response to wait for."""
+    def add_task(self, fn, *a, **kw):
+        fn(*a, **kw)
+
+
+def system_send_invoice(db, inv, base_url="", background_tasks=None):
+    """Email an invoice the way the Send button does, with nobody pressing
+    it. Returns True when it was handed to the mail; a refusal (no address,
+    no credit, mail not set up) is written to the audit log and the
+    business is told once, and False comes back."""
+    client = db.query(models.DBClient).filter(models.DBClient.id == inv.client_id).first()
+    if client is None:
+        return False
+    try:
+        send_invoice_email(inv.number, background_tasks or _RunNow(), _SystemRequest(client, base_url), SendInvoiceEmail(), db)
+        return True
+    except HTTPException as exc:
+        db.rollback()
+        why = str(exc.detail)
+        log_audit(db, client.id, "invoice_send_failed", "invoice", inv.id, inv.number, f"Sent by the system: {why}")
+        db.commit()
+        if client.email and validate_email_address(client.email):
+            send_email_background(client.email, f"Invoice {inv.number} could not be sent",
+                                  f"aniprotech tried to email invoice {inv.number} to {inv.email or 'the customer'} on your behalf and could not: {why}\n\nOpen the invoice in aniprotech to send it yourself.\n",
+                                  platform_from_address(db), None, None, "", "", client_id=client.id)
+        return False
+
+
+@app.post("/api/invoices/{number}/schedule")
+def schedule_invoice_send(number: str, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Send it on a day: today or later. A blank date cancels."""
+    client = get_client_user(request, db)
+    inv = db.query(models.DBInvoice).filter(models.DBInvoice.number == number, models.DBInvoice.client_id == client.id).first()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    when = str((body or {}).get("send_at") or "").strip()
+    if not when:
+        inv.send_at = ""
+        log_audit(db, client.id, "invoice_send_unscheduled", "invoice", inv.id, inv.number, "", request)
+        db.commit()
+        return {"message": "It will not send itself", "send_at": ""}
+    when = _clean_ymd(when, "Send date")
+    if when < date.today().isoformat():
+        raise HTTPException(status_code=400, detail="Pick today or a day to come")
+    if inv.status in ("Paid", "Void", "Credited"):
+        raise HTTPException(status_code=400, detail=f"A {inv.status.lower()} invoice is not sent")
+    if not inv.email or not validate_email_address(inv.email):
+        raise HTTPException(status_code=400, detail="The invoice needs the customer's email address first")
+    inv.send_at = when
+    log_audit(db, client.id, "invoice_send_scheduled", "invoice", inv.id, inv.number, f"On {when} to {inv.email}", request)
+    db.commit()
+    return {"message": f"It will be sent on {when}", "send_at": when}
+
+
+@scheduled_job("scheduled_sends")
+def job_scheduled_sends(db, now):
+    """Send what was told to send itself today or earlier."""
+    today = now.date().isoformat()
+    due = db.query(models.DBInvoice).filter(models.DBInvoice.send_at != "", models.DBInvoice.send_at <= today,
+                                            models.DBInvoice.status.notin_(["Paid", "Void", "Credited"])).all()
+    sent = failed = 0
+    for inv in due:
+        when = inv.send_at
+        inv.send_at = ""
+        db.commit()
+        if system_send_invoice(db, inv):
+            sent += 1
+        else:
+            failed += 1
+            row = db.query(models.DBInvoice).filter(models.DBInvoice.id == inv.id).first()
+            if row is not None:
+                row.send_at = when       # kept, so it is tried again tomorrow
+                db.commit()
+    return f"{sent} sent" + (f", {failed} could not be" if failed else "")
 
 
 # Serve frontend
