@@ -129,15 +129,18 @@
            Everything measured against the nav's height grows with it. See the
            safe-area note in mobile.css. */
         .nav { position: fixed; top: 0; left: 0; right: 0; z-index: 50; background: rgba(255, 255, 255, 0.86); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-bottom: 1px solid var(--ap-line); padding-top: env(safe-area-inset-top, 0px); }
-        .nav-inner { max-width: 1200px; margin: 0 auto; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; height: 64px; }
-        .nav-logo { display: flex; align-items: center; gap: 10px; }
+        /* Ten links and two buttons. Nothing in here may wrap or squash:
+           the header either fits on one line or folds into the menu. */
+        .nav-inner { max-width: 1200px; margin: 0 auto; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; gap: 20px; height: 64px; }
+        .nav-logo { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
         .nav-logo-icon { width: 32px; height: 32px; border-radius: 8px; background: linear-gradient(135deg, var(--ap-blue), var(--ap-blue-dark)); display: flex; align-items: center; justify-content: center; box-shadow: 0 6px 16px rgba(2, 132, 199, 0.24); }
         .nav-logo-icon svg { width: 20px; height: 20px; color: white; }
-        .nav-logo span { font-size: 18px; font-weight: 700; color: var(--ap-ink); letter-spacing: -0.02em; }
-        .nav-links { display: flex; gap: 32px; }
-        .nav-links a { font-size: 14px; font-weight: 500; color: var(--ap-body); transition: color 0.2s; }
+        .nav-logo span { font-size: 18px; font-weight: 700; color: var(--ap-ink); letter-spacing: -0.02em; white-space: nowrap; }
+        .nav-links { display: flex; gap: 22px; flex-wrap: nowrap; }
+        .nav-links a { font-size: 14px; font-weight: 500; color: var(--ap-body); transition: color 0.2s; white-space: nowrap; }
+        #nav-auth { flex: 0 0 auto; }
         .nav-links a:hover { color: var(--ap-blue-dark); }
-        .nav-login { font-size: 14px; font-weight: 700; color: #fff; background: linear-gradient(135deg, var(--ap-blue), var(--ap-blue-dark)); padding: 9px 20px; border-radius: 10px; box-shadow: 0 8px 20px rgba(2, 132, 199, 0.22); transition: transform 0.2s var(--ap-ease), box-shadow 0.2s var(--ap-ease); }
+        .nav-login { font-size: 14px; font-weight: 700; color: #fff; background: linear-gradient(135deg, var(--ap-blue), var(--ap-blue-dark)); padding: 9px 18px; border-radius: 10px; white-space: nowrap; box-shadow: 0 8px 20px rgba(2, 132, 199, 0.22); transition: transform 0.2s var(--ap-ease), box-shadow 0.2s var(--ap-ease); }
         .nav-login:hover { transform: translateY(-2px); box-shadow: 0 12px 26px rgba(2, 132, 199, 0.3); }
         /* The secondary portals. These used to be inlined as a white film
            over a dark page - on white that is a white button with a border
@@ -155,7 +158,14 @@
         .mobile-menu { display: none; background: rgba(255, 255, 255, 0.98); border-top: 1px solid var(--ap-line); padding: 12px 16px; }
         .mobile-menu a { display: block; font-size: 15px; font-weight: 500; color: var(--ap-body); padding: 12px 4px; min-height: 44px; }
         .mobile-menu a:hover { color: var(--ap-blue-dark); }
-        @media (max-width: 768px) {
+        @media (max-width: 1280px) {
+            .nav-links { gap: 16px; }
+            .nav-links a { font-size: 13.5px; }
+            .nav-login { padding: 9px 14px; }
+        }
+        /* Below this the row cannot hold every link at a readable size, so
+           the header folds into the menu a good deal earlier than a phone. */
+        @media (max-width: 1120px) {
             .nav-links { display: none; }
             /* The portal buttons stayed visible and crushed the hamburger down
                to 16px wide, leaving no usable tap target. Both links already

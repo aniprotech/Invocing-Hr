@@ -93,6 +93,18 @@ function boot(copy) {
             /#082f49/.test(css) && /#0c4a6e/.test(css) && !/#071a33/i.test(css));
     }
 
+    // --- the header still fits -------------------------------------------------
+    // An eleventh link is what made the Sign in button wrap onto two lines
+    // on a 1280px screen. Nothing in the row may wrap; below the width the
+    // row can hold, the header folds into the menu.
+    {
+        const rule = sel => (HTML.match(new RegExp(sel.replace(/[.#]/g, '\\$&') + '\\s*\\{[^}]*\\}')) || [''])[0];
+        check('header links and buttons never wrap',
+            /white-space:\s*nowrap/.test(rule('.nav-links a')) && /white-space:\s*nowrap/.test(rule('.nav-login')));
+        const fold = HTML.match(/@media \(max-width: (\d+)px\) \{\s*\.nav-links \{ display: none; \}/);
+        check('  the header folds into the menu well before a phone width', fold && Number(fold[1]) >= 1100, fold && fold[1]);
+    }
+
     console.log(failures === 0 ? '\nAll Caremonitor checks passed.' : `\n${failures} check(s) failed.`);
     process.exit(failures === 0 ? 0 : 1);
 })();
