@@ -22965,6 +22965,16 @@ PLATFORM_SETTINGS = [
             help="The address mail appears to come from. For Gmail this has to be "
                  "the same account, or Google rewrites it."),
 
+    Setting("landing.caremonitor_eyebrow", "Caremonitor: strapline", "Landing", "text",
+            "Also from Aniprotech"),
+    Setting("landing.caremonitor_title", "Caremonitor: heading", "Landing", "text",
+            "Run a care service? Meet Caremonitor.",
+            help="The block that points care providers to caremonitor.aniprotech.com."),
+    Setting("landing.caremonitor_intro", "Caremonitor: paragraph", "Landing", "longtext",
+            "Connected care management for home care and supported living providers: "
+            "care plans, rostering, a carer mobile app with eMAR, verified visit times "
+            "that flow into invoicing and staff pay, and the governance to stand behind it all."),
+
     Setting("landing.invoice_cta_title", "Invoicing pitch: heading", "Landing", "text",
             "Ready to streamline your invoicing?"),
     Setting("landing.invoice_cta_intro", "Invoicing pitch: paragraph", "Landing", "longtext",

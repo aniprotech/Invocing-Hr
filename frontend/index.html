@@ -530,6 +530,59 @@
         .mock-acts div { font-size: 13px; color: var(--ap-body); padding: 6px 0; display: flex; align-items: center; gap: 8px; }
         .mock-acts .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ap-blue); flex: 0 0 auto; }
 
+        /* --- Caremonitor ---------------------------------------------------
+           The company's other product. It has a navy of its own, so this is
+           the one dark block on a white page - drawn from the deep end of the
+           same sky ramp rather than a colour brought in from elsewhere. */
+        .cm-card {
+            display: grid; grid-template-columns: 1.1fr 1fr; gap: 48px; align-items: center;
+            background: linear-gradient(145deg, #082f49, #0c4a6e);
+            border: 1px solid #075985; border-radius: 24px; padding: 56px;
+            box-shadow: 0 24px 60px rgba(8, 47, 73, 0.28); overflow: hidden; position: relative;
+        }
+        .cm-card::after {
+            content: ''; position: absolute; width: 420px; height: 420px; border-radius: 50%;
+            right: -140px; top: -180px; background: rgba(56, 189, 248, 0.14); pointer-events: none;
+        }
+        .cm-copy { position: relative; z-index: 1; }
+        .cm-copy .eyebrow { text-align: left; color: #7dd3fc; }
+        .cm-copy h2 { font-size: clamp(26px, 3.4vw, 34px); font-weight: 800; color: #f0f9ff; letter-spacing: -0.035em; line-height: 1.12; margin-bottom: 16px; }
+        .cm-copy p { color: #bae6fd; line-height: 1.7; margin-bottom: 22px; }
+        .cm-points { list-style: none; display: grid; gap: 10px; margin-bottom: 30px; }
+        .cm-points li { display: flex; gap: 10px; align-items: flex-start; font-size: 14.5px; color: #e0f2fe; line-height: 1.55; }
+        .cm-points li::before { content: '\2713'; flex: 0 0 auto; width: 20px; height: 20px; border-radius: 50%; background: rgba(56, 189, 248, 0.18); color: #7dd3fc; font-size: 12px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; margin-top: 1px; }
+        .cm-cta { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+        .cm-cta .btn-white { box-shadow: 0 10px 26px rgba(2, 132, 199, 0.45); }
+        .cm-link { font-size: 14px; font-weight: 600; color: #7dd3fc; }
+        .cm-link:hover { color: #f0f9ff; text-decoration: underline; }
+        /* A picture of the product, the same way the dashboard above is. */
+        .cm-shot { position: relative; z-index: 1; background: rgba(2, 6, 23, 0.32); border: 1px solid rgba(125, 211, 252, 0.22); border-radius: 18px; overflow: hidden; backdrop-filter: blur(6px); }
+        .cm-shot-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid rgba(125, 211, 252, 0.18); font-size: 13px; font-weight: 700; color: #f0f9ff; }
+        .cm-live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: #6ee7b7; }
+        .cm-live .dot { width: 7px; height: 7px; border-radius: 50%; background: #34d399; animation: pulse 2s infinite; }
+        .cm-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 18px; }
+        .cm-stat { border: 1px solid rgba(125, 211, 252, 0.18); border-radius: 12px; padding: 12px 14px; background: rgba(8, 47, 73, 0.5); }
+        .cm-stat .k { font-size: 11.5px; color: #7dd3fc; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+        .cm-stat .v { font-size: 26px; font-weight: 800; color: #f0f9ff; letter-spacing: -0.03em; line-height: 1.2; }
+        .cm-rows { border-top: 1px solid rgba(125, 211, 252, 0.18); padding: 6px 18px 14px; }
+        .cm-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 0; border-bottom: 1px solid rgba(125, 211, 252, 0.10); }
+        .cm-row:last-child { border-bottom: none; }
+        .cm-row strong { display: block; font-size: 13.5px; font-weight: 700; color: #f0f9ff; }
+        .cm-row span { display: block; font-size: 12px; color: #bae6fd; margin-top: 2px; }
+        .cm-row em { flex: 0 0 auto; font-style: normal; font-size: 11.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; padding: 5px 10px; border-radius: 999px; }
+        .cm-row em.ok { color: #6ee7b7; background: rgba(52, 211, 153, 0.16); }
+        .cm-row em.warn { color: #fde68a; background: rgba(251, 191, 36, 0.18); }
+        .cm-row em.flow { color: #7dd3fc; background: rgba(56, 189, 248, 0.16); }
+        @media (max-width: 900px) {
+            .cm-card { grid-template-columns: 1fr; gap: 32px; padding: 36px 24px; }
+        }
+        @media (max-width: 480px) {
+            .cm-card { padding: 28px 18px; }
+            .cm-stats { grid-template-columns: 1fr 1fr 1fr; gap: 8px; padding: 14px; }
+            .cm-stat { padding: 10px; }
+            .cm-stat .v { font-size: 22px; }
+        }
+
         /* --- Footer columns ------------------------------------------------ */
         .footer-cols { max-width: 1200px; margin: 0 auto; padding: 48px 16px 24px; display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 32px; }
         @media (max-width: 860px) { .footer-cols { grid-template-columns: 1fr 1fr; } }
@@ -581,6 +634,7 @@
                 <a href="#features">Features</a>
                 <a href="#how">How&nbsp;it&nbsp;works</a>
                 <a href="#industries">Industries</a>
+                <a href="#caremonitor">Caremonitor</a>
                 <a href="#pricing">Pricing</a>
                 <a href="#install">Install</a>
                 <a href="#faq">FAQ</a>
@@ -600,6 +654,7 @@
             <a href="#features">Features</a>
                 <a href="#how">How&nbsp;it&nbsp;works</a>
             <a href="#industries">Industries</a>
+            <a href="#caremonitor">Caremonitor</a>
             <a href="#pricing">Pricing</a>
             <a href="#install">Install</a>
                 <a href="#faq">FAQ</a>
@@ -735,6 +790,53 @@
                 <div class="tile"><div class="tile-icon" aria-hidden="true">&#127981;</div><h3>Manufacturing</h3><p>Improve workforce productivity with attendance and shift automation.</p></div>
                 <div class="tile"><div class="tile-icon" aria-hidden="true">&#128666;</div><h3>Logistics</h3><p>Track mobile teams, branches, attendance and employee performance.</p></div>
                 <div class="tile"><div class="tile-icon" aria-hidden="true">&#128188;</div><h3>Professional Services</h3><p>Perfect for agencies, consultants, accountants and service businesses.</p></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ── Caremonitor ─────────────────────────────────────────────────────
+         The company's other product. It lives on its own host with its own
+         sign-in, so this is a signpost rather than a module: what it is, who
+         it is for, and the way in. The panel is a picture of it, not live
+         data - nobody is signed in on this page. -->
+    <section class="section" id="caremonitor">
+        <div class="container">
+            <div class="cm-card reveal">
+                <div class="cm-copy">
+                    <span class="eyebrow" data-cms="caremonitor_eyebrow">Also from Aniprotech</span>
+                    <h2 data-cms="caremonitor_title">Run a care service? Meet Caremonitor.</h2>
+                    <p data-cms="caremonitor_intro">Connected care management for home care and supported living providers: care plans, rostering, a carer mobile app with eMAR, verified visit times that flow into invoicing and staff pay, and the governance to stand behind it all.</p>
+                    <ul class="cm-points">
+                        <li>Person-centred care plans, assessments, tasks and a full client timeline</li>
+                        <li>Rostering that stays connected to the care that must be delivered</li>
+                        <li>Carers check in, follow the plan and record outcomes from their phone</li>
+                        <li>Verified visit time moves straight into invoicing and staff-pay review</li>
+                        <li>Role-based access, auditable actions and privacy controls throughout</li>
+                    </ul>
+                    <div class="cm-cta">
+                        <a href="https://caremonitor.aniprotech.com/" class="btn-white">
+                            Open Caremonitor
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+                        </a>
+                        <a href="https://caremonitor.aniprotech.com/" class="cm-link">caremonitor.aniprotech.com</a>
+                    </div>
+                </div>
+                <div class="cm-shot" role="img" aria-label="Preview of Caremonitor's live operations view: today's visits, how many are complete and which need review">
+                    <div class="cm-shot-bar">
+                        <span>Caremonitor &middot; Today at a glance</span>
+                        <span class="cm-live"><span class="dot"></span> Service connected</span>
+                    </div>
+                    <div class="cm-stats" aria-hidden="true">
+                        <div class="cm-stat"><div class="k">Visits</div><div class="v">18</div></div>
+                        <div class="cm-stat"><div class="k">Completed</div><div class="v">14</div></div>
+                        <div class="cm-stat"><div class="k">Need review</div><div class="v">2</div></div>
+                    </div>
+                    <div class="cm-rows" aria-hidden="true">
+                        <div class="cm-row"><div><strong>Visit attendance verified</strong><span>Location and actual time recorded</span></div><em class="ok">Complete</em></div>
+                        <div class="cm-row"><div><strong>Medication outcome needs review</strong><span>Assigned to the care manager</span></div><em class="warn">Action</em></div>
+                        <div class="cm-row"><div><strong>Roster &rarr; Visit &rarr; Evidence &rarr; Finance</strong><span>One connected workflow</span></div><em class="flow">Connected</em></div>
+                    </div>
+                </div>
             </div>
         </div>
     </section>
@@ -1112,6 +1214,7 @@
                 <h4>Portals</h4>
                 <a href="/login.html">Sign in</a>
                 <a href="/employee-login.html">Employee Portal</a>
+                <a href="https://caremonitor.aniprotech.com/">Caremonitor</a>
             </div>
             <div class="footer-col">
                 <h4>Contact</h4>
