@@ -10,7 +10,7 @@ from datetime import date, timedelta
 import pytest
 
 import main
-from conftest import make_employee
+from conftest import make_employee, work_every_day
 
 EMP_PASSWORD = "EmpPass123"
 
@@ -45,6 +45,9 @@ def test_somebody_with_no_reports_is_not_a_manager(tenant):
 
 
 def test_the_overview_gathers_what_the_manager_owes(tenant, account):
+    # Bob is 'in' because signing in clocks him in - which only happens on
+    # a working day, so the suite went red every weekend without this.
+    work_every_day(tenant)
     boss = person(tenant, first_name="Bea", probation_months=0)
     a = person(tenant, first_name="Ann", reports_to=boss["id"], probation_end=days(5))
     b = person(tenant, first_name="Bob", reports_to=boss["id"], probation_months=0)
