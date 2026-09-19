@@ -105,6 +105,22 @@ function boot(copy) {
         check('  the header folds into the menu well before a phone width', fold && Number(fold[1]) >= 1100, fold && fold[1]);
     }
 
+    // --- the door -------------------------------------------------------------------
+    // Somebody with a Caremonitor account who lands on this sign-in page
+    // should see their own door beside the employee one, going straight to
+    // the product's sign-in rather than its front page.
+    {
+        const login = new JSDOM(fs.readFileSync(path.join(ROOT, 'login.html'), 'utf8'), { url: 'https://localhost/login.html' }).window.document;
+        const door = login.querySelector('a[href="https://caremonitor.aniprotech.com/login"]');
+        check('the sign-in page offers Caremonitor as a door of its own',
+            door && /Caremonitor/.test(door.textContent) && /sign in/i.test(door.getAttribute('aria-label') || ''));
+        const doors = door && [...door.parentElement.querySelectorAll('a')];
+        check('  beside the Employee Portal, each saying who it is for',
+            doors && doors.length === 2 && doors[0].getAttribute('href') === '/employee-login.html'
+                && doors.every(a => a.querySelectorAll('.block').length === 2), doors && doors.map(a => a.getAttribute('href')).join(' '));
+        check('  neither opens a new window', doors && !doors.some(a => a.getAttribute('target')));
+    }
+
     console.log(failures === 0 ? '\nAll Caremonitor checks passed.' : `\n${failures} check(s) failed.`);
     process.exit(failures === 0 ? 0 : 1);
 })();

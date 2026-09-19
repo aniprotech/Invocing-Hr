@@ -361,13 +361,34 @@
             <span class="h-px flex-1" style="background:var(--ap-line);"></span>
           </div>
 
+          <!-- The other doors. Each says who it is for, because somebody
+               who lands here with the wrong account should be able to tell
+               at a glance which one is theirs. Caremonitor is the company's
+               other product, with a sign-in of its own on its own host. -->
           <div class="grid gap-2.5">
             <a href="/employee-login.html" aria-label="Employee Portal sign in"
                class="ap-feature ap-card flex items-center justify-between px-4 py-3.5 min-h-[52px]">
               <span class="flex items-center gap-3">
-                <span class="inline-flex items-center justify-center w-8 h-8 rounded-lg text-base"
+                <span class="inline-flex items-center justify-center w-8 h-8 rounded-lg text-base shrink-0"
                       style="background:var(--ap-blue-soft);" aria-hidden="true">&#128100;</span>
-                <span class="text-sm font-semibold" style="color:var(--ap-ink);">Employee Portal</span>
+                <span>
+                  <span class="block text-sm font-semibold leading-tight" style="color:var(--ap-ink);">Employee Portal</span>
+                  <span class="block text-xs leading-tight" style="color:var(--ap-muted);">Clock in, leave, payslips</span>
+                </span>
+              </span>
+              <span aria-hidden="true" style="color:var(--ap-muted);">&rarr;</span>
+            </a>
+            <a href="https://caremonitor.aniprotech.com/login" aria-label="Caremonitor sign in"
+               class="ap-feature ap-card flex items-center justify-between px-4 py-3.5 min-h-[52px]">
+              <span class="flex items-center gap-3">
+                <span class="inline-flex items-center justify-center w-8 h-8 rounded-lg shrink-0"
+                      style="background:#082f49;color:#7dd3fc;" aria-hidden="true">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 12.6 12 20l-7.5-7.4a4.8 4.8 0 0 1 6.8-6.8L12 6.5l.7-.7a4.8 4.8 0 0 1 6.8 6.8z"/><path d="M4 12h3l1.5-2.5 3 5 1.5-2.5H17"/></svg>
+                </span>
+                <span>
+                  <span class="block text-sm font-semibold leading-tight" style="color:var(--ap-ink);">Caremonitor</span>
+                  <span class="block text-xs leading-tight" style="color:var(--ap-muted);">Care management sign-in</span>
+                </span>
               </span>
               <span aria-hidden="true" style="color:var(--ap-muted);">&rarr;</span>
             </a>
