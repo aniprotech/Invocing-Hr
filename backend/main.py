@@ -480,12 +480,62 @@ async def a_leaver_is_out(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def front_door(request: Request, call_next):
+    """The face each host shows. See ONE APP, THREE FRONT DOORS.
+
+    Pages only - the API answers the same on every host. The root of a
+    product host is its sign-in, or the app for somebody already in; a page
+    that belongs to another face is sent to that face's host, with the query
+    string, once the hosts are named. Until they are, every host serves
+    everything, as it always did.
+    """
+    path = request.url.path
+    if request.method not in ("GET", "HEAD") or path.startswith("/api/"):
+        return await call_next(request)
+    face = product_for_host(request.headers.get("host", ""))
+    split = hosts_are_split()
+    query = ("?" + request.url.query) if request.url.query else ""
+
+    def elsewhere(product):
+        base = product_base_url(product, request) if product else site_base_url(request)
+        return RedirectResponse(url=base + path + query, status_code=302) if base else None
+
+    if face == "employee":
+        if path in ("/", "/index.html"):
+            signed_in = bool(request.session.get("employee_id"))
+            return RedirectResponse(url="/employee-dashboard.html" if signed_in else "/employee-login.html", status_code=302)
+        if split and path in BUSINESS_PAGES:
+            return elsewhere("hr") or await call_next(request)
+        if split and path in OPERATOR_PAGES:
+            return elsewhere("") or await call_next(request)
+    elif face in ("invoicing", "hr"):
+        if path in ("/", "/index.html"):
+            signed_in = bool(request.session.get("client_id"))
+            return RedirectResponse(url="/app.html" if signed_in else "/login.html", status_code=302)
+        if split and path in EMPLOYEE_PAGES:
+            return elsewhere("employee") or await call_next(request)
+        if split and path in OPERATOR_PAGES:
+            return elsewhere("") or await call_next(request)
+    elif split:
+        # The site itself, or a host nobody named: the business pages live
+        # on the product hosts now.
+        if path in BUSINESS_PAGES:
+            return elsewhere("hr" if path == "/hr.html" else "invoicing") or await call_next(request)
+        if path in EMPLOYEE_PAGES:
+            return elsewhere("employee") or await call_next(request)
+    return await call_next(request)
+
+
 app.add_middleware(
     SessionMiddleware,
     secret_key=SECRET_KEY,
     same_site="lax",
     https_only=COOKIE_SECURE,
     max_age=int(os.getenv("SESSION_MAX_AGE", "86400")),
+    # ".aniprotech.com" once the hosts are split, so one sign-in covers
+    # invoice., hr. and employee. Unset, the cookie is the host's own.
+    domain=(os.getenv("COOKIE_DOMAIN", "") or "").strip() or None,
 )
 
 oauth = OAuth()
@@ -900,6 +950,121 @@ def client_modules(client) -> list:
         return list(ALL_MODULES)
     have = [m.strip().lower() for m in raw.split(",") if m.strip()]
     return [m for m in have if m in ALL_MODULES] or list(ALL_MODULES)
+
+
+# ============================================================================
+# ONE APP, THREE FRONT DOORS
+#
+# invoice.aniprotech.com, hr.aniprotech.com and employee.aniprotech.com are
+# one deployment. Everything on one address had the two products and the
+# staff portal sharing a header, a sign-in page and a front page, and people
+# could not tell which of the three they were looking at. So the first label
+# of the host now names the face: what the root serves, which product the
+# app shows, and where the other product's pages send you. Nothing else is
+# split - the API, the data and the session are the same whichever host the
+# request came in on - so a business with both products signs in once
+# (COOKIE_DOMAIN puts the session on the parent domain) and moves between
+# them by link.
+#
+# PRODUCT_HOSTS names the three hosts, and until it is set the site works
+# exactly as it did on one address. A host whose first label is one of the
+# three still shows that face regardless, which is what makes
+# hr.localhost:8000 a way to see the split with no DNS at all.
+# ============================================================================
+PRODUCT_LABELS = {"invoice": "invoicing", "invoicing": "invoicing", "hr": "hr",
+                  "employee": "employee", "staff": "employee"}
+PRODUCT_NAMES = {"invoicing": "Invoicing", "hr": "HR", "employee": "Employee portal"}
+
+# The routes inside app.html that belong to HR. A link to one of these is
+# built on the HR host; a guard in the tests holds this to the nav itself.
+HR_SLUGS = frozenset((
+    "hr", "people", "departments", "attendance", "org-chart", "calendar", "feed",
+    "recognition", "leave", "pay", "payroll", "expenses", "staff-requests", "goals",
+    "reviews", "skills", "training", "people-analytics", "workflows", "surveys",
+    "policies", "assets", "recruitment", "onboarding",
+))
+BUSINESS_PAGES = ("/app.html", "/login.html", "/onboard.html", "/hr.html", "/hr-login.html")
+EMPLOYEE_PAGES = ("/employee-login.html", "/employee-dashboard.html")
+OPERATOR_PAGES = ("/superadmin.html", "/superadmin-login.html")
+
+
+def product_for_host(host) -> str:
+    """'invoicing', 'hr' or 'employee' from the host's first label, else ''
+    - the site itself: www, the bare domain, localhost, anything unnamed."""
+    label = (host or "").split(":")[0].split(".")[0].strip().lower()
+    return PRODUCT_LABELS.get(label, "")
+
+
+def product_hosts() -> dict:
+    """The hosts PRODUCT_HOSTS names, as {product: host}. Empty until it is
+    set, and that emptiness is what "not split" means everywhere below."""
+    out = {}
+    for part in (os.getenv("PRODUCT_HOSTS", "") or "").split(","):
+        if "=" not in part:
+            continue
+        key, host = part.split("=", 1)
+        key, host = key.strip().lower(), host.strip().lower().rstrip("/")
+        key = PRODUCT_LABELS.get(key, key)
+        if key in PRODUCT_NAMES and host:
+            out[key] = host.replace("https://", "").replace("http://", "")
+    return out
+
+
+def hosts_are_split() -> bool:
+    return bool(product_hosts())
+
+
+def site_base_url(request=None) -> str:
+    """Where the site lives: APP_BASE_URL, else the host serving this
+    request, else the live address - a link to nowhere is worse than one
+    that is occasionally wrong."""
+    base = os.getenv("APP_BASE_URL", "") or ""
+    if not base and request is not None:
+        base = str(request.base_url)
+    return (base or "https://www.aniprotech.com").rstrip("/")
+
+
+def product_base_url(product, request=None) -> str:
+    """https://hr.aniprotech.com for 'hr', on the site's own scheme. Empty
+    when the hosts are not split, so callers fall back to the site."""
+    host = product_hosts().get(product, "")
+    if not host:
+        return ""
+    scheme = "http" if site_base_url(request).startswith("http://") else "https"
+    return f"{scheme}://{host}"
+
+
+def product_for_page(path) -> str:
+    """Which host a page belongs on. The staff pages on the employee host;
+    an app route that is HR's on the HR host; every other business page,
+    the sign-in and the customer-facing invoice and quote on Invoicing;
+    the operator's pages and everything else on the site itself."""
+    p = (path or "").strip()
+    bare = p.split("?", 1)[0].split("#", 1)[0]
+    if bare in EMPLOYEE_PAGES or "portal=employee" in p:
+        return "employee"
+    if bare in OPERATOR_PAGES:
+        return ""
+    if bare == "/app.html" or bare == "/hr.html":
+        slug = p.split("#", 1)[1] if "#" in p else ""
+        first = slug.strip("/").split("?", 1)[0].split("/", 1)[0]
+        return "hr" if (first in HR_SLUGS or bare == "/hr.html") else "invoicing"
+    if bare in BUSINESS_PAGES or bare in ("/invoice.html", "/quote.html", "/reset-password.html"):
+        return "invoicing"
+    return ""
+
+
+def page_url(path, request=None) -> str:
+    """An absolute link to a page, on the host it belongs to."""
+    if not path.startswith("/"):
+        path = "/" + path
+    return (product_base_url(product_for_page(path), request) or site_base_url(request)) + path
+
+
+def product_urls(request=None) -> dict:
+    """{product: base url} for the front page and the app to link between
+    the faces. Empty when the hosts are not split."""
+    return {p: product_base_url(p, request) for p in PRODUCT_NAMES if product_base_url(p, request)}
 
 
 # Which part of the product a path belongs to. Only the prefixes that are
@@ -1746,6 +1911,10 @@ def client_me(request: Request, db: Session = Depends(get_db)):
         # What the app should show. One app now, so the plan decides what is
         # in it rather than which file was opened.
         "modules": client_modules(client),
+        # Which face this host wears, and where the others are, so the app
+        # can show one product and link to the other.
+        "product": product_for_host(request.headers.get("host", "")),
+        "products": product_urls(request),
         # An operator viewing a tenant keeps their superadmin session, so the
         # app can say whose account is on screen. Without this the only clue
         # was the data itself, which is exactly the wrong moment to guess.
@@ -2638,9 +2807,9 @@ def superadmin_client_overview(client_id: int, request: Request, db: Session = D
             "interviews": tenant_count(models.DBInterview),
         },
         "portals": {
-            "invoicing": "/app.html",
-            "hr": "/hr.html",
-            "employee": "/employee-login.html",
+            "invoicing": page_url("/app.html"),
+            "hr": page_url("/app.html#/hr"),
+            "employee": page_url("/employee-login.html"),
             "job_board": f"/jobs.html?c={client.id}",
         },
     }
@@ -4749,7 +4918,7 @@ async def auth_callback(request: Request, db: Session = Depends(get_db)):
                 request.session['refresh_token'] = refresh_token
 
             oauth_portal = request.session.pop('oauth_portal', 'invoicing')
-            target_dashboard = "/hr.html" if oauth_portal == "hr" else "/app.html"
+            target_dashboard = page_url("/app.html#/hr" if oauth_portal == "hr" else "/app.html", request)
 
             google_email = user.get('email', '')
 
@@ -4789,7 +4958,7 @@ async def auth_callback(request: Request, db: Session = Depends(get_db)):
                               "google", request, "success")
                     auto_clock_in_on_sign_in(db, emp, request)
                     db.commit()
-                    return RedirectResponse(url="/employee-dashboard.html")
+                    return RedirectResponse(url=page_url("/employee-dashboard.html", request))
 
                 existing_client = db.query(models.DBClient).filter(
                     sqlfunc.lower(models.DBClient.email)
@@ -6741,8 +6910,7 @@ def forgot_password(body: ForgotPasswordIn, background_tasks: BackgroundTasks,
               request, "requested")
     db.commit()
 
-    base = (os.getenv("APP_BASE_URL") or str(request.base_url)).rstrip("/")
-    link = f"{base}/reset-password.html?token={token}"
+    link = page_url(f"/reset-password.html?token={token}", request)
     company = client.company_name or "your account"
     from_email = platform_from_address()
 
@@ -6860,13 +7028,12 @@ def employee_forgot_password(body: ForgotPasswordIn, background_tasks: Backgroun
     # contractor locked out of employer B was sent a link for employer A and
     # stayed locked out. They demonstrably hold the mailbox, and each link
     # names the one account it belongs to.
-    base = (os.getenv("APP_BASE_URL") or str(request.base_url)).rstrip("/")
     from_email = platform_from_address()
     for emp in people:
         token = issue_reset_token(db, "employee", emp.id, ip)
         db.commit()
 
-        link = f"{base}/reset-password.html?token={token}&portal=employee"
+        link = page_url(f"/reset-password.html?token={token}&portal=employee", request)
         who = f"{emp.first_name} {emp.last_name}".strip() or emp.email
         text_body, html_body = reset_email_bodies(link, who, RESET_TOKEN_TTL_MINUTES)
 
@@ -6986,8 +7153,7 @@ def invite_member(body: TeamInvite, background_tasks: BackgroundTasks,
     log_audit(db, client.id, "team_invited", "team", member.id, email, role, request)
     db.commit()
 
-    base = (os.getenv("APP_BASE_URL") or str(request.base_url)).rstrip("/")
-    link = f"{base}/reset-password.html?token={token}&portal=team"
+    link = page_url(f"/reset-password.html?token={token}&portal=team", request)
     who = client.company_name or "the team"
     text_body, html_body = reset_email_bodies(link, who, RESET_TOKEN_TTL_MINUTES)
     text_body = text_body.replace("Someone asked to reset the password for",
@@ -14597,14 +14763,13 @@ def _create_stripe_checkout(order, client, request):
     cfg = gateway_config()["stripe"]
     if not cfg["secret"]:
         raise provider_unavailable("Stripe", ["STRIPE_SECRET_KEY"])
-    base = str(request.base_url).rstrip("/")
     resp = httpx.post(
         "https://api.stripe.com/v1/checkout/sessions",
         auth=(cfg["secret"], ""),
         data={
             "mode": "payment",
-            "success_url": f"{base}/app.html?topup=success",
-            "cancel_url": f"{base}/app.html?topup=cancelled",
+            "success_url": page_url("/app.html?topup=success", request),
+            "cancel_url": page_url("/app.html?topup=cancelled", request),
             "client_reference_id": str(order.id),
             "metadata[order_id]": str(order.id),
             "metadata[client_id]": str(client.id),
@@ -23290,6 +23455,9 @@ def public_platform_landing(db: Session = Depends(get_db)):
         # a section to operator-managed is a decision rather than something
         # that happens by deleting the last row.
         "items": landing_items_by_kind(db),
+        # The product hosts, once they are split, so the front page's
+        # sign-in links go to the right door. Empty means one address.
+        "products": product_urls(),
     }
 
 
@@ -27910,19 +28078,19 @@ def hr_digest_for(db, client, today=None):
         coming.append(f"- {c['name']}" + ("'s birthday " if c["kind"] == "birthday" else f": {c['years']} year{'s' if c['years'] != 1 else ''} here ") + when)
     if not lines and not coming:
         return None
-    base = (os.getenv("APP_BASE_URL") or "https://www.aniprotech.com").rstrip("/")
+    hr_link = page_url("/app.html#/hr")
     name = client.company_name or "your business"
     text = f"Good morning. Here is what is waiting on you at {name}.\n\n"
     if lines:
         text += "Waiting for a decision:\n" + "\n".join(lines) + "\n\n"
     if coming:
         text += "Coming up:\n" + "\n".join(coming) + "\n\n"
-    text += f"Open the HR dashboard: {base}/app.html#/hr\n\nTo stop these, switch off the morning digest under Settings."
+    text += f"Open the HR dashboard: {hr_link}\n\nTo stop these, switch off the morning digest under Settings."
     esc_ = html_mod.escape
     html = (f"<p>Good morning. Here is what is waiting on you at <strong>{esc_(name)}</strong>.</p>"
             + (f"<p><strong>Waiting for a decision</strong></p><ul>{''.join('<li>' + esc_(l[2:]) + '</li>' for l in lines)}</ul>" if lines else "")
             + (f"<p><strong>Coming up</strong></p><ul>{''.join('<li>' + esc_(l[2:]) + '</li>' for l in coming)}</ul>" if coming else "")
-            + f"<p><a href=\"{base}/app.html#/hr\">Open the HR dashboard</a></p>"
+            + f"<p><a href=\"{hr_link}\">Open the HR dashboard</a></p>"
             + "<p style=\"color:#64748b;font-size:12px\">To stop these, switch off the morning digest under Settings.</p>")
     subject = f"{name}: {sum(w['count'] for w in waiting)} thing{'s' if sum(w['count'] for w in waiting) != 1 else ''} waiting" if lines else f"{name}: what is coming up"
     return {"subject": subject, "text": text, "html": html, "waiting": waiting, "coming": coming}
@@ -28008,14 +28176,14 @@ def employee_digest_for(db, emp, since):
         models.DBNotification.created_at >= since).order_by(models.DBNotification.id.desc()).limit(30).all()
     if not rows:
         return None
-    base = (os.getenv("APP_BASE_URL") or "https://www.aniprotech.com").rstrip("/")
+    portal = page_url("/employee-login.html")
     lines = [f"- {n.title}" for n in rows]
     text = (f"Good morning {emp.first_name}. Since yesterday:\n\n" + "\n".join(lines) +
-            f"\n\nOpen your portal: {base}/employee-login.html")
+            f"\n\nOpen your portal: {portal}")
     esc_ = html_mod.escape
     html = (f"<p>Good morning {esc_(emp.first_name or '')}. Since yesterday:</p><ul>" +
             "".join(f"<li>{esc_(n.title)}</li>" for n in rows) +
-            f"</ul><p><a href=\"{base}/employee-login.html\">Open your portal</a></p>")
+            f"</ul><p><a href=\"{portal}\">Open your portal</a></p>")
     return {"subject": f"{len(rows)} thing{'s' if len(rows) != 1 else ''} waiting for you", "text": text, "html": html, "count": len(rows)}
 
 
@@ -28601,10 +28769,10 @@ def gateway_failure_notice(db, client_id, provider, why):
     else:
         db.add(models.DBSettings(client_id=client_id, key=key, value=today))
     label = PROVIDER_LABELS.get(provider, provider.title())
-    base = (os.getenv("APP_BASE_URL") or "https://www.aniprotech.com").rstrip("/")
+    settings_link = page_url("/app.html#/settings")
     text_body = (f"A customer tried to pay an invoice through {label} and it could not be started.\n\n"
                  f"{label} said: {why}\n\n"
-                 f"Check the keys under Settings > Payments and press \"Check keys\": {base}/app.html#/settings\n\n"
+                 f"Check the keys under Settings > Payments and press \"Check keys\": {settings_link}\n\n"
                  "Until then your invoices still show the Pay button, and each attempt will fail the same way.")
     try:
         send_email_background(client.email, f"Customers cannot pay you through {label}", text_body,
@@ -28832,13 +29000,13 @@ def online_payment_recorded(db, inv, method, amount, reference):
         return
     if str(tenant_setting(db, inv.client_id, "notify_online_payments", "1")).lower() in ("0", "false", "no", "off"):
         return
-    base = (os.getenv("APP_BASE_URL") or "https://www.aniprotech.com").rstrip("/")
+    open_link = page_url(f"/app.html#/invoices/{inv.number}")
     left = money(inv.due or 0)
     subject = f"{inv.number} paid: {currency} {amount:,.2f} by {how}"
     text_body = (f"{inv.to_contact or 'Your customer'} paid {currency} {amount:,.2f} on invoice {inv.number} by {how}.\n"
                  + (f"Reference: {reference}\n" if reference else "")
                  + (f"{currency} {left:,.2f} is still outstanding on it.\n" if left > 0 else "The invoice is paid in full.\n")
-                 + f"\nOpen it: {base}/app.html#/invoices/{inv.number}\n\n"
+                 + f"\nOpen it: {open_link}\n\n"
                  "To stop these, switch off online payment notices under Settings > Payments.")
     try:
         send_email_background(client.email, subject, text_body, platform_from_address(db), None, client_id=inv.client_id)
@@ -30611,8 +30779,7 @@ def late_fee_total_for(db, inv):
 
 
 def invoice_public_link(inv):
-    base = (os.getenv("APP_BASE_URL", "") or "https://www.aniprotech.com").rstrip("/")
-    return f"{base}/invoice.html?id={inv.tracking_id}" if inv.tracking_id else ""
+    return page_url(f"/invoice.html?id={inv.tracking_id}") if inv.tracking_id else ""
 
 
 def send_dunning_reminder(db, inv, step, days, today, request=None, by="policy"):
@@ -31475,8 +31642,7 @@ def send_credit_note_email(number: str, background_tasks: BackgroundTasks, reque
 # ============================================================================
 
 def quote_public_link(q, request=None):
-    base = (os.getenv("APP_BASE_URL", "") or (str(request.base_url) if request is not None else "") or "https://www.aniprotech.com").rstrip("/")
-    return f"{base}/quote.html?id={q.tracking_id}" if q.tracking_id else ""
+    return page_url(f"/quote.html?id={q.tracking_id}", request) if q.tracking_id else ""
 
 
 def quote_accept_raises_invoice(db, client_id):
@@ -31884,7 +32050,7 @@ class _SystemRequest:
         self.session = {"user": {"email": "system"}}
         # The live host when nothing says otherwise: a link that goes
         # nowhere is worse than one that is occasionally wrong.
-        base = (os.getenv("APP_BASE_URL", "") or base_url or "https://www.aniprotech.com").rstrip("/")
+        base = product_base_url("invoicing") or (os.getenv("APP_BASE_URL", "") or base_url or "https://www.aniprotech.com").rstrip("/")
         self.base_url = base + "/"
         self.client = None
         self.headers = {}
@@ -31966,6 +32132,22 @@ def job_scheduled_sends(db, now):
                 row.send_at = when       # kept, so it is tried again tomorrow
                 db.commit()
     return f"{sent} sent" + (f", {failed} could not be" if failed else "")
+
+
+# The installable app's manifest, named for the face this host wears, so the
+# icon on a phone says "aniprotech HR" rather than the same name for both
+# products. The employee portal has a manifest of its own.
+@app.get("/manifest.webmanifest")
+def app_manifest(request: Request):
+    with open(os.path.join(frontend_dir(), "manifest.webmanifest"), encoding="utf-8") as f:
+        data = json.load(f)
+    face = product_for_host(request.headers.get("host", ""))
+    if face in ("invoicing", "hr"):
+        data["name"] = f"aniprotech {PRODUCT_NAMES[face]}"
+        data["description"] = ("Invoices, quotes, payments and chasing." if face == "invoicing"
+                               else "People, leave, payroll, hiring and the staff portal.")
+    return Response(json.dumps(data), media_type="application/manifest+json",
+                    headers={"Cache-Control": "no-cache"})
 
 
 # Serve frontend

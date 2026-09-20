@@ -10,8 +10,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="tailwind.css?v=186">
-    <link rel="stylesheet" href="mobile.css?v=186">
+    <link rel="stylesheet" href="tailwind.css?v=187">
+    <link rel="stylesheet" href="mobile.css?v=187">
     <style>
         /* ── Taken from aniprotech.com ────────────────────────────────────
            The marketing site and the door into the product were two
@@ -168,11 +168,11 @@
             .ap-btn-google:hover, .ap-feature:hover { transform: none; }
         }
     </style>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=186">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=186">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=186">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=186">
-    <script src="/dialogs.js?v=186"></script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=187">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=187">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=187">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=187">
+    <script src="/dialogs.js?v=187"></script>
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="aniprotech">
     <meta property="og:title" content="Sign in to aniprotech">
@@ -277,11 +277,11 @@
           <!-- The full lockup rather than a letter in a box. This is the page
                that introduces the product, and a placeholder initial is what
                it looked like before there was a logo at all. -->
-          <img src="/icons/logo-full.svg?v=186" alt="aniprotech"
+          <img src="/icons/logo-full.svg?v=187" alt="aniprotech"
                width="212" height="56" class="mx-auto mb-5"
                style="color:var(--ap-ink);">
-          <h2 class="ap-display text-2xl mb-1.5">Welcome back</h2>
-          <p class="text-sm" style="color:var(--ap-body);">
+          <h2 class="ap-display text-2xl mb-1.5" id="door-title">Welcome back</h2>
+          <p class="text-sm" style="color:var(--ap-body);" id="door-intro">
             One sign-in for invoicing, HR and payroll - whatever your plan includes.
           </p>
         </div>
@@ -415,6 +415,31 @@
 </div>
 
 <script>
+    // One app, three front doors: on invoice. or hr. this is that product's
+    // sign-in and says so, and Google is told which product to land on.
+    (function () {
+        var labels = { invoice: 'invoicing', invoicing: 'invoicing', hr: 'hr' };
+        var product = labels[String(window.location.hostname).split('.')[0].toLowerCase()] || '';
+        if (!product) return;
+        var name = product === 'hr' ? 'HR' : 'Invoicing';
+        var other = product === 'hr' ? 'Invoicing' : 'HR';
+        var parts = window.location.host.split('.');
+        parts[0] = product === 'hr' ? 'invoice' : 'hr';
+        var otherUrl = window.location.protocol + '//' + parts.join('.') + '/login.html';
+        document.title = 'Sign in - aniprotech ' + name;
+        document.getElementById('door-title').textContent = 'Sign in to ' + name;
+        var intro = document.getElementById('door-intro');
+        intro.textContent = product === 'hr'
+            ? 'People, leave, payroll and hiring. Looking for invoicing? '
+            : 'Invoices, quotes, payments and chasing. Looking for HR? ';
+        var a = document.createElement('a');
+        a.href = otherUrl; a.textContent = 'Sign in to ' + other;
+        a.className = 'font-semibold hover:underline'; a.style.color = 'var(--ap-blue-dark)';
+        intro.appendChild(a);
+        var g = document.getElementById('google-btn');
+        if (g) g.href = '/api/auth/login?portal=' + product;
+    })();
+
     var params = new URLSearchParams(window.location.search);
     var error = params.get('error');
     if (error) {
@@ -612,7 +637,7 @@
         document.getElementById('loading').classList.remove('hidden');
     });
 </script>
-    <script src="/install-hint.js?v=186"></script>
-    <script src="/pwa.js?v=186"></script>
+    <script src="/install-hint.js?v=187"></script>
+    <script src="/pwa.js?v=187"></script>
 </body>
 </html>

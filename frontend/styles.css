@@ -679,6 +679,9 @@ textarea.table-input.item-desc {
 .currency-option.no-result { color: var(--text-secondary); cursor: default; }
 .currency-option.no-result:hover { background: transparent; }
 
+/* The product this host is, after the brand: "aniprotech HR". */
+.brand-product { font-weight: 500; font-size: 0.82em; opacity: 0.8; margin-left: 7px; letter-spacing: 0.01em; }
+
 /* Department Cards */
 .dept-card:hover { border-color: rgba(255, 255, 255, 0.15); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3); }
 

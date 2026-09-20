@@ -454,12 +454,22 @@ function applyRoute(slug) {
     slug = (slug || '').replace(/^\/+|\/+$/g, '');
     if (!slug) return false;
 
+    // A hash pointing at a portal this tenant does not have - an HR link
+    // opened by an invoicing-only account - must not strand them on a blank
+    // screen, so it falls through to the default view. A hash pointing at
+    // the other product on a host that wears one face goes to that product's
+    // own host, hash and all. A detail route (#/people/12) is judged by the
+    // list it belongs to.
+    var listView = VIEW_FOR_SLUG[slug] || VIEW_FOR_SLUG[slug.split('/')[0]];
+    if (listView && !isViewAvailable(listView)) {
+        var wants = viewProduct(listView);
+        if (PRODUCT && wants && wants !== PRODUCT && _planModules.indexOf(wants) !== -1
+                && goToProduct(wants, '/app.html#/' + slug)) return true;
+        return false;
+    }
+
     var viewId = VIEW_FOR_SLUG[slug];
     if (viewId) {
-        // A hash pointing at a portal this tenant does not have - an HR link
-        // opened by an invoicing-only account - must not strand them on a
-        // blank screen, so fall through to the default view.
-        if (!isViewAvailable(viewId)) return false;
         _applyingRoute = true;
         try { showView(viewId); } finally { _applyingRoute = false; }
         return true;
@@ -480,6 +490,15 @@ window.applyRoute = applyRoute;
 // A view is reachable if the section exists and its nav entry has not been
 // hidden by enforcePortalSeparation(). Views with no nav entry of their own
 // (detail screens, staff requests) are treated as reachable.
+// Which product a view belongs to, read off its nav entry. '' for the
+// shared ones and for views with no entry of their own.
+function viewProduct(viewId) {
+    var navEl = document.getElementById(NAV_FOR_VIEW[viewId] || '');
+    var p = navEl && navEl.getAttribute('data-portal');
+    return p && p !== 'shared' ? p : '';
+}
+window.viewProduct = viewProduct;
+
 function isViewAvailable(viewId) {
     if (!document.getElementById(viewId)) return false;
     var navId = NAV_FOR_VIEW[viewId];
@@ -1750,15 +1769,89 @@ window.goToEmployees = goToEmployees;
 //
 // Everything until the answer arrives, because starting from nothing makes
 // the header flash empty on every load for the tenants who have it all.
-var _modules = ['invoicing', 'hr'];
+//
+// One app, three front doors. invoice., hr. and employee. are the same
+// deployment wearing one face each: on a product host the app shows that
+// product alone, whatever the plan holds, and a link to the other product
+// goes to the other host. The face is read from the host here, before the
+// server has answered, so the header never flashes the other product; the
+// server's answer then says where the other doors are. On the site itself,
+// or on localhost, there is no face and the plan alone decides.
+var PRODUCT_LABELS = { invoice: 'invoicing', invoicing: 'invoicing', hr: 'hr', employee: 'employee', staff: 'employee' };
+var PRODUCT_NAMES = { invoicing: 'Invoicing', hr: 'HR' };
+
+function productForHost(host) {
+    var label = String(host || '').split(':')[0].split('.')[0].toLowerCase();
+    return PRODUCT_LABELS[label] || '';
+}
+window.productForHost = productForHost;
+
+var PRODUCT = productForHost(window.location.hostname);
+var _productUrls = {};                  // {invoicing: 'https://invoice...', ...} once the server says
+var _planModules = ['invoicing', 'hr']; // what the business has bought
+var _modules = PRODUCT_NAMES[PRODUCT] ? [PRODUCT] : ['invoicing', 'hr'];   // what this face shows
+
+// Where another face lives. The server's word first; failing that, this
+// host with its first label swapped, which is right wherever the hosts
+// follow the invoice./hr./employee. convention - and a host wearing a face
+// already does.
+function productUrl(product) {
+    if (_productUrls[product]) return _productUrls[product];
+    if (!PRODUCT) return '';
+    var label = { invoicing: 'invoice', hr: 'hr', employee: 'employee' }[product];
+    if (!label) return '';
+    var parts = window.location.host.split('.');
+    parts[0] = label;
+    return window.location.protocol + '//' + parts.join('.');
+}
+window.productUrl = productUrl;
+
+function goToProduct(product, path) {
+    var base = productUrl(product);
+    if (!base) return false;
+    window.location.replace(base + (path || '/app.html'));
+    return true;
+}
+window.goToProduct = goToProduct;
 
 function hasModule(name) {
     return _modules.indexOf(name) !== -1;
 }
 window.hasModule = hasModule;
 
+// The brand says which product this is, the account menu offers the other
+// one when the plan has it, and the employee portal link goes to its host.
+function applyProductChrome() {
+    var brand = document.getElementById('brand-product');
+    if (brand) brand.textContent = PRODUCT_NAMES[PRODUCT] || '';
+    if (PRODUCT_NAMES[PRODUCT]) document.title = 'aniprotech ' + PRODUCT_NAMES[PRODUCT];
+    var other = PRODUCT === 'invoicing' ? 'hr' : PRODUCT === 'hr' ? 'invoicing' : '';
+    var sw = document.getElementById('user-menu-switch');
+    if (sw) {
+        var can = other && _planModules.indexOf(other) !== -1 && productUrl(other);
+        sw.style.display = can ? '' : 'none';
+        if (can) { sw.textContent = 'Switch to ' + PRODUCT_NAMES[other]; sw.href = productUrl(other) + '/app.html'; }
+    }
+    var staff = productUrl('employee');
+    if (staff) {
+        document.querySelectorAll('a[href="/employee-login.html"], a[href$="/employee-login.html"]').forEach(function (a) {
+            a.href = staff + '/employee-login.html';
+        });
+    }
+}
+window.applyProductChrome = applyProductChrome;
+
 function applyModuleAccess(modules) {
-    if (Array.isArray(modules) && modules.length) _modules = modules;
+    if (Array.isArray(modules) && modules.length) _planModules = modules;
+    var face = PRODUCT_NAMES[PRODUCT]
+        ? _planModules.filter(function (m) { return m === PRODUCT; })
+        : _planModules.slice();
+    // This host's product is not in their plan: the door they do have.
+    if (PRODUCT_NAMES[PRODUCT] && !face.length) {
+        if (_planModules.length && goToProduct(_planModules[0])) return;
+        face = _planModules.slice();
+    }
+    _modules = face;
 
     document.querySelectorAll('.nav-item').forEach(function (item) {
         var needs = item.getAttribute('data-portal');
@@ -1776,6 +1869,7 @@ function applyModuleAccess(modules) {
         });
         group.style.display = anyVisible ? '' : 'none';
     });
+    applyProductChrome();
 }
 window.applyModuleAccess = applyModuleAccess;
 
@@ -9052,6 +9146,7 @@ document.addEventListener('DOMContentLoaded', async function() {
         var meRes = await fetch('/api/client/me', { credentials: 'same-origin' });
         if (meRes.ok) {
             var me = await meRes.json();
+            if (me.products && typeof me.products === 'object') _productUrls = me.products;
             if (Array.isArray(me.modules)) applyModuleAccess(me.modules);
         }
     } catch (e) {

@@ -187,8 +187,21 @@ def test_client_overview_reports_usage_and_portals(client, account, superadmin):
     d = superadmin.get(f"/api/superadmin/clients/{cid}/overview").json()
     for section in ("invoicing", "hr", "recruitment", "portals"):
         assert section in d
-    assert d["portals"]["employee"] == "/employee-login.html"
+    # Absolute now: once the hosts are split the employee portal is on its
+    # own host, and the operator's link has to go there.
+    assert d["portals"]["employee"].endswith("/employee-login.html")
+    assert d["portals"]["hr"].endswith("/app.html#/hr")
     assert d["portals"]["job_board"] == f"/jobs.html?c={cid}"
+
+
+def test_client_overview_names_the_doors_once_split(client, account, superadmin, monkeypatch):
+    monkeypatch.setenv("PRODUCT_HOSTS", "invoicing=invoice.aniprotech.com,hr=hr.aniprotech.com,employee=employee.aniprotech.com")
+    monkeypatch.setenv("APP_BASE_URL", "https://www.aniprotech.com")
+    cid = superadmin.get("/api/superadmin/clients").json()[0]["id"]
+    d = superadmin.get(f"/api/superadmin/clients/{cid}/overview").json()
+    assert d["portals"]["employee"] == "https://employee.aniprotech.com/employee-login.html"
+    assert d["portals"]["hr"] == "https://hr.aniprotech.com/app.html#/hr"
+    assert d["portals"]["invoicing"] == "https://invoice.aniprotech.com/app.html"
 
 
 def test_superadmin_endpoints_require_authorisation(client):
