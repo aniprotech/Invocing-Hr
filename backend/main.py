@@ -4739,6 +4739,18 @@ def cash_summary_report(request: Request, db: Session = Depends(get_db)):
         for code in sorted(groups) if code != base
     ]
     return report
+
+
+# Signing in asks Google who you are and nothing else. It used to ask for
+# permission to send mail as well, with the consent screen forced on every
+# visit - so every sign-in showed "aniprotech wants to send email on your
+# behalf" behind Google's unverified-app warning, and Google mailed a
+# "security alert: aniprotech was granted access" each time. Sending is a
+# separate act, granted once from Settings (/api/gmail/connect), which is
+# the only place the mail permission is asked for.
+SIGN_IN_SCOPE = "openid email profile"
+
+
 @app.get("/api/auth/login")
 async def login(request: Request, role: str = "client", portal: str = None):
     request.session['oauth_role'] = role
@@ -4747,7 +4759,9 @@ async def login(request: Request, role: str = "client", portal: str = None):
     redirect_uri = str(request.url_for('auth_callback'))
     if redirect_uri.startswith('http://') and 'localhost' not in redirect_uri:
         redirect_uri = redirect_uri.replace('http://', 'https://', 1)
-    return await oauth.google.authorize_redirect(request, redirect_uri, access_type='offline', prompt='consent')
+    # select_account: somebody with two Google accounts gets to pick, and
+    # nobody gets a consent screen or a security email for signing in.
+    return await oauth.google.authorize_redirect(request, redirect_uri, scope=SIGN_IN_SCOPE, prompt='select_account')
 
 def auto_clock_in_on_sign_in(db: Session, emp, request, lat=0.0, lng=0.0,
                              device="", loc_label=""):
@@ -4906,16 +4920,14 @@ async def auth_callback(request: Request, db: Session = Depends(get_db)):
         return RedirectResponse(
             url=f"/login.html?error=auth_failed&why={google_failure_code(e)}")
     user = token.get('userinfo')
-    access_token = token.get('access_token')
-    refresh_token = token.get('refresh_token')
     oauth_role = request.session.pop('oauth_role', 'client')
 
     try:
         if user:
+            # Who they are, and nothing Google would let us do as them:
+            # sign-in asks for no such thing any more, and the tokens it used
+            # to keep here were read by nothing.
             request.session['user'] = dict(user)
-            request.session['access_token'] = access_token
-            if refresh_token:
-                request.session['refresh_token'] = refresh_token
 
             oauth_portal = request.session.pop('oauth_portal', 'invoicing')
             target_dashboard = page_url("/app.html#/hr" if oauth_portal == "hr" else "/app.html", request)
@@ -4985,22 +4997,6 @@ async def auth_callback(request: Request, db: Session = Depends(get_db)):
                     client_id = new_client.id
                     request.session['client_id'] = client_id
                     log_login(db, client_id, google_email, "client", "google", request, "success")
-
-                # Save refresh token per-client
-                if refresh_token and client_id:
-                    try:
-                        setting = db.query(models.DBSettings).filter(
-                            models.DBSettings.key == "GOOGLE_REFRESH_TOKEN",
-                            models.DBSettings.client_id == client_id
-                        ).first()
-                        if not setting:
-                            setting = models.DBSettings(key="GOOGLE_REFRESH_TOKEN", value=refresh_token, client_id=client_id)
-                            db.add(setting)
-                        else:
-                            setting.value = refresh_token
-                        db.commit()
-                    except Exception as e:
-                        logger.error(f"Failed to save refresh token: {e}")
 
                 if existing_client:
                     if existing_client.is_onboarded:
