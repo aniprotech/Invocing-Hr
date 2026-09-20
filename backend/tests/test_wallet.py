@@ -12,7 +12,7 @@ import time
 import pytest
 
 import main
-from conftest import past_trial, make_employee
+from conftest import past_trial
 
 
 @pytest.fixture

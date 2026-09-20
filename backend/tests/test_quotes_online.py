@@ -8,7 +8,6 @@ business wants that, tells the business, and reaches integrations. The
 quote email carries the link. Nothing crosses a business.
 """
 import os
-import uuid
 from datetime import date, timedelta
 
 os.environ["WEBHOOKS_ASYNC"] = "0"          # rows only; nothing goes out

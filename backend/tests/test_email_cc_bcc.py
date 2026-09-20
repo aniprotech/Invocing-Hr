@@ -11,7 +11,6 @@ visible to the other recipients. Getting that wrong is silent and only
 discovered by the person who was not supposed to know.
 """
 import pytest
-from fastapi.testclient import TestClient
 
 import main
 from conftest import make_invoice

@@ -15,7 +15,6 @@ Confirmed live before this was written - an anonymous POST with a malformed
 body returned 422, which means the request reached the handler and was
 validated rather than being turned away for having no session.
 """
-import pytest
 
 import main
 

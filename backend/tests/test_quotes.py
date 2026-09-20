@@ -1,7 +1,6 @@
 """Quotes: priced proposals that can become invoices."""
 import uuid
 
-import pytest
 
 
 def make_quote(tenant, line_items=None, **overrides):

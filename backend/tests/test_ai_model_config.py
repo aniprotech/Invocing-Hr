@@ -5,7 +5,6 @@ environment variable is a restart; changing a constant is a deploy, and the
 difference matters when the thing is already broken.
 """
 import importlib
-import os
 
 import pytest
 

@@ -568,11 +568,6 @@ input[type="number"] {
 .line-items-table td {
     vertical-align: top;
 }
-.line-items-table .item-desc-cell {
-    word-wrap: break-word;
-    overflow-wrap: break-word;
-    max-width: 280px;
-}
 textarea.table-input.item-desc {
     resize: vertical;
     min-height: 32px;
@@ -686,14 +681,6 @@ textarea.table-input.item-desc {
 
 /* Department Cards */
 .dept-card:hover { border-color: rgba(255, 255, 255, 0.15); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3); }
-
-/* Onboarding Hub */
-.onb-progress-ring .bg { stroke: rgba(255, 255, 255, 0.08); }
-.onb-progress-ring .fill { transition: stroke-dashoffset 0.6s ease; }
-.onb-progress-ring .pct {
-    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
-    font-size: 0.75rem; font-weight: 700;
-}
 
 /* ===== CLICKABLE STAT CARDS =====
    Dashboard figures drill through to the list that explains them. Built on a
@@ -929,7 +916,7 @@ textarea.table-input.item-desc {
     .grid-4, .grid-5 { grid-template-columns: repeat(2, 1fr) !important; gap: 12px; }
     /* Form layouts always stack, even when they also carry a .grid-* class.
        Declared after the grid rules above so it wins the !important tie. */
-    .invoice-top-grid, .form-grid, .form-row { grid-template-columns: 1fr !important; }
+    .invoice-top-grid, .form-row { grid-template-columns: 1fr !important; }
     .stat-card { padding: 16px; }
     .stat-card .stat-value { font-size: 1.25rem; }
     .stat-card .stat-value.lg { font-size: 1.6rem; }
@@ -954,7 +941,7 @@ textarea.table-input.item-desc {
     .line-items-table { min-width: 720px; }
 
     /* Forms go full width and stack. */
-    .form-row, .form-grid { grid-template-columns: 1fr !important; }
+    .form-row { grid-template-columns: 1fr !important; }
     .modal .form-row { flex-direction: column; }
 }
 
@@ -1093,11 +1080,6 @@ select option:hover {
     .line-items-table th, .line-items-table td { border-bottom: 1px solid #ddd !important; color: black !important; background-color: transparent !important; }
     * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
 }
-
-/* ===== PDF MODE ===== */
-.pdf-mode .glass-widget { background: #ffffff !important; border: none !important; box-shadow: none !important; backdrop-filter: none !important; border-radius: 0 !important; }
-.pdf-mode .widget-content { padding: 0 !important; }
-.pdf-mode .status-pill { display: none !important; }
 
 /* Recruitment Kanban Styles */
 .kanban-column {

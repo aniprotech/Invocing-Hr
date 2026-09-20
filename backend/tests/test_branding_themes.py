@@ -7,7 +7,6 @@ one default theme, a colour is always a colour, and a logo is always an image.
 import pytest
 
 import main
-import models
 
 
 @pytest.fixture(autouse=True)

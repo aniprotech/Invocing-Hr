@@ -9,7 +9,6 @@ customer never received.
 So the tests worth having are all about the failing path: it must not say
 sent, and it must give the money back.
 """
-import uuid
 
 import pytest
 

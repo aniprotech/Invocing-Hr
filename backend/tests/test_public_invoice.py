@@ -12,7 +12,6 @@ import uuid
 import pytest
 
 import main
-import models
 from conftest import make_invoice
 
 

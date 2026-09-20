@@ -1,5 +1,4 @@
 """Payslip calculation, payroll runs and the guards around them."""
-import pytest
 
 from conftest import make_employee
 

@@ -5,7 +5,7 @@ same month, or a customer chased twice for the same thing. Most of this is
 about those.
 """
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 import pytest
 

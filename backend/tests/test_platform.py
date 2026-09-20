@@ -4,7 +4,6 @@ import time
 import pytest
 
 import main
-from conftest import make_employee
 
 
 # --- password hashing ------------------------------------------------------

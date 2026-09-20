@@ -10,7 +10,6 @@ sees anybody else's at all.
 import pytest
 
 import main
-import models
 from conftest import make_employee
 
 EMP_PASSWORD = "EmpPass123"

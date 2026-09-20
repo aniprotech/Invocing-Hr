@@ -6,8 +6,6 @@ import hmac
 import secrets
 import struct
 import uuid
-import smtplib
-import ssl
 import json
 import re
 import html as html_mod
@@ -26,7 +24,6 @@ from datetime import datetime, timedelta, date
 import os
 import base64
 import logging
-from email.message import EmailMessage
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request as GoogleRequest
 from googleapiclient.discovery import build
@@ -1787,7 +1784,6 @@ def client_onboard(body: ClientOnboard, request: Request, db: Session = Depends(
 
 @app.post("/api/client/logo")
 def upload_logo(request: Request, db: Session = Depends(get_db)):
-    import json
     client = get_client_user(request, db)
     return {"logo_url": client.logo_url or ""}
 
@@ -3434,7 +3430,6 @@ def _send_email_now(to_email: str, subject: str, body: str, from_email: str, htm
 
 @app.get("/api/dashboard-summary")
 def get_dashboard_summary(request: Request, db: Session = Depends(get_db)):
-    from collections import defaultdict
     from datetime import datetime, timedelta
 
     client = get_client_user(request, db)
@@ -3826,7 +3821,6 @@ def send_invoice_email(number: str, background_tasks: BackgroundTasks, request: 
     if not validate_email_address(inv.email):
         raise HTTPException(status_code=400, detail=f"Invalid email address: {inv.email}")
 
-    user = request.session.get('user', {})
     from_email = platform_from_address()
     if not from_email:
         raise HTTPException(status_code=400, detail="No sender email configured.")
@@ -3838,8 +3832,6 @@ def send_invoice_email(number: str, background_tasks: BackgroundTasks, request: 
     company_email = settings_map.get("email", "") or (inv_client.email if inv_client else "")
     company_phone = settings_map.get("phone_number", "") or (inv_client.phone_number if inv_client else "")
     company_address = settings_map.get("company_address", "") or (inv_client.address if inv_client else "")
-    company_abn = settings_map.get("company_abn", "") or (inv_client.abn if inv_client else "")
-    company_website = settings_map.get("company_website", "") or (inv_client.website if inv_client else "")
 
     cur = (inv.currency or settings_map.get("currency") or (inv_client.currency if inv_client else "") or "GBP").upper()
     cur_symbol = currency_symbol(cur)
@@ -5462,7 +5454,7 @@ class PaymentCreate(BaseModel):
 
 
 @app.post("/api/invoices/{number}/payments")
-def record_invoice_payment(number: str, body: PaymentCreate, request: Request, db: Session = Depends(get_db)):
+def add_invoice_payment(number: str, body: PaymentCreate, request: Request, db: Session = Depends(get_db)):
     """Record a part payment. Status moves Draft/Sent -> Partially Paid -> Paid."""
     client = get_client_user(request, db)
     inv = db.query(models.DBInvoice).filter(
@@ -12736,7 +12728,7 @@ def list_offers(sub_id: int, request: Request, db: Session = Depends(get_db)):
 @app.post("/api/recruitment/submissions/{sub_id}/offers")
 def create_offer(sub_id: int, request: Request, body: OfferIn, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
-    sub = _get_submission_for_client(db, client.id, sub_id)
+    _get_submission_for_client(db, client.id, sub_id)      # 404 if it is not theirs
     live = db.query(models.DBOffer).filter(
         models.DBOffer.submission_id == sub_id,
         models.DBOffer.status.in_(["draft", "sent", "accepted"]),
@@ -13679,7 +13671,7 @@ class PricingRuleIn(BaseModel):
 
 
 @app.get("/api/superadmin/ai-status")
-def ai_status(request: Request):
+def superadmin_ai_status(request: Request):
     """Which providers can answer, in the order they will be asked.
 
     The AI used to be one paid provider on one large model, so this said "is
@@ -14308,7 +14300,6 @@ def wallet_providers(request: Request, db: Session = Depends(get_db)):
     wallet = get_wallet(db, client.id)
     db.commit()
     enabled = enabled_providers()
-    cfg = gateway_config()
     currency = wallet.currency
 
     def entry(key, label, extra=None):
@@ -15718,7 +15709,6 @@ def expiring_documents(request: Request, days: int = 60, db: Session = Depends(g
     client = get_client_user(request, db)
     days = max(1, min(days, 365))
     horizon = (datetime.now().date() + timedelta(days=days))
-    today = datetime.now().date()
 
     rows = db.query(models.DBDocumentRequest).filter(
         models.DBDocumentRequest.client_id == client.id,
@@ -16524,11 +16514,6 @@ def _safe_date(y, m, d):
     return date(y, m, 28)
 
 
-def _add_months(d, months):
-    m = d.month - 1 + months
-    return _safe_date(d.year + m // 12, m % 12 + 1, d.day)
-
-
 def leave_year_bounds(policy, today):
     """[start, end) of the leave year that contains today."""
     mm, dd = int(policy["year_start"][:2]), int(policy["year_start"][3:])
@@ -16894,7 +16879,6 @@ def get_weekly_chart(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Not authenticated")
     from datetime import timedelta
     today = datetime.now()
-    start = (today - timedelta(days=today.weekday())).strftime("%Y-%m-%d")
     week_days = []
     for i in range(7):
         d = (today - timedelta(days=today.weekday() - i)).strftime("%Y-%m-%d")
@@ -17443,7 +17427,6 @@ def summarize_attendance(request: Request, body: dict = None, db: Session = Depe
 # ============================================================
 # VIDEO MEETINGS - WebRTC Signaling Server
 # ============================================================
-from collections import defaultdict
 
 meeting_rooms = defaultdict(lambda: {
     "participants": {},
@@ -17904,8 +17887,6 @@ def build_business_context(db, client):
 
     invoices = db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id).all()
     overdue = [i for i in invoices if invoice_overdue_days(i, today) > 0]
-    outstanding = sum(i.due or 0 for i in invoices if i.status in OPEN_INVOICE_STATUSES)
-    collected = sum(i.paid or 0 for i in invoices)
 
     employees = db.query(models.DBEmployee).filter(models.DBEmployee.client_id == client.id).all()
     active = [e for e in employees if e.status == "active"]
@@ -22036,20 +22017,6 @@ def client_gateway_to_dict(g):
         "is_live": bool(g.is_live),
         "updated_at": g.updated_at or "",
     }
-
-
-def active_client_gateway(db: Session, client_id: int):
-    """The one a customer will be offered. Razorpay first because it is the
-    only one wired end to end."""
-    rows = db.query(models.DBClientGateway).filter(
-        models.DBClientGateway.client_id == client_id,
-        models.DBClientGateway.is_active == True,      # noqa: E712
-    ).all()
-    by_provider = {r.provider: r for r in rows if r.public_key and r.secret_key}
-    for provider in CLIENT_PROVIDERS:
-        if provider in by_provider:
-            return by_provider[provider]
-    return None
 
 
 def client_email_to_dict(row, client):
@@ -26919,7 +26886,6 @@ def import_people_csv(request: Request, body: dict = None, dry_run: int = 0,
 
     # Write. Departments first, then people, then managers - a manager may
     # be lower in the file than the person who reports to them.
-    by = _hr_name(client)
     for row, email, salary, level, emp_type in to_write:
         dept_name = row.get("department", "")
         if dept_name and dept_name.lower() not in depts:
@@ -27927,7 +27893,6 @@ def delete_custom_field(field_id: int, request: Request, db: Session = Depends(g
 def hr_digest_for(db, client, today=None):
     """The rows and the words, or None if there is nothing to say."""
     today = today or date.today()
-    cid = client.id
     # The dashboard's own queues, computed the same way the screen does.
     dash = hr_dashboard_data(db, client)
     waiting = [w for w in dash["waiting_on_you"] if w["count"]]

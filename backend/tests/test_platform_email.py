@@ -12,7 +12,6 @@ The token this writes is platform-wide - it is the account every tenant's mail
 goes out through until they connect their own - so most of what is here is
 about who is allowed to write it.
 """
-import uuid
 
 import pytest
 

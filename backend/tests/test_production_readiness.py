@@ -18,7 +18,6 @@ Each of these was true in production when it was found:
 import os
 import subprocess
 import sys
-import uuid
 
 import pytest
 

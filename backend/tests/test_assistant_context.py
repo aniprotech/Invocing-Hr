@@ -214,7 +214,7 @@ def test_it_names_who_is_on_leave_today(client, tenant, account, me):
 
 def test_somebody_on_leave_is_not_also_reported_absent(client, tenant, account, me):
     """Otherwise the same person is listed as unaccounted for and on holiday."""
-    from datetime import date, timedelta
+    from datetime import date
     today = date.today()
     # Every day counts as a working day here, or a request landing on a
     # weekend is worth zero days and never gets created - which made this

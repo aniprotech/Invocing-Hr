@@ -8,7 +8,6 @@ quote's invoice reaches the customer. The system sends the way the Send
 button does - charged, recorded, marked sent - and when it cannot, the
 business is told and the audit log says why. Nothing crosses a business.
 """
-import uuid
 from datetime import date, timedelta
 
 import pytest

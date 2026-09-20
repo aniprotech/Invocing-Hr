@@ -13,7 +13,6 @@ from datetime import date, timedelta
 import pytest
 
 import main
-import models
 from conftest import make_invoice
 
 

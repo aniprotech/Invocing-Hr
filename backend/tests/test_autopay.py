@@ -8,9 +8,6 @@ real.
 
 Most of these are about the charge that must NOT happen.
 """
-import hashlib
-import hmac
-import uuid
 from datetime import date, timedelta
 
 import pytest

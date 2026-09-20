@@ -1,7 +1,6 @@
 import logging
 import os
 import sys
-import uuid
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv

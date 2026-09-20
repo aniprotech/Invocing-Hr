@@ -10,8 +10,6 @@ So the relay has to be configurable, its credentials must not be baked into a
 static page anyone can read, and the app has to know whether one exists so it
 can say something useful when a connection fails.
 """
-import importlib
-import os
 import pathlib
 
 import pytest

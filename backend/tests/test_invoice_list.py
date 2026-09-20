@@ -3,7 +3,6 @@ acted on in bulk - on the server, so five thousand invoices are no slower
 than fifty. The old whole-list route is untouched. Nothing crosses a
 business.
 """
-import uuid
 from datetime import date, timedelta
 
 import pytest
