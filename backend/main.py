@@ -32260,6 +32260,406 @@ def job_scheduled_sends(db, now):
     return f"{sent} sent" + (f", {failed} could not be" if failed else "")
 
 
+# ============================================================================
+# BANK FEEDS
+#
+# What Xero does through Tink. The business picks its bank, says yes at the
+# bank's own login, and from then on the account's transactions arrive every
+# morning as bank lines - the same lines a statement file would have brought,
+# matched to invoices the same way. See backend/bankfeed.py for the provider.
+# ============================================================================
+import bankfeed  # noqa: E402
+
+_BANK_PROVIDER = None
+_INSTITUTIONS = {"at": 0.0, "rows": []}
+BANK_FEED_SYNCS_A_DAY = 4          # the banks' own limit, enforced by the provider
+BANK_FEED_WARN_DAYS = 10           # how far ahead the business is told consent is ending
+
+
+def bank_provider():
+    """The provider, made once from the platform's keys; None until the keys are set."""
+    global _BANK_PROVIDER
+    if _BANK_PROVIDER is None:
+        _BANK_PROVIDER = bankfeed.GoCardlessBankData(os.getenv("BANK_FEED_SECRET_ID", ""), os.getenv("BANK_FEED_SECRET_KEY", ""))
+    return _BANK_PROVIDER if _BANK_PROVIDER.configured() else None
+
+
+def require_bank_provider():
+    p = bank_provider()
+    if p is None:
+        raise HTTPException(status_code=400, detail="Bank feeds are not switched on for this platform yet")
+    return p
+
+
+def bank_institutions(provider):
+    """The banks, fetched once a day - the list changes about never."""
+    if time.time() - _INSTITUTIONS["at"] > 86400 or not _INSTITUTIONS["rows"]:
+        _INSTITUTIONS["rows"] = provider.institutions("gb")
+        _INSTITUTIONS["at"] = time.time()
+    return _INSTITUTIONS["rows"]
+
+
+def feed_account_figures(db, acc):
+    """The tile: what the bank says is there, what of it is explained, and
+    the lines still to match. The difference is the money in that nobody
+    has recorded against an invoice yet."""
+    imports = [i.id for i in db.query(models.DBBankImport.id).filter(models.DBBankImport.feed_account_id == acc.id).all()]
+    unmatched = db.query(models.DBBankLine).filter(models.DBBankLine.import_id.in_(imports),
+                                                   models.DBBankLine.status == "unmatched").all() if imports else []
+    to_match = money(sum(max(0.0, (l.amount or 0) - (l.allocated or 0)) for l in unmatched))
+    bal = acc.statement_balance
+    return {"statement_balance": bal, "balance_on": acc.balance_on or "",
+            "in_app": money(bal - to_match) if bal is not None else None,
+            "difference": to_match, "to_match": len(unmatched), "lines_total": acc.lines_total or 0}
+
+
+def feed_account_to_dict(db, acc, names=None):
+    names = names or {}
+    d = {"id": acc.id, "feed_id": acc.feed_id, "name": acc.name or "Account", "owner": acc.owner or "",
+         "sort_code": acc.sort_code or "", "account_number": acc.account_number or "", "iban": acc.iban or "",
+         "currency": acc.currency or "GBP", "enabled": bool(acc.enabled), "account_id": acc.account_id,
+         "account": names.get(acc.account_id, ""), "last_synced_at": acc.last_synced_at or ""}
+    d.update(feed_account_figures(db, acc))
+    return d
+
+
+def feed_to_dict(db, feed, names=None):
+    accounts = db.query(models.DBBankFeedAccount).filter(models.DBBankFeedAccount.feed_id == feed.id).order_by(models.DBBankFeedAccount.id.asc()).all()
+    days_left = None
+    if feed.consent_expires_on:
+        exp = _parse_date(feed.consent_expires_on)
+        days_left = (exp - date.today()).days if exp else None
+    return {"id": feed.id, "provider": bankfeed.PROVIDER_NAME, "institution_id": feed.institution_id,
+            "institution_name": feed.institution_name or "", "institution_logo": feed.institution_logo or "",
+            "status": feed.status, "consent_expires_on": feed.consent_expires_on or "", "days_left": days_left,
+            "renew_soon": feed.status == "linked" and days_left is not None and days_left <= BANK_FEED_WARN_DAYS,
+            "last_synced_at": feed.last_synced_at or "", "last_error": feed.last_error or "",
+            "syncs_left_today": max(0, BANK_FEED_SYNCS_A_DAY - (feed.syncs_today or 0)) if feed.syncs_on == date.today().isoformat() else BANK_FEED_SYNCS_A_DAY,
+            "created_at": feed.created_at or "",
+            "accounts": [feed_account_to_dict(db, a, names) for a in accounts]}
+
+
+def _feed_of(db, client, feed_id):
+    feed = db.query(models.DBBankFeed).filter(models.DBBankFeed.id == feed_id, models.DBBankFeed.client_id == client.id).first()
+    if not feed:
+        raise HTTPException(status_code=404, detail="That bank connection is not one of yours")
+    return feed
+
+
+def _money_account_for_feed_account(db, client_id, feed, info):
+    """The business's own money account this bank account's lines go to:
+    the one already made for the same sort code and number - a renewal -
+    or a new one named after the bank."""
+    tail = (info.get("account_number") or "")[-4:]
+    older = db.query(models.DBBankFeedAccount).filter(
+        models.DBBankFeedAccount.client_id == client_id, models.DBBankFeedAccount.feed_id != feed.id,
+        models.DBBankFeedAccount.sort_code == (info.get("sort_code") or ""),
+        models.DBBankFeedAccount.account_number == (info.get("account_number") or ""),
+        models.DBBankFeedAccount.account_id != None).order_by(models.DBBankFeedAccount.id.desc()).first()  # noqa: E711
+    if older and older.account_id:
+        return older.account_id
+    name = f"{feed.institution_name or 'Bank'} {info.get('name') or ''}".strip()
+    if tail:
+        name = f"{name} ···{tail}"
+    details = " ".join(x for x in (f"Sort code {info['sort_code']}" if info.get("sort_code") else "",
+                                   f"account {info['account_number']}" if info.get("account_number") else "") if x)
+    first = db.query(models.DBMoneyAccount).filter(models.DBMoneyAccount.client_id == client_id).count() == 0
+    row = models.DBMoneyAccount(client_id=client_id, name=name[:120], kind="bank", details=details, active=True, is_default=first)
+    db.add(row)
+    db.flush()
+    return row.id
+
+
+def _adopt_older_feed_account(db, acc):
+    """A renewal is the same bank account under a new consent: the lines its
+    earlier connection brought in count as this one's, so the card's figures
+    do not start from nothing."""
+    older = db.query(models.DBBankFeedAccount).filter(
+        models.DBBankFeedAccount.client_id == acc.client_id, models.DBBankFeedAccount.id != acc.id,
+        models.DBBankFeedAccount.sort_code == (acc.sort_code or ""),
+        models.DBBankFeedAccount.account_number == (acc.account_number or "")).order_by(models.DBBankFeedAccount.id.desc()).all()
+    for old in older:
+        db.query(models.DBBankImport).filter(models.DBBankImport.feed_account_id == old.id).update(
+            {models.DBBankImport.feed_account_id: acc.id}, synchronize_session=False)
+        acc.lines_total = (acc.lines_total or 0) + (old.lines_total or 0)
+        old.lines_total = 0
+
+
+def sync_feed_account(db, provider, feed, acc, first=False):
+    """Pull what is new for one account into bank lines. Returns how many."""
+    since = date.today() - timedelta(days=bankfeed.HISTORY_DAYS if first or not acc.last_synced_at
+                                     else 5)   # a few days back: banks book late
+    rows = provider.transactions(acc.provider_account_id, since.isoformat())
+    bal = provider.balance(acc.provider_account_id)
+    if bal:
+        acc.statement_balance = money(bal["amount"])
+        acc.balance_on = bal.get("on") or date.today().isoformat()
+        if bal.get("currency"):
+            acc.currency = bal["currency"]
+    existing = {l.fingerprint for l in db.query(models.DBBankLine.fingerprint).filter(models.DBBankLine.client_id == feed.client_id).all()}
+    fresh = []
+    for t in rows:
+        if not t.get("date"):
+            continue
+        key = t.get("external_id") or f"{t['date']}|{t['amount']:.2f}|{t.get('description', '')}|{t.get('reference', '')}"
+        fp = hashlib.sha1(f"feed|{acc.provider_account_id}|{key}".encode("utf-8")).hexdigest()
+        if fp in existing:
+            continue
+        existing.add(fp)
+        fresh.append((fp, t))
+    if fresh:
+        imp = models.DBBankImport(client_id=feed.client_id, account_id=acc.account_id, feed_account_id=acc.id, kind="feed",
+                                  filename=f"{feed.institution_name or 'Bank'} feed {date.today().isoformat()}",
+                                  lines=len(fresh), duplicates=len(rows) - len(fresh), imported_by="bank feed")
+        db.add(imp)
+        db.flush()
+        for fp, t in fresh:
+            db.add(models.DBBankLine(client_id=feed.client_id, import_id=imp.id, account_id=acc.account_id, date=t["date"],
+                                     description=t.get("description") or "", reference=t.get("reference") or "",
+                                     amount=money(t["amount"]), balance=None, fingerprint=fp,
+                                     status="unmatched" if t["amount"] > 0 else "out"))
+        acc.lines_total = (acc.lines_total or 0) + len(fresh)
+    acc.last_synced_at = bankfeed.now_text()
+    return len(fresh)
+
+
+def sync_feed(db, feed, provider=None, first=False, manual=False):
+    """Every enabled account under a connection. Errors are kept on the
+    feed for the screen to show, never raised past here."""
+    provider = provider or bank_provider()
+    if provider is None or feed.status != "linked":
+        return 0
+    today = date.today().isoformat()
+    if feed.syncs_on != today:
+        feed.syncs_on, feed.syncs_today = today, 0
+    if manual and (feed.syncs_today or 0) >= BANK_FEED_SYNCS_A_DAY:
+        raise HTTPException(status_code=429, detail=f"The bank allows {BANK_FEED_SYNCS_A_DAY} refreshes a day; the next one is tomorrow morning")
+    feed.syncs_today = (feed.syncs_today or 0) + 1
+    total = 0
+    try:
+        for acc in db.query(models.DBBankFeedAccount).filter(models.DBBankFeedAccount.feed_id == feed.id,
+                                                             models.DBBankFeedAccount.enabled == True).all():  # noqa: E712
+            total += sync_feed_account(db, provider, feed, acc, first=first)
+        feed.last_error = ""
+        feed.last_synced_at = bankfeed.now_text()
+    except bankfeed.BankFeedError as e:
+        feed.last_error = str(e)[:300]
+        state = {}
+        try:
+            state = provider.status(feed.requisition_id)
+        except bankfeed.BankFeedError:
+            pass
+        if state.get("state") in ("expired", "rejected", "suspended"):
+            feed.status = "expired"
+    db.commit()
+    return total
+
+
+@app.get("/api/bank/feeds")
+def list_bank_feeds(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    names = account_names(db, client.id)
+    rows = db.query(models.DBBankFeed).filter(models.DBBankFeed.client_id == client.id,
+                                              models.DBBankFeed.status != "disconnected").order_by(models.DBBankFeed.id.desc()).all()
+    return {"configured": bank_provider() is not None, "provider": bankfeed.PROVIDER_NAME, "blurb": bankfeed.PROVIDER_BLURB,
+            "consent_days": bankfeed.CONSENT_DAYS, "feeds": [feed_to_dict(db, f, names) for f in rows]}
+
+
+@app.get("/api/bank/feeds/institutions")
+def search_bank_institutions(request: Request, q: str = "", db: Session = Depends(get_db)):
+    get_client_user(request, db)
+    provider = bank_provider()
+    if provider is None:
+        # Not an error: the screen does not offer the search until the keys
+        # are set, and a sweep of every route expects an answer, not a 5xx.
+        return {"institutions": [], "configured": False}
+    try:
+        rows = bank_institutions(provider)
+    except bankfeed.BankFeedError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    needle = (q or "").strip().lower()
+    hits = [r for r in rows if not needle or needle in (r.get("name") or "").lower()]
+    return {"institutions": hits[:40]}
+
+
+@app.post("/api/bank/feeds")
+def start_bank_feed(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Begin: the consent at the provider, and the link to the bank."""
+    client = get_client_user(request, db)
+    provider = require_bank_provider()
+    body = body or {}
+    institution_id = str(body.get("institution_id") or "").strip()
+    if not institution_id:
+        raise HTTPException(status_code=400, detail="Pick a bank")
+    try:
+        inst = next((i for i in bank_institutions(provider) if i["id"] == institution_id), None)
+    except bankfeed.BankFeedError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    if inst is None and institution_id != bankfeed.SANDBOX_INSTITUTION:
+        raise HTTPException(status_code=400, detail="That bank is not one the provider covers")
+    reference = uuid.uuid4().hex
+    feed = models.DBBankFeed(client_id=client.id, provider="gocardless", institution_id=institution_id,
+                             institution_name=(inst or {}).get("name") or ("Sandbox bank" if institution_id == bankfeed.SANDBOX_INSTITUTION else institution_id),
+                             institution_logo=(inst or {}).get("logo") or "", reference=reference, status="pending",
+                             created_by=(client.email or "")[:120])
+    db.add(feed)
+    db.flush()
+    consent_days = min(bankfeed.CONSENT_DAYS, int((inst or {}).get("consent_days") or bankfeed.CONSENT_DAYS))
+    redirect = page_url(f"/app.html?feed={reference}#/bank", request)
+    try:
+        started = provider.start(institution_id, redirect, reference, consent_days=consent_days,
+                                 history_days=min(bankfeed.HISTORY_DAYS, int((inst or {}).get("history_days") or bankfeed.HISTORY_DAYS)))
+    except bankfeed.BankFeedError as e:
+        db.rollback()
+        raise HTTPException(status_code=502, detail=str(e))
+    feed.requisition_id = started["requisition_id"]
+    feed.agreement_id = started.get("agreement_id") or ""
+    feed.consent_expires_on = (date.today() + timedelta(days=consent_days)).isoformat()
+    log_audit(db, client.id, "bank_feed_started", "bank_feed", feed.id, feed.institution_name, "", request)
+    db.commit()
+    return {"feed_id": feed.id, "reference": reference, "link": started["link"], "consent_days": consent_days}
+
+
+@app.post("/api/bank/feeds/complete")
+def complete_bank_feed(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Back from the bank. Asks the provider whether they said yes, takes
+    the accounts, and pulls the first ninety days."""
+    client = get_client_user(request, db)
+    provider = require_bank_provider()
+    reference = str((body or {}).get("reference") or "").strip()
+    feed = db.query(models.DBBankFeed).filter(models.DBBankFeed.reference == reference, models.DBBankFeed.client_id == client.id).first()
+    if not feed:
+        raise HTTPException(status_code=404, detail="That bank connection is not one of yours")
+    if feed.status == "linked":
+        return feed_to_dict(db, feed, account_names(db, client.id))
+    try:
+        state = provider.status(feed.requisition_id)
+    except bankfeed.BankFeedError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    if state["state"] != "linked":
+        feed.status = "rejected" if state["state"] in ("rejected", "expired", "suspended") else "pending"
+        db.commit()
+        if feed.status == "pending":
+            raise HTTPException(status_code=409, detail="The bank has not confirmed yet - finish at the bank, then come back")
+        raise HTTPException(status_code=400, detail="The bank did not give access. You can try again.")
+    if not state["accounts"]:
+        raise HTTPException(status_code=400, detail="The bank gave access to no accounts")
+    for pid in state["accounts"]:
+        try:
+            info = provider.account(pid)
+        except bankfeed.BankFeedError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        acc = models.DBBankFeedAccount(feed_id=feed.id, client_id=client.id, provider_account_id=pid, name=info.get("name") or "Account",
+                                       owner=info.get("owner") or "", sort_code=info.get("sort_code") or "",
+                                       account_number=info.get("account_number") or "", iban=info.get("iban") or "",
+                                       currency=info.get("currency") or "GBP", enabled=True)
+        acc.account_id = _money_account_for_feed_account(db, client.id, feed, info)
+        db.add(acc)
+        db.flush()
+        _adopt_older_feed_account(db, acc)
+    feed.status = "linked"
+    db.flush()
+    # A renewal replaces the older connection to the same bank.
+    for old in db.query(models.DBBankFeed).filter(models.DBBankFeed.client_id == client.id, models.DBBankFeed.id != feed.id,
+                                                  models.DBBankFeed.institution_id == feed.institution_id,
+                                                  models.DBBankFeed.status.in_(["linked", "expired", "error"])).all():
+        old.status = "disconnected"
+        provider.disconnect(old.requisition_id)
+    log_audit(db, client.id, "bank_feed_connected", "bank_feed", feed.id, feed.institution_name,
+              f"{len(state['accounts'])} account(s)", request)
+    db.commit()
+    sync_feed(db, feed, provider, first=True)
+    return feed_to_dict(db, feed, account_names(db, client.id))
+
+
+@app.post("/api/bank/feeds/{feed_id}/sync")
+def sync_bank_feed_now(feed_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    feed = _feed_of(db, client, feed_id)
+    provider = require_bank_provider()
+    if feed.status != "linked":
+        raise HTTPException(status_code=400, detail="That connection is not live - renew it first")
+    got = sync_feed(db, feed, provider, manual=True)
+    if feed.last_error:
+        raise HTTPException(status_code=502, detail=feed.last_error)
+    return {"new_lines": got, "feed": feed_to_dict(db, feed, account_names(db, client.id))}
+
+
+@app.post("/api/bank/feeds/{feed_id}/accounts/{acc_id}")
+def update_bank_feed_account(feed_id: int, acc_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Switch an account's feed on or off, or point its lines at a
+    different money account."""
+    client = get_client_user(request, db)
+    feed = _feed_of(db, client, feed_id)
+    acc = db.query(models.DBBankFeedAccount).filter(models.DBBankFeedAccount.id == acc_id, models.DBBankFeedAccount.feed_id == feed.id).first()
+    if not acc:
+        raise HTTPException(status_code=404, detail="No such account on that connection")
+    body = body or {}
+    if "enabled" in body:
+        acc.enabled = bool(body["enabled"])
+    if "account_id" in body:
+        acc.account_id = resolve_account(db, client.id, body["account_id"])
+    db.commit()
+    return feed_account_to_dict(db, acc, account_names(db, client.id))
+
+
+@app.delete("/api/bank/feeds/{feed_id}")
+def disconnect_bank_feed(feed_id: int, request: Request, db: Session = Depends(get_db)):
+    """The lines already brought in stay; nothing more arrives."""
+    client = get_client_user(request, db)
+    feed = _feed_of(db, client, feed_id)
+    provider = bank_provider()
+    if provider is not None and feed.requisition_id:
+        provider.disconnect(feed.requisition_id)
+    feed.status = "disconnected"
+    log_audit(db, client.id, "bank_feed_disconnected", "bank_feed", feed.id, feed.institution_name, "", request)
+    db.commit()
+    return {"message": "Disconnected"}
+
+
+def _tell_business_feed(db, client, feed, subject, text):
+    to = (client.email or "").strip()
+    if not to or not validate_email_address(to):
+        return
+    from_email = platform_from_address(db)
+    send_email_background(to, subject, text, f"aniprotech <{from_email}>", None, None, "", "", client_id=client.id)
+
+
+@scheduled_job("bank_feed_sync")
+def job_bank_feed_sync(db, now):
+    """Every morning: pull what is new for every live connection, and tell
+    each business whose consent is about to end - once - and again when
+    it has ended."""
+    provider = bank_provider()
+    if provider is None:
+        return "not configured"
+    today = now.date()
+    pulled = warned = expired = 0
+    for feed in db.query(models.DBBankFeed).filter(models.DBBankFeed.status == "linked").all():
+        exp = _parse_date(feed.consent_expires_on)
+        client = db.query(models.DBClient).filter(models.DBClient.id == feed.client_id).first()
+        if exp and exp < today:
+            feed.status = "expired"
+            db.commit()
+            if client:
+                _tell_business_feed(db, client, feed, f"Your {feed.institution_name} bank feed has stopped",
+                                    f"The {bankfeed.CONSENT_DAYS}-day access you gave {feed.institution_name} has run out, as the regulations require. "
+                                    f"Nothing new will arrive from the bank until you renew it: open Bank and press Renew next to {feed.institution_name}.\n\n"
+                                    f"{page_url('/app.html#/bank')}")
+            expired += 1
+            continue
+        pulled += sync_feed(db, feed, provider)
+        if exp and 0 <= (exp - today).days <= BANK_FEED_WARN_DAYS and feed.renewal_told_on != feed.consent_expires_on and client:
+            _tell_business_feed(db, client, feed, f"Renew your {feed.institution_name} bank feed by {feed.consent_expires_on}",
+                                f"The access you gave {feed.institution_name} ends on {feed.consent_expires_on} - open banking access lasts "
+                                f"{bankfeed.CONSENT_DAYS} days by regulation. Renew it in a minute from Bank, and nothing is missed.\n\n"
+                                f"{page_url('/app.html#/bank')}")
+            feed.renewal_told_on = feed.consent_expires_on
+            db.commit()
+            warned += 1
+    return f"{pulled} lines, {warned} warned, {expired} expired"
+
+
 # The installable app's manifest, named for the face this host wears, so the
 # icon on a phone says "aniprotech HR" rather than the same name for both
 # products. The employee portal has a manifest of its own.

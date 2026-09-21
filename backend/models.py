@@ -2759,7 +2759,8 @@ class DBBankImport(Base):
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
     account_id = Column(Integer, ForeignKey("money_accounts.id"), nullable=True, index=True)
     filename = Column(String, default="")
-    kind = Column(String, default="csv")             # csv | ofx
+    kind = Column(String, default="csv")             # csv | ofx | feed
+    feed_account_id = Column(Integer, ForeignKey("bank_feed_accounts.id"), nullable=True, index=True)
     lines = Column(Integer, default=0)
     duplicates = Column(Integer, default=0)
     imported_by = Column(String, default="")
@@ -2788,3 +2789,55 @@ class DBBankLine(Base):
     payment_ids = Column(String, default="")                     # comma-separated receipts made from it
     note = Column(String, default="")
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBBankFeed(Base):
+    """A bank the business has connected through the open-banking provider:
+    the consent it gave, when that consent runs out, and how it is going.
+    The accounts under it are DBBankFeedAccount; their lines land in
+    bank_lines like a statement file's would."""
+    __tablename__ = "bank_feeds"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    provider = Column(String, default="gocardless")
+    institution_id = Column(String, default="")
+    institution_name = Column(String, default="")
+    institution_logo = Column(String, default="")
+    requisition_id = Column(String, default="", index=True)
+    agreement_id = Column(String, default="")
+    reference = Column(String, default="", unique=True, index=True)   # ours; carried back on the return
+    status = Column(String, default="pending", index=True)   # pending | linked | expired | rejected | error | disconnected
+    consent_expires_on = Column(String, default="")          # YYYY-MM-DD
+    renewal_told_on = Column(String, default="")             # the day the expiry warning went out
+    last_synced_at = Column(String, default="")
+    last_error = Column(String, default="")
+    syncs_today = Column(Integer, default=0)                 # the bank allows a few a day
+    syncs_on = Column(String, default="")
+    created_by = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBBankFeedAccount(Base):
+    """One account under a connected bank: what the bank calls it, what it
+    holds, and which of the business's own money accounts its lines go to."""
+    __tablename__ = "bank_feed_accounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    feed_id = Column(Integer, ForeignKey("bank_feeds.id"), nullable=False, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    provider_account_id = Column(String, default="", index=True)
+    name = Column(String, default="")
+    owner = Column(String, default="")
+    sort_code = Column(String, default="")
+    account_number = Column(String, default="")
+    iban = Column(String, default="")
+    currency = Column(String, default="GBP")
+    account_id = Column(Integer, ForeignKey("money_accounts.id"), nullable=True, index=True)
+    enabled = Column(Boolean, default=True)
+    statement_balance = Column(Float, nullable=True)
+    balance_on = Column(String, default="")
+    last_synced_at = Column(String, default="")
+    lines_total = Column(Integer, default=0)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+

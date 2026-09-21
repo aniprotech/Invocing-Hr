@@ -1795,6 +1795,14 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 63: {sys.exc_info()[1]}")
 
+            # 64. Lines that arrived by bank feed remember which connected
+            # account they came from.
+            try:
+                conn.execute(text("ALTER TABLE bank_imports ADD COLUMN IF NOT EXISTS feed_account_id INTEGER"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 64: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

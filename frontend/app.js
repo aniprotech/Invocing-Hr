@@ -9176,6 +9176,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     boot('top-up return', handleTopUpReturn);
     boot('settings', loadSettings);
     boot('dashboard', fetchDashboardData);
+    boot('bank feeds', loadBankFeeds);
     boot('invoices', fetchInvoices);
     boot('search index', preloadSearchData);
     boot('saved logo', loadSavedLogo);
@@ -16318,10 +16319,240 @@ function switchBankTab(tab, btn) {
 }
 window.switchBankTab = switchBankTab;
 
+// ── Bank feeds ────────────────────────────────────────────────────────────
+// What Xero does through Tink. The business finds its bank, reads what will
+// be shared, says yes at the bank's own login and comes back here; from then
+// on the account's transactions arrive every morning as bank lines. Consent
+// lasts ninety days, so the card says when it ends and offers Renew.
+var _bankFeedPick = null;
+var _bankFeedInfo = null;
+var _bankFeedSearchTimer = null;
+
+function bankFeedLogo(inst) {
+    return inst && inst.institution_logo || (inst && inst.logo)
+        ? '<img src="' + esc(inst.institution_logo || inst.logo) + '" alt="">'
+        : '<span class="bank-feed-logo bank-feed-logo-provider">' + esc(String((inst && (inst.institution_name || inst.name)) || 'Bank').slice(0, 3).toUpperCase()) + '</span>';
+}
+
+async function loadBankFeeds() {
+    var strip = document.getElementById('bank-feeds');
+    var tile = document.getElementById('dashboard-bank');
+    try {
+        _bankFeedInfo = await fetchJson('/api/bank/feeds');
+    } catch (e) {
+        if (strip) strip.innerHTML = '';
+        if (tile) tile.style.display = 'none';
+        return;
+    }
+    var info = _bankFeedInfo;
+    // An answer with no feeds in it is no feeds, not a broken Bank screen.
+    if (!info || typeof info !== 'object' || !Array.isArray(info.feeds)) info = _bankFeedInfo = { configured: false, feeds: [] };
+    var add = document.getElementById('bank-add-account');
+    if (add) add.style.display = info.configured ? '' : 'none';
+    if (strip) {
+        if (!info.feeds.length) {
+            strip.innerHTML = info.configured
+                ? '<div class="widget" style="padding:18px 20px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">' +
+                  '<div><strong>Connect your bank</strong><div style="font-size:0.85rem;color:var(--text-secondary);margin-top:4px;">Your transactions arrive here every morning and are set against your invoices - no files to download.</div></div>' +
+                  '<button class="btn btn-primary" onclick="addBankAccount()">+ Add bank account</button></div>'
+                : '';
+        } else {
+            strip.innerHTML = info.feeds.map(function (f) { return bankFeedCard(f, false); }).join('');
+            bindBankFeedCards(strip);
+        }
+    }
+    if (tile) {
+        var live = info.feeds.filter(function (f) { return f.status === 'linked' || f.status === 'expired'; });
+        if (live.length) {
+            tile.innerHTML = bankFeedCard(live[0], true);
+            tile.style.display = '';
+            bindBankFeedCards(tile);
+        } else {
+            tile.style.display = 'none';
+        }
+    }
+}
+window.loadBankFeeds = loadBankFeeds;
+
+function bankFeedCard(f, compact) {
+    var sym = getCurrencySymbol();
+    var status = f.status === 'linked' ? (f.renew_soon ? ['warn', 'Renew by ' + f.consent_expires_on] : ['live', 'Feed connected'])
+        : f.status === 'expired' ? ['off', 'Feed stopped - renew'] : f.status === 'pending' ? ['warn', 'Waiting for the bank'] : ['off', esc(f.status)];
+    var accounts = f.accounts.filter(function (a) { return a.enabled || !compact; });
+    var body = accounts.map(function (a) {
+        var money = function (v) { return v === null || v === undefined ? '&ndash;' : sym + Number(v).toFixed(2); };
+        return '<div class="widget" style="padding:16px 18px;margin-top:10px;">' +
+            '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px;">' +
+            '<div><strong>' + esc(a.name) + '</strong>' + (a.sort_code || a.account_number ? '<div style="font-size:0.8rem;color:var(--text-secondary);">' + esc([a.sort_code, a.account_number].filter(Boolean).join(' ')) + '</div>' : '') + '</div>' +
+            (compact ? '' : '<label style="font-size:0.8rem;color:var(--text-secondary);display:flex;align-items:center;gap:6px;"><input type="checkbox" data-feed-toggle="' + f.id + ':' + a.id + '"' + (a.enabled ? ' checked' : '') + '> Feed on</label>') +
+            '</div>' +
+            '<div class="bank-card">' +
+            '<div><div class="k">Statement balance' + (a.balance_on ? ' (' + esc(a.balance_on) + ')' : '') + '</div><div class="v">' + money(a.statement_balance) + '</div></div>' +
+            '<div><div class="k">Balance in aniprotech</div><div class="v">' + money(a.in_app) + '</div></div>' +
+            '<div><div class="k">Balance difference &#9432;</div><div class="v" style="color:' + (a.difference ? 'var(--warning-color)' : 'var(--success-color)') + ';">' + money(a.difference) + '</div>' +
+            (a.to_match ? '<a href="#/bank" style="font-size:0.8rem;">' + a.to_match + ' line' + (a.to_match === 1 ? '' : 's') + ' to match</a>' : '<span style="font-size:0.8rem;color:var(--text-secondary);">Everything explained</span>') + '</div>' +
+            '</div></div>';
+    }).join('');
+    return '<div class="widget" style="padding:16px 18px;" data-feed="' + f.id + '">' +
+        '<div class="bank-card-head">' +
+        '<div style="display:flex;align-items:center;gap:10px;">' + bankFeedLogo(f) + '<strong>' + esc(f.institution_name) + '</strong><span class="bank-feed-status ' + status[0] + '">' + status[1] + '</span></div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">' +
+        (f.last_synced_at ? '<span style="font-size:0.78rem;color:var(--text-secondary);">Updated ' + esc(f.last_synced_at.slice(0, 16)) + '</span>' : '') +
+        (f.status === 'linked' ? '<button class="btn btn-outline btn-sm" data-feed-sync="' + f.id + '"' + (f.syncs_left_today ? '' : ' disabled title="The bank allows a few refreshes a day; next one tomorrow"') + '>Refresh</button>' : '') +
+        (f.renew_soon || f.status === 'expired' ? '<button class="btn btn-primary btn-sm" data-feed-renew="' + esc(f.institution_id) + '">Renew</button>' : '') +
+        (compact ? '<a class="btn btn-outline btn-sm" href="#/bank">Reconcile</a>' : '<button class="btn btn-outline btn-sm" data-feed-disconnect="' + f.id + '">Disconnect</button>') +
+        '</div></div>' +
+        (f.last_error ? '<p style="color:var(--danger-text);font-size:0.85rem;margin:0 0 6px;">' + esc(f.last_error) + '</p>' : '') +
+        body + '</div>';
+}
+
+function bindBankFeedCards(root) {
+    root.querySelectorAll('[data-feed-sync]').forEach(function (b) {
+        b.addEventListener('click', async function () {
+            b.disabled = true;
+            try {
+                var out = await fetchJson('/api/bank/feeds/' + b.getAttribute('data-feed-sync') + '/sync', { method: 'POST' });
+                showToast(out.new_lines ? out.new_lines + ' new line' + (out.new_lines === 1 ? '' : 's') + ' from the bank' : 'Nothing new at the bank', 'success');
+                loadBankFeeds(); if (typeof loadBankView === 'function' && document.getElementById('bank-view').style.display !== 'none') loadBankView();
+            } catch (e) { showToast(e.message, 'error'); b.disabled = false; }
+        });
+    });
+    root.querySelectorAll('[data-feed-renew]').forEach(function (b) {
+        b.addEventListener('click', function () { addBankAccount(b.getAttribute('data-feed-renew')); });
+    });
+    root.querySelectorAll('[data-feed-disconnect]').forEach(function (b) {
+        b.addEventListener('click', async function () {
+            if (!await uiConfirm('Disconnect this bank? The lines already here stay; nothing more arrives until you connect it again.', { title: 'Disconnect bank feed', confirmText: 'Disconnect', danger: true })) return;
+            try { await fetchJson('/api/bank/feeds/' + b.getAttribute('data-feed-disconnect'), { method: 'DELETE' }); showToast('Disconnected', 'success'); loadBankFeeds(); }
+            catch (e) { showToast(e.message, 'error'); }
+        });
+    });
+    root.querySelectorAll('[data-feed-toggle]').forEach(function (cb) {
+        cb.addEventListener('change', async function () {
+            var ids = cb.getAttribute('data-feed-toggle').split(':');
+            try { await fetchJson('/api/bank/feeds/' + ids[0] + '/accounts/' + ids[1], { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: cb.checked }) }); }
+            catch (e) { showToast(e.message, 'error'); cb.checked = !cb.checked; }
+        });
+    });
+}
+
+// The three screens.
+function addBankAccount(institutionId) {
+    var m = document.getElementById('bank-feed-modal');
+    if (!m) return;
+    _bankFeedPick = null;
+    document.getElementById('bank-feed-error').style.display = 'none';
+    document.getElementById('bank-feed-search').value = '';
+    document.getElementById('bank-feed-results').innerHTML = '';
+    m.style.display = 'flex';
+    if (institutionId && _bankFeedInfo) {
+        // Renewing: the bank is known, so straight to what will be shared.
+        var f = _bankFeedInfo.feeds.filter(function (x) { return x.institution_id === institutionId; })[0];
+        if (f) { pickBankFeedInstitution({ id: f.institution_id, name: f.institution_name, logo: f.institution_logo }); bankFeedStep('consent'); return; }
+    }
+    bankFeedStep('find');
+    document.getElementById('bank-feed-search').focus();
+    searchBankFeedInstitutions();
+}
+window.addBankAccount = addBankAccount;
+
+function closeBankFeed() {
+    var m = document.getElementById('bank-feed-modal');
+    if (m) m.style.display = 'none';
+}
+window.closeBankFeed = closeBankFeed;
+
+function bankFeedStep(step) {
+    ['find', 'add', 'consent'].forEach(function (s) {
+        var el = document.getElementById('bank-feed-step-' + s);
+        if (el) el.style.display = s === step ? '' : 'none';
+    });
+    var name = _bankFeedPick ? _bankFeedPick.name : 'your bank';
+    document.getElementById('bank-feed-title').textContent = step === 'find' ? 'Add bank account' : step === 'add' ? 'Add accounts for ' + name : 'Connect to ' + name;
+    if (step === 'add') {
+        document.getElementById('bank-feed-add-title').textContent = 'Add accounts for ' + name;
+        document.getElementById('bank-feed-logo-1').innerHTML = bankFeedLogo(_bankFeedPick);
+    }
+    if (step === 'consent') {
+        document.getElementById('bank-feed-consent-title').textContent = 'Connect to ' + name;
+        document.getElementById('bank-feed-logo-2').innerHTML = bankFeedLogo(_bankFeedPick);
+        var info = _bankFeedInfo || {};
+        document.getElementById('bank-feed-blurb').textContent = info.blurb || '';
+        document.getElementById('bank-feed-provider-mark').textContent = (info.provider || 'provider').split(' ')[0];
+        document.getElementById('bank-feed-days').innerHTML = '&#9432; aniprotech will access this information for ' + (info.consent_days || 90) + ' days, after which you will be asked to renew the connection';
+    }
+}
+window.bankFeedStep = bankFeedStep;
+
+function searchBankFeedInstitutions() {
+    clearTimeout(_bankFeedSearchTimer);
+    _bankFeedSearchTimer = setTimeout(async function () {
+        var q = document.getElementById('bank-feed-search').value.trim();
+        var host = document.getElementById('bank-feed-results');
+        try {
+            var d = await fetchJson('/api/bank/feeds/institutions?q=' + encodeURIComponent(q));
+            if (!d.institutions.length) { host.innerHTML = '<div style="padding:12px;color:var(--text-secondary);">No bank by that name. Try the name on your card.</div>'; return; }
+            host.innerHTML = d.institutions.map(function (i, n) {
+                return '<button type="button" class="bank-feed-hit" data-bank-pick="' + n + '">' + bankFeedLogo(i) + '<span>' + esc(i.name) + '</span></button>';
+            }).join('');
+            host.querySelectorAll('[data-bank-pick]').forEach(function (b) {
+                b.addEventListener('click', function () { pickBankFeedInstitution(d.institutions[Number(b.getAttribute('data-bank-pick'))]); bankFeedStep('add'); });
+            });
+        } catch (e) {
+            host.innerHTML = '<div style="padding:12px;color:var(--danger-text);">' + esc(e.message) + '</div>';
+        }
+    }, 220);
+}
+window.searchBankFeedInstitutions = searchBankFeedInstitutions;
+
+function pickBankFeedInstitution(inst) {
+    _bankFeedPick = inst;
+}
+window.pickBankFeedInstitution = pickBankFeedInstitution;
+
+// "Continue and log in to bank": the provider's link, in this tab, back to
+// the Bank screen when the bank has said yes.
+async function startBankFeed() {
+    if (!_bankFeedPick) return;
+    var go = document.getElementById('bank-feed-go');
+    var err = document.getElementById('bank-feed-error');
+    go.disabled = true; err.style.display = 'none';
+    try {
+        var out = await fetchJson('/api/bank/feeds', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ institution_id: _bankFeedPick.id }) });
+        goToBank(out.link);
+    } catch (e) {
+        err.textContent = e.message; err.style.display = '';
+        go.disabled = false;
+    }
+}
+window.startBankFeed = startBankFeed;
+
+function goToBank(link) { window.location.href = link; }
+window.goToBank = goToBank;
+
+// Back from the bank: /app.html?feed=<reference>#/bank. Finish the
+// connection, say what came in, and take the reference off the address.
+async function finishBankFeedReturn() {
+    var params = new URLSearchParams(window.location.search);
+    var ref = params.get('feed');
+    if (!ref) return;
+    try {
+        var f = await fetchJson('/api/bank/feeds/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reference: ref }) });
+        var lines = f.accounts.reduce(function (n, a) { return n + (a.lines_total || 0); }, 0);
+        showToast(f.institution_name + ' connected: ' + f.accounts.length + ' account' + (f.accounts.length === 1 ? '' : 's') + ', ' + lines + ' line' + (lines === 1 ? '' : 's') + ' brought in', 'success');
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+    try { history.replaceState(null, '', window.location.pathname + '#/bank'); } catch (e) { /* older browsers keep the address */ }
+}
+window.finishBankFeedReturn = finishBankFeedReturn;
+
 async function loadBankView() {
     var host = document.getElementById('bank-list');
     var tiles = document.getElementById('bank-tiles');
     if (!host) return;
+    await finishBankFeedReturn();
+    loadBankFeeds();
     var sel = document.getElementById('bank-account');
     var accountId = sel && sel.value ? Number(sel.value) : 0;
     try {

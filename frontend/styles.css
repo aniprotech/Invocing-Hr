@@ -682,6 +682,30 @@ textarea.table-input.item-desc {
 /* The product this host is, after the brand: "aniprotech HR". */
 .brand-product { font-weight: 500; font-size: 0.82em; opacity: 0.8; margin-left: 7px; letter-spacing: 0.01em; }
 
+/* --- Bank feeds ------------------------------------------------------------ */
+.bank-feed-results { margin-top: 10px; max-height: 320px; overflow-y: auto; display: grid; gap: 6px; }
+.bank-feed-hit { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 10px; background: none; color: var(--text-primary); font: inherit; cursor: pointer; text-align: left; width: 100%; }
+.bank-feed-hit:hover { border-color: var(--primary-color); background: rgba(56, 189, 248, 0.06); }
+.bank-feed-hit img, .bank-feed-logo img { width: 32px; height: 32px; border-radius: 50%; object-fit: contain; background: #fff; }
+.bank-feed-logos { display: flex; align-items: center; justify-content: center; gap: 12px; }
+.bank-feed-logo { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; height: 44px; border-radius: 50%; font-weight: 800; font-size: 0.72rem; letter-spacing: 0.02em; padding: 0 10px; }
+.bank-feed-logo img { width: 44px; height: 44px; }
+.bank-feed-logo-us { background: var(--primary-color); color: #0b0f19; }
+.bank-feed-logo-provider { background: #fff; color: #0f172a; border: 1px solid var(--border-color); }
+.bank-feed-dots { color: var(--text-secondary); letter-spacing: 3px; }
+.bank-feed-scope { border: 1px solid var(--border-color); border-radius: 12px; padding: 14px 18px; margin-top: 16px; }
+.bank-feed-scope ul { margin: 8px 0 0 18px; line-height: 1.8; }
+.bank-card { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; align-items: start; }
+.bank-card .k { font-size: 0.78rem; color: var(--text-secondary); }
+.bank-card .v { font-size: 1.45rem; font-weight: 700; letter-spacing: -0.02em; }
+.bank-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.bank-card-head img { width: 28px; height: 28px; border-radius: 50%; background: #fff; object-fit: contain; }
+.bank-feed-status { font-size: 0.75rem; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
+.bank-feed-status.live { color: var(--success-color); background: rgba(52, 211, 153, 0.14); }
+.bank-feed-status.warn { color: var(--warning-color); background: rgba(251, 191, 36, 0.16); }
+.bank-feed-status.off { color: var(--danger-text); background: rgba(251, 113, 133, 0.14); }
+@media (max-width: 640px) { .bank-card { grid-template-columns: 1fr; } }
+
 /* Department Cards */
 .dept-card:hover { border-color: rgba(255, 255, 255, 0.15); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3); }
 
