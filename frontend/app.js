@@ -3922,8 +3922,10 @@ function generateInvoicePDF(isDummy, kind) {
     var compPhone  = isDummy ? 'Tel: 01902521476' : (document.getElementById(cfg.p + 'company-phone') ? document.getElementById(cfg.p + 'company-phone').textContent.replace('Phone: ','') : '');
     var compAbn    = isDummy ? '' : (document.getElementById(cfg.p + 'company-abn') ? document.getElementById(cfg.p + 'company-abn').textContent.replace('ABN: ','').replace('Tax ID: ','') : '');
     var savedLogo      = localStorage.getItem('company_logo') || '';
-    var savedSignature = localStorage.getItem('company_signature') || '';
-    var savedTerms     = localStorage.getItem('company_terms') || '';
+    // What the business saved under Settings, wherever it saved it; this
+    // browser's own copy only when the server has not answered yet.
+    var savedSignature = window._companySignature || localStorage.getItem('company_signature') || '';
+    var savedTerms     = window._companyTerms || localStorage.getItem('company_terms') || '';
     var currencyCode   = rawSym === cs ? '' : rawSym; // e.g. for "INR" label in Amount column header
 
     // Determine column currency label for table header (e.g. "Amount GBP")
@@ -4142,7 +4144,8 @@ function generateInvoicePDF(isDummy, kind) {
                     qty:    cells[2].textContent.trim(),
                     price:  cells[3].textContent.trim(),
                     disc:   (cells[4].textContent||'0').replace('%','').trim(),
-                    tax:    (cells[5]?cells[5].textContent:'0').replace('%','').trim(),
+                    // "20% VAT" -> "20". The % is put back when it is printed.
+                    tax:    ((cells[5]?cells[5].textContent:'0').match(/[\d.]+/) || ['0'])[0],
                     amount: cells[6].textContent.trim()
                 });
             }
@@ -5623,6 +5626,8 @@ async function loadSettings() {
         if (!res.ok) return;
         var data = await res.json();
         initTemplateBuilder(data.invoice_layout || null);
+        window._companyTerms = data.company_terms || '';
+        window._companySignature = data.company_signature || '';
         if (data.company_name !== undefined) { var el = document.getElementById('settings-company-name'); if (el) el.value = data.company_name; }
         if (data.email !== undefined) { var el = document.getElementById('settings-company-email'); if (el) el.value = data.email; }
         if (data.phone_number !== undefined) { var el = document.getElementById('settings-company-phone'); if (el) el.value = data.phone_number; }
@@ -11994,6 +11999,9 @@ async function handleSettingsSignatureUpload(event) {
             text.style.display = 'none';
         }
         localStorage.setItem('company_signature', b64);
+        window._companySignature = b64;
+        fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+               body: JSON.stringify({ company_signature: b64 }) }).catch(function () { });
     };
     reader.readAsDataURL(file);
 }
@@ -12003,6 +12011,7 @@ function saveLegalSettings() {
     
     // Save locally
     localStorage.setItem('company_terms', terms);
+    window._companyTerms = terms;
     
     // Save to backend.
     // This posted an array of {key, value} pairs, but the endpoint takes a

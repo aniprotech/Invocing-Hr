@@ -140,8 +140,9 @@ const buttons = w => w.document.getElementById('payButtons');
         await wait(200);
         check('nothing set up offers no way to pay',
             !w.document.getElementById('payBtn') && !w.document.getElementById('payCardBtn'));
-        check('but the invoice can still be printed',
-            /Print or save/.test(buttons(w).textContent));
+        check('but the invoice can still be printed, and the document itself taken as a PDF',
+            /Print/.test(buttons(w).textContent)
+            && [...w.document.querySelectorAll('#payButtons a')].some(a => a.textContent === 'Download PDF' && /\/api\/public\/invoices\/.+\/pdf$/.test(a.getAttribute('href')) && a.getAttribute('download')));
     }
 
     {

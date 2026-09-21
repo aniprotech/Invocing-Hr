@@ -4200,6 +4200,10 @@ Powered by Aniprotech"""
     # Unticking "attach PDF" has to actually drop the attachment, not just
     # hide the tick - the customer notices which of those happened.
     pdf_b64 = payload.pdf_data if (payload.pdf_data and payload.attach_pdf) else None
+    # No PDF from the screen - a scheduled send, a recurring invoice, a
+    # quote accepted - and the attachment still wanted: the server draws it.
+    if payload.attach_pdf and not pdf_b64:
+        pdf_b64 = document_pdf_b64(db, inv, client, "invoice")
     pdf_filename = f"{inv.number}.pdf" if pdf_b64 else "invoice.pdf"
 
     # Where it is going. An address typed on the screen wins over the one on
@@ -4425,6 +4429,130 @@ def billing_for_document(db, client_id, name, company, address, tax_id):
 def bill_to_dict(doc):
     return {"name": doc.to_contact or "", "company": doc.to_company or "", "address": doc.to_address or "",
             "email": doc.email or "", "phone": doc.phone_number or "", "tax_id": doc.to_tax_id or ""}
+
+
+# ============================================================================
+# THE DOCUMENT, DRAWN ON THE SERVER
+#
+# The browser draws the PDF the Send button attaches. Everything the system
+# sends on its own - scheduled sends, recurring invoices, the invoice raised
+# when a quote is accepted, every reminder - had no browser to draw one and
+# went out as words alone. backend/pdf.py draws the same document here, and
+# every send that arrives without a PDF gets this one.
+# ============================================================================
+import pdf as pdf_engine  # noqa: E402
+
+
+def pdf_document_data(db, obj, client, kind="invoice"):
+    """Everything the renderer needs, gathered the way the screen gathers it:
+    the parties, the lines, the theme, the logo, the terms and the signature
+    the business saved under Settings."""
+    settings_map = {s.key: s.value for s in db.query(models.DBSettings).filter(
+        models.DBSettings.client_id == client.id).all()}
+    theme = default_theme_for(db, client.id)
+    currency = (getattr(obj, "currency", "") or client.currency or "GBP").upper()
+    if kind == "quote":
+        date_out = getattr(obj, "expiry_date", "") or ""
+    elif kind == "credit_note":
+        date_out = getattr(obj, "invoice_number", "") or ""
+    else:
+        date_out = getattr(obj, "due_date", "") or ""
+    return {
+        "number": obj.number, "ref": getattr(obj, "ref", "") or "",
+        "date": getattr(obj, "issue_date", "") or "", "date_out": date_out,
+        "to": obj.to_contact or "", "email": obj.email or "", "phone_number": getattr(obj, "phone_number", "") or "",
+        "bill_to": bill_to_dict(obj),
+        "company": {
+            "name": settings_map.get("company_name", "") or (client.company_name or ""),
+            "email": settings_map.get("email", "") or (client.email or ""),
+            "phone_number": settings_map.get("phone_number", "") or (client.phone_number or ""),
+            "address": settings_map.get("company_address", "") or (client.address or ""),
+            "abn": settings_map.get("company_abn", "") or (client.abn or ""),
+        },
+        "logo": client.logo_url or "",
+        "signature": settings_map.get("company_signature", "") or "",
+        "terms": settings_map.get("company_terms", "") or "",
+        "bank_details": getattr(obj, "bank_details", "") or "",
+        "currency": currency, "symbol": currency_symbol(currency),
+        "tax_type": getattr(obj, "tax_type", "") or "exclusive",
+        "line_items": [{"name": li.name or "", "description": li.description or "", "qty": li.qty,
+                        "price": li.price, "disc": li.disc, "tax_rate": li.tax_rate}
+                       for li in (obj.line_items or [])],
+        "theme": theme_to_dict(theme) if theme else {},
+        "layout": _layout_blocks(settings_map.get("invoice_layout", "")),
+    }
+
+
+def _layout_blocks(raw):
+    """The section visibility saved from the template builder, or none."""
+    try:
+        blocks = json.loads(raw) if raw else []
+    except (ValueError, TypeError):
+        blocks = []
+    return blocks if isinstance(blocks, list) else []
+
+
+def document_pdf_bytes(db, obj, client, kind="invoice") -> bytes:
+    return pdf_engine.document_pdf(pdf_document_data(db, obj, client, kind), kind)
+
+
+def document_pdf_b64(db, obj, client, kind="invoice") -> str:
+    return base64.b64encode(document_pdf_bytes(db, obj, client, kind)).decode("ascii")
+
+
+def pdf_response(data: bytes, filename: str):
+    return Response(data, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="{filename}"',
+                             "Cache-Control": "no-store"})
+
+
+@app.get("/api/invoices/{number}/pdf")
+def invoice_pdf(number: str, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    inv = db.query(models.DBInvoice).filter(models.DBInvoice.number == number,
+                                            models.DBInvoice.client_id == client.id).first()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    return pdf_response(document_pdf_bytes(db, inv, client, "invoice"), f"{inv.number}.pdf")
+
+
+@app.get("/api/quotes/{number}/pdf")
+def quote_pdf(number: str, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    q = db.query(models.DBQuote).filter(models.DBQuote.number == number,
+                                        models.DBQuote.client_id == client.id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Quote not found")
+    return pdf_response(document_pdf_bytes(db, q, client, "quote"), f"{q.number}.pdf")
+
+
+@app.get("/api/credit-notes/{number}/pdf")
+def credit_note_pdf(number: str, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    cn = db.query(models.DBCreditNote).filter(models.DBCreditNote.number == number,
+                                              models.DBCreditNote.client_id == client.id).first()
+    if not cn:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+    return pdf_response(document_pdf_bytes(db, cn, client, "credit_note"), f"{cn.number}.pdf")
+
+
+@app.get("/api/public/invoices/{tracking_id}/pdf")
+def public_invoice_pdf(tracking_id: str, db: Session = Depends(get_db)):
+    """The document itself, for the person it was sent to. The same rule as
+    the page: a draft or a void invoice is not available from a link."""
+    inv = db.query(models.DBInvoice).filter(models.DBInvoice.tracking_id == tracking_id).first()
+    if not inv or inv.status in ("Draft", "Void"):
+        raise HTTPException(status_code=404, detail="That invoice is not available")
+    client = db.query(models.DBClient).filter(models.DBClient.id == inv.client_id).first()
+    if not client:
+        raise HTTPException(status_code=404, detail="That invoice is not available")
+    return pdf_response(document_pdf_bytes(db, inv, client, "invoice"), f"{inv.number}.pdf")
+
+
+@app.get("/api/public/quotes/{tracking_id}/pdf")
+def public_quote_pdf(tracking_id: str, db: Session = Depends(get_db)):
+    q, client = _public_quote(db, tracking_id)
+    return pdf_response(document_pdf_bytes(db, q, client, "quote"), f"{q.number}.pdf")
 
 
 @app.get("/api/contacts/search")
@@ -8694,8 +8822,8 @@ Powered by Aniprotech"""
     </html>
     """
 
-    pdf_b64 = payload.pdf_data if payload.pdf_data else None
-    pdf_filename = f"{q.number}.pdf" if pdf_b64 else "quote.pdf"
+    pdf_b64 = payload.pdf_data or document_pdf_b64(db, q, client, "quote")
+    pdf_filename = f"{q.number}.pdf"
 
     # Charged before the send is queued, so a refused charge cannot still
     # deliver the email.
@@ -30799,8 +30927,10 @@ def send_dunning_reminder(db, inv, step, days, today, request=None, by="policy")
         db.rollback()
         return False
     from_email = platform_from_address(db)
+    owner = db.query(models.DBClient).filter(models.DBClient.id == inv.client_id).first()
+    attached = document_pdf_b64(db, inv, owner, "invoice") if owner else None
     send_email_background(inv.email, subject, text_body, f"{company} <{from_email}>",
-                          html_body, None, "", "", client_id=inv.client_id, cc=contact_cc_for(db, inv))
+                          html_body, attached, f"{inv.number}.pdf", "", client_id=inv.client_id, cc=contact_cc_for(db, inv))
     log_audit(db, inv.client_id, "invoice_chased", "invoice", inv.id, inv.number,
               f"{step_label(step['days'], step.get('tone', ''))} to {inv.email}" + ("" if by == "policy" else f" by {by}"), request)
     db.commit()
@@ -31615,8 +31745,8 @@ def send_credit_note_email(number: str, background_tasks: BackgroundTasks, reque
       </div>
     </body></html>
     """
-    pdf_b64 = payload.pdf_data or None
-    pdf_filename = f"{cn.number}.pdf" if pdf_b64 else "credit-note.pdf"
+    pdf_b64 = payload.pdf_data or document_pdf_b64(db, cn, client, "credit_note")
+    pdf_filename = f"{cn.number}.pdf"
     charge = require_credit(db, client.id, "invoice_send", 1, cn.number)
     delivery = start_delivery(db, client.id, "credit_note", cn.number, cn.email, charge)
     background_tasks.add_task(deliver_and_record, delivery.id, cn.email, subject, body, f"{company_name} <{from_email}>",
