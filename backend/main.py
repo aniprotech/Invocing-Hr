@@ -13,7 +13,7 @@ import threading
 import time
 from collections import defaultdict
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import RedirectResponse, StreamingResponse, JSONResponse, Response, HTMLResponse, FileResponse
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -30402,11 +30402,21 @@ def _recent_payments(db, client_id, lines):
                                              models.DBPayment.paid_on <= hi).all()
 
 
-def bank_line_to_dict(l, names=None, suggestions=None, already=None):
-    d = {"id": l.id, "import_id": l.import_id, "account_id": l.account_id, "date": l.date, "description": l.description or "",
-         "reference": l.reference or "", "amount": l.amount, "balance": l.balance, "status": l.status, "allocated": l.allocated or 0.0,
+_NO_CODING = object()
+
+
+def bank_line_to_dict(l, names=None, suggestions=None, already=None, coding=_NO_CODING):
+    names = names or {}
+    d = {"id": l.id, "import_id": l.import_id, "account_id": l.account_id, "account": names.get(l.account_id, ""), "date": l.date,
+         "description": l.description or "", "reference": l.reference or "", "amount": l.amount, "balance": l.balance, "status": l.status,
+         "allocated": l.allocated or 0.0,
          "remaining": money((l.amount or 0) - (l.allocated or 0)) if (l.amount or 0) > 0 else 0.0,
-         "payment_ids": [int(x) for x in (l.payment_ids or "").split(",") if x.strip().isdigit()], "note": l.note or ""}
+         "payment_ids": [int(x) for x in (l.payment_ids or "").split(",") if x.strip().isdigit()], "note": l.note or "",
+         "category": l.category or "", "category_label": BANK_CATEGORY_LABELS.get(l.category or "", ""), "tax_rate": l.tax_rate or "",
+         "transfer_account_id": l.transfer_account_id, "transfer_account": names.get(l.transfer_account_id, "") if l.transfer_account_id else "",
+         "bill_id": l.bill_id, "rule_id": l.rule_id, "coded_at": l.coded_at or ""}
+    if coding is not _NO_CODING:
+        d["coding"] = coding          # None means nothing to suggest
     if suggestions is not None:
         d["suggestions"] = suggestions
     if already is not None:
@@ -30451,10 +30461,15 @@ def import_bank_statement(request: Request, body: dict = None, dry_run: int = 0,
                               lines=len(fresh), duplicates=dupes, imported_by=(client.email or "")[:120])
     db.add(imp)
     db.flush()
+    new_lines = []
     for fp, r in fresh:
-        db.add(models.DBBankLine(client_id=client.id, import_id=imp.id, account_id=account_id, date=r["date"], description=r["description"],
-                                 reference=r["reference"], amount=r["amount"], balance=r["balance"], fingerprint=fp,
-                                 status="unmatched" if r["amount"] > 0 else "out"))
+        row = models.DBBankLine(client_id=client.id, import_id=imp.id, account_id=account_id, date=r["date"], description=r["description"],
+                                reference=r["reference"], amount=r["amount"], balance=r["balance"], fingerprint=fp,
+                                status="unmatched" if r["amount"] > 0 else "out")
+        db.add(row)
+        new_lines.append(row)
+    db.flush()
+    summary["coded_by_rules"] = apply_bank_rules(db, client, new_lines)
     log_audit(db, client.id, "bank_statement_imported", "bank_import", imp.id, imp.filename or kind,
               f"{len(fresh)} lines, {dupes} duplicates skipped", request)
     db.commit()
@@ -30484,15 +30499,20 @@ def list_bank_lines(request: Request, status: str = "unmatched", account_id: int
     lines = q.order_by(models.DBBankLine.date.desc(), models.DBBankLine.id.desc()).limit(500).all()
     names = account_names(db, client.id)
     out = []
+    coder = CodingSuggester(db, client.id, lines) if status in ("unmatched", "out", "all") else None
     if status in ("unmatched", "all"):
         open_inv = _open_invoices(db, client.id)
         recent = _recent_payments(db, client.id, lines)
         for l in lines:
             if l.status == "unmatched":
                 sug, already = match_suggestions(db, client.id, l, open_inv, recent)
-                out.append(bank_line_to_dict(l, names, sug, already))
+                out.append(bank_line_to_dict(l, names, sug, already, coding=coder.suggest(l)))
+            elif l.status == "out":
+                out.append(bank_line_to_dict(l, names, coding=coder.suggest(l)))
             else:
                 out.append(bank_line_to_dict(l, names))
+    elif status == "out":
+        out = [bank_line_to_dict(l, names, coding=coder.suggest(l)) for l in lines]
     else:
         out = [bank_line_to_dict(l, names) for l in lines]
     counts = {}
@@ -30501,7 +30521,8 @@ def list_bank_lines(request: Request, status: str = "unmatched", account_id: int
     unmatched_total = money(sum((l.amount or 0) - (l.allocated or 0) for l in db.query(models.DBBankLine).filter(
         models.DBBankLine.client_id == client.id, models.DBBankLine.status == "unmatched").all()))
     return {"lines": out, "counts": counts, "unmatched_total": unmatched_total, "accounts": [{"id": k, "name": v} for k, v in names.items()],
-            "auto": sum(1 for l in out if l.get("suggestions") and l["suggestions"][0]["confidence"] == "auto" and not l.get("already_recorded"))}
+            "auto": sum(1 for l in out if l.get("suggestions") and l["suggestions"][0]["confidence"] == "auto" and not l.get("already_recorded")),
+            "auto_coding": sum(1 for l in out if l.get("coding") and l["coding"]["confidence"] == "auto")}
 
 
 def _line_or_404(db, client_id, line_id):
@@ -30618,8 +30639,10 @@ def ignore_bank_line(line_id: int, request: Request, body: dict = None, db: Sess
 def restore_bank_line(line_id: int, request: Request, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
     line = _line_or_404(db, client.id, line_id)
-    if line.status not in ("ignored", "out"):
-        raise HTTPException(status_code=400, detail="Only an ignored line can be brought back")
+    if line.status not in ("ignored", "out", "coded"):
+        raise HTTPException(status_code=400, detail="Only an ignored or coded line can be brought back")
+    if line.status == "coded":
+        uncode_bank_line(db, client, line)
     line.status, line.note = ("unmatched" if (line.amount or 0) > 0 else "out"), ""
     db.commit()
     return {"message": "Back in the list", "line": bank_line_to_dict(line)}
@@ -32413,11 +32436,18 @@ def sync_feed_account(db, provider, feed, acc, first=False):
                                   lines=len(fresh), duplicates=len(rows) - len(fresh), imported_by="bank feed")
         db.add(imp)
         db.flush()
+        new_lines = []
         for fp, t in fresh:
-            db.add(models.DBBankLine(client_id=feed.client_id, import_id=imp.id, account_id=acc.account_id, date=t["date"],
-                                     description=t.get("description") or "", reference=t.get("reference") or "",
-                                     amount=money(t["amount"]), balance=None, fingerprint=fp,
-                                     status="unmatched" if t["amount"] > 0 else "out"))
+            row = models.DBBankLine(client_id=feed.client_id, import_id=imp.id, account_id=acc.account_id, date=t["date"],
+                                    description=t.get("description") or "", reference=t.get("reference") or "",
+                                    amount=money(t["amount"]), balance=None, fingerprint=fp,
+                                    status="unmatched" if t["amount"] > 0 else "out")
+            db.add(row)
+            new_lines.append(row)
+        db.flush()
+        owner = db.query(models.DBClient).filter(models.DBClient.id == feed.client_id).first()
+        if owner:
+            apply_bank_rules(db, owner, new_lines)
         acc.lines_total = (acc.lines_total or 0) + len(fresh)
     acc.last_synced_at = bankfeed.now_text()
     return len(fresh)
@@ -32658,6 +32688,522 @@ def job_bank_feed_sync(db, now):
             db.commit()
             warned += 1
     return f"{pulled} lines, {warned} warned, {expired} expired"
+
+
+# ============================================================================
+# CODING THE MONEY OUT
+#
+# A customer paying an invoice is matched. Everything else on the statement -
+# rent, wages, the electricity, a transfer to savings, a bill on the books -
+# used to be kept "for the record" and nothing more. It is coded now: a
+# category and the tax in it, the other account of a transfer, the bill it
+# paid. Rules do it for the lines that repeat; the rest are suggested from
+# what was coded before, from a mirror line on another account, or from an
+# open bill; and the report reads the bank instead of guessing.
+# ============================================================================
+# key, label, kind, direction. The bill categories are a subset, so a bill's
+# category and a bank line's mean the same thing.
+BANK_CATEGORIES = (
+    ("rent", "Rent & premises", "expense", "out"),
+    ("utilities", "Utilities", "expense", "out"),
+    ("wages", "Wages & salaries", "expense", "out"),
+    ("subcontractors", "Subcontractors & freelancers", "expense", "out"),
+    ("software", "Software & subscriptions", "expense", "out"),
+    ("travel", "Travel & vehicles", "expense", "out"),
+    ("office", "Office & supplies", "expense", "out"),
+    ("marketing", "Marketing", "expense", "out"),
+    ("professional", "Professional fees", "expense", "out"),
+    ("insurance", "Insurance", "expense", "out"),
+    ("bank_fees", "Bank fees & interest", "expense", "out"),
+    ("equipment", "Equipment", "expense", "out"),
+    ("stock", "Stock & materials", "expense", "out"),
+    ("general", "General expenses", "expense", "out"),
+    ("tax", "Tax paid to HMRC", "tax", "out"),
+    ("drawings", "Owner's drawings", "drawings", "out"),
+    ("loan_repayment", "Loan repayment", "capital", "out"),
+    ("bill", "A bill on the books", "bill", "out"),
+    ("transfer", "Transfer between own accounts", "transfer", "both"),
+    ("other_income", "Other income", "income", "in"),
+    ("refund_in", "Refund from a supplier", "income", "in"),
+    ("owner_funds", "Owner's money in", "capital", "in"),
+    ("loan_in", "Loan received", "capital", "in"),
+)
+BANK_CATEGORY_LABELS = {k: label for k, label, _kind, _d in BANK_CATEGORIES}
+BANK_CATEGORY_KIND = {k: kind for k, _l, kind, _d in BANK_CATEGORIES}
+BANK_CATEGORY_DIRECTION = {k: d for k, _l, _k, d in BANK_CATEGORIES}
+TRANSFER_WINDOW_DAYS = 3
+
+
+def bank_categories_for(direction):
+    return [{"key": k, "label": label, "kind": kind} for k, label, kind, d in BANK_CATEGORIES if d == "both" or d == direction]
+
+
+def _line_direction(line):
+    return "in" if (line.amount or 0) > 0 else "out"
+
+
+def _narrative(line):
+    return f"{line.description or ''} {line.reference or ''}".strip().lower()
+
+
+def bank_rule_matches(rule, line):
+    if not rule.active:
+        return False
+    if rule.direction in ("in", "out") and rule.direction != _line_direction(line):
+        return False
+    if (rule.contains or "").strip().lower() not in _narrative(line):
+        return False
+    amt = abs(line.amount or 0)
+    if rule.min_amount is not None and amt < rule.min_amount - 0.005:
+        return False
+    if rule.max_amount is not None and amt > rule.max_amount + 0.005:
+        return False
+    return True
+
+
+def bank_rule_to_dict(r, names=None):
+    names = names or {}
+    return {"id": r.id, "name": r.name or "", "contains": r.contains or "", "direction": r.direction or "out",
+            "min_amount": r.min_amount, "max_amount": r.max_amount, "action": r.action or "categorise",
+            "category": r.category or "", "category_label": BANK_CATEGORY_LABELS.get(r.category or "", ""),
+            "tax_rate": r.tax_rate or "", "transfer_account_id": r.transfer_account_id,
+            "transfer_account": names.get(r.transfer_account_id, "") if r.transfer_account_id else "",
+            "applied_count": r.applied_count or 0, "active": bool(r.active), "position": r.position or 0}
+
+
+def _bank_rules(db, client_id):
+    return db.query(models.DBBankRule).filter(models.DBBankRule.client_id == client_id,
+                                              models.DBBankRule.active == True).order_by(  # noqa: E712
+        models.DBBankRule.position.asc(), models.DBBankRule.id.asc()).all()
+
+
+def _mirror_line(db, client_id, line, window=TRANSFER_WINDOW_DAYS):
+    """The other side of a transfer: the same amount the other way, on
+    another of the business's accounts, within a few days, not yet dealt
+    with."""
+    when = _parse_date(line.date)
+    if not when or not line.account_id:
+        return None
+    lo, hi = (when - timedelta(days=window)).isoformat(), (when + timedelta(days=window)).isoformat()
+    want = money(-(line.amount or 0))
+    rows = db.query(models.DBBankLine).filter(
+        models.DBBankLine.client_id == client_id, models.DBBankLine.id != line.id,
+        models.DBBankLine.account_id != None, models.DBBankLine.account_id != line.account_id,  # noqa: E711
+        models.DBBankLine.status.in_(["unmatched", "out"]),
+        models.DBBankLine.date >= lo, models.DBBankLine.date <= hi).all()
+    for r in rows:
+        if abs(money(r.amount or 0) - want) < 0.005:
+            return r
+    return None
+
+
+def code_bank_line(db, client, line, category, tax_rate="", transfer_account_id=None, bill_id=None, rule=None, request=None, mirror=True):
+    """Say where a line's money went. Returns the line."""
+    category = (category or "").strip()
+    if category not in BANK_CATEGORY_LABELS:
+        raise HTTPException(status_code=400, detail="Pick a category from the list")
+    direction = _line_direction(line)
+    allowed = BANK_CATEGORY_DIRECTION[category]
+    if allowed != "both" and allowed != direction:
+        raise HTTPException(status_code=400, detail=f"'{BANK_CATEGORY_LABELS[category]}' is for money {allowed}, and this line is money {direction}")
+    if line.status not in ("out", "unmatched", "coded", "ignored"):
+        raise HTTPException(status_code=400, detail="This line has been recorded against an invoice")
+    if line.allocated and line.allocated > 0:
+        raise HTTPException(status_code=400, detail="Part of this line has been recorded against an invoice; reverse that first")
+    if line.status == "coded":
+        uncode_bank_line(db, client, line)
+    line.category, line.tax_rate, line.transfer_account_id, line.bill_id = category, "", None, None
+    if category == "transfer":
+        other = resolve_account(db, client.id, transfer_account_id) if transfer_account_id else None
+        if other is None:
+            raise HTTPException(status_code=400, detail="Which of your own accounts did it go to or come from?")
+        if line.account_id and other == line.account_id:
+            raise HTTPException(status_code=400, detail="A transfer is between two different accounts")
+        line.transfer_account_id = other
+        if mirror:
+            twin = _mirror_line(db, client.id, line)
+            if twin is not None and twin.account_id == other:
+                code_bank_line(db, client, twin, "transfer", transfer_account_id=line.account_id, rule=rule, request=request, mirror=False)
+    elif category == "bill":
+        bill = db.query(models.DBBill).filter(models.DBBill.id == (bill_id or 0), models.DBBill.client_id == client.id).first()
+        if not bill:
+            raise HTTPException(status_code=400, detail="Which bill did this pay?")
+        balance = money((bill.total or 0) - (bill.amount_paid or 0))
+        paid = money(abs(line.amount or 0))
+        if balance <= 0:
+            raise HTTPException(status_code=400, detail=f"Bill {bill.number} is already paid")
+        if paid > balance + 0.005:
+            raise HTTPException(status_code=400, detail=f"This line is more than bill {bill.number} has left ({balance:.2f})")
+        bill.amount_paid = money((bill.amount_paid or 0) + paid)
+        bill.status = "Paid" if bill.amount_paid >= (bill.total or 0) - 0.005 else "Partially Paid"
+        line.bill_id = bill.id
+        line.tax_rate = tax_rate or ""
+    else:
+        if BANK_CATEGORY_KIND[category] == "expense" or category in ("other_income", "refund_in"):
+            line.tax_rate = (tax_rate or "").strip()[:40]
+    line.status = "coded"
+    line.rule_id = rule.id if rule is not None else None
+    line.coded_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if rule is not None:
+        rule.applied_count = (rule.applied_count or 0) + 1
+    return line
+
+
+def uncode_bank_line(db, client, line):
+    """Take a coding back: a bill it paid is owed again; a transfer's other
+    side is left as it is, since it may be right on its own."""
+    if line.bill_id:
+        bill = db.query(models.DBBill).filter(models.DBBill.id == line.bill_id).first()
+        if bill:
+            bill.amount_paid = money(max(0.0, (bill.amount_paid or 0) - abs(line.amount or 0)))
+            bill.status = "Paid" if bill.amount_paid >= (bill.total or 0) - 0.005 else ("Partially Paid" if bill.amount_paid > 0 else "Awaiting Payment")
+    line.category, line.tax_rate, line.transfer_account_id, line.bill_id, line.rule_id, line.coded_at = "", "", None, None, None, ""
+    line.status = "unmatched" if (line.amount or 0) > 0 else "out"
+
+
+def apply_bank_rules(db, client, lines, rules=None):
+    """The first rule that fits a line decides it. Returns how many lines
+    were coded or ignored."""
+    rules = _bank_rules(db, client.id) if rules is None else rules
+    if not rules:
+        return 0
+    done = 0
+    for line in lines:
+        if line.status not in ("out", "unmatched") or (line.allocated or 0) > 0:
+            continue
+        for rule in rules:
+            if not bank_rule_matches(rule, line):
+                continue
+            try:
+                if rule.action == "ignore":
+                    line.status, line.note, line.rule_id = "ignored", f"Rule: {rule.name}"[:200], rule.id
+                    rule.applied_count = (rule.applied_count or 0) + 1
+                elif rule.action == "transfer":
+                    code_bank_line(db, client, line, "transfer", transfer_account_id=rule.transfer_account_id, rule=rule)
+                else:
+                    code_bank_line(db, client, line, rule.category, tax_rate=rule.tax_rate, rule=rule)
+                done += 1
+            except HTTPException:
+                continue          # a rule that no longer fits its own account or category is skipped, not fatal
+            break
+    return done
+
+
+class CodingSuggester:
+    """What a line is probably for, in order of confidence: a rule that fits
+    (auto), the same narrative coded before (auto), the other side of a
+    transfer (likely), an open bill from that supplier for that amount
+    (likely)."""
+
+    def __init__(self, db, client_id, lines):
+        self.db, self.client_id = db, client_id
+        self.rules = _bank_rules(db, client_id)
+        self.names = account_names(db, client_id)
+        past = db.query(models.DBBankLine).filter(models.DBBankLine.client_id == client_id, models.DBBankLine.status == "coded",
+                                                  models.DBBankLine.category != "").order_by(models.DBBankLine.coded_at.desc()).limit(2000).all()
+        self.history = {}
+        for p in past:
+            key = _norm(p.description)
+            if key and key not in self.history:
+                self.history[key] = p
+        self.bills = [b for b in db.query(models.DBBill).filter(models.DBBill.client_id == client_id,
+                                                                  models.DBBill.status.notin_(["Paid", "Void", "Draft"])).all()
+                      if money((b.total or 0) - (b.amount_paid or 0)) > 0]
+
+    def suggest(self, line):
+        if (line.allocated or 0) > 0:
+            return None
+        for rule in self.rules:
+            if bank_rule_matches(rule, line):
+                if rule.action == "ignore":
+                    return {"action": "ignore", "confidence": "auto", "why": f"rule: {rule.name}", "rule_id": rule.id}
+                cat = "transfer" if rule.action == "transfer" else rule.category
+                return {"action": "code", "category": cat, "category_label": BANK_CATEGORY_LABELS.get(cat, ""), "tax_rate": rule.tax_rate or "",
+                        "transfer_account_id": rule.transfer_account_id, "transfer_account": self.names.get(rule.transfer_account_id, ""),
+                        "confidence": "auto", "why": f"rule: {rule.name}", "rule_id": rule.id}
+        past = self.history.get(_norm(line.description))
+        if past is not None and past.category not in ("bill",) and BANK_CATEGORY_DIRECTION[past.category] in ("both", _line_direction(line)):
+            return {"action": "code", "category": past.category, "category_label": BANK_CATEGORY_LABELS.get(past.category, ""),
+                    "tax_rate": past.tax_rate or "", "transfer_account_id": past.transfer_account_id,
+                    "transfer_account": self.names.get(past.transfer_account_id, ""), "confidence": "auto",
+                    "why": f"coded that way on {past.date}"}
+        twin = _mirror_line(self.db, self.client_id, line)
+        if twin is not None:
+            return {"action": "code", "category": "transfer", "category_label": BANK_CATEGORY_LABELS["transfer"], "tax_rate": "",
+                    "transfer_account_id": twin.account_id, "transfer_account": self.names.get(twin.account_id, ""),
+                    "confidence": "likely", "why": f"the same amount the other way in {self.names.get(twin.account_id, 'another account')} on {twin.date}"}
+        if (line.amount or 0) < 0:
+            words = _narrative(line)
+            paid = money(abs(line.amount or 0))
+            for b in self.bills:
+                vendor = _norm(b.vendor_name)
+                if vendor and vendor in _norm(words) and abs(money((b.total or 0) - (b.amount_paid or 0)) - paid) < 0.005:
+                    return {"action": "code", "category": "bill", "category_label": BANK_CATEGORY_LABELS["bill"], "bill_id": b.id,
+                            "bill_number": b.number, "tax_rate": "", "confidence": "likely",
+                            "why": f"bill {b.number} from {b.vendor_name} for exactly this"}
+        return None
+
+
+@app.get("/api/bank/categories")
+def list_bank_categories(request: Request, db: Session = Depends(get_db)):
+    get_client_user(request, db)
+    return {"out": bank_categories_for("out"), "in": bank_categories_for("in")}
+
+
+@app.post("/api/bank/lines/code")
+def code_bank_lines(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """One line or many, coded the same way: a category and the tax in it,
+    a transfer to one of your accounts, or a bill on the books."""
+    client = get_client_user(request, db)
+    body = body or {}
+    ids = body.get("ids") or ([body["id"]] if body.get("id") else [])
+    try:
+        ids = [int(x) for x in ids][:500]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Which lines?")
+    if not ids:
+        raise HTTPException(status_code=400, detail="Which lines?")
+    lines = db.query(models.DBBankLine).filter(models.DBBankLine.client_id == client.id, models.DBBankLine.id.in_(ids)).all()
+    if len(lines) != len(set(ids)):
+        raise HTTPException(status_code=404, detail="Line not found")
+    for line in lines:
+        code_bank_line(db, client, line, body.get("category"), tax_rate=body.get("tax_rate") or "",
+                       transfer_account_id=body.get("transfer_account_id"), bill_id=body.get("bill_id"), request=request)
+    log_audit(db, client.id, "bank_lines_coded", "bank_line", lines[0].id, BANK_CATEGORY_LABELS.get(body.get("category"), ""),
+              f"{len(lines)} line(s)", request)
+    db.commit()
+    names = account_names(db, client.id)
+    return {"coded": len(lines), "lines": [bank_line_to_dict(l, names) for l in lines]}
+
+
+@app.post("/api/bank/lines/code-suggested")
+def code_suggested_bank_lines(request: Request, db: Session = Depends(get_db)):
+    """Every money-out line whose coding is certain - a rule fits it, or the
+    same narrative was coded before - coded in one go."""
+    client = get_client_user(request, db)
+    lines = db.query(models.DBBankLine).filter(models.DBBankLine.client_id == client.id, models.DBBankLine.status == "out").all()
+    coder = CodingSuggester(db, client.id, lines)
+    done = 0
+    for line in lines:
+        sug = coder.suggest(line)
+        if not sug or sug["confidence"] != "auto":
+            continue
+        if sug["action"] == "ignore":
+            line.status, line.note = "ignored", sug["why"][:200]
+        else:
+            code_bank_line(db, client, line, sug["category"], tax_rate=sug.get("tax_rate") or "",
+                           transfer_account_id=sug.get("transfer_account_id"), bill_id=sug.get("bill_id"), request=request)
+        done += 1
+    db.commit()
+    return {"coded": done, "left": sum(1 for l in lines if l.status == "out")}
+
+
+@app.post("/api/bank/lines/{line_id}/uncode")
+def uncode_bank_line_route(line_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    line = _line_or_404(db, client.id, line_id)
+    if line.status != "coded":
+        raise HTTPException(status_code=400, detail="That line is not coded")
+    uncode_bank_line(db, client, line)
+    db.commit()
+    return {"message": "Back in the list", "line": bank_line_to_dict(line, account_names(db, client.id))}
+
+
+# --- rules ---------------------------------------------------------------------------
+def _rule_fields(db, client, body, rule):
+    rule.name = str(body.get("name") or "").strip()[:80]
+    rule.contains = str(body.get("contains") or "").strip()[:120]
+    if not rule.contains:
+        raise HTTPException(status_code=400, detail="What should the narrative contain?")
+    if not rule.name:
+        rule.name = rule.contains
+    rule.direction = body.get("direction") if body.get("direction") in ("in", "out", "any") else "out"
+    for f in ("min_amount", "max_amount"):
+        v = body.get(f)
+        try:
+            setattr(rule, f, None if v in (None, "") else float(v))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{f.replace('_', ' ')} must be a number")
+    rule.action = body.get("action") if body.get("action") in ("categorise", "transfer", "ignore") else "categorise"
+    if rule.action == "categorise":
+        cat = str(body.get("category") or "").strip()
+        if cat not in BANK_CATEGORY_LABELS or cat in ("transfer", "bill"):
+            raise HTTPException(status_code=400, detail="Pick a category for the rule")
+        if BANK_CATEGORY_DIRECTION[cat] not in ("both", rule.direction) and rule.direction != "any":
+            raise HTTPException(status_code=400, detail=f"'{BANK_CATEGORY_LABELS[cat]}' is for money {BANK_CATEGORY_DIRECTION[cat]}")
+        rule.category, rule.tax_rate, rule.transfer_account_id = cat, str(body.get("tax_rate") or "").strip()[:40], None
+    elif rule.action == "transfer":
+        rule.transfer_account_id = resolve_account(db, client.id, body.get("transfer_account_id"))
+        if not rule.transfer_account_id:
+            raise HTTPException(status_code=400, detail="Which of your accounts does the transfer go to?")
+        rule.category, rule.tax_rate = "transfer", ""
+    else:
+        rule.category, rule.tax_rate, rule.transfer_account_id = "", "", None
+    if "active" in body:
+        rule.active = bool(body["active"])
+
+
+@app.get("/api/bank/rules")
+def list_bank_rules(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    names = account_names(db, client.id)
+    rows = db.query(models.DBBankRule).filter(models.DBBankRule.client_id == client.id).order_by(
+        models.DBBankRule.position.asc(), models.DBBankRule.id.asc()).all()
+    return {"rules": [bank_rule_to_dict(r, names) for r in rows]}
+
+
+@app.post("/api/bank/rules")
+def create_bank_rule(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    rule = models.DBBankRule(client_id=client.id, active=True)
+    _rule_fields(db, client, body, rule)
+    rule.position = (db.query(sqlfunc.max(models.DBBankRule.position)).filter(models.DBBankRule.client_id == client.id).scalar() or 0) + 1
+    db.add(rule)
+    db.flush()
+    applied = 0
+    if body.get("apply_now", True):
+        waiting = db.query(models.DBBankLine).filter(models.DBBankLine.client_id == client.id,
+                                                     models.DBBankLine.status.in_(["out", "unmatched"])).all()
+        applied = apply_bank_rules(db, client, waiting, rules=[rule])
+    log_audit(db, client.id, "bank_rule_created", "bank_rule", rule.id, rule.name, f"applied to {applied}", request)
+    db.commit()
+    return {"rule": bank_rule_to_dict(rule, account_names(db, client.id)), "applied": applied}
+
+
+@app.put("/api/bank/rules/{rule_id}")
+def update_bank_rule(rule_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    rule = db.query(models.DBBankRule).filter(models.DBBankRule.id == rule_id, models.DBBankRule.client_id == client.id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    _rule_fields(db, client, body or {}, rule)
+    db.commit()
+    return {"rule": bank_rule_to_dict(rule, account_names(db, client.id))}
+
+
+@app.delete("/api/bank/rules/{rule_id}")
+def delete_bank_rule(rule_id: int, request: Request, db: Session = Depends(get_db)):
+    """The rule goes; what it coded stays coded."""
+    client = get_client_user(request, db)
+    rule = db.query(models.DBBankRule).filter(models.DBBankRule.id == rule_id, models.DBBankRule.client_id == client.id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    db.delete(rule)
+    db.commit()
+    return {"message": "Deleted"}
+
+
+@app.post("/api/bank/rules/apply")
+def apply_bank_rules_now(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    waiting = db.query(models.DBBankLine).filter(models.DBBankLine.client_id == client.id,
+                                                 models.DBBankLine.status.in_(["out", "unmatched"])).all()
+    done = apply_bank_rules(db, client, waiting)
+    db.commit()
+    return {"applied": done}
+
+
+# --- the report that reads the bank ----------------------------------------------------
+def profit_and_loss_detail(db, client, start, end):
+    """Income and spending for a period, from what actually happened: receipts
+    recorded against invoices, other money in, and the money out that has
+    been coded - by category, with the VAT in each. Transfers, drawings, loan
+    money and tax payments are movements, not trade, and sit apart."""
+    def within(d):
+        return bool(d) and start <= d[:10] <= end
+
+    receipts = [p for p in db.query(models.DBPayment).filter(models.DBPayment.client_id == client.id).all()
+                if within(p.paid_on) and p.method != "credit_note"]
+    refunds = [r for r in db.query(models.DBRefund).filter(models.DBRefund.client_id == client.id).all() if within(r.refunded_on)]
+    invoiced_income = money(sum(p.amount or 0 for p in receipts) - sum(r.amount or 0 for r in refunds))
+    coded = [l for l in db.query(models.DBBankLine).filter(models.DBBankLine.client_id == client.id,
+                                                          models.DBBankLine.status == "coded").all() if within(l.date)]
+    other_income = money(sum(l.amount or 0 for l in coded if BANK_CATEGORY_KIND.get(l.category) == "income"))
+    by_cat = {}
+    input_vat = 0.0
+    for l in coded:
+        kind = BANK_CATEGORY_KIND.get(l.category)
+        if kind != "expense":
+            continue
+        gross = money(abs(l.amount or 0))
+        rate = parse_tax_rate(l.tax_rate, 0.0) if l.tax_rate else 0.0
+        vat = money(gross - gross / (1 + rate)) if rate else 0.0
+        input_vat += vat
+        t = by_cat.setdefault(l.category, {"category": l.category, "label": BANK_CATEGORY_LABELS.get(l.category, l.category), "gross": 0.0, "vat": 0.0, "net": 0.0, "lines": 0})
+        t["gross"] = money(t["gross"] + gross)
+        t["vat"] = money(t["vat"] + vat)
+        t["net"] = money(t["net"] + gross - vat)
+        t["lines"] += 1
+    # Bills paid from a coded line are counted once, as the bill's own category.
+    for l in coded:
+        if l.category == "bill" and l.bill_id:
+            bill = db.query(models.DBBill).filter(models.DBBill.id == l.bill_id).first()
+            cat = (bill.category if bill and bill.category in BANK_CATEGORY_LABELS else "general")
+            gross = money(abs(l.amount or 0))
+            vat = money(bill.tax_amount or 0) if bill and (bill.tax_amount or 0) and gross >= (bill.total or 0) - 0.005 else 0.0
+            input_vat += vat
+            t = by_cat.setdefault(cat, {"category": cat, "label": BANK_CATEGORY_LABELS.get(cat, cat), "gross": 0.0, "vat": 0.0, "net": 0.0, "lines": 0})
+            t["gross"] = money(t["gross"] + gross)
+            t["vat"] = money(t["vat"] + vat)
+            t["net"] = money(t["net"] + gross - vat)
+            t["lines"] += 1
+    expenses = sorted(by_cat.values(), key=lambda x: -x["gross"])
+    total_expenses = money(sum(x["gross"] for x in expenses))
+    movements = {}
+    for l in coded:
+        kind = BANK_CATEGORY_KIND.get(l.category)
+        if kind in ("transfer", "drawings", "capital", "tax"):
+            t = movements.setdefault(l.category, {"category": l.category, "label": BANK_CATEGORY_LABELS.get(l.category, l.category), "amount": 0.0, "lines": 0})
+            t["amount"] = money(t["amount"] + (l.amount or 0))
+            t["lines"] += 1
+    # Output VAT from what was invoiced in the period, whether or not paid yet.
+    invoices = [i for i in db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id,
+                                                            models.DBInvoice.status.notin_(["Draft", "Void"])).all() if within(i.issue_date)]
+    output_vat = money(sum(compute_invoice_totals(i.line_items, i.tax_type)[1] for i in invoices))
+    uncoded = db.query(models.DBBankLine).filter(models.DBBankLine.client_id == client.id, models.DBBankLine.status == "out").all()
+    uncoded_in_period = [l for l in uncoded if within(l.date)]
+    return {
+        "from": start, "to": end, "currency": base_currency(client),
+        "income": {"invoices": invoiced_income, "other": other_income, "total": money(invoiced_income + other_income), "receipts": len(receipts)},
+        "expenses": {"by_category": expenses, "total": total_expenses, "vat": money(input_vat)},
+        "net": money(invoiced_income + other_income - total_expenses),
+        "movements": sorted(movements.values(), key=lambda x: x["label"]),
+        "vat": {"output": output_vat, "input": money(input_vat), "due": money(output_vat - input_vat), "invoices": len(invoices)},
+        "uncoded": {"count": len(uncoded_in_period), "amount": money(sum(abs(l.amount or 0) for l in uncoded_in_period))},
+    }
+
+
+def _period(from_, to):
+    today = date.today()
+    start = _clean_ymd(from_, "from") if from_ else today.replace(day=1).isoformat()
+    end = _clean_ymd(to, "to") if to else today.isoformat()
+    if end < start:
+        raise HTTPException(status_code=400, detail="'to' is before 'from'")
+    return start, end
+
+
+@app.get("/api/reports/profit-loss/detail")
+def profit_loss_detail_report(request: Request, from_: str = Query("", alias="from"), to: str = "", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    start, end = _period(from_, to)
+    return profit_and_loss_detail(db, client, start, end)
+
+
+@app.get("/api/reports/profit-loss/detail.csv")
+def profit_loss_detail_csv(request: Request, from_: str = Query("", alias="from"), to: str = "", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    start, end = _period(from_, to)
+    r = profit_and_loss_detail(db, client, start, end)
+    rows = [["Profit and loss", f"{start} to {end}", r["currency"]], [],
+            ["Income", "", ""], ["Invoices paid", f"{r['income']['invoices']:.2f}", ""], ["Other income", f"{r['income']['other']:.2f}", ""],
+            ["Total income", f"{r['income']['total']:.2f}", ""], [],
+            ["Expenses", "Gross", "VAT"]]
+    rows += [[x["label"], f"{x['gross']:.2f}", f"{x['vat']:.2f}"] for x in r["expenses"]["by_category"]]
+    rows += [["Total expenses", f"{r['expenses']['total']:.2f}", f"{r['expenses']['vat']:.2f}"], [],
+             ["Net", f"{r['net']:.2f}", ""], [],
+             ["VAT on sales", f"{r['vat']['output']:.2f}", ""], ["VAT on purchases", f"{r['vat']['input']:.2f}", ""], ["VAT due", f"{r['vat']['due']:.2f}", ""]]
+    return _csv_response(f"profit-and-loss-{start}-to-{end}.csv", rows[0], rows[1:])
 
 
 # The installable app's manifest, named for the face this host wears, so the

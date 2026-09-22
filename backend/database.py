@@ -1803,6 +1803,22 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 64: {sys.exc_info()[1]}")
 
+            # 65. Where a bank line's money went: a category, the tax in it,
+            # the other account of a transfer, the bill it paid, the rule.
+            try:
+                for ddl in (
+                    "ALTER TABLE bank_lines ADD COLUMN IF NOT EXISTS category VARCHAR DEFAULT ''",
+                    "ALTER TABLE bank_lines ADD COLUMN IF NOT EXISTS tax_rate VARCHAR DEFAULT ''",
+                    "ALTER TABLE bank_lines ADD COLUMN IF NOT EXISTS transfer_account_id INTEGER",
+                    "ALTER TABLE bank_lines ADD COLUMN IF NOT EXISTS bill_id INTEGER",
+                    "ALTER TABLE bank_lines ADD COLUMN IF NOT EXISTS rule_id INTEGER",
+                    "ALTER TABLE bank_lines ADD COLUMN IF NOT EXISTS coded_at VARCHAR DEFAULT ''",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 65: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

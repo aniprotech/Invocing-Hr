@@ -11154,8 +11154,50 @@ function renderAgedCustomers(data) {
 }
 window.renderAgedCustomers = renderAgedCustomers;
 
+// The profit and loss that reads the bank: receipts against invoices,
+// other money in, and the money out that has been coded, by category with
+// the VAT in it. Transfers, drawings and tax paid are movements, shown
+// apart. Anything still to code is named, so the figure is never mistaken
+// for complete.
+async function loadProfitLossDetail() {
+    var body = document.getElementById('pl-detail-body');
+    if (!body) return;
+    var from = document.getElementById('pl-from'), to = document.getElementById('pl-to');
+    if (from && !from.value) { var t = new Date(); from.value = t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-01'; }
+    if (to && !to.value) to.value = localDate(new Date());
+    var q = '?from=' + encodeURIComponent(from ? from.value : '') + '&to=' + encodeURIComponent(to ? to.value : '');
+    var csv = document.getElementById('pl-csv');
+    if (csv) csv.href = '/api/reports/profit-loss/detail.csv' + q;
+    body.innerHTML = '<div style="padding:16px;color:var(--text-secondary);">Loading...</div>';
+    try {
+        var r = await fetchJson('/api/reports/profit-loss/detail' + q);
+        var sym = getCurrencySymbol(r.currency);
+        var m = function (v) { return sym + Number(v || 0).toFixed(2); };
+        var rows = '<tr><td>Invoices paid</td><td class="text-right"></td><td class="text-right">' + m(r.income.invoices) + '</td></tr>' +
+            (r.income.other ? '<tr><td>Other income</td><td class="text-right"></td><td class="text-right">' + m(r.income.other) + '</td></tr>' : '') +
+            '<tr style="font-weight:700;"><td>Total income</td><td></td><td class="text-right">' + m(r.income.total) + '</td></tr>' +
+            '<tr><td colspan="3" style="padding-top:14px;color:var(--text-secondary);font-size:0.78rem;text-transform:uppercase;letter-spacing:0.5px;">Expenses</td></tr>' +
+            (r.expenses.by_category.length ? r.expenses.by_category.map(function (x) {
+                return '<tr><td>' + esc(x.label) + ' <span style="color:var(--text-secondary);font-size:0.78rem;">' + x.lines + ' line' + (x.lines === 1 ? '' : 's') + '</span></td><td class="text-right" style="color:var(--text-secondary);">' + (x.vat ? m(x.vat) : '') + '</td><td class="text-right">' + m(x.gross) + '</td></tr>';
+            }).join('') : '<tr><td colspan="3" style="color:var(--text-secondary);">Nothing coded in this period. <a href="#/bank">Code the money out</a> and it appears here.</td></tr>') +
+            '<tr style="font-weight:700;"><td>Total expenses</td><td class="text-right" style="color:var(--text-secondary);">' + (r.expenses.vat ? m(r.expenses.vat) : '') + '</td><td class="text-right">' + m(r.expenses.total) + '</td></tr>' +
+            '<tr style="font-weight:800;font-size:1.05rem;"><td>Net</td><td></td><td class="text-right" style="color:' + (r.net >= 0 ? 'var(--success-color)' : 'var(--danger-color)') + ';">' + m(r.net) + '</td></tr>';
+        var moves = r.movements.length ? '<p style="margin-top:14px;font-size:0.85rem;color:var(--text-secondary);">Not trade, kept apart: ' + r.movements.map(function (x) { return esc(x.label) + ' ' + m(x.amount); }).join(' · ') + '</p>' : '';
+        var vat = '<div class="grid-3" style="margin-top:14px;gap:12px;">' +
+            '<div class="stat-card"><span class="stat-label">VAT on sales</span><span class="stat-value">' + m(r.vat.output) + '</span><span style="font-size:0.75rem;color:var(--text-secondary);">' + r.vat.invoices + ' invoice' + (r.vat.invoices === 1 ? '' : 's') + ' issued</span></div>' +
+            '<div class="stat-card"><span class="stat-label">VAT on purchases</span><span class="stat-value">' + m(r.vat.input) + '</span><span style="font-size:0.75rem;color:var(--text-secondary);">from coded lines</span></div>' +
+            '<div class="stat-card"><span class="stat-label">VAT due</span><span class="stat-value" style="color:' + (r.vat.due > 0 ? 'var(--warning-color)' : 'var(--success-color)') + ';">' + m(r.vat.due) + '</span></div></div>';
+        var warn = r.uncoded.count ? '<p style="margin-top:12px;color:var(--warning-color);font-size:0.9rem;">' + r.uncoded.count + ' line' + (r.uncoded.count === 1 ? '' : 's') + ' of money out (' + m(r.uncoded.amount) + ') in this period still to code - <a href="#/bank">code them</a> and the figures move.</p>' : '';
+        body.innerHTML = '<div class="table-responsive"><table class="data-table"><thead><tr><th></th><th class="text-right">of which VAT</th><th class="text-right">Amount</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + moves + vat + warn;
+    } catch (e) {
+        body.innerHTML = '<div style="padding:16px;color:var(--danger-color);">' + esc(e.message) + '</div>';
+    }
+}
+window.loadProfitLossDetail = loadProfitLossDetail;
+
 async function loadProfitLoss() {
     showReportsTab('pl');
+    loadProfitLossDetail();
     var body = document.getElementById('pl-report-body');
     var chart = document.getElementById('pl-chart');
     if (body) body.innerHTML = '<div style="padding:16px;color:var(--text-secondary);">Loading...</div>';
@@ -16547,12 +16589,249 @@ async function finishBankFeedReturn() {
 }
 window.finishBankFeedReturn = finishBankFeedReturn;
 
+// ── Coding the money out ───────────────────────────────────────────────────
+// A customer paying an invoice is matched. Everything else is coded: a
+// category and the tax in it, a transfer to one of your own accounts, a
+// bill on the books. Rules do the lines that repeat; the rest are
+// suggested from what was coded before, a mirror line elsewhere, or an
+// open bill; the ticked ones are coded together.
+var _bankCategories = null;
+var _bankSelected = {};
+var _bankCodeLine = null;
+
+async function bankCategories() {
+    if (!_bankCategories) _bankCategories = await fetchJson('/api/bank/categories');
+    return _bankCategories;
+}
+
+function categoryOptions(list, chosen) {
+    return list.map(function (c) { return '<option value="' + esc(c.key) + '"' + (c.key === chosen ? ' selected' : '') + '>' + esc(c.label) + '</option>'; }).join('');
+}
+
+function taxOptions(chosen) {
+    var rates = (_taxRates || []).map(function (t) { return t.label || taxRateLabel(t.name, t.percent); });
+    if (!rates.length) rates = ['20% VAT', '5% VAT', 'No Tax'];
+    if (chosen && rates.indexOf(chosen) === -1) rates.unshift(chosen);
+    return '<option value="">No tax in it</option>' + rates.map(function (r) { return '<option value="' + esc(r) + '"' + (r === chosen ? ' selected' : '') + '>' + esc(r) + '</option>'; }).join('');
+}
+
+function accountOptions(chosen, exceptId) {
+    return '<option value="">Choose an account</option>' + (_bankAccounts || []).filter(function (a) { return a.id !== exceptId; })
+        .map(function (a) { return '<option value="' + a.id + '"' + (a.id === chosen ? ' selected' : '') + '>' + esc(a.name) + '</option>'; }).join('');
+}
+
+// What a line is probably for, as a chip with a one-click button.
+function codingChip(l) {
+    var c = l.coding;
+    if (!c) return '<span style="color:var(--text-secondary);">Not coded yet</span>';
+    var conf = c.confidence === 'auto' ? ['Certain', 'var(--success-color)'] : ['Probably', 'var(--warning-color)'];
+    var what = c.action === 'ignore' ? 'Ignore' : esc(c.category_label) + (c.transfer_account ? ' \u2192 ' + esc(c.transfer_account) : '') + (c.bill_number ? ' ' + esc(c.bill_number) : '') + (c.tax_rate ? ' \u00b7 ' + esc(c.tax_rate) : '');
+    return '<strong>' + what + '</strong><div style="font-size:0.75rem;color:' + conf[1] + ';">' + conf[0] + ': ' + esc(c.why) + '</div>';
+}
+
+function codingActions(l) {
+    var c = l.coding;
+    var quick = c ? (c.action === 'ignore'
+        ? '<button class="btn btn-outline btn-sm" data-bank-ignore="' + l.id + '">Ignore</button> '
+        : '<button class="btn ' + (c.confidence === 'auto' ? 'btn-primary' : 'btn-outline') + ' btn-sm" data-bank-code-as="' + l.id + '">Code as ' + esc(c.category_label.split(' ')[0]) + '</button> ') : '';
+    return quick + '<button class="btn btn-outline btn-sm" data-bank-code="' + l.id + '">Code\u2026</button> <button class="btn btn-outline btn-sm" data-bank-ignore="' + l.id + '">Ignore</button>';
+}
+
+function bankSelectionChanged() {
+    var ids = Object.keys(_bankSelected).filter(function (k) { return _bankSelected[k]; });
+    var bar = document.getElementById('bank-bulk');
+    if (!bar) return;
+    bar.style.display = ids.length ? 'flex' : 'none';
+    document.getElementById('bank-bulk-count').textContent = ids.length + ' selected';
+}
+
+function clearBankSelection() {
+    _bankSelected = {};
+    document.querySelectorAll('[data-bank-select]').forEach(function (cb) { cb.checked = false; });
+    bankSelectionChanged();
+}
+window.clearBankSelection = clearBankSelection;
+
+async function codeSelectedBankLines() {
+    var ids = Object.keys(_bankSelected).filter(function (k) { return _bankSelected[k]; }).map(Number);
+    if (!ids.length) return;
+    var category = document.getElementById('bank-bulk-category').value;
+    var tax = document.getElementById('bank-bulk-tax').value;
+    try {
+        var out = await fetchJson('/api/bank/lines/code', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: ids, category: category, tax_rate: tax }) });
+        showToast(out.coded + ' line' + (out.coded === 1 ? '' : 's') + ' coded', 'success');
+        _bankSelected = {};
+        loadBankView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.codeSelectedBankLines = codeSelectedBankLines;
+
+async function codeSuggestedBankLines() {
+    try {
+        var out = await fetchJson('/api/bank/lines/code-suggested', { method: 'POST' });
+        showToast(out.coded + ' coded, ' + out.left + ' left to look at', 'success');
+        loadBankView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.codeSuggestedBankLines = codeSuggestedBankLines;
+
+async function codeBankLineAsSuggested(l) {
+    var c = l.coding;
+    if (!c) return;
+    try {
+        await fetchJson('/api/bank/lines/code', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: [l.id], category: c.category, tax_rate: c.tax_rate || '', transfer_account_id: c.transfer_account_id || null, bill_id: c.bill_id || null }) });
+        showToast('Coded as ' + c.category_label, 'success');
+        loadBankView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function openBankCode(l) {
+    _bankCodeLine = l;
+    var cats = await bankCategories();
+    var list = l.amount > 0 ? cats.in : cats.out;
+    var c = l.coding || {};
+    document.getElementById('bank-code-line').textContent = l.date + ' \u00b7 ' + l.description + ' \u00b7 ' + (l.amount < 0 ? '\u2212' : '') + getCurrencySymbol() + Math.abs(l.amount).toFixed(2);
+    document.getElementById('bank-code-category').innerHTML = categoryOptions(list, c.category || (l.amount > 0 ? 'other_income' : 'general'));
+    document.getElementById('bank-code-tax').innerHTML = taxOptions(c.tax_rate || '');
+    document.getElementById('bank-code-transfer').innerHTML = accountOptions(c.transfer_account_id || null, l.account_id);
+    var bills = [];
+    try { bills = (await fetchJson('/api/bills')).filter(function (b) { return ['Paid', 'Void', 'Draft'].indexOf(b.status) === -1; }); } catch (e) { /* no bills, no list */ }
+    document.getElementById('bank-code-bill').innerHTML = '<option value="">Choose a bill</option>' + bills.map(function (b) {
+        return '<option value="' + b.id + '"' + (b.id === c.bill_id ? ' selected' : '') + '>' + esc(b.number) + ' \u00b7 ' + esc(b.vendor_name) + ' \u00b7 ' + Number((b.total || 0) - (b.amount_paid || 0)).toFixed(2) + ' left</option>';
+    }).join('');
+    document.getElementById('bank-code-make-rule').checked = false;
+    bankCodeCategoryChanged();
+    document.getElementById('bank-code-modal').style.display = 'flex';
+}
+
+function bankCodeCategoryChanged() {
+    var cat = document.getElementById('bank-code-category').value;
+    document.getElementById('bank-code-transfer-group').style.display = cat === 'transfer' ? '' : 'none';
+    document.getElementById('bank-code-bill-group').style.display = cat === 'bill' ? '' : 'none';
+    document.getElementById('bank-code-tax-group').style.display = (cat === 'transfer' || cat === 'bill' || cat === 'drawings' || cat === 'tax' || cat === 'loan_repayment' || cat === 'owner_funds' || cat === 'loan_in') ? 'none' : '';
+    document.getElementById('bank-code-make-rule').parentElement.style.display = (cat === 'bill') ? 'none' : '';
+}
+window.bankCodeCategoryChanged = bankCodeCategoryChanged;
+
+function closeBankCode() {
+    document.getElementById('bank-code-modal').style.display = 'none';
+    _bankCodeLine = null;
+}
+window.closeBankCode = closeBankCode;
+
+async function saveBankCode() {
+    var l = _bankCodeLine;
+    if (!l) return;
+    var category = document.getElementById('bank-code-category').value;
+    var body = { ids: [l.id], category: category, tax_rate: document.getElementById('bank-code-tax').value,
+        transfer_account_id: document.getElementById('bank-code-transfer').value ? Number(document.getElementById('bank-code-transfer').value) : null,
+        bill_id: document.getElementById('bank-code-bill').value ? Number(document.getElementById('bank-code-bill').value) : null };
+    try {
+        await fetchJson('/api/bank/lines/code', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (document.getElementById('bank-code-make-rule').checked && category !== 'bill') {
+            // The rule: the narrative's first words, this way, from now on.
+            var words = (l.description || '').replace(/[0-9]{3,}/g, ' ').replace(/\s+/g, ' ').trim().split(' ').slice(0, 2).join(' ');
+            await fetchJson('/api/bank/rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+                name: words, contains: words, direction: l.amount > 0 ? 'in' : 'out',
+                action: category === 'transfer' ? 'transfer' : 'categorise', category: category, tax_rate: body.tax_rate, transfer_account_id: body.transfer_account_id }) });
+            showToast('Coded, and a rule made for lines like it', 'success');
+        } else {
+            showToast('Coded', 'success');
+        }
+        closeBankCode();
+        loadBankView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.saveBankCode = saveBankCode;
+
+// --- rules ---
+async function renderBankRules(host) {
+    var d = await fetchJson('/api/bank/rules');
+    host.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;">' +
+        '<p style="color:var(--text-secondary);margin:0;">A rule codes every line that arrives, and the ones waiting now. The first rule that fits wins.</p>' +
+        '<span style="display:flex;gap:8px;"><button class="btn btn-outline btn-sm" id="bank-rules-apply">Apply to waiting lines</button><button class="btn btn-primary btn-sm" id="bank-rules-new">+ New rule</button></span></div>' +
+        (d.rules.length ? '<div class="widget"><div class="table-responsive"><table class="data-table"><thead><tr><th>Rule</th><th>When the narrative contains</th><th>Money</th><th>Then</th><th class="text-right">Applied</th><th></th></tr></thead><tbody>' +
+            d.rules.map(function (r) {
+                var then = r.action === 'ignore' ? 'Ignore' : r.action === 'transfer' ? 'Transfer \u2192 ' + esc(r.transfer_account || '') : esc(r.category_label) + (r.tax_rate ? ' \u00b7 ' + esc(r.tax_rate) : '');
+                var bounds = (r.min_amount != null || r.max_amount != null) ? '<div style="font-size:0.75rem;color:var(--text-secondary);">' + (r.min_amount != null ? 'from ' + r.min_amount : '') + (r.max_amount != null ? ' up to ' + r.max_amount : '') + '</div>' : '';
+                return '<tr' + (r.active ? '' : ' style="opacity:0.55;"') + '><td><strong>' + esc(r.name) + '</strong></td><td>' + esc(r.contains) + bounds + '</td><td>' + esc(r.direction === 'any' ? 'either' : r.direction) + '</td><td>' + then + '</td><td class="text-right">' + r.applied_count + '</td>' +
+                    '<td class="text-right" style="white-space:nowrap;"><button class="btn btn-outline btn-sm" data-rule-edit="' + r.id + '">Edit</button> <button class="btn btn-outline btn-sm" data-rule-delete="' + r.id + '">Delete</button></td></tr>';
+            }).join('') + '</tbody></table></div></div>'
+        : '<div class="widget" style="padding:40px;text-align:center;color:var(--text-secondary);">No rules yet. Code a line and tick "make a rule", or start one here.</div>');
+    host.querySelector('#bank-rules-new').addEventListener('click', function () { openBankRule(null); });
+    host.querySelector('#bank-rules-apply').addEventListener('click', async function () {
+        try { var out = await fetchJson('/api/bank/rules/apply', { method: 'POST' }); showToast(out.applied + ' line' + (out.applied === 1 ? '' : 's') + ' coded by rules', 'success'); loadBankView(); }
+        catch (e) { showToast(e.message, 'error'); }
+    });
+    host.querySelectorAll('[data-rule-edit]').forEach(function (b) {
+        b.addEventListener('click', function () { openBankRule(d.rules.filter(function (r) { return String(r.id) === b.getAttribute('data-rule-edit'); })[0]); });
+    });
+    host.querySelectorAll('[data-rule-delete]').forEach(function (b) {
+        b.addEventListener('click', async function () {
+            if (!await uiConfirm('Delete this rule? What it already coded stays coded.', { title: 'Delete rule', confirmText: 'Delete', danger: true })) return;
+            try { await fetchJson('/api/bank/rules/' + b.getAttribute('data-rule-delete'), { method: 'DELETE' }); loadBankView(); }
+            catch (e) { showToast(e.message, 'error'); }
+        });
+    });
+}
+
+async function openBankRule(rule, prefill) {
+    var cats = await bankCategories();
+    rule = rule || prefill || {};
+    document.getElementById('bank-rule-title').textContent = rule.id ? 'Edit rule' : 'New rule';
+    document.getElementById('bank-rule-id').value = rule.id || '';
+    document.getElementById('bank-rule-contains').value = rule.contains || '';
+    document.getElementById('bank-rule-direction').value = rule.direction || 'out';
+    document.getElementById('bank-rule-action').value = rule.action || 'categorise';
+    document.getElementById('bank-rule-category').innerHTML = categoryOptions(cats.out.concat(cats.in).filter(function (c) { return c.key !== 'transfer' && c.key !== 'bill'; }), rule.category || 'general');
+    document.getElementById('bank-rule-tax').innerHTML = taxOptions(rule.tax_rate || '');
+    document.getElementById('bank-rule-transfer').innerHTML = accountOptions(rule.transfer_account_id || null, null);
+    document.getElementById('bank-rule-min').value = rule.min_amount != null ? rule.min_amount : '';
+    document.getElementById('bank-rule-max').value = rule.max_amount != null ? rule.max_amount : '';
+    document.getElementById('bank-rule-name').value = rule.name || '';
+    bankRuleFormChanged();
+    document.getElementById('bank-rule-modal').style.display = 'flex';
+}
+window.openBankRule = openBankRule;
+
+function bankRuleFormChanged() {
+    var action = document.getElementById('bank-rule-action').value;
+    document.getElementById('bank-rule-category-group').style.display = action === 'categorise' ? '' : 'none';
+    document.getElementById('bank-rule-tax-group').style.display = action === 'categorise' ? '' : 'none';
+    document.getElementById('bank-rule-transfer-group').style.display = action === 'transfer' ? '' : 'none';
+}
+window.bankRuleFormChanged = bankRuleFormChanged;
+
+function closeBankRule() { document.getElementById('bank-rule-modal').style.display = 'none'; }
+window.closeBankRule = closeBankRule;
+
+async function saveBankRule() {
+    var id = document.getElementById('bank-rule-id').value;
+    var body = { name: document.getElementById('bank-rule-name').value, contains: document.getElementById('bank-rule-contains').value,
+        direction: document.getElementById('bank-rule-direction').value, action: document.getElementById('bank-rule-action').value,
+        category: document.getElementById('bank-rule-category').value, tax_rate: document.getElementById('bank-rule-tax').value,
+        transfer_account_id: document.getElementById('bank-rule-transfer').value ? Number(document.getElementById('bank-rule-transfer').value) : null,
+        min_amount: document.getElementById('bank-rule-min').value, max_amount: document.getElementById('bank-rule-max').value };
+    try {
+        var out = await fetchJson('/api/bank/rules' + (id ? '/' + id : ''), { method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        showToast(id ? 'Rule saved' : ('Rule made' + (out.applied ? ', ' + out.applied + ' line' + (out.applied === 1 ? '' : 's') + ' coded' : '')), 'success');
+        closeBankRule();
+        loadBankView();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.saveBankRule = saveBankRule;
+
 async function loadBankView() {
     var host = document.getElementById('bank-list');
     var tiles = document.getElementById('bank-tiles');
     if (!host) return;
     await finishBankFeedReturn();
     loadBankFeeds();
+    if (_bankTab === 'rules') {
+        try { await renderBankRules(host); } catch (e) { host.innerHTML = '<div class="widget" style="padding:20px;color:var(--danger-text);">' + esc(e.message) + '</div>'; }
+        return;
+    }
     var sel = document.getElementById('bank-account');
     var accountId = sel && sel.value ? Number(sel.value) : 0;
     try {
@@ -16587,18 +16866,48 @@ async function loadBankView() {
         }
         tiles.innerHTML = tile('To match', c.unmatched || 0, sym + Number(d.unmatched_total || 0).toFixed(2) + ' unexplained', c.unmatched ? 'var(--warning-color)' : '') +
             tile('Confident matches', d.auto || 0, 'one click each, or all at once', d.auto ? 'var(--success-color)' : '') +
-            tile('Matched', c.matched || 0, 'recorded against invoices') +
-            tile('Money out', c.out || 0, 'kept for the record');
+            tile('To code', c.out || 0, 'money out with no home yet', c.out ? 'var(--warning-color)' : '') +
+            tile('Coded', c.coded || 0, 'where the money went');
         var btn = document.getElementById('bank-record-all');
         if (btn) btn.style.display = d.auto ? 'inline-flex' : 'none';
+        var codeAll = document.getElementById('bank-code-all');
+        if (codeAll) codeAll.style.display = (_bankTab === 'out' && d.auto_coding) ? 'inline-flex' : 'none';
+        if (_bankTab === 'out') {
+            // The cash-coding bar's pickers, filled once the categories are known.
+            bankCategories().then(function (cats) {
+                var sel = document.getElementById('bank-bulk-category');
+                if (sel && !sel.options.length) sel.innerHTML = categoryOptions(cats.out.filter(function (x) { return x.key !== 'transfer' && x.key !== 'bill'; }), 'general');
+                var tax = document.getElementById('bank-bulk-tax');
+                if (tax && !tax.options.length) tax.innerHTML = taxOptions('');
+            });
+        } else {
+            _bankSelected = {};
+            bankSelectionChanged();
+        }
         if (!d.lines.length) {
             host.innerHTML = '<div class="widget" style="padding:40px;text-align:center;color:var(--text-secondary);">' +
-                (_bankTab === 'unmatched' ? 'Nothing waiting. Import a statement - a CSV from any bank, or an OFX - and each line of money in is set against your open invoices.' : 'Nothing here.') + '</div>';
+                (_bankTab === 'unmatched' ? 'Nothing waiting. Import a statement - a CSV from any bank, or an OFX - and each line of money in is set against your open invoices.'
+                    : _bankTab === 'out' ? 'Nothing to code. Every line of money out has a home.' : 'Nothing here.') + '</div>';
             return;
         }
-        host.innerHTML = '<div class="widget"><div class="table-responsive"><table class="data-table"><thead><tr><th style="white-space:nowrap;">Date</th><th>Narrative</th><th class="text-right" style="white-space:nowrap;">Amount</th>' +
-            (_bankTab === 'unmatched' ? '<th>Probably for</th>' : '<th>Recorded as</th>') + '<th></th></tr></thead><tbody>' +
+        host.innerHTML = '<div class="widget"><div class="table-responsive"><table class="data-table"><thead><tr>' + (_bankTab === 'out' ? '<th></th>' : '') + '<th style="white-space:nowrap;">Date</th><th>Narrative</th><th class="text-right" style="white-space:nowrap;">Amount</th>' +
+            (_bankTab === 'unmatched' ? '<th>Probably for</th>' : _bankTab === 'out' ? '<th>Probably</th>' : _bankTab === 'coded' ? '<th>Coded as</th>' : '<th>Recorded as</th>') + '<th></th></tr></thead><tbody>' +
             d.lines.map(function (l) { return bankLineRow(l, sym); }).join('') + '</tbody></table></div></div>';
+        host.querySelectorAll('[data-bank-select]').forEach(function (cb) {
+            cb.addEventListener('change', function () { _bankSelected[cb.getAttribute('data-bank-select')] = cb.checked; bankSelectionChanged(); });
+        });
+        host.querySelectorAll('[data-bank-code-as]').forEach(function (b) {
+            b.addEventListener('click', function () { codeBankLineAsSuggested(d.lines.filter(function (l) { return String(l.id) === b.getAttribute('data-bank-code-as'); })[0]); });
+        });
+        host.querySelectorAll('[data-bank-code]').forEach(function (b) {
+            b.addEventListener('click', function () { openBankCode(d.lines.filter(function (l) { return String(l.id) === b.getAttribute('data-bank-code'); })[0]); });
+        });
+        host.querySelectorAll('[data-bank-uncode]').forEach(function (b) {
+            b.addEventListener('click', async function () {
+                try { await fetchJson('/api/bank/lines/' + b.getAttribute('data-bank-uncode') + '/uncode', { method: 'POST' }); loadBankView(); }
+                catch (e) { showToast(e.message, 'error'); }
+            });
+        });
         host.querySelectorAll('[data-bank-record]').forEach(function (b) {
             b.addEventListener('click', function () { recordBankLine(Number(b.getAttribute('data-bank-record')), b.getAttribute('data-bank-number')); });
         });
@@ -16655,10 +16964,26 @@ function bankLineRow(l, sym) {
         var actions = l.already_recorded
             ? '<button class="btn btn-outline btn-sm" data-bank-link="' + l.id + '" data-bank-payment="' + l.already_recorded.payment_id + '">Same one</button> '
             : (s0 ? '<button class="btn ' + (s0.confidence === 'auto' ? 'btn-primary' : 'btn-outline') + ' btn-sm" data-bank-record="' + l.id + '" data-bank-number="' + esc(s0.number) + '">Record</button> ' : '');
-        actions += '<button class="btn btn-outline btn-sm" data-bank-pick="' + l.id + '">Choose\u2026</button> <button class="btn btn-outline btn-sm" data-bank-ignore="' + l.id + '">Ignore</button>';
+        actions += '<button class="btn btn-outline btn-sm" data-bank-pick="' + l.id + '">Choose\u2026</button> ';
+        // Money in that is not a customer: a transfer from your other account,
+        // the owner's money, a refund - coded rather than matched.
+        if (l.coding && l.coding.category === 'transfer') {
+            pick = '<strong>Transfer from ' + esc(l.coding.transfer_account || 'your other account') + '</strong><div style="font-size:0.75rem;color:var(--warning-color);">Probably: ' + esc(l.coding.why) + '</div>';
+            actions = '<button class="btn btn-primary btn-sm" data-bank-code-as="' + l.id + '">Code as transfer</button> ' + actions;
+        }
+        actions += '<button class="btn btn-outline btn-sm" data-bank-code="' + l.id + '">Not a customer\u2026</button> <button class="btn btn-outline btn-sm" data-bank-ignore="' + l.id + '">Ignore</button>';
         return head + '<td>' + pick + '</td><td class="text-right" style="white-space:nowrap;">' + actions + '</td></tr>';
     }
-    var recorded = l.status === 'matched' ? ((l.payment_ids || []).length ? (l.payment_ids.length === 1 ? 'a receipt' : l.payment_ids.length + ' receipts') : '') : l.status === 'ignored' ? 'ignored' : 'money out';
+    if (l.status === 'out') {
+        var tick = '<td><input type="checkbox" data-bank-select="' + l.id + '"' + (_bankSelected[l.id] ? ' checked' : '') + ' aria-label="Select"></td>';
+        return '<tr>' + tick + head.slice(4) + '<td>' + codingChip(l) + '</td><td class="text-right" style="white-space:nowrap;">' + codingActions(l) + '</td></tr>';
+    }
+    if (l.status === 'coded') {
+        var what = '<strong>' + esc(l.category_label || l.category) + '</strong>' + (l.transfer_account ? ' \u2192 ' + esc(l.transfer_account) : '') + (l.bill_id ? ' <span style="color:var(--text-secondary);font-size:0.78rem;">bill paid</span>' : '') +
+            (l.tax_rate ? '<div style="font-size:0.75rem;color:var(--text-secondary);">' + esc(l.tax_rate) + '</div>' : '') + (l.rule_id ? '<div style="font-size:0.72rem;color:var(--text-secondary);">by rule</div>' : '');
+        return head + '<td>' + what + '</td><td class="text-right"><button class="btn btn-outline btn-sm" data-bank-uncode="' + l.id + '">Undo</button></td></tr>';
+    }
+    var recorded = l.status === 'matched' ? ((l.payment_ids || []).length ? (l.payment_ids.length === 1 ? 'a receipt' : l.payment_ids.length + ' receipts') : '') : l.status === 'ignored' ? 'ignored' + (l.note ? ' \u00b7 ' + esc(l.note) : '') : 'money out';
     var restore = (l.status === 'ignored') ? '<button class="btn btn-outline btn-sm" data-bank-restore="' + l.id + '">Back to the list</button>' : '';
     return head + '<td style="color:var(--text-secondary);">' + recorded + '</td><td class="text-right">' + restore + '</td></tr>';
 }

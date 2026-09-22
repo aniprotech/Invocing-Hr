@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=189">
-    <link rel="stylesheet" href="mobile.css?v=189">
+    <link rel="stylesheet" href="styles.css?v=190">
+    <link rel="stylesheet" href="mobile.css?v=190">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,11 +57,11 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=189">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=189">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=189">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=189">
-    <script src="/dialogs.js?v=189"></script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=190">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=190">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=190">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=190">
+    <script src="/dialogs.js?v=190"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -1298,6 +1298,7 @@
                         <div class="invoices-actions" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
                             <select id="bank-account" class="form-control" style="width:auto;padding:8px 12px;" onchange="loadBankView()"></select>
                             <button class="btn btn-outline" id="bank-record-all" onclick="recordAllBankLines()">Record confident matches</button>
+                            <button class="btn btn-outline" id="bank-code-all" onclick="codeSuggestedBankLines()" style="display:none;">Code the certain ones</button>
                             <button class="btn btn-outline" onclick="importBankStatement()">Import statement</button>
                             <button class="btn btn-primary" id="bank-add-account" onclick="addBankAccount()">+ Add bank account</button>
                             <input type="file" id="bank-file" accept=".csv,.ofx,.qfx,text/csv,text/plain" style="display:none;" onchange="bankFileChosen(this)">
@@ -1309,10 +1310,20 @@
                     <div class="grid-4 mb-24" id="bank-tiles"></div>
                     <div class="invoices-tabs" id="bank-tabs">
                         <button class="tab active" onclick="switchBankTab('unmatched', this)">To match</button>
+                        <button class="tab" onclick="switchBankTab('out', this)">To code</button>
                         <button class="tab" onclick="switchBankTab('matched', this)">Matched</button>
-                        <button class="tab" onclick="switchBankTab('out', this)">Money out</button>
+                        <button class="tab" onclick="switchBankTab('coded', this)">Coded</button>
                         <button class="tab" onclick="switchBankTab('ignored', this)">Ignored</button>
+                        <button class="tab" onclick="switchBankTab('rules', this)">Rules</button>
                         <button class="tab" onclick="switchBankTab('imports', this)">Files</button>
+                    </div>
+                    <!-- Cash coding: tick the lines, code them all as one thing. -->
+                    <div id="bank-bulk" class="widget" style="display:none;padding:12px 16px;margin-bottom:12px;align-items:center;gap:10px;flex-wrap:wrap;">
+                        <strong id="bank-bulk-count">0 selected</strong>
+                        <select id="bank-bulk-category" class="form-control" style="width:auto;padding:6px 10px;"></select>
+                        <select id="bank-bulk-tax" class="form-control" style="width:auto;padding:6px 10px;"></select>
+                        <button class="btn btn-primary btn-sm" onclick="codeSelectedBankLines()">Code them</button>
+                        <button class="btn btn-outline btn-sm" onclick="clearBankSelection()">Clear</button>
                     </div>
                     <div id="bank-list"></div>
                 </div>
@@ -1497,6 +1508,20 @@
                         <div class="glass-widget" style="margin-bottom:24px;">
                             <div class="widget-header"><h3>Profit & Loss Statement</h3></div>
                             <div class="widget-content" id="pl-report-body"></div>
+                        </div>
+                        <!-- From the bank: receipts against invoices, other money in, and
+                             the money out that has been coded, by category, with the VAT. -->
+                        <div class="glass-widget" style="margin-bottom:24px;">
+                            <div class="widget-header" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+                                <h3>By category, from the bank</h3>
+                                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                                    <input type="date" id="pl-from" class="form-control" style="width:auto;padding:6px 10px;" onchange="loadProfitLossDetail()">
+                                    <span style="color:var(--text-secondary);">to</span>
+                                    <input type="date" id="pl-to" class="form-control" style="width:auto;padding:6px 10px;" onchange="loadProfitLossDetail()">
+                                    <a class="btn btn-outline btn-sm" id="pl-csv" href="#" download>CSV</a>
+                                </div>
+                            </div>
+                            <div class="widget-content" id="pl-detail-body"></div>
                         </div>
                         <div class="glass-widget">
                             <div class="widget-header"><h3>Monthly Breakdown</h3></div>
@@ -3286,6 +3311,57 @@
                 <!-- Somebody who cannot send anything finds out when an invoice
                      is already written and the send is refused. The answer is
                      knowable at sign-in, so it is said then. -->
+                <!-- Coding a line: where the money went. -->
+                <div id="bank-code-modal" class="modal-overlay" style="display:none;">
+                    <div class="modal" style="max-width:520px;">
+                        <div class="modal-header">
+                            <h3>Where did this go?</h3>
+                            <button class="btn-icon" onclick="closeBankCode()" aria-label="Close">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <p id="bank-code-line" style="color:var(--text-secondary);margin-bottom:12px;"></p>
+                            <div class="form-group"><label for="bank-code-category">Category</label><select id="bank-code-category" class="form-control" onchange="bankCodeCategoryChanged()"></select></div>
+                            <div class="form-group" id="bank-code-tax-group"><label for="bank-code-tax">Tax in it</label><select id="bank-code-tax" class="form-control"></select></div>
+                            <div class="form-group" id="bank-code-transfer-group" style="display:none;"><label for="bank-code-transfer">The other account</label><select id="bank-code-transfer" class="form-control"></select></div>
+                            <div class="form-group" id="bank-code-bill-group" style="display:none;"><label for="bank-code-bill">Which bill</label><select id="bank-code-bill" class="form-control"></select></div>
+                            <label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;color:var(--text-secondary);margin-top:6px;"><input type="checkbox" id="bank-code-make-rule"> Always code lines like this the same way (make a rule)</label>
+                            <div style="display:flex;gap:10px;margin-top:16px;justify-content:flex-end;">
+                                <button class="btn btn-outline" onclick="closeBankCode()">Cancel</button>
+                                <button class="btn btn-primary" id="bank-code-save" onclick="saveBankCode()">Code it</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div id="bank-rule-modal" class="modal-overlay" style="display:none;">
+                    <div class="modal" style="max-width:560px;">
+                        <div class="modal-header">
+                            <h3 id="bank-rule-title">New rule</h3>
+                            <button class="btn-icon" onclick="closeBankRule()" aria-label="Close">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <p style="color:var(--text-secondary);margin-bottom:12px;font-size:0.9rem;">Applied to every line that arrives, and to the ones waiting now.</p>
+                            <input type="hidden" id="bank-rule-id">
+                            <div class="form-group"><label for="bank-rule-contains">When the narrative contains</label><input type="text" id="bank-rule-contains" class="form-control" placeholder="british gas"></div>
+                            <div class="grid-2" style="gap:12px;">
+                                <div class="form-group"><label for="bank-rule-direction">Money</label><select id="bank-rule-direction" class="form-control" onchange="bankRuleFormChanged()"><option value="out">out</option><option value="in">in</option><option value="any">either way</option></select></div>
+                                <div class="form-group"><label for="bank-rule-action">Then</label><select id="bank-rule-action" class="form-control" onchange="bankRuleFormChanged()"><option value="categorise">code it as</option><option value="transfer">it is a transfer to</option><option value="ignore">ignore it</option></select></div>
+                            </div>
+                            <div class="form-group" id="bank-rule-category-group"><label for="bank-rule-category">Category</label><select id="bank-rule-category" class="form-control"></select></div>
+                            <div class="form-group" id="bank-rule-tax-group"><label for="bank-rule-tax">Tax in it</label><select id="bank-rule-tax" class="form-control"></select></div>
+                            <div class="form-group" id="bank-rule-transfer-group" style="display:none;"><label for="bank-rule-transfer">Account</label><select id="bank-rule-transfer" class="form-control"></select></div>
+                            <div class="grid-2" style="gap:12px;">
+                                <div class="form-group"><label for="bank-rule-min">Only from (amount)</label><input type="number" step="0.01" id="bank-rule-min" class="form-control" placeholder="any"></div>
+                                <div class="form-group"><label for="bank-rule-max">up to</label><input type="number" step="0.01" id="bank-rule-max" class="form-control" placeholder="any"></div>
+                            </div>
+                            <div class="form-group"><label for="bank-rule-name">Name</label><input type="text" id="bank-rule-name" class="form-control" placeholder="Gas"></div>
+                            <div style="display:flex;gap:10px;margin-top:8px;justify-content:flex-end;">
+                                <button class="btn btn-outline" onclick="closeBankRule()">Cancel</button>
+                                <button class="btn btn-primary" onclick="saveBankRule()">Save rule</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Connecting a bank feed. Three screens, the ones a business
                      already knows from Xero: find the bank, add its accounts,
                      read what will be shared and go to the bank to say yes. -->
@@ -4896,8 +4972,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="feed.js?v=189"></script>
-    <script src="app.js?v=189"></script>
+    <script src="feed.js?v=190"></script>
+    <script src="app.js?v=190"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
@@ -5125,7 +5201,7 @@
             </div>
         </div>
     </div>
-    <script src="/install-hint.js?v=189"></script>
-    <script src="/pwa.js?v=189"></script>
+    <script src="/install-hint.js?v=190"></script>
+    <script src="/pwa.js?v=190"></script>
 </body>
 </html>

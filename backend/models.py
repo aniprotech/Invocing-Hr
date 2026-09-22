@@ -2788,6 +2788,37 @@ class DBBankLine(Base):
     allocated = Column(Float, default=0.0)                       # recorded against invoices so far
     payment_ids = Column(String, default="")                     # comma-separated receipts made from it
     note = Column(String, default="")
+    # Where the money went, for a line that is not a customer paying an
+    # invoice: a category, the tax in it, the other account of a transfer,
+    # the bill it paid, the rule that decided - and status "coded".
+    category = Column(String, default="", index=True)
+    tax_rate = Column(String, default="")
+    transfer_account_id = Column(Integer, ForeignKey("money_accounts.id"), nullable=True)
+    bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True)
+    rule_id = Column(Integer, nullable=True)
+    coded_at = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBBankRule(Base):
+    """"Anything from British Gas is Utilities, 20% VAT": a rule applied to
+    every line that arrives, and on demand to the ones already here."""
+    __tablename__ = "bank_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    name = Column(String, default="")
+    contains = Column(String, default="")                    # in the narrative or reference, any case
+    direction = Column(String, default="out")                # out | in | any
+    min_amount = Column(Float, nullable=True)                # of the absolute amount
+    max_amount = Column(Float, nullable=True)
+    action = Column(String, default="categorise")            # categorise | transfer | ignore
+    category = Column(String, default="")
+    tax_rate = Column(String, default="")
+    transfer_account_id = Column(Integer, ForeignKey("money_accounts.id"), nullable=True)
+    applied_count = Column(Integer, default=0)
+    active = Column(Boolean, default=True)
+    position = Column(Integer, default=0)
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 

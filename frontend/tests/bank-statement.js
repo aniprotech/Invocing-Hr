@@ -69,7 +69,7 @@ function boot(opts) {
         await w.loadBankView();
         await wait(40);
         const tiles = doc.getElementById('bank-tiles').textContent;
-        check('the tiles count what is to match, the confident ones, the matched and the money out', /3/.test(tiles) && /£1380\.00 unexplained/.test(tiles) && /Confident matches\s*1/.test(tiles.replace(/\s+/g, ' ')) && /Money out\s*2/.test(tiles.replace(/\s+/g, ' ')), tiles);
+        check('the tiles count what is to match, the confident ones, the matched and the money out', /3/.test(tiles) && /£1380\.00 unexplained/.test(tiles) && /Confident matches\s*1/.test(tiles.replace(/\s+/g, ' ')) && /To code\s*2/.test(tiles.replace(/\s+/g, ' ')), tiles);
         check('the account picker is filled, names as text', doc.getElementById('bank-account').options.length === 3 && /HDFC <b>current<\/b>/.test(doc.getElementById('bank-account').options[1].textContent));
         const rows = doc.querySelectorAll('#bank-list tbody tr');
         check('one row per line, narrative as text', rows.length === 3 && /FPS ACME <i>LTD<\/i> INV-0001/.test(rows[0].textContent) && !doc.getElementById('bank-list').querySelector('i'));
