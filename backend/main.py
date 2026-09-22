@@ -4077,6 +4077,11 @@ def send_invoice_email(number: str, background_tasks: BackgroundTasks, request: 
               {rows}
             </div>'''
 
+    # The offer, drawn once and used in both halves of the message.
+    pay_link = page_url(f"/invoice.html?id={inv.tracking_id}", request) if inv.tracking_id else ""
+    pay_html, pay_text = invoice_pay_block(inv, cur_symbol, pay_link)
+    pay_text_block = (pay_text + "\n\n") if pay_text else ""
+
     body = f"""Hello {esc(inv.to_contact)},
 
 Please find the details of your invoice {inv.number} from {company_name or sender_name} below.
@@ -4094,7 +4099,7 @@ Line Items:
     body += f"""
 Total Amount Due: {cur_symbol}{inv.due:.2f}
 
-Payment is due by {inv.due_date}. If you have any questions about this invoice, please reply to this email.
+{pay_text_block}Payment is due by {inv.due_date}. If you have any questions about this invoice, please reply to this email.
 
 Thank you for your business!
 
@@ -4137,7 +4142,8 @@ Powered by Aniprotech"""
             <!-- Body -->
             <div style="padding: 40px;">
               <p style="font-size: 16px; color: #1e293b; margin: 0 0 6px 0;">Hello <strong>{esc(inv.to_contact)}</strong>,</p>
-              <p style="font-size: 14px; color: #64748b; margin: 0 0 32px 0;">Here's your invoice from <strong>{esc(company_name or sender_name)}</strong>. Please find the details below.</p>
+              <p style="font-size: 14px; color: #64748b; margin: 0 0 8px 0;">Here's your invoice from <strong>{esc(company_name or sender_name)}</strong>. Please find the details below.</p>
+              {pay_html}
 
               <!-- Invoice Details Cards -->
               <div style="margin-bottom: 32px;">
@@ -4179,8 +4185,6 @@ Powered by Aniprotech"""
                 <p style="font-size: 13px; color: #854d0e; margin: 0;"><strong>Payment Terms:</strong> Please pay by {inv.due_date}. For any questions, reply to this email.</p>
               </div>
 
-              <!-- View and Pay Online -->
-              <p style="margin-top: 20px;"><a href="{request.base_url}invoice.html?id={inv.tracking_id}" style="color: #0ea5e9; font-size: 14px; font-weight: 600;">View this invoice online &rarr;</a></p>
             </div>
 
             <!-- Footer -->
@@ -30884,19 +30888,20 @@ def reminder_copy(step, inv, company, cur, days, fee_total=0.0, fee_policy=None,
         paras.append(f"A late payment fee of {_fee_wording(fee_policy, cur)} applies to invoices more than {fee_policy['after_days']} days overdue.")
     if step.get("message"):
         paras.append(step["message"])
-    if link:
-        paras.append(f"View and pay online: {link}")
     if tone != "final":
         paras.append("If you have already paid, please ignore this note.")
 
-    text_body = f"Hello {inv.to_contact},\n\n" + "\n\n".join(paras) + f"\n\nKind regards,\n{company}\n"
     header = {"gentle": ("Payment reminder", "#0f172a"), "firm": ("Overdue invoice", "#b45309"), "final": ("Final notice", "#9f1239")}[tone]
     if days < 0:
         header = ("Due soon", "#0f172a")
+    # A chase is about getting paid, so it carries the button, in the colour
+    # of the notice it is.
+    pay_html, pay_text = invoice_pay_block(inv, cur, link, header[1])
+    text_body = (f"Hello {inv.to_contact},\n\n" + "\n\n".join(paras)
+                 + (f"\n\n{pay_text}" if pay_text else "")
+                 + f"\n\nKind regards,\n{company}\n")
     body_html = "".join(
-        f'<p style="margin:0 0 16px;font-size:15px;color:#475569;">{esc(p)}</p>' if not p.startswith("View and pay online: ")
-        else f'<p style="margin:0 0 16px;font-size:15px;"><a href="{esc(link)}" style="color:#0284c7;font-weight:600;">View and pay this invoice online &rarr;</a></p>'
-        for p in paras)
+        f'<p style="margin:0 0 16px;font-size:15px;color:#475569;">{esc(p)}</p>' for p in paras)
     html_body = f"""
         <!DOCTYPE html><html><body style="font-family:Arial,Helvetica,sans-serif;background:#f1f5f9;margin:0;padding:0;">
           <div style="max-width:520px;margin:0 auto;padding:40px 20px;">
@@ -30908,6 +30913,7 @@ def reminder_copy(step, inv, company, cur, days, fee_total=0.0, fee_policy=None,
               <div style="padding:26px;">
                 <p style="margin:0 0 16px;font-size:15px;">Hello {esc(inv.to_contact)},</p>
                 {body_html}
+                {pay_html}
               </div>
               <div style="background:#f8fafc;padding:18px;text-align:center;border-top:1px solid #e2e8f0;">
                 <div style="font-size:13px;font-weight:700;color:#0f172a;">{esc(company)}</div>
@@ -30927,6 +30933,59 @@ def late_fee_total_for(db, inv):
 
 def invoice_public_link(inv):
     return page_url(f"/invoice.html?id={inv.tracking_id}") if inv.tracking_id else ""
+
+
+def pay_block_text(link, amount_text, due_text, number):
+    """The same offer as the button, for the plain-text half of the email."""
+    return (f"{amount_text}\n"
+            + (f"Due {due_text}\n" if due_text else "")
+            + f"Invoice #: {number}\n\n"
+              f"Review and pay: {link}")
+
+
+def pay_block_html(link, amount_text, due_text, number, accent="#0f172a"):
+    """What is owed, when, which invoice, and one button that opens the
+    payment page - the first thing a customer should see.
+
+    Tables, not flex: Outlook lays email out with Word, where a flex row
+    collapses into a column. The button is a padded anchor for the same
+    reason - a <button> outside a form does nothing in several clients.
+    """
+    due_row = (f'<tr><td align="center" style="padding:0 0 2px;">'
+               f'<div style="font-size:14px;color:#475569;">Due {esc(due_text)}</div></td></tr>') if due_text else ""
+    return f"""
+              <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;margin:26px 0 30px;">
+                <tr><td align="center" style="padding:0 0 4px;">
+                  <div style="font-size:30px;font-weight:800;color:#0f172a;line-height:1.2;">{esc(amount_text)}</div>
+                </td></tr>
+                {due_row}
+                <tr><td align="center" style="padding:0 0 18px;">
+                  <div style="font-size:13px;color:#64748b;">Invoice #: {esc(number)}</div>
+                </td></tr>
+                <tr><td align="center">
+                  <a href="{esc(link)}" style="display:block;background:{accent};color:#ffffff;font-size:17px;font-weight:700;text-align:center;text-decoration:none;padding:16px 24px;border-radius:6px;">Review and pay</a>
+                </td></tr>
+              </table>"""
+
+
+def invoice_pay_block(inv, cur_symbol, link=None, accent="#0f172a"):
+    """(html, text) for this invoice: the button while there is something to
+    pay, a plain link once there is not, and nothing at all when the invoice
+    has no public page to send anybody to."""
+    link = invoice_public_link(inv) if link is None else link
+    if not link:
+        return "", ""
+    owed = money(inv.due or 0)
+    if inv.status == "Paid" or owed <= 0:
+        return (f'<p style="margin:24px 0 0;font-size:15px;text-align:center;">'
+                f'<a href="{esc(link)}" style="color:#0284c7;font-weight:600;">View this invoice online &rarr;</a></p>',
+                f"View this invoice online: {link}")
+    code = (inv.currency or "GBP").upper()
+    amount_text = f"{cur_symbol}{owed:,.2f} {code}"
+    on = _parse_any_date(inv.due_date or "")
+    due_text = on.strftime("%d %b %Y").lstrip("0") if on else (inv.due_date or "")
+    return (pay_block_html(link, amount_text, due_text, inv.number, accent),
+            pay_block_text(link, amount_text, due_text, inv.number))
 
 
 def send_dunning_reminder(db, inv, step, days, today, request=None, by="policy"):
@@ -31011,10 +31070,11 @@ def tell_customer_about_fee(db, inv, fee):
     cur = currency_symbol((inv.currency or "GBP").upper())
     subject = f"A late payment fee has been added to invoice {inv.number}"
     link = invoice_public_link(inv)
+    fee_pay_html, fee_pay_text = invoice_pay_block(inv, cur, link, "#b45309")
     text_body = (f"Hello {inv.to_contact},\n\n"
                  f"Invoice {inv.number} was due on {inv.due_date} and is now {fee.days_overdue} days overdue, so a late payment fee of "
                  f"{cur}{fee.amount:.2f} has been added under our payment terms. The amount now due is {cur}{(inv.due or 0):.2f}.\n\n"
-                 + (f"View and pay online: {link}\n\n" if link else "")
+                 + (f"{fee_pay_text}\n\n" if fee_pay_text else "")
                  + f"If you have already paid, please let us know and we will take the fee off.\n\nKind regards,\n{company}\n")
     html_body = f"""
         <!DOCTYPE html><html><body style="font-family:Arial,Helvetica,sans-serif;background:#f1f5f9;margin:0;padding:0;">
@@ -31028,7 +31088,7 @@ def tell_customer_about_fee(db, inv, fee):
                 <p style="margin:0 0 16px;font-size:15px;">Hello {esc(inv.to_contact)},</p>
                 <p style="margin:0 0 16px;font-size:15px;color:#475569;">Invoice <strong>{esc(inv.number)}</strong> was due on <strong>{esc(inv.due_date)}</strong> and is now {fee.days_overdue} days overdue, so a late payment fee of <strong>{cur}{fee.amount:.2f}</strong> has been added under our payment terms.</p>
                 <p style="margin:0 0 16px;font-size:15px;color:#475569;">The amount now due is <strong>{cur}{(inv.due or 0):.2f}</strong>.</p>
-                {f'<p style="margin:0 0 16px;font-size:15px;"><a href="{esc(link)}" style="color:#0284c7;font-weight:600;">View and pay this invoice online &rarr;</a></p>' if link else ''}
+                {fee_pay_html}
                 <p style="margin:0;font-size:13px;color:#64748b;">If you have already paid, please let us know and we will take the fee off.</p>
               </div>
               <div style="background:#f8fafc;padding:18px;text-align:center;border-top:1px solid #e2e8f0;">

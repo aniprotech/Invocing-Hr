@@ -166,7 +166,7 @@ def test_the_business_own_sentence_and_the_pay_link_go_in(tenant, outbox, monkey
     body = mine(outbox, inv["email"])[0]["body"]
     assert "card is quickest." in body
     assert f"https://bills.example.test/invoice.html?id={inv['tracking_id']}" in body
-    assert "View and pay this invoice online" in mine(outbox, inv["email"])[0]["html"]
+    assert "Review and pay" in mine(outbox, inv["email"])[0]["html"]
 
 
 def test_a_customer_left_out_is_not_chased(tenant, outbox):
