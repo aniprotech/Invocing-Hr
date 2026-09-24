@@ -1819,6 +1819,53 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 65: {sys.exc_info()[1]}")
 
+            # 66. UK PAYE on the employee: NI number, tax code, NI category,
+            # loans, director status, the starter declaration and a P45.
+            try:
+                for ddl in (
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS ni_number VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS tax_code VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS ni_category VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS student_loan_plan VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS postgrad_loan BOOLEAN DEFAULT FALSE",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS is_director BOOLEAN DEFAULT FALSE",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS director_since VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS starter_declaration VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS p45_tax_year INTEGER DEFAULT 0",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS p45_taxable_pay DOUBLE PRECISION DEFAULT 0",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS p45_tax DOUBLE PRECISION DEFAULT 0",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 66: {sys.exc_info()[1]}")
+
+            # 67. UK PAYE on the payslip: the codes it was worked on, the tax
+            # year and period, NI both sides, loans, and the RTI NI bands.
+            try:
+                for ddl in (
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS regime VARCHAR DEFAULT ''",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS tax_code VARCHAR DEFAULT ''",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS ni_category VARCHAR DEFAULT ''",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS tax_year INTEGER DEFAULT 0",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS tax_period INTEGER DEFAULT 0",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS taxable_pay DOUBLE PRECISION DEFAULT 0",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS ni_earnings DOUBLE PRECISION DEFAULT 0",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS employee_ni DOUBLE PRECISION DEFAULT 0",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS employer_ni DOUBLE PRECISION DEFAULT 0",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS student_loan DOUBLE PRECISION DEFAULT 0",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS postgrad_loan DOUBLE PRECISION DEFAULT 0",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS ni_at_lel DOUBLE PRECISION DEFAULT 0",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS ni_lel_to_pt DOUBLE PRECISION DEFAULT 0",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS ni_pt_to_uel DOUBLE PRECISION DEFAULT 0",
+                    "CREATE INDEX IF NOT EXISTS ix_payslips_regime ON payslips (regime)",
+                    "CREATE INDEX IF NOT EXISTS ix_payslips_tax_year ON payslips (tax_year)",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 67: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

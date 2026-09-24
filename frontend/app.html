@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=191">
-    <link rel="stylesheet" href="mobile.css?v=191">
+    <link rel="stylesheet" href="styles.css?v=192">
+    <link rel="stylesheet" href="mobile.css?v=192">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,11 +57,11 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=191">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=191">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=191">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=191">
-    <script src="/dialogs.js?v=191"></script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=192">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=192">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=192">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=192">
+    <script src="/dialogs.js?v=192"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -2696,7 +2696,7 @@
                                         <div><span style="color:var(--text-secondary);">Level:</span> <select id="emp-detail-level" class="form-control" style="display:none;padding:4px 8px;font-size:0.85rem;" data-field="level"><option value="">Not set</option></select><span id="emp-detail-level-ro">-</span></div>
                                         <div><span style="color:var(--text-secondary);">Role:</span> <select id="emp-detail-role" class="form-control" style="display:none;padding:4px 8px;font-size:0.85rem;" data-field="role"><option value="employee">Employee</option></select><span id="emp-detail-role-ro">-</span></div>
                                         <div><span style="color:var(--text-secondary);">Type:</span> <select id="emp-detail-type" class="form-control" style="display:none;padding:4px 8px;font-size:0.85rem;" data-field="employment_type"><option value="full_time">Full Time</option><option value="part_time">Part Time</option><option value="contract">Contract</option><option value="casual">Casual</option></select><span id="emp-detail-type-ro">-</span></div>
-                                        <div><span style="color:var(--text-secondary);">Pay Frequency:</span> <select id="emp-detail-payfreq" class="form-control" style="display:none;padding:4px 8px;font-size:0.85rem;" data-field="pay_frequency"><option value="monthly">Monthly</option><option value="weekly">Weekly</option><option value="biweekly">Bi-Weekly</option></select><span id="emp-detail-payfreq-ro">-</span></div>
+                                        <div><span style="color:var(--text-secondary);">Pay Frequency:</span> <select id="emp-detail-payfreq" class="form-control" style="display:none;padding:4px 8px;font-size:0.85rem;" data-field="pay_frequency"><option value="monthly">Monthly</option><option value="weekly">Weekly</option><option value="biweekly">Bi-Weekly</option><option value="fourweekly">Four-weekly</option></select><span id="emp-detail-payfreq-ro">-</span></div>
                                         <div><span style="color:var(--text-secondary);">Salary:</span> <input type="number" id="emp-detail-salary" class="form-control" style="display:none;padding:4px 8px;font-size:0.85rem;" data-field="salary" step="0.01"><span id="emp-detail-salary-ro">-</span></div>
                                         <div><span style="color:var(--text-secondary);">Start Date:</span> <input type="date" id="emp-detail-start" class="form-control" style="display:none;padding:4px 8px;font-size:0.85rem;" data-field="start_date"><span id="emp-detail-start-ro">-</span></div>
                                         <div><span style="color:var(--text-secondary);">Date of birth:</span> <input type="date" id="emp-detail-dob" class="form-control" style="display:none;padding:4px 8px;font-size:0.85rem;" data-field="date_of_birth"><span id="emp-detail-dob-ro">-</span></div>
@@ -2705,6 +2705,16 @@
                                         <div><span style="color:var(--text-secondary);">Emergency Contact:</span> <input type="text" id="emp-detail-emergency" class="form-control" style="display:none;padding:4px 8px;font-size:0.85rem;" data-field="emergency_contact"><span id="emp-detail-emergency-ro">-</span></div>
                                     </div>
                                 </div>
+                            </div>
+                            <div class="glass-widget" id="emp-uk-card" style="display:none;margin-bottom:24px;">
+                                <div class="widget-header">
+                                    <h3>UK payroll</h3>
+                                    <div style="margin-left:auto;display:flex;gap:8px;">
+                                        <button class="btn btn-outline btn-sm" onclick="previewUkPayslip()">Preview a payslip</button>
+                                        <button class="btn btn-outline btn-sm" onclick="openUkPayroll()">Edit</button>
+                                    </div>
+                                </div>
+                                <div class="widget-content" id="emp-uk-summary"></div>
                             </div>
                             <div class="glass-widget">
                                 <div class="widget-header">
@@ -2933,6 +2943,7 @@
                                     <div style="margin-top:8px;font-size:0.9rem;"><span style="color:var(--text-secondary);">Employee:</span> <span id="ps-detail-emp-name">-</span></div>
                                     <div style="margin-top:4px;font-size:0.9rem;"><span style="color:var(--text-secondary);">Period:</span> <span id="ps-detail-period">-</span></div>
                                     <div style="margin-top:4px;font-size:0.9rem;"><span style="color:var(--text-secondary);">Pay Date:</span> <span id="ps-detail-pay-date">-</span></div>
+                                    <div id="ps-detail-uk-codes" style="display:none;margin-top:4px;font-size:0.85rem;color:var(--text-secondary);"></div>
                                     <div style="margin-top:8px;font-size:1.1rem;font-weight:600;color:var(--success-color);">Net Pay: <span id="ps-detail-currency">£</span><span id="ps-detail-net">0.00</span></div>
                                 </div>
                             </div>
@@ -2954,7 +2965,10 @@
                                 <div>
                                     <h3 style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:16px;">Deductions</h3>
                                     <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
-                                        <tr><td style="padding:10px 0;border-bottom:1px solid var(--border-color);color:var(--danger-color);">Tax</td><td style="padding:10px 0;border-bottom:1px solid var(--border-color);text-align:right;color:var(--danger-color);" id="ps-detail-tax">0.00</td></tr>
+                                        <tr><td style="padding:10px 0;border-bottom:1px solid var(--border-color);color:var(--danger-color);" id="ps-detail-tax-label">Tax</td><td style="padding:10px 0;border-bottom:1px solid var(--border-color);text-align:right;color:var(--danger-color);" id="ps-detail-tax">0.00</td></tr>
+                                        <tr id="ps-detail-ni-row" style="display:none;"><td style="padding:10px 0;border-bottom:1px solid var(--border-color);color:var(--danger-color);">National Insurance</td><td style="padding:10px 0;border-bottom:1px solid var(--border-color);text-align:right;color:var(--danger-color);" id="ps-detail-ni">0.00</td></tr>
+                                        <tr id="ps-detail-sl-row" style="display:none;"><td style="padding:10px 0;border-bottom:1px solid var(--border-color);color:var(--danger-color);" id="ps-detail-sl-label">Student loan</td><td style="padding:10px 0;border-bottom:1px solid var(--border-color);text-align:right;color:var(--danger-color);" id="ps-detail-sl">0.00</td></tr>
+                                        <tr id="ps-detail-pgl-row" style="display:none;"><td style="padding:10px 0;border-bottom:1px solid var(--border-color);color:var(--danger-color);">Postgraduate loan</td><td style="padding:10px 0;border-bottom:1px solid var(--border-color);text-align:right;color:var(--danger-color);" id="ps-detail-pgl">0.00</td></tr>
                                         <tr><td style="padding:10px 0;border-bottom:1px solid var(--border-color);color:var(--danger-color);">Insurance</td><td style="padding:10px 0;border-bottom:1px solid var(--border-color);text-align:right;color:var(--danger-color);" id="ps-detail-ins">0.00</td></tr>
                                         <tr><td style="padding:10px 0;border-bottom:1px solid var(--border-color);color:var(--danger-color);">Retirement</td><td style="padding:10px 0;border-bottom:1px solid var(--border-color);text-align:right;color:var(--danger-color);" id="ps-detail-ret">0.00</td></tr>
                                         <tr><td style="padding:10px 0;border-bottom:1px solid var(--border-color);color:var(--danger-color);">Other</td><td style="padding:10px 0;border-bottom:1px solid var(--border-color);text-align:right;color:var(--danger-color);" id="ps-detail-other">0.00</td></tr>
@@ -2967,6 +2981,8 @@
                                 <div style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:4px;">NET PAY</div>
                                 <div style="font-size:2rem;font-weight:700;color:var(--primary-color);" id="ps-detail-net-big"><span id="ps-detail-net-big-currency">£</span>0.00</div>
                             </div>
+                            <!-- UK: the tax year so far, and what the employer paid on top. -->
+                            <div id="ps-detail-ytd" style="display:none;margin-top:24px;"></div>
                             <div id="ps-detail-notes" style="margin-top:24px;padding:16px;background:rgba(255, 255, 255, 0.02);border-radius:var(--radius-md);font-size:0.9rem;color:var(--text-secondary);display:none;">
                                 <strong>Notes:</strong> <span id="ps-detail-notes-text"></span>
                             </div>
@@ -2980,6 +2996,14 @@
                         <div>
                             <h1>Payroll</h1>
                             <p class="subtitle">Manage payslips and employee payments</p>
+                            <div id="payroll-regime" style="margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:0.85rem;">
+                                <label for="payroll-regime-select" style="color:var(--text-secondary);margin:0;">Payroll</label>
+                                <select id="payroll-regime-select" class="form-control" style="width:auto;padding:4px 8px;font-size:0.85rem;" onchange="setPayrollRegime(this.value)">
+                                    <option value="simple">Simple - flat tax rate</option>
+                                    <option value="uk">UK PAYE</option>
+                                </select>
+                                <span id="payroll-regime-note" style="color:var(--text-secondary);"></span>
+                            </div>
                         </div>
                         <div class="invoices-actions">
                             <button class="btn btn-outline" onclick="batchGeneratePayslips()">Batch Generate All Active</button>
@@ -4785,6 +4809,51 @@
     </div>
 
     <!-- ========== ADD EMPLOYEE MODAL ========== -->
+    <div id="uk-payroll-modal" class="modal-overlay" style="display:none;">
+        <div class="modal" style="max-width:640px;width:95%;max-height:90vh;overflow-y:auto;">
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:24px 24px 0;">
+                <h2 style="font-size:1.2rem;font-weight:700;">UK payroll</h2>
+                <button class="btn-icon" onclick="closeUkPayroll()" style="font-size:1.5rem;color:var(--text-secondary);" aria-label="Close">&times;</button>
+            </div>
+            <form id="uk-payroll-form" style="padding:20px 24px 24px;" onsubmit="return false;">
+                <div class="grid-2 gap-16">
+                    <div class="form-group"><label>NI number</label><input type="text" id="ukp-ni-number" class="form-control" placeholder="AB 12 34 56 C" autocomplete="off"></div>
+                    <div class="form-group"><label>Tax code</label><input type="text" id="ukp-tax-code" class="form-control" placeholder="1257L, S1257L, BR, K475, 1257L M1"></div>
+                    <div class="form-group"><label>NI category</label><select id="ukp-ni-category" class="form-control"></select></div>
+                    <div class="form-group"><label>Starter declaration</label>
+                        <select id="ukp-starter-declaration" class="form-control">
+                            <option value="">Not given</option>
+                            <option value="A">A - first job since 6 April</option>
+                            <option value="B">B - only job now, had another</option>
+                            <option value="C">C - has another job or a pension</option>
+                        </select>
+                    </div>
+                    <div class="form-group"><label>Student loan</label>
+                        <select id="ukp-student-loan" class="form-control">
+                            <option value="">None</option><option value="1">Plan 1</option><option value="2">Plan 2</option><option value="4">Plan 4</option><option value="5">Plan 5</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="display:flex;align-items:flex-end;"><label style="display:flex;gap:6px;align-items:center;margin:0;"><input type="checkbox" id="ukp-postgrad-loan"> Postgraduate loan</label></div>
+                    <div class="form-group" style="display:flex;align-items:flex-end;"><label style="display:flex;gap:6px;align-items:center;margin:0;"><input type="checkbox" id="ukp-is-director"> Company director</label></div>
+                    <div class="form-group"><label>Director since</label><input type="date" id="ukp-director-since" class="form-control"></div>
+                </div>
+                <div style="margin-top:12px;font-weight:600;font-size:0.9rem;">From their P45 (a previous job this tax year)</div>
+                <div class="grid-2 gap-16" style="margin-top:8px;">
+                    <div class="form-group"><label>Tax year</label>
+                        <select id="ukp-p45-year" class="form-control"><option value="0">No P45</option></select>
+                    </div>
+                    <div></div>
+                    <div class="form-group"><label>Pay to date</label><input type="number" id="ukp-p45-pay" class="form-control" step="0.01" min="0" value="0"></div>
+                    <div class="form-group"><label>Tax to date</label><input type="number" id="ukp-p45-tax" class="form-control" step="0.01" value="0"></div>
+                </div>
+                <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:16px;">
+                    <button type="button" class="btn btn-outline" onclick="closeUkPayroll()">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="ukp-save" onclick="saveUkPayroll()">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <div id="add-employee-modal" class="modal-overlay" style="display:none;">
         <div class="modal" style="max-width:700px;width:95%;max-height:90vh;overflow-y:auto;">
             <div style="display:flex;justify-content:space-between;align-items:center;padding:24px 24px 0;">
@@ -4831,6 +4900,7 @@
                                 <option value="monthly">Monthly</option>
                                 <option value="weekly">Weekly</option>
                                 <option value="biweekly">Bi-Weekly</option>
+                                <option value="fourweekly">Four-weekly</option>
                             </select>
                         </div>
                         <div class="form-group"><label>Salary</label><input type="number" id="emp-salary" class="form-control" step="0.01" value="0"></div>
@@ -4847,6 +4917,32 @@
                         </div>
                         <div class="form-group"><label>Emergency Contact</label><input type="text" id="emp-emergency-contact" class="form-control" placeholder="Contact name"></div>
                         <div class="form-group"><label>Emergency Phone</label><input type="tel" id="emp-emergency-phone" class="form-control" placeholder="Contact phone"></div>
+                    </div>
+                    <!-- UK PAYE: shown only when the business runs UK payroll. -->
+                    <div id="emp-uk-fields" style="display:none;margin-top:16px;padding:14px;border:1px solid var(--border-color);border-radius:8px;">
+                        <div style="font-weight:600;font-size:0.9rem;margin-bottom:10px;">UK payroll</div>
+                        <div class="grid-2 gap-16">
+                            <div class="form-group"><label>NI number</label><input type="text" id="emp-ni-number" class="form-control" placeholder="AB 12 34 56 C" autocomplete="off"></div>
+                            <div class="form-group"><label>Tax code</label><input type="text" id="emp-tax-code" class="form-control" placeholder="1257L - leave blank if HMRC has not sent one"></div>
+                            <div class="form-group"><label>NI category</label><select id="emp-ni-category" class="form-control"></select></div>
+                            <div class="form-group"><label>Starter declaration</label>
+                                <select id="emp-starter-declaration" class="form-control">
+                                    <option value="">Not given</option>
+                                    <option value="A">A - first job since 6 April</option>
+                                    <option value="B">B - only job now, had another</option>
+                                    <option value="C">C - has another job or a pension</option>
+                                </select>
+                            </div>
+                            <div class="form-group"><label>Student loan</label>
+                                <select id="emp-student-loan" class="form-control">
+                                    <option value="">None</option><option value="1">Plan 1</option><option value="2">Plan 2</option><option value="4">Plan 4</option><option value="5">Plan 5</option>
+                                </select>
+                            </div>
+                            <div class="form-group" style="display:flex;align-items:flex-end;gap:16px;">
+                                <label style="display:flex;gap:6px;align-items:center;margin:0;"><input type="checkbox" id="emp-postgrad-loan"> Postgraduate loan</label>
+                                <label style="display:flex;gap:6px;align-items:center;margin:0;"><input type="checkbox" id="emp-is-director"> Director</label>
+                            </div>
+                        </div>
                     </div>
                     <div style="margin-top:16px;padding:12px;background:rgba(14, 165, 233, 0.06);border:1px solid rgba(14, 165, 233, 0.15);border-radius:8px;">
                         <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
@@ -4977,8 +5073,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="feed.js?v=191"></script>
-    <script src="app.js?v=191"></script>
+    <script src="feed.js?v=192"></script>
+    <script src="app.js?v=192"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
@@ -5206,7 +5302,7 @@
             </div>
         </div>
     </div>
-    <script src="/install-hint.js?v=191"></script>
-    <script src="/pwa.js?v=191"></script>
+    <script src="/install-hint.js?v=192"></script>
+    <script src="/pwa.js?v=192"></script>
 </body>
 </html>

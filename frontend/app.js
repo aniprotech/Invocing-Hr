@@ -6324,6 +6324,7 @@ async function viewEmployee(empId) {
             }
         }
 
+        renderEmployeeUk(emp);
         showView('employee-detail-view');
         setRoute('people/' + empId);
         loadEmpGoals(empId);
@@ -6338,6 +6339,7 @@ window.viewEmployee = viewEmployee;
 async function showAddEmployeeModal() {
     document.getElementById('add-employee-modal').style.display = 'flex';
     document.getElementById('add-employee-form').reset();
+    showUkFieldsOnAddEmployee();
     var today = localDate(new Date());
     var startEl = document.getElementById('emp-start-date');
     if (startEl) startEl.value = today;
@@ -6449,6 +6451,15 @@ async function submitNewEmployee() {
         emergency_contact: document.getElementById('emp-emergency-contact').value,
         emergency_phone: document.getElementById('emp-emergency-phone').value,
     };
+    if (isUkPayroll()) {
+        payload.ni_number = (document.getElementById('emp-ni-number') || {}).value || '';
+        payload.tax_code = (document.getElementById('emp-tax-code') || {}).value || '';
+        payload.ni_category = (document.getElementById('emp-ni-category') || {}).value || '';
+        payload.starter_declaration = (document.getElementById('emp-starter-declaration') || {}).value || '';
+        payload.student_loan_plan = (document.getElementById('emp-student-loan') || {}).value || '';
+        payload.postgrad_loan = !!(document.getElementById('emp-postgrad-loan') || {}).checked;
+        payload.is_director = !!(document.getElementById('emp-is-director') || {}).checked;
+    }
     try {
         var res = await fetch('/api/employees', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -7360,6 +7371,15 @@ window.searchPayslips = searchPayslips;
 // Runs the whole pay period server-side in one transaction. The old version
 // looped one HTTP request per employee from the browser, which had no
 // atomicity, ignored worked hours, and reported failures only as a count.
+async function showUkFieldsOnAddEmployee() {
+    await loadPayrollSettings();
+    var box = document.getElementById('emp-uk-fields');
+    if (!box) return;
+    box.style.display = isUkPayroll() ? '' : 'none';
+    if (isUkPayroll()) fillNiCategories(document.getElementById('emp-ni-category'), '');
+}
+window.showUkFieldsOnAddEmployee = showUkFieldsOnAddEmployee;
+
 async function batchGeneratePayslips() {
     var today = localDate(new Date());
     var firstOfMonth = today.slice(0, 8) + '01';
@@ -7385,6 +7405,18 @@ async function batchGeneratePayslips() {
         var msg = data.created.length + ' payslip(s) created, net ' + getCurrencySymbol() + data.total_net.toFixed(2);
         if (data.skipped.length) msg += ' — ' + data.skipped.length + ' skipped (already paid for this period)';
         showToast(msg, data.created.length ? 'success' : 'warning');
+        // On UK payroll the run is also a bill: what goes to HMRC and what the
+        // pay costs the business once employer's NI is on top.
+        if (data.regime === 'uk' && data.created.length) {
+            await uiAlert('Payroll run for ' + periodStart + ' to ' + periodEnd + '\n\n' +
+                'Take-home pay: ' + formatCurrency(data.total_net) + '\n' +
+                'Income Tax: ' + formatCurrency(data.total_tax) + '\n' +
+                'Employee NI: ' + formatCurrency(data.total_employee_ni) + '\n' +
+                'Employer NI: ' + formatCurrency(data.total_employer_ni) + '\n' +
+                (data.total_student_loans ? 'Student loans: ' + formatCurrency(data.total_student_loans) + '\n' : '') +
+                '\nOwed to HMRC: ' + formatCurrency(data.owed_to_hmrc) + '\n' +
+                'Total cost of this payroll: ' + formatCurrency(data.employer_cost), { title: 'Payroll summary' });
+        }
         // Zero-value payslips nearly always mean missing hours, so make the
         // operator acknowledge them rather than shipping a silent nil payment.
         if (data.warnings && data.warnings.length) {
@@ -7426,6 +7458,210 @@ function filterPayslips(status, btn) {
 window.filterPayslips = filterPayslips;
 
 // --- View Payslip ---
+// --- UK PAYE ------------------------------------------------------------------
+// The payroll a business runs is its own choice: "simple" (a flat rate on each
+// employee, as it always was) or "uk" (tax codes, NI, student loans, worked on
+// the tax year so far). The UK parts of every screen show only for "uk".
+var _payrollSettings = null;
+
+async function loadPayrollSettings(force) {
+    if (_payrollSettings && !force) return _payrollSettings;
+    try { _payrollSettings = await fetchJson('/api/payroll/settings'); }
+    catch (e) { _payrollSettings = { regime: 'simple', ni_categories: [] }; }
+    if (!_payrollSettings || typeof _payrollSettings !== 'object') _payrollSettings = { regime: 'simple', ni_categories: [] };
+    return _payrollSettings;
+}
+window.loadPayrollSettings = loadPayrollSettings;
+
+function isUkPayroll() { return !!(_payrollSettings && _payrollSettings.regime === 'uk'); }
+
+var NI_CATEGORY_NAMES = {
+    A: 'A - standard', B: 'B - married women and widows (reduced)', C: 'C - over State Pension age',
+    D: 'D - Investment Zone deferment', E: 'E - Investment Zone reduced rate', F: 'F - Freeport',
+    H: 'H - apprentice under 25', I: 'I - Freeport reduced rate', J: 'J - deferment',
+    K: 'K - Investment Zone over pension age', L: 'L - Freeport deferment', M: 'M - under 21',
+    N: 'N - Investment Zone', S: 'S - Freeport over pension age', V: 'V - veteran', Z: 'Z - under 21 deferment'
+};
+
+function fillNiCategories(select, value) {
+    if (!select) return;
+    var cats = (_payrollSettings && _payrollSettings.ni_categories) || Object.keys(NI_CATEGORY_NAMES);
+    select.innerHTML = '<option value="">Not set (A)</option>' + cats.map(function (c) {
+        return '<option value="' + esc(c) + '">' + esc(NI_CATEGORY_NAMES[c] || c) + '</option>';
+    }).join('');
+    select.value = value || '';
+}
+
+async function renderPayrollRegime() {
+    var s = await loadPayrollSettings(true);
+    var sel = document.getElementById('payroll-regime-select');
+    var note = document.getElementById('payroll-regime-note');
+    if (sel) sel.value = s.regime || 'simple';
+    if (note) note.textContent = s.regime === 'uk'
+        ? 'Tax year ' + (s.tax_year || '') + (s.rates_ready ? ' - HMRC rates loaded' : ' - rates for this tax year are not loaded yet')
+        : '';
+}
+window.renderPayrollRegime = renderPayrollRegime;
+
+async function setPayrollRegime(value) {
+    var sel = document.getElementById('payroll-regime-select');
+    var before = (_payrollSettings && _payrollSettings.regime) || 'simple';
+    if (value === before) return;
+    var ok = await uiConfirm(value === 'uk'
+        ? 'Switch to UK PAYE? New payslips will be worked with tax codes, National Insurance and student loans on the tax year so far. Payslips already made keep their figures.'
+        : 'Switch back to the simple flat-rate payroll? New payslips will use each employee\'s tax rate. UK payslips already made keep their figures.',
+        { title: 'Change payroll', confirmText: value === 'uk' ? 'Use UK PAYE' : 'Use simple payroll' });
+    if (!ok) { if (sel) sel.value = before; return; }
+    try {
+        _payrollSettings = await fetchJson('/api/payroll/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ regime: value }) });
+        showToast(value === 'uk' ? 'UK PAYE is on' : 'Simple payroll is on', 'success');
+        renderPayrollRegime();
+    } catch (e) { showToast(e.message, 'error'); if (sel) sel.value = before; }
+}
+window.setPayrollRegime = setPayrollRegime;
+
+var _ukEmployee = null;
+
+function ukSummaryRow(label, value) {
+    return '<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border-color);font-size:0.88rem;">' +
+        '<span style="color:var(--text-secondary);">' + esc(label) + '</span><span style="font-weight:600;text-align:right;">' + esc(value) + '</span></div>';
+}
+
+async function renderEmployeeUk(emp) {
+    _ukEmployee = emp;
+    var card = document.getElementById('emp-uk-card');
+    if (!card) return;
+    await loadPayrollSettings();
+    if (!isUkPayroll()) { card.style.display = 'none'; return; }
+    card.style.display = '';
+    var decl = { A: 'A - first job since 6 April', B: 'B - only job now', C: 'C - another job or pension' };
+    var rows = ukSummaryRow('NI number', emp.ni_number || 'Not given') +
+        ukSummaryRow('Tax code', emp.tax_code || ('None yet' + (emp.starter_declaration ? ' - using statement ' + emp.starter_declaration : ' - 0T until HMRC sends one'))) +
+        ukSummaryRow('NI category', emp.ni_category ? (NI_CATEGORY_NAMES[emp.ni_category] || emp.ni_category) : 'Not set - A is used') +
+        ukSummaryRow('Student loan', emp.student_loan_plan ? 'Plan ' + emp.student_loan_plan : 'None') +
+        (emp.postgrad_loan ? ukSummaryRow('Postgraduate loan', 'Yes') : '') +
+        (emp.is_director ? ukSummaryRow('Director', 'Yes' + (emp.director_since ? ', since ' + emp.director_since : '') + ' - NI worked on the year') : '') +
+        (emp.starter_declaration ? ukSummaryRow('Starter declaration', decl[emp.starter_declaration] || emp.starter_declaration) : '') +
+        (emp.p45_tax_year ? ukSummaryRow('P45', (emp.p45_tax_year + '-' + String(emp.p45_tax_year + 1).slice(2)) + ': pay ' + formatCurrency(emp.p45_taxable_pay || 0) + ', tax ' + formatCurrency(emp.p45_tax || 0)) : '');
+    var missing = [];
+    if (!emp.ni_number) missing.push('an NI number');
+    if (!emp.tax_code) missing.push('a tax code');
+    document.getElementById('emp-uk-summary').innerHTML = rows +
+        (missing.length ? '<div style="margin-top:10px;font-size:0.82rem;color:var(--warning-color);">Still needed: ' + esc(missing.join(' and ')) + '.</div>' : '') +
+        '<div id="emp-uk-preview" style="margin-top:10px;"></div>';
+}
+window.renderEmployeeUk = renderEmployeeUk;
+
+function openUkPayroll() {
+    var emp = _ukEmployee || {};
+    document.getElementById('ukp-ni-number').value = emp.ni_number || '';
+    document.getElementById('ukp-tax-code').value = emp.tax_code || '';
+    fillNiCategories(document.getElementById('ukp-ni-category'), emp.ni_category || '');
+    document.getElementById('ukp-starter-declaration').value = emp.starter_declaration || '';
+    document.getElementById('ukp-student-loan').value = emp.student_loan_plan || '';
+    document.getElementById('ukp-postgrad-loan').checked = !!emp.postgrad_loan;
+    document.getElementById('ukp-is-director').checked = !!emp.is_director;
+    document.getElementById('ukp-director-since').value = emp.director_since || '';
+    var year = document.getElementById('ukp-p45-year');
+    var thisYear = parseInt(((_payrollSettings && _payrollSettings.tax_year) || '').slice(0, 4), 10);
+    year.innerHTML = '<option value="0">No P45</option>' + (thisYear ? '<option value="' + thisYear + '">' + thisYear + '-' + String(thisYear + 1).slice(2) + '</option>' : '');
+    year.value = String(emp.p45_tax_year || 0);
+    document.getElementById('ukp-p45-pay').value = emp.p45_taxable_pay || 0;
+    document.getElementById('ukp-p45-tax').value = emp.p45_tax || 0;
+    document.getElementById('uk-payroll-modal').style.display = 'flex';
+}
+window.openUkPayroll = openUkPayroll;
+
+function closeUkPayroll() { document.getElementById('uk-payroll-modal').style.display = 'none'; }
+window.closeUkPayroll = closeUkPayroll;
+
+async function saveUkPayroll() {
+    var emp = _ukEmployee;
+    if (!emp) return;
+    var body = {
+        ni_number: document.getElementById('ukp-ni-number').value,
+        tax_code: document.getElementById('ukp-tax-code').value,
+        ni_category: document.getElementById('ukp-ni-category').value,
+        starter_declaration: document.getElementById('ukp-starter-declaration').value,
+        student_loan_plan: document.getElementById('ukp-student-loan').value,
+        postgrad_loan: document.getElementById('ukp-postgrad-loan').checked,
+        is_director: document.getElementById('ukp-is-director').checked,
+        director_since: document.getElementById('ukp-director-since').value,
+        p45_tax_year: parseInt(document.getElementById('ukp-p45-year').value, 10) || 0,
+        p45_taxable_pay: parseFloat(document.getElementById('ukp-p45-pay').value) || 0,
+        p45_tax: parseFloat(document.getElementById('ukp-p45-tax').value) || 0
+    };
+    try {
+        await fetchJson('/api/employees/' + emp.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        showToast('UK payroll details saved', 'success');
+        closeUkPayroll();
+        var fresh = await fetchJson('/api/employees/' + emp.id);
+        renderEmployeeUk(fresh);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.saveUkPayroll = saveUkPayroll;
+
+async function previewUkPayslip() {
+    var emp = _ukEmployee;
+    var host = document.getElementById('emp-uk-preview');
+    if (!emp || !host) return;
+    try {
+        var p = await fetchJson('/api/payroll/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ employee_id: emp.id, pay_date: localDate(new Date()) }) });
+        var line = function (label, v) { return '<div style="display:flex;justify-content:space-between;font-size:0.85rem;padding:3px 0;"><span>' + esc(label) + '</span><span>' + formatCurrency(v || 0) + '</span></div>'; };
+        host.innerHTML = '<div style="padding:12px;border:1px dashed var(--border-color);border-radius:8px;">' +
+            '<div style="font-weight:600;font-size:0.85rem;margin-bottom:6px;">If paid today (' + esc(p.tax_year_label) + ', period ' + p.tax_period + ', code ' + esc(p.tax_code) + ')</div>' +
+            line('Gross pay', p.gross_pay) + line('Income Tax', p.tax_amount) + line('National Insurance', p.employee_ni) +
+            (p.student_loan ? line('Student loan', p.student_loan) : '') + (p.postgrad_loan ? line('Postgraduate loan', p.postgrad_loan) : '') +
+            '<div style="display:flex;justify-content:space-between;font-weight:700;padding-top:6px;border-top:1px solid var(--border-color);margin-top:4px;"><span>Take-home</span><span>' + formatCurrency(p.net_pay) + '</span></div>' +
+            '<div style="font-size:0.8rem;color:var(--text-secondary);margin-top:6px;">Employer\'s NI on top: ' + formatCurrency(p.employer_ni) + '. Nothing has been saved.</div>' +
+            (p.notes && p.notes.length ? '<div style="font-size:0.8rem;color:var(--warning-color);margin-top:4px;">' + p.notes.map(esc).join('<br>') + '</div>' : '') +
+            '</div>';
+    } catch (e) { host.innerHTML = '<div style="font-size:0.85rem;color:var(--danger-color);">' + esc(e.message) + '</div>'; }
+}
+window.previewUkPayslip = previewUkPayslip;
+
+function renderPayslipUk(ps) {
+    var uk = ps.uk;
+    var show = function (id, on) { var el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
+    var set = function (id, v) { var el = document.getElementById(id); if (el) el.textContent = v; };
+    var codes = document.getElementById('ps-detail-uk-codes');
+    set('ps-detail-tax-label', uk ? 'Income Tax' : 'Tax');
+    show('ps-detail-ni-row', !!uk);
+    show('ps-detail-sl-row', !!(uk && uk.student_loan));
+    show('ps-detail-pgl-row', !!(uk && uk.postgrad_loan));
+    show('ps-detail-uk-codes', !!uk);
+    // The flat-rate rows mean nothing at zero on a UK payslip, and the PDF
+    // and the email leave them out, so the screen does too. Pension is the
+    // UK word for what the flat-rate payslip calls retirement.
+    [['ps-detail-ins', ps.insurance], ['ps-detail-ret', ps.retirement], ['ps-detail-other', ps.other_deductions]].forEach(function (r) {
+        var td = document.getElementById(r[0]);
+        if (td && td.parentElement) td.parentElement.style.display = (uk && !(r[1] || 0)) ? 'none' : '';
+    });
+    var retLabel = document.getElementById('ps-detail-ret');
+    if (retLabel && retLabel.previousElementSibling) retLabel.previousElementSibling.textContent = uk ? 'Pension' : 'Retirement';
+    var ytdHost = document.getElementById('ps-detail-ytd');
+    if (!uk) { if (ytdHost) { ytdHost.style.display = 'none'; ytdHost.innerHTML = ''; } return; }
+    set('ps-detail-ni', (uk.employee_ni || 0).toFixed(2));
+    set('ps-detail-sl', (uk.student_loan || 0).toFixed(2));
+    set('ps-detail-sl-label', 'Student loan' + (uk.student_loan_plan ? ' (plan ' + uk.student_loan_plan + ')' : ''));
+    set('ps-detail-pgl', (uk.postgrad_loan || 0).toFixed(2));
+    if (codes) codes.textContent = 'Tax code ' + (uk.tax_code || '-') + ' \u00b7 NI ' + (uk.ni_category || '-') +
+        (uk.ni_number ? ' \u00b7 ' + uk.ni_number : '') + ' \u00b7 ' + (uk.tax_year || '') + ' period ' + (uk.tax_period || '-');
+    var y = uk.year_to_date || {};
+    var cell = function (label, v) { return '<div style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;"><div style="font-size:0.72rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.4px;">' + esc(label) + '</div><div style="font-weight:700;margin-top:2px;">' + formatCurrency(v || 0) + '</div></div>'; };
+    if (ytdHost) {
+        ytdHost.style.display = '';
+        ytdHost.innerHTML = '<h3 style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px;">This tax year to date (' + esc(y.tax_year || uk.tax_year || '') + ')</h3>' +
+            '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;">' +
+            cell('Gross pay', y.gross_pay) + cell('Taxable pay', y.taxable_pay) + cell('Income Tax', y.tax) +
+            cell('National Insurance', y.employee_ni) + (y.student_loan ? cell('Student loan', y.student_loan) : '') + cell('Take-home', y.net_pay) +
+            '</div>' +
+            '<div style="margin-top:10px;font-size:0.82rem;color:var(--text-secondary);">Employer\'s National Insurance this period: ' + formatCurrency(uk.employer_ni || 0) +
+            ' (paid by the employer on top of gross pay, not taken from it).</div>';
+    }
+}
+window.renderPayslipUk = renderPayslipUk;
+
 async function viewPayslip(psId) {
     currentPayslipId = psId;
     try {
@@ -7467,6 +7703,7 @@ async function viewPayslip(psId) {
             document.getElementById('ps-detail-standing').textContent = standing.toFixed(2);
         }
         document.getElementById('ps-detail-dedtotal').textContent = (ps.total_deductions || 0).toFixed(2);
+        renderPayslipUk(ps);
         var netBigEl = document.getElementById('ps-detail-net-big');
         if (netBigEl) netBigEl.textContent = getCurrencySymbol() + (ps.net_pay || 0).toFixed(2);
 
@@ -7798,11 +8035,16 @@ function generatePayslipPDF() {
         ['Job title', emp.job_title],
         ['Department', emp.department_name],
         ['Level', emp.level],
-        ['Tax ID', emp.tax_id]
+        // A UK payslip shows what HMRC's rules ask for: the NI number, the
+        // tax code it was worked on and the NI category letter.
+        ps.uk ? ['NI number', ps.uk.ni_number] : ['Tax ID', emp.tax_id],
+        ps.uk ? ['Tax code', ps.uk.tax_code] : ['', ''],
+        ps.uk ? ['NI category', ps.uk.ni_category] : ['', '']
     ]);
     var rightEnd = fieldBlock(colR, 'PAY PERIOD', [
         ['Period', (ps.period_start || '') + '  to  ' + (ps.period_end || '')],
         ['Pay date', ps.pay_date],
+        ps.uk ? ['Tax period', (ps.uk.tax_year || '') + ' period ' + (ps.uk.tax_period || '')] : ['', ''],
         ['Frequency', emp.pay_frequency],
         ['Bank', emp.bank_name],
         ['Account', emp.bank_account],
@@ -7864,7 +8106,14 @@ function generatePayslipPDF() {
     // A standing deduction set on the employee record sits inside the total.
     // Without its own line the four rows did not add up to the total printed
     // underneath them, and nobody reading their payslip could see why.
-    var dedRows = [
+    var dedRows = ps.uk ? [
+        ['Income Tax', ps.tax_amount],
+        ['National Insurance', ps.uk.employee_ni]
+    ].concat(ps.uk.student_loan ? [['Student loan' + (ps.uk.student_loan_plan ? ' (plan ' + ps.uk.student_loan_plan + ')' : ''), ps.uk.student_loan]] : [])
+     .concat(ps.uk.postgrad_loan ? [['Postgraduate loan', ps.uk.postgrad_loan]] : [])
+     .concat((ps.insurance || 0) ? [['Insurance', ps.insurance]] : [])
+     .concat((ps.retirement || 0) ? [['Pension', ps.retirement]] : [])
+     .concat((ps.other_deductions || 0) ? [['Other', ps.other_deductions]] : []) : [
         ['Tax', ps.tax_amount],
         ['Insurance', ps.insurance],
         ['Retirement', ps.retirement],
@@ -7896,13 +8145,22 @@ function generatePayslipPDF() {
     y += 74;
 
     // ── Year to date ─────────────────────────────────────────────────────
+    // A UK payslip's year is the tax year (6 April), with NI and taxable pay.
+    if (ps.uk && ps.uk.year_to_date) {
+        var uy = ps.uk.year_to_date;
+        ytd = { payslip_count: uy.payslips, year: uy.tax_year, gross_pay: uy.gross_pay,
+                tax_amount: uy.tax, total_deductions: uy.employee_ni, net_pay: uy.net_pay, _uk: uy };
+    }
     if (ytd && ytd.payslip_count) {
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(7.5);
         doc.setTextColor(120, 120, 120);
         doc.text('YEAR TO DATE (' + txt(ytd.year || '') + ')', ml, y);
         y += 14;
-        var cells = [
+        var cells = ytd._uk ? [
+            ['Gross', ytd._uk.gross_pay], ['Taxable pay', ytd._uk.taxable_pay], ['Income Tax', ytd._uk.tax],
+            ['NI', ytd._uk.employee_ni], ['Net', ytd._uk.net_pay]
+        ] : [
             ['Gross', ytd.gross_pay], ['Tax', ytd.tax_amount],
             ['Deductions', ytd.total_deductions], ['Net', ytd.net_pay]
         ];
@@ -8643,7 +8901,7 @@ showView = function(viewId) {
     if (viewId === 'workflows-view' && typeof loadWorkflows === 'function') loadWorkflows();
     if (viewId === 'departments-view') fetchDepartments();
     if (viewId === 'onboarding-hub-view') { loadOnboardingHub(); loadDocumentQueue(); loadExpiringDocuments(); loadOnboardingPipeline(); loadProbations(); }
-    if (viewId === 'payroll-view') { fetchPayslips(currentPsFilter); loadPayrollAnomalies(); }
+    if (viewId === 'payroll-view') { fetchPayslips(currentPsFilter); loadPayrollAnomalies(); renderPayrollRegime(); }
     if (viewId === 'attendance-view') { loadAttendanceStats(); loadAttendanceButtons(); loadAttendance(); loadLiveAttendance(); loadAttendanceSettings(); switchAttTab('live'); }
     if (viewId === 'orgchart-view') loadOrgChart();
     if (viewId === 'feed-view') loadFeedView();

@@ -712,6 +712,21 @@ class DBEmployee(Base):
     onboarding_complete = Column(Boolean, default=False)
     offboarding_complete = Column(Boolean, default=False)
 
+    # UK PAYE, used only when the business runs UK payroll. Empty on
+    # everybody else, whose payroll stays the flat rate above.
+    ni_number = Column(String, default="")
+    tax_code = Column(String, default="")          # 1257L, S1257L, BR, K475, 1257L M1 ...
+    ni_category = Column(String, default="")       # A, B, C, H, J, M, V, Z ...
+    student_loan_plan = Column(String, default="") # "", 1, 2, 4, 5
+    postgrad_loan = Column(Boolean, default=False)
+    is_director = Column(Boolean, default=False)
+    director_since = Column(String, default="")    # YYYY-MM-DD, for pro-rata NI thresholds
+    starter_declaration = Column(String, default="")  # A, B or C from the starter checklist
+    # Pay and tax from a previous job this tax year, off their P45.
+    p45_tax_year = Column(Integer, default=0)
+    p45_taxable_pay = Column(Float, default=0.0)
+    p45_tax = Column(Float, default=0.0)
+
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     client = relationship("DBClient", back_populates="employees")
@@ -760,6 +775,25 @@ class DBPayslip(Base):
     sent = Column(String, default="")
     notes = Column(String, default="")
     pay_frequency = Column(String, default="")
+
+    # UK PAYE. `regime` is "uk" on a payslip worked out by the PAYE engine and
+    # empty on the flat-rate kind, so the two are never mistaken for each
+    # other and the year-to-date figures only add up the UK ones.
+    regime = Column(String, default="", index=True)
+    tax_code = Column(String, default="")
+    ni_category = Column(String, default="")
+    tax_year = Column(Integer, default=0, index=True)   # 2026 for 2026-27
+    tax_period = Column(Integer, default=0)
+    taxable_pay = Column(Float, default=0.0)
+    ni_earnings = Column(Float, default=0.0)
+    employee_ni = Column(Float, default=0.0)
+    employer_ni = Column(Float, default=0.0)
+    student_loan = Column(Float, default=0.0)
+    postgrad_loan = Column(Float, default=0.0)
+    # The NI bands RTI reports for the period.
+    ni_at_lel = Column(Float, default=0.0)
+    ni_lel_to_pt = Column(Float, default=0.0)
+    ni_pt_to_uel = Column(Float, default=0.0)
 
     tracking_id = Column(String, unique=True, index=True, default=lambda: str(uuid.uuid4()))
     open_count = Column(Integer, default=0)

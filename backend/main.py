@@ -8892,6 +8892,22 @@ class EmployeeCreate(BaseModel):
     probation_end: Optional[str] = ""
     probation_months: Optional[int] = None
     custom: Optional[dict] = None
+    # UK PAYE (used when the business runs UK payroll)
+    ni_number: Optional[str] = ""
+    tax_code: Optional[str] = ""
+    ni_category: Optional[str] = ""
+    student_loan_plan: Optional[str] = ""
+    postgrad_loan: Optional[bool] = False
+    is_director: Optional[bool] = False
+    director_since: Optional[str] = ""
+    starter_declaration: Optional[str] = ""
+    p45_tax_year: Optional[int] = 0
+    p45_taxable_pay: Optional[float] = 0.0
+    p45_tax: Optional[float] = 0.0
+
+UK_PAYROLL_FIELDS = ("ni_number", "tax_code", "ni_category", "student_loan_plan", "postgrad_loan",
+                     "is_director", "director_since", "starter_declaration",
+                     "p45_tax_year", "p45_taxable_pay", "p45_tax")
 
 class PayslipCreate(BaseModel):
     employee_id: int
@@ -9649,6 +9665,9 @@ def get_employees(request: Request, q: str = "", status: str = "", db: Session =
             "pay_frequency": e.pay_frequency,
             "salary": e.salary, "hourly_rate": e.hourly_rate,
             "tax_rate": e.tax_rate, "deductions": e.deductions,
+            "ni_number": e.ni_number or "", "tax_code": e.tax_code or "", "ni_category": e.ni_category or "",
+            "student_loan_plan": e.student_loan_plan or "", "postgrad_loan": bool(e.postgrad_loan),
+            "is_director": bool(e.is_director),
             "allowances": e.allowances, "bonus": e.bonus,
             "bank_name": e.bank_name, "bank_account": e.bank_account, "tax_id": e.tax_id,
             "emergency_contact": e.emergency_contact, "emergency_phone": e.emergency_phone,
@@ -9666,6 +9685,8 @@ def create_employee(request: Request, body: EmployeeCreate, db: Session = Depend
     last_name = clean_person_name(body.last_name, "Last name")
     email = clean_employee_email(db, client.id, body.email)
     validate_employee_money(body.model_dump())
+    uk_fields = {k: getattr(body, k) for k in UK_PAYROLL_FIELDS}
+    validate_uk_payroll_fields(uk_fields)
     employee_code = assert_employee_code_free(db, client.id, body.employee_id)
 
     level = validate_level(body.level)
@@ -9691,6 +9712,7 @@ def create_employee(request: Request, body: EmployeeCreate, db: Session = Depend
         start_date=body.start_date, status="onboarding",
         password_hash=models.hash_password(body.password) if body.password else "",
         date_of_birth=_clean_ymd(body.date_of_birth, "Date of birth"),
+        **uk_fields,
     )
     start_probation(db, emp, body.probation_end, body.probation_months)
     db.add(emp)
@@ -9818,6 +9840,11 @@ def get_employee(emp_id: int, request: Request, db: Session = Depends(get_db)):
         "employment_type": emp.employment_type, "pay_frequency": emp.pay_frequency,
         "salary": emp.salary, "hourly_rate": emp.hourly_rate,
         "tax_rate": emp.tax_rate, "deductions": emp.deductions,
+        "ni_number": emp.ni_number or "", "tax_code": emp.tax_code or "", "ni_category": emp.ni_category or "",
+        "student_loan_plan": emp.student_loan_plan or "", "postgrad_loan": bool(emp.postgrad_loan),
+        "is_director": bool(emp.is_director), "director_since": emp.director_since or "",
+        "starter_declaration": emp.starter_declaration or "",
+        "p45_tax_year": emp.p45_tax_year or 0, "p45_taxable_pay": emp.p45_taxable_pay or 0.0, "p45_tax": emp.p45_tax or 0.0,
         "allowances": emp.allowances, "bonus": emp.bonus,
         "bank_name": emp.bank_name, "bank_account": emp.bank_account, "tax_id": emp.tax_id,
         "emergency_contact": emp.emergency_contact, "emergency_phone": emp.emergency_phone,
@@ -9888,6 +9915,7 @@ def update_employee(emp_id: int, request: Request, body: dict = None, db: Sessio
     if "email" in body:
         body["email"] = clean_employee_email(db, client.id, body["email"], exclude_id=emp.id)
     validate_employee_money(body)
+    validate_uk_payroll_fields(body)
     # Hierarchy fields go through the same checks as on create; a blind
     # setattr let callers set an unknown level or build a reporting loop.
     if "level" in body:
@@ -10496,6 +10524,276 @@ def get_employee_pay_details(emp_id: int, request: Request, period_start: str = 
         "net_pay": net_pay,
     }
 
+# ---------------------------------------------------------------------------
+# UK PAYE
+# ---------------------------------------------------------------------------
+# A business chooses its payroll. "simple" is the flat rate per employee that
+# has always been here, and stays the default: a business outside the UK
+# gets exactly the payroll it had. "uk" runs every new payslip through the
+# PAYE engine (backend/uk_paye.py) - tax codes, National Insurance both
+# sides, student loans - on the year's pay so far.
+#
+# A payslip remembers which it was worked on, so switching the setting never
+# rewrites a payslip already issued, and the year-to-date figures only ever
+# add up the UK ones.
+
+import uk_paye  # noqa: E402
+
+PAYROLL_REGIMES = ("simple", "uk")
+
+
+def payroll_regime(db, client_id) -> str:
+    value = tenant_setting(db, client_id, "payroll.regime", "simple")
+    return value if value in PAYROLL_REGIMES else "simple"
+
+
+def _paye_error(e):
+    return HTTPException(status_code=400, detail=str(e))
+
+
+_NI_BAD_FIRST = set("DFIQUV")
+_NI_BAD_SECOND = set("DFIOQUV")
+_NI_BAD_PREFIXES = {"BG", "GB", "KN", "NK", "NT", "TN", "ZZ"}
+
+
+def clean_ni_number(value) -> str:
+    """An NI number as HMRC issues them: two letters, six digits, A to D.
+    Some letter pairs are never issued, and a number built from one is a
+    typing mistake, not a person."""
+    raw = re.sub(r"\s+", "", str(value or "")).upper()
+    if not raw:
+        return ""
+    if not re.fullmatch(r"[A-Z]{2}\d{6}[A-D]", raw):
+        raise HTTPException(status_code=400, detail="An NI number is two letters, six numbers and A, B, C or D - like QQ 12 34 56 C")
+    if raw[0] in _NI_BAD_FIRST or raw[1] in _NI_BAD_SECOND or raw[:2] in _NI_BAD_PREFIXES:
+        raise HTTPException(status_code=400, detail=f"{raw[:2]} is never used at the start of an NI number - check it against the employee's letter from HMRC")
+    return raw
+
+
+def validate_uk_payroll_fields(body: dict) -> None:
+    """Checked on the way in, so a payroll run never meets a code it cannot
+    work. Cleans in place."""
+    if "tax_code" in body:
+        code = re.sub(r"\s+", " ", str(body.get("tax_code") or "").strip().upper())
+        if code:
+            problem = uk_paye.tax_code_problem(code)
+            if problem:
+                raise HTTPException(status_code=400, detail=f"Tax code: {problem}")
+        body["tax_code"] = code
+    if "ni_category" in body:
+        cat = str(body.get("ni_category") or "").strip().upper()
+        if cat and cat not in uk_paye.NI_CATEGORIES:
+            raise HTTPException(status_code=400, detail=f"NI category '{cat}' is not one HMRC uses")
+        body["ni_category"] = cat
+    if "student_loan_plan" in body:
+        plan = str(body.get("student_loan_plan") or "").strip().upper().replace("PLAN", "").strip()
+        if plan and plan not in uk_paye.STUDENT_LOAN_PLANS:
+            raise HTTPException(status_code=400, detail="Student loan plan must be 1, 2, 4 or 5")
+        body["student_loan_plan"] = plan
+    if "ni_number" in body:
+        body["ni_number"] = clean_ni_number(body.get("ni_number"))
+    if "starter_declaration" in body:
+        decl = str(body.get("starter_declaration") or "").strip().upper()
+        if decl not in ("", "A", "B", "C"):
+            raise HTTPException(status_code=400, detail="The starter declaration is A, B or C")
+        body["starter_declaration"] = decl
+    if "director_since" in body:
+        body["director_since"] = _clean_ymd(body.get("director_since"), "Director since")
+    for key in ("p45_taxable_pay", "p45_tax"):
+        if key in body:
+            try:
+                v = float(body.get(key) or 0)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="P45 figures must be amounts")
+            if key == "p45_taxable_pay" and v < 0:
+                raise HTTPException(status_code=400, detail="P45 pay cannot be negative")
+            body[key] = money(v)
+    if "p45_tax_year" in body:
+        try:
+            body["p45_tax_year"] = int(body.get("p45_tax_year") or 0)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="P45 tax year must be a year, like 2026")
+    for key in ("postgrad_loan", "is_director"):
+        if key in body:
+            body[key] = bool(body.get(key))
+
+
+def effective_tax_code(emp, year: int) -> tuple:
+    """(code, why) - the code on the employee record, or the one HMRC's
+    starter checklist says to use while waiting for HMRC to send one."""
+    code = (emp.tax_code or "").strip().upper()
+    if code:
+        return code, ""
+    emergency = uk_paye.rates_for(year)["emergency_code"]
+    decl = (emp.starter_declaration or "").upper()
+    if decl == "A":
+        return emergency, f"no tax code yet - used {emergency} (starter statement A)"
+    if decl == "B":
+        return f"{emergency} X", f"no tax code yet - used {emergency} on this period only (starter statement B)"
+    if decl == "C":
+        return "BR", "no tax code yet - used BR (starter statement C)"
+    return "0T X", "no tax code and no starter declaration - used 0T on this period only, as HMRC requires"
+
+
+def uk_payslip_context(db, client_id, emp, pay_date_str, self_id=None) -> dict:
+    """Everything the engine needs besides this period's pay: the period,
+    the codes, and what the tax year has already paid."""
+    pay_date = _parse_date(pay_date_str)
+    if not pay_date:
+        raise HTTPException(status_code=400, detail="A UK payslip needs a pay date - it decides the tax period")
+    try:
+        frequency = uk_paye.frequency_key(emp.pay_frequency or "monthly")
+        year = uk_paye.tax_year_of(pay_date)
+        uk_paye.rates_for(year)
+    except uk_paye.PayeError as e:
+        raise _paye_error(e)
+    code, code_note = effective_tax_code(emp, year)
+    category = (emp.ni_category or "").upper()
+    notes = [code_note] if code_note else []
+    if not category:
+        category = "A"
+        notes.append("no NI category set - used A")
+    if not (emp.ni_number or "").strip():
+        notes.append("no NI number - HMRC needs one before this pay can be reported")
+
+    day = pay_date.isoformat()
+    prior = db.query(models.DBPayslip).filter(
+        models.DBPayslip.client_id == client_id,
+        models.DBPayslip.employee_id == emp.id,
+        models.DBPayslip.regime == "uk",
+        models.DBPayslip.tax_year == year,
+        models.DBPayslip.status != "Void",
+        models.DBPayslip.pay_date <= day,
+    ).all()
+    # Earlier in the year, or the same day but made before this one.
+    prior = [p for p in prior if p.id != self_id and (p.pay_date < day or self_id is None or p.id < self_id)]
+    ytd = uk_paye.YearToDate(
+        taxable_pay=Decimal(str(money(sum(p.taxable_pay or 0 for p in prior)))),
+        tax=Decimal(str(money(sum(p.tax_amount or 0 for p in prior)))),
+        ni_earnings=Decimal(str(money(sum(p.ni_earnings or 0 for p in prior)))),
+        employee_ni=Decimal(str(money(sum(p.employee_ni or 0 for p in prior)))),
+        employer_ni=Decimal(str(money(sum(p.employer_ni or 0 for p in prior)))),
+    )
+    # Pay and tax from an earlier job this year count for tax, never for NI.
+    if (emp.p45_tax_year or 0) == year:
+        ytd.taxable_pay += Decimal(str(money(emp.p45_taxable_pay or 0)))
+        ytd.tax += Decimal(str(money(emp.p45_tax or 0)))
+
+    director_weeks = 52
+    since = _parse_date(emp.director_since) if emp.is_director else None
+    if since and uk_paye.tax_year_of(since) == year:
+        director_weeks = 52 - uk_paye.tax_week(since) + 1
+
+    return {"pay_date": pay_date, "frequency": frequency, "tax_code": code, "ni_category": category,
+            "director_weeks": director_weeks, "ytd": ytd, "notes": notes, "tax_year": year}
+
+
+def uk_payslip_figures(emp, data, ctx, *, hours, ot_hours, ot_rate, basic, ot_pay, bonus, allowances, gross):
+    try:
+        r = uk_paye.run_period(uk_paye.PayPeriod(
+            gross=Decimal(str(gross)), pay_date=ctx["pay_date"], frequency=ctx["frequency"],
+            tax_code=ctx["tax_code"], ni_category=ctx["ni_category"],
+            student_loan_plan=emp.student_loan_plan or "", postgraduate_loan=bool(emp.postgrad_loan),
+            is_director=bool(emp.is_director), director_weeks=ctx["director_weeks"], ytd=ctx["ytd"]))
+    except uk_paye.PayeError as e:
+        raise _paye_error(e)
+    insurance = money(data.get("insurance") or 0)
+    retirement = money(data.get("retirement") or 0)
+    other = money(data.get("other_deductions") or 0)
+    standing = money(emp.deductions or 0)
+    tax = money(r["tax"])
+    ee, er = money(r["employee_ni"]), money(r["employer_ni"])
+    sl, pgl = money(r["student_loan"]), money(r["postgraduate_loan"])
+    total = money(tax + ee + sl + pgl + insurance + retirement + other + standing)
+    nd = r["ni_detail"]
+    return {
+        "hours_worked": hours, "overtime_hours": ot_hours, "overtime_rate": money(ot_rate),
+        "basic_salary": basic, "overtime_pay": ot_pay, "bonus": bonus, "allowances": allowances,
+        "gross_pay": gross, "tax_amount": tax, "insurance": insurance, "retirement": retirement,
+        "other_deductions": other, "total_deductions": total, "net_pay": money(gross - total),
+        "regime": "uk", "tax_code": r["tax_detail"]["tax_code"], "ni_category": ctx["ni_category"],
+        "tax_year": r["tax_year"], "tax_period": r["tax_period"],
+        "taxable_pay": money(r["taxable_pay"]), "ni_earnings": money(r["ni_earnings"]),
+        "employee_ni": ee, "employer_ni": er, "student_loan": sl, "postgrad_loan": pgl,
+        "ni_at_lel": money(nd["earnings_at_lel"]), "ni_lel_to_pt": money(nd["earnings_lel_to_pt"]),
+        "ni_pt_to_uel": money(nd["earnings_pt_to_uel"]),
+    }
+
+
+def uk_tax_year_to_date(db, client_id, employee_id, year, up_to_id=None) -> dict:
+    """The tax year's running totals, for the payslip: HMRC wants pay and tax
+    to date on it."""
+    q = db.query(models.DBPayslip).filter(
+        models.DBPayslip.client_id == client_id, models.DBPayslip.employee_id == employee_id,
+        models.DBPayslip.regime == "uk", models.DBPayslip.tax_year == year,
+        models.DBPayslip.status != "Void")
+    rows = q.all()
+    if up_to_id is not None:
+        this = next((p for p in rows if p.id == up_to_id), None)
+        if this is not None:
+            rows = [p for p in rows if (p.pay_date, p.id) <= (this.pay_date, this.id)]
+    total = lambda f: money(sum(getattr(p, f) or 0 for p in rows))
+    return {"tax_year": uk_paye.tax_year_label(year), "payslips": len(rows),
+            "gross_pay": total("gross_pay"), "taxable_pay": total("taxable_pay"), "tax": total("tax_amount"),
+            "employee_ni": total("employee_ni"), "employer_ni": total("employer_ni"),
+            "student_loan": total("student_loan"), "postgrad_loan": total("postgrad_loan"),
+            "net_pay": total("net_pay")}
+
+
+@app.get("/api/payroll/settings")
+def get_payroll_settings(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    today = datetime.now().date()
+    year = uk_paye.tax_year_of(today)
+    loaded = sorted(uk_paye.RATES)
+    return {"regime": payroll_regime(db, client.id),
+            "regimes": [{"key": "simple", "label": "Simple - a flat tax rate per employee"},
+                        {"key": "uk", "label": "UK PAYE - tax codes, National Insurance and student loans"}],
+            "tax_year": uk_paye.tax_year_label(year),
+            "rates_loaded": [uk_paye.tax_year_label(y) for y in loaded],
+            "rates_ready": year in uk_paye.RATES,
+            "rates_source": uk_paye.RATES[loaded[-1]]["source"],
+            "ni_categories": list(uk_paye.NI_CATEGORIES),
+            "student_loan_plans": list(uk_paye.STUDENT_LOAN_PLANS)}
+
+
+@app.put("/api/payroll/settings")
+def put_payroll_settings(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    regime = str(body.get("regime") or "").strip().lower()
+    if regime not in PAYROLL_REGIMES:
+        raise HTTPException(status_code=400, detail="Payroll is either 'simple' or 'uk'")
+    row = db.query(models.DBSettings).filter(models.DBSettings.client_id == client.id,
+                                             models.DBSettings.key == "payroll.regime").first()
+    before = row.value if row else "simple"
+    if row:
+        row.value = regime
+    else:
+        db.add(models.DBSettings(client_id=client.id, key="payroll.regime", value=regime))
+    if before != regime:
+        log_audit(db, client.id, "payroll_regime_changed", "settings", None, "payroll", f"{before} -> {regime}", request)
+    db.commit()
+    return get_payroll_settings(request, db)
+
+
+@app.post("/api/payroll/preview")
+def preview_uk_payslip(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """What a UK payslip would come to, without making one - for the
+    employee screen, so a code or category can be checked before a run."""
+    client = get_client_user(request, db)
+    body = body or {}
+    emp = db.query(models.DBEmployee).filter(models.DBEmployee.id == body.get("employee_id"),
+                                             models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    ctx = uk_payslip_context(db, client.id, emp, body.get("pay_date") or datetime.now().strftime("%Y-%m-%d"))
+    figures = compute_payslip_figures(emp, {"bonus": emp.bonus or 0, "allowances": emp.allowances or 0,
+                                            **{k: body[k] for k in ("basic_salary", "bonus", "allowances",
+                                                                    "hours_worked", "overtime_hours") if k in body}}, uk=ctx)
+    return {**figures, "notes": ctx["notes"], "tax_year_label": uk_paye.tax_year_label(ctx["tax_year"])}
+
+
 def resolve_basic_pay(emp, requested_basic, hours_worked):
     """Work out basic pay for a period.
 
@@ -10512,11 +10810,13 @@ def resolve_basic_pay(emp, requested_basic, hours_worked):
     return 0.0
 
 
-def compute_payslip_figures(emp, data):
+def compute_payslip_figures(emp, data, uk=None):
     """Single source of truth for payslip arithmetic, used by create, update and
     the bulk payroll run so the three can never drift apart.
 
-    `data` is a dict of the editable inputs.
+    `data` is a dict of the editable inputs. `uk` is the PAYE context from
+    uk_payslip_context() when the payslip is a UK one; without it the flat
+    rate on the employee applies, as it always has.
     """
     hours = float(data.get("hours_worked") or 0)
     ot_hours = float(data.get("overtime_hours") or 0)
@@ -10530,6 +10830,11 @@ def compute_payslip_figures(emp, data):
     bonus = money(data.get("bonus") or 0)
     allowances = money(data.get("allowances") or 0)
     gross = money(basic + ot_pay + bonus + allowances)
+
+    if uk is not None:
+        # PAYE is worked, never typed: a tax figure on the form is ignored.
+        return uk_payslip_figures(emp, data, uk, hours=hours, ot_hours=ot_hours, ot_rate=ot_rate,
+                                  basic=basic, ot_pay=ot_pay, bonus=bonus, allowances=allowances, gross=gross)
 
     tax = data.get("tax_amount")
     if tax is None or float(tax) <= 0:
@@ -10595,7 +10900,8 @@ def create_payslip(request: Request, body: PayslipCreate, allow_overlap: bool = 
             )
 
     ps_number = next_sequence_number(db, models.DBPayslip, client.id, "PS-")
-    figures = compute_payslip_figures(emp, body.model_dump())
+    uk = uk_payslip_context(db, client.id, emp, body.pay_date) if payroll_regime(db, client.id) == "uk" else None
+    figures = compute_payslip_figures(emp, body.model_dump(), uk=uk)
 
     ps = models.DBPayslip(
         client_id=client.id, employee_id=body.employee_id, number=ps_number,
@@ -10653,6 +10959,8 @@ def run_payroll(request: Request, body: PayrollRunRequest, db: Session = Depends
         raise HTTPException(status_code=400, detail="No payable employees match this payroll run")
 
     created, skipped, warnings, total_net, total_gross = [], [], [], 0.0, 0.0
+    total_tax, total_ee_ni, total_er_ni, total_loans = 0.0, 0.0, 0.0, 0.0
+    uk_payroll = payroll_regime(db, client.id) == "uk"
     next_number = next_sequence_number(db, models.DBPayslip, client.id, "PS-")
     seq = int(next_number.split("-")[1])
 
@@ -10690,10 +10998,19 @@ def run_payroll(request: Request, body: PayrollRunRequest, db: Session = Depends
             ).all()
         ), 2)
 
+        uk = uk_payslip_context(db, client.id, emp, body.pay_date) if uk_payroll else None
         figures = compute_payslip_figures(emp, {
             "hours_worked": hours, "overtime_hours": ot_hours,
             "bonus": emp.bonus or 0, "allowances": emp.allowances or 0,
-        })
+        }, uk=uk)
+        if uk:
+            for note in uk["notes"]:
+                warnings.append({"employee_id": emp.id, "name": f"{emp.first_name} {emp.last_name}",
+                                 "number": f"PS-{seq:04d}", "reason": note})
+            total_tax += figures["tax_amount"]
+            total_ee_ni += figures["employee_ni"]
+            total_er_ni += figures["employer_ni"]
+            total_loans += figures["student_loan"] + figures["postgrad_loan"]
         ps = models.DBPayslip(
             client_id=client.id, employee_id=emp.id, number=f"PS-{seq:04d}",
             period_start=body.period_start, period_end=body.period_end, pay_date=body.pay_date,
@@ -10706,6 +11023,9 @@ def run_payroll(request: Request, body: PayrollRunRequest, db: Session = Depends
         created.append({
             "employee_id": emp.id, "name": f"{emp.first_name} {emp.last_name}",
             "number": ps.number, "gross_pay": figures["gross_pay"], "net_pay": figures["net_pay"],
+            **({"tax_code": figures["tax_code"], "tax": figures["tax_amount"],
+                "employee_ni": figures["employee_ni"], "employer_ni": figures["employer_ni"],
+                "student_loan": figures["student_loan"] + figures["postgrad_loan"]} if uk else {}),
         })
         # A zero-value payslip is almost always missing data (an hourly worker
         # with no attendance logged) rather than a genuine nil payment. Surface
@@ -10729,6 +11049,12 @@ def run_payroll(request: Request, body: PayrollRunRequest, db: Session = Depends
         "message": f"Generated {len(created)} payslip(s)",
         "created": created, "skipped": skipped, "warnings": warnings,
         "total_gross": money(total_gross), "total_net": money(total_net),
+        "regime": "uk" if uk_payroll else "simple",
+        # What the run costs the business and owes HMRC, not just what staff take home.
+        **({"total_tax": money(total_tax), "total_employee_ni": money(total_ee_ni),
+            "total_employer_ni": money(total_er_ni), "total_student_loans": money(total_loans),
+            "owed_to_hmrc": money(total_tax + total_ee_ni + total_er_ni + total_loans),
+            "employer_cost": money(total_gross + total_er_ni)} if uk_payroll else {}),
         "period_start": body.period_start, "period_end": body.period_end, "pay_date": body.pay_date,
     }
 
@@ -10797,7 +11123,21 @@ def get_payslip(ps_id: int, request: Request, db: Session = Depends(get_db)):
         # Derived rather than stored, so payslips already issued reconcile too.
         "standing_deduction": money(
             (ps.total_deductions or 0) - (ps.tax_amount or 0) - (ps.insurance or 0)
-            - (ps.retirement or 0) - (ps.other_deductions or 0)),
+            - (ps.retirement or 0) - (ps.other_deductions or 0)
+            - (ps.employee_ni or 0) - (ps.student_loan or 0) - (ps.postgrad_loan or 0)),
+        "regime": ps.regime or "simple",
+        "uk": {
+            "tax_code": ps.tax_code, "ni_category": ps.ni_category,
+            "ni_number": (emp.ni_number or "") if emp else "",
+            "tax_year": uk_paye.tax_year_label(ps.tax_year) if ps.tax_year else "",
+            "tax_period": ps.tax_period,
+            "frequency": ps.pay_frequency or (emp.pay_frequency if emp else ""),
+            "taxable_pay": ps.taxable_pay, "ni_earnings": ps.ni_earnings,
+            "employee_ni": ps.employee_ni, "employer_ni": ps.employer_ni,
+            "student_loan": ps.student_loan, "postgrad_loan": ps.postgrad_loan,
+            "student_loan_plan": (emp.student_loan_plan or "") if emp else "",
+            "year_to_date": uk_tax_year_to_date(db, client.id, ps.employee_id, ps.tax_year, up_to_id=ps.id),
+        } if ps.regime == "uk" else None,
         "net_pay": ps.net_pay, "status": ps.status, "sent": ps.sent, "notes": ps.notes,
         "company": {
             "name": settings_map.get("company_name", "") or (client.company_name or ""),
@@ -10843,7 +11183,9 @@ def update_payslip(ps_id: int, request: Request, body: dict = None, db: Session 
         if key in body and body[key] is not None:
             inputs[key] = body[key]
 
-    for key, val in compute_payslip_figures(emp, inputs).items():
+    # A payslip stays on the payroll it was made on, whatever the setting is now.
+    uk = uk_payslip_context(db, client.id, emp, ps.pay_date, self_id=ps.id) if ps.regime == "uk" else None
+    for key, val in compute_payslip_figures(emp, inputs, uk=uk).items():
         setattr(ps, key, val)
 
     log_audit(db, client.id, "payslip_updated", "payslip", ps.id, ps.number, f"Net: {ps.net_pay:.2f}", request)
@@ -10939,6 +11281,25 @@ Best regards,
 {company_email}
 {company_phone}"""
 
+    # A UK payslip lists what PAYE took, line by line, and shows the codes
+    # it was worked on; the flat-rate kind keeps its four rows.
+    def _ded(label, amount):
+        return (f'<tr><td style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#dc2626;font-size:14px;">{esc(label)}</td>'
+                f'<td style="padding:10px 16px;text-align:right;border-bottom:1px solid #f1f5f9;color:#dc2626;font-size:14px;">-&pound;{(amount or 0):.2f}</td></tr>')
+    if ps.regime == "uk":
+        ded_rows = (_ded(f"Income Tax (code {ps.tax_code})", ps.tax_amount)
+                    + _ded(f"National Insurance (category {ps.ni_category})", ps.employee_ni)
+                    + (_ded(f"Student loan (plan {emp.student_loan_plan})", ps.student_loan) if ps.student_loan else "")
+                    + (_ded("Postgraduate loan", ps.postgrad_loan) if ps.postgrad_loan else "")
+                    + (_ded("Insurance", ps.insurance) if ps.insurance else "")
+                    + (_ded("Pension", ps.retirement) if ps.retirement else "")
+                    + (_ded("Other deductions", ps.other_deductions) if ps.other_deductions else ""))
+        uk_line = (f'<p style="font-size:12px;color:#64748b;margin:0 0 16px 0;">Tax year {uk_paye.tax_year_label(ps.tax_year)}, period {ps.tax_period}'
+                   + (f' &middot; NI number {esc(emp.ni_number)}' if emp.ni_number else "") + '</p>')
+    else:
+        ded_rows = (_ded("Tax", ps.tax_amount) + _ded("Insurance", ps.insurance)
+                    + _ded("Retirement", ps.retirement) + _ded("Other Deductions", ps.other_deductions))
+        uk_line = ""
     html_body = f"""<!DOCTYPE html>
 <html><body style="font-family:Arial,Helvetica,sans-serif;color:#1e293b;margin:0;padding:0;background-color:#f1f5f9;">
 <div style="max-width:600px;margin:0 auto;padding:40px 20px;">
@@ -10957,6 +11318,7 @@ Best regards,
 <div style="padding:40px;">
 <p style="font-size:16px;color:#1e293b;margin:0 0 6px 0;">Hello <strong>{esc(emp.first_name)}</strong>,</p>
 <p style="font-size:14px;color:#64748b;margin:0 0 24px 0;">Here's your payslip from <strong>{esc(company_name)}</strong> for the period {esc(ps.period_start)} to {esc(ps.period_end)}.</p>
+{uk_line}
 <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:24px;">
 <tr>
 <td style="background-color:#f1f5f9;border-radius:10px;padding:16px;text-align:center;width:33%;">
@@ -10982,10 +11344,7 @@ Best regards,
 <tr><td style="padding:10px 16px;border-bottom:1px solid #f1f5f9;font-size:14px;">Bonus</td><td style="padding:10px 16px;text-align:right;border-bottom:1px solid #f1f5f9;font-weight:600;font-size:14px;">&pound;{ps.bonus:.2f}</td></tr>
 <tr><td style="padding:10px 16px;border-bottom:1px solid #f1f5f9;font-size:14px;">Allowances</td><td style="padding:10px 16px;text-align:right;border-bottom:1px solid #f1f5f9;font-weight:600;font-size:14px;">&pound;{ps.allowances:.2f}</td></tr>
 <tr style="font-weight:700;background-color:#f0fdf4;"><td style="padding:12px 16px;font-size:14px;">Gross Pay</td><td style="padding:12px 16px;text-align:right;color:#16a34a;font-size:14px;">&pound;{ps.gross_pay:.2f}</td></tr>
-<tr><td style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#dc2626;font-size:14px;">Tax</td><td style="padding:10px 16px;text-align:right;border-bottom:1px solid #f1f5f9;color:#dc2626;font-size:14px;">-&pound;{ps.tax_amount:.2f}</td></tr>
-<tr><td style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#dc2626;font-size:14px;">Insurance</td><td style="padding:10px 16px;text-align:right;border-bottom:1px solid #f1f5f9;color:#dc2626;font-size:14px;">-&pound;{ps.insurance:.2f}</td></tr>
-<tr><td style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#dc2626;font-size:14px;">Retirement</td><td style="padding:10px 16px;text-align:right;border-bottom:1px solid #f1f5f9;color:#dc2626;font-size:14px;">-&pound;{ps.retirement:.2f}</td></tr>
-<tr><td style="padding:10px 16px;border-bottom:1px solid #f1f5f9;color:#dc2626;font-size:14px;">Other Deductions</td><td style="padding:10px 16px;text-align:right;border-bottom:1px solid #f1f5f9;color:#dc2626;font-size:14px;">-&pound;{ps.other_deductions:.2f}</td></tr>
+{ded_rows}
 <tr style="font-weight:700;background-color:#fef2f2;"><td style="padding:12px 16px;font-size:14px;">Total Deductions</td><td style="padding:12px 16px;text-align:right;color:#dc2626;font-size:14px;">-&pound;{ps.total_deductions:.2f}</td></tr>
 </table>
 <div style="background-color:#0f172a;border-radius:12px;padding:24px;text-align:right;">
