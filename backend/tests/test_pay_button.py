@@ -74,7 +74,7 @@ def test_the_invoice_email_carries_a_button_to_the_payment_page(tenant, outbox):
 
 
 def test_the_block_says_what_is_owed_when_and_which_invoice(tenant, outbox):
-    inv = an_invoice(tenant, due_date="2026-09-23")
+    inv = an_invoice(tenant, issue_date="2026-09-01", due_date="2026-09-23")
     send(tenant, inv)
     html = outbox[0]["html"]
     assert "5.00 GBP" in html, html[:400]
@@ -85,7 +85,7 @@ def test_the_block_says_what_is_owed_when_and_which_invoice(tenant, outbox):
 def test_the_plain_text_half_makes_the_same_offer(tenant, outbox):
     """With nothing written on the send screen and no saved wording, the
     generated message is what goes out - and it makes the same offer."""
-    inv = an_invoice(tenant, due_date="2026-09-23")
+    inv = an_invoice(tenant, issue_date="2026-09-01", due_date="2026-09-23")
     res = tenant.post(f"/api/invoices/{inv['number']}/send", json={"attach_pdf": False, "body": ""})
     assert res.status_code == 200, res.text
     text = outbox[0]["text"]
