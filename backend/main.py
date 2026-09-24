@@ -33266,6 +33266,150 @@ def profit_loss_detail_csv(request: Request, from_: str = Query("", alias="from"
     return _csv_response(f"profit-and-loss-{start}-to-{end}.csv", rows[0], rows[1:])
 
 
+# ---------------------------------------------------------------------------
+# WHAT NEEDS YOU TODAY
+# ---------------------------------------------------------------------------
+# The dashboard could say what a business had done and nothing about what it
+# still had to do. Every count below already existed on its own screen -
+# overdue invoices, bank lines with no home, a bill falling due, a quote
+# nobody answered, leave waiting on a manager, a send that failed - and a
+# person had to go looking for each one. This gathers them in the order they
+# cost money, each with the screen it is fixed on.
+#
+# An item with nothing in it is left out rather than shown as a zero: a list
+# of zeroes is noise, and the point of this panel is that anything on it is
+# worth a click.
+
+ATTENTION_LIMIT = 8
+
+# Mail the business sent to somebody else, as opposed to mail about the
+# account itself.
+OUTBOUND_DELIVERY_KINDS = ("invoice", "invoice_copy", "payslip", "credit_note")
+
+
+def _ymd_or_none(text):
+    return _parse_any_date(text or "")
+
+
+def attention_items(db: Session, client) -> list:
+    """Everything waiting on this business, worst first."""
+    today = date.today()
+    soon = today + timedelta(days=7)
+    items = []
+
+    def add(key, count, label, hint, go, tone="warn", amount=None, currency=""):
+        """`go` is the screen this is fixed on: a view id the router knows,
+        and the tab or filter to arrive on, so one click lands on the work
+        rather than on the front of a section."""
+        if count:
+            items.append({"key": key, "count": int(count), "label": label, "hint": hint,
+                          "view": go[0], "filter": go[1] if len(go) > 1 else "",
+                          "tone": tone,
+                          "amount": None if amount is None else money(amount),
+                          "currency": currency})
+
+    cur = (client.currency or "GBP").upper()
+
+    # --- money owed to this business ---------------------------------------
+    invoices = db.query(models.DBInvoice).filter(
+        models.DBInvoice.client_id == client.id,
+        models.DBInvoice.status.notin_(["Paid", "Void"])).all()
+    overdue = [i for i in invoices if invoice_overdue_days(i, today) > 0]
+    add("overdue", len(overdue), "Overdue invoices", "past their due date and still unpaid",
+        ("invoices-view", "overdue"), "bad", sum(i.due or 0 for i in overdue), cur)
+
+    due_soon = [i for i in invoices
+                if i.status in OPEN_INVOICE_STATUSES and invoice_overdue_days(i, today) <= 0
+                and (_ymd_or_none(i.due_date) or soon + timedelta(days=1)) <= soon]
+    add("due_soon", len(due_soon), "Falling due this week", "worth a nudge before they are late",
+        ("invoices-view", "awaiting payment"), "info", sum(i.due or 0 for i in due_soon), cur)
+
+    drafts = [i for i in invoices if i.status == "Draft"]
+    add("drafts", len(drafts), "Draft invoices", "written but never sent, so never paid",
+        ("invoices-view", "draft"), "info", sum((i.due or 0) + (i.paid or 0) for i in drafts), cur)
+
+    # --- the bank -----------------------------------------------------------
+    bank = {}
+    for st, n in db.query(models.DBBankLine.status, sqlfunc.count(models.DBBankLine.id)).filter(
+            models.DBBankLine.client_id == client.id).group_by(models.DBBankLine.status).all():
+        bank[st] = n
+    unmatched_total = sum((l.amount or 0) - (l.allocated or 0) for l in db.query(models.DBBankLine).filter(
+        models.DBBankLine.client_id == client.id, models.DBBankLine.status == "unmatched").all())
+    add("bank_to_match", bank.get("unmatched", 0), "Bank lines to match",
+        "money in with no invoice against it", ("bank-view", "unmatched"), "warn", unmatched_total, cur)
+    add("bank_to_code", bank.get("out", 0), "Bank lines to code",
+        "money out with no home yet", ("bank-view", "out"), "warn")
+
+    # --- money this business owes -------------------------------------------
+    bills = db.query(models.DBBill).filter(
+        models.DBBill.client_id == client.id,
+        models.DBBill.status.notin_(["Paid", "Void", "Draft"])).all()
+    late = [b for b in bills if (_ymd_or_none(b.due_date) or today + timedelta(days=1)) < today]
+    add("bills_overdue", len(late), "Bills past due", "somebody is waiting to be paid",
+        ("bills-view",), "bad", sum((b.total or 0) - (b.amount_paid or 0) for b in late), cur)
+    near = [b for b in bills if b not in late
+            and today <= (_ymd_or_none(b.due_date) or soon + timedelta(days=1)) <= soon]
+    add("bills_due", len(near), "Bills due this week", "due within seven days",
+        ("bills-view",), "info", sum((b.total or 0) - (b.amount_paid or 0) for b in near), cur)
+
+    # --- work that has stalled ----------------------------------------------
+    quotes = db.query(models.DBQuote).filter(
+        models.DBQuote.client_id == client.id, models.DBQuote.status == "Sent").all()
+    add("quotes_open", len(quotes), "Quotes awaiting an answer", "sent and not yet accepted or declined",
+        ("quotes-view",), "info", sum(q.total or 0 for q in quotes), cur)
+
+    leave = db.query(models.DBLeaveRequest).filter(
+        models.DBLeaveRequest.client_id == client.id,
+        models.DBLeaveRequest.status == "pending").count()
+    add("leave_pending", leave, "Leave requests to decide", "somebody is waiting on an answer",
+        ("leave-view",), "warn")
+
+    # --- things that quietly went wrong --------------------------------------
+    # Mail to customers and staff only. The account's own verification mail
+    # has its own bar and its own Resend, and putting it here would mean a
+    # brand new account opened on a warning about itself.
+    since = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+    failed = db.query(models.DBEmailDelivery).filter(
+        models.DBEmailDelivery.client_id == client.id,
+        models.DBEmailDelivery.status == "failed",
+        models.DBEmailDelivery.kind.in_(OUTBOUND_DELIVERY_KINDS),
+        models.DBEmailDelivery.created_at >= since).count()
+    add("email_failed", failed, "Emails that did not arrive", "in the last 24 hours",
+        ("settings-view",), "bad")
+
+    # Only for a business that actually uses the wallet. A brand new account
+    # has a zero balance and has never needed one, and opening on a warning
+    # about a thing they have not set up is how a panel gets ignored.
+    wallet = db.query(models.DBWallet).filter(models.DBWallet.client_id == client.id).first()
+    if (wallet and (wallet.lifetime_topped_up_minor or 0) > 0
+            and (wallet.balance_minor or 0) <= (wallet.low_balance_minor or 0)):
+        items.append({"key": "wallet_low", "count": 1, "label": "Wallet is low",
+                      "hint": "sending and payroll stop when it runs out",
+                      "view": "wallet-view", "filter": "", "tone": "bad", "amount": money((wallet.balance_minor or 0) / 100.0),
+                      "currency": (wallet.currency or cur).upper()})
+
+    # A bank feed's consent lasts ninety days by regulation. Being told on the
+    # day it stops is being told too late.
+    feeds = db.query(models.DBBankFeed).filter(
+        models.DBBankFeed.client_id == client.id,
+        models.DBBankFeed.status.in_(["linked", "expired"])).all()
+    ending = [f for f in feeds if f.status == "expired"
+              or (_ymd_or_none(f.consent_expires_on) or today + timedelta(days=999)) <= today + timedelta(days=10)]
+    add("feed_ending", len(ending), "Bank connections to renew",
+        "the bank's ninety days are nearly up", ("bank-view", "unmatched"), "warn")
+
+    order = {"bad": 0, "warn": 1, "info": 2}
+    items.sort(key=lambda x: (order.get(x["tone"], 3), -(x["amount"] or 0), -x["count"]))
+    return items[:ATTENTION_LIMIT]
+
+
+@app.get("/api/dashboard/attention")
+def get_dashboard_attention(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    return {"items": attention_items(db, client),
+            "currency": (client.currency or "GBP").upper()}
+
+
 # The installable app's manifest, named for the face this host wears, so the
 # icon on a phone says "aniprotech HR" rather than the same name for both
 # products. The employee portal has a manifest of its own.

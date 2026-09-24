@@ -592,6 +592,11 @@ function showView(viewId) {
     if (viewId === 'staff-requests-view' && typeof loadStaffRequestQueue === 'function') loadStaffRequestQueue();
     if (viewId === 'staff-requests-view' && typeof loadBankChanges === 'function') loadBankChanges();
     if (viewId === 'hr-dashboard-view' && typeof loadHrDashboard === 'function') loadHrDashboard();
+    // Coming back to the dashboard after doing some of the work must show
+    // the work that is left. The rest of the dashboard is loaded once at
+    // boot and is expensive to redraw; the panel is the part that goes out
+    // of date the moment somebody acts on it.
+    if (viewId === 'dashboard-view' && typeof loadAttention === 'function') loadAttention();
     if (viewId === 'settings-view' && typeof buildSettingsSections === 'function') buildSettingsSections();
     if (viewId === 'settings-view' && typeof loadPaymentGateways === 'function') loadPaymentGateways();
     if (viewId === 'settings-view' && typeof loadAccounts === 'function') loadAccounts();
@@ -1750,8 +1755,11 @@ function activateTabForFilter(containerSelector, filterValue) {
 function goToInvoices(filter) {
     showView('invoices-view');
     if (!filter || filter === 'all') return;
+    // By id, not by class. The dashboard's own cash-flow range buttons carry
+    // the same class and sit earlier in the document, so a plain '#invoice-tabs'
+    // matched those instead and every stat card landed on an unfiltered list.
     // fetchInvoices() is kicked off by showView; wait for it before filtering.
-    setTimeout(function () { activateTabForFilter('.invoices-tabs', filter); }, 250);
+    setTimeout(function () { activateTabForFilter('#invoice-tabs', filter); }, 250);
 }
 window.goToInvoices = goToInvoices;
 
@@ -2087,8 +2095,74 @@ function handleLogout() {
 }
 window.handleLogout = handleLogout;
 
+// --- What needs you today ---------------------------------------------------
+// Counts that each already existed on their own screen, gathered in the order
+// they cost money. Every row is a link to the work, not to the front of a
+// section. Nothing waiting draws nothing at all: an empty panel taking up the
+// top of the screen teaches people to ignore the top of the screen.
+
+var ATTENTION_TONES = {
+    bad: { border: 'var(--danger-color)', text: 'var(--danger-color)' },
+    warn: { border: 'var(--warning-color)', text: 'var(--warning-color)' },
+    info: { border: 'var(--border-color)', text: 'var(--text-secondary)' }
+};
+
+function attentionRow(it) {
+    var tone = ATTENTION_TONES[it.tone] || ATTENTION_TONES.info;
+    var money = it.amount === null || it.amount === undefined ? ''
+        : '<span style="font-weight:700;white-space:nowrap;color:var(--text-primary);">' + esc(currencySymbolFor(it.currency)) + Number(it.amount).toFixed(2) + '</span>';
+    return '<button type="button" class="attention-row" data-attention="' + esc(it.key) + '"' +
+        ' style="display:flex;align-items:center;gap:14px;width:100%;text-align:left;padding:12px 16px;background:none;border:0;border-left:3px solid ' + tone.border + ';cursor:pointer;">' +
+        '<span style="font-size:1.25rem;font-weight:800;min-width:2.2rem;color:' + tone.text + ';">' + it.count + '</span>' +
+        '<span style="flex:1;min-width:0;">' +
+            '<span style="display:block;font-weight:600;color:var(--text-primary);">' + esc(it.label) + '</span>' +
+            '<span style="display:block;font-size:0.82rem;color:var(--text-secondary);">' + esc(it.hint) + '</span>' +
+        '</span>' + money +
+        '<span aria-hidden="true" style="color:var(--text-secondary);">&rsaquo;</span></button>';
+}
+
+function goToAttention(it) {
+    showView(it.view);
+    if (!it.filter) return;
+    if (it.view === 'bank-view') {
+        setTimeout(function () {
+            var tabs = document.querySelectorAll('#bank-tabs .tab');
+            var want = it.filter === 'out' ? 'To code' : 'To match';
+            for (var i = 0; i < tabs.length; i++) {
+                if (tabs[i].textContent.trim() === want) { tabs[i].click(); return; }
+            }
+        }, 150);
+        return;
+    }
+    if (it.view === 'invoices-view') {
+        setTimeout(function () { activateTabForFilter('#invoice-tabs', it.filter); }, 250);
+    }
+}
+
+async function loadAttention() {
+    var host = document.getElementById('dash-attention');
+    if (!host) return;
+    var data;
+    try { data = await fetchJson('/api/dashboard/attention'); } catch (e) { host.style.display = 'none'; return; }
+    var items = (data && data.items) || [];
+    if (!items.length) { host.style.display = 'none'; host.innerHTML = ''; return; }
+    host.style.display = '';
+    host.innerHTML = '<div class="widget" style="padding:0;overflow:hidden;">' +
+        '<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--border-color);">' +
+            '<h3 style="margin:0;font-size:1rem;">Needs you today</h3>' +
+            '<span style="font-size:0.8rem;color:var(--text-secondary);">' + items.length + ' thing' + (items.length === 1 ? '' : 's') + ' waiting</span>' +
+        '</div>' +
+        '<div style="display:flex;flex-direction:column;">' + items.map(attentionRow).join('') + '</div></div>';
+    host.querySelectorAll('[data-attention]').forEach(function (b) {
+        var it = items.find(function (x) { return x.key === b.getAttribute('data-attention'); });
+        b.addEventListener('click', function () { goToAttention(it); });
+    });
+}
+window.loadAttention = loadAttention;
+
 // --- Dashboard ---
 async function fetchDashboardData() {
+    loadAttention();
     try {
         var response = await fetch('/api/dashboard-summary');
         if (!response.ok) {

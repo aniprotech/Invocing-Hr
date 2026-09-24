@@ -27,19 +27,19 @@
 const CACHE = 'aniprotech-static-v1';
 
 const PRECACHE = [
-    '/styles.css?v=190',
+    '/styles.css?v=191',
     // The employee portal's stylesheet. It used to come from the Tailwind
     // CDN, which this worker refuses to cache because it is another origin -
     // so the busiest page in the product got none of the benefit.
-    '/tailwind.css?v=190',
-    '/mobile.css?v=190',
-    '/app.js?v=190',
+    '/tailwind.css?v=191',
+    '/mobile.css?v=191',
+    '/app.js?v=191',
     // The company feed, shared by the staff portal and the HR app.
-    '/feed.js?v=190',
+    '/feed.js?v=191',
     // Every page loads this, so it is worth having before it is asked for.
-    '/pwa.js?v=190',
+    '/pwa.js?v=191',
     // The dialogs every page asks its questions through.
-    '/dialogs.js?v=190',
+    '/dialogs.js?v=191',
     '/icons/icon-192.png',
     '/icons/icon-512.png',
     '/icons/icon.svg',

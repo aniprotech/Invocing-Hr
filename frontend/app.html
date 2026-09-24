@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=190">
-    <link rel="stylesheet" href="mobile.css?v=190">
+    <link rel="stylesheet" href="styles.css?v=191">
+    <link rel="stylesheet" href="mobile.css?v=191">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,11 +57,11 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=190">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=190">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=190">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=190">
-    <script src="/dialogs.js?v=190"></script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=191">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=191">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=191">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=191">
+    <script src="/dialogs.js?v=191"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -301,6 +301,11 @@
                         <p class="subtitle">Here's what's happening with your invoicing today.</p>
                     </header>
 
+                    <!-- What is waiting on this business, worst first. Anything
+                         on it is worth a click; a count of nothing is left off
+                         entirely rather than shown as a zero. -->
+                    <div id="dash-attention" style="display:none;margin-bottom:24px;"></div>
+
                     <!-- The bank, as the bank sees it: shown once a feed is connected. -->
                     <div id="dashboard-bank" style="display:none;margin-bottom:24px;"></div>
 
@@ -477,7 +482,7 @@
                             <button class="btn btn-primary" onclick="showView('create-invoice-view')">New Invoice</button>
                         </div>
                     </div>
-                    <div class="invoices-tabs">
+                    <div class="invoices-tabs" id="invoice-tabs">
                         <button class="tab active" onclick="filterInvoices('all', this)">All</button>
                         <button class="tab" onclick="filterInvoices('draft', this)">Draft</button>
                         <button class="tab" onclick="filterInvoices('awaiting payment', this)">Awaiting Payment</button>
@@ -4972,8 +4977,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="feed.js?v=190"></script>
-    <script src="app.js?v=190"></script>
+    <script src="feed.js?v=191"></script>
+    <script src="app.js?v=191"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
@@ -5201,7 +5206,7 @@
             </div>
         </div>
     </div>
-    <script src="/install-hint.js?v=190"></script>
-    <script src="/pwa.js?v=190"></script>
+    <script src="/install-hint.js?v=191"></script>
+    <script src="/pwa.js?v=191"></script>
 </body>
 </html>
