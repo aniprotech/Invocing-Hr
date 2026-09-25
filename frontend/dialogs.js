@@ -52,10 +52,18 @@
     transform: translateY(8px) scale(0.98);
     transition: transform 0.16s ease;
     overflow: hidden;
+    /* Never taller than the screen. A long form - Add certification, with
+       seven fields - was centred and cut off at both ends on a laptop, its
+       title above the top and Save below the bottom, with nothing to scroll.
+       Now the questions scroll inside it and the buttons stay in sight. */
+    max-height: calc(100vh - 40px);
+    max-height: calc(100dvh - 40px);
+    display: flex;
+    flex-direction: column;
 }
 .ui-dialog-scrim.is-open .ui-dialog { transform: none; }
 
-.ui-dialog-body { padding: 24px 24px 8px; display: flex; gap: 14px; }
+.ui-dialog-body { padding: 24px 24px 8px; display: flex; gap: 14px; overflow-y: auto; min-height: 0; flex: 1 1 auto; }
 
 .ui-dialog-icon {
     width: 38px;
@@ -105,6 +113,7 @@
 }
 
 .ui-dialog-actions {
+    flex: 0 0 auto;
     display: flex;
     justify-content: flex-end;
     gap: 8px;
