@@ -18,6 +18,9 @@
       --late: #a6332166;
     }
     * { box-sizing: border-box; }
+    /* hidden means hidden: without this, .btn's display:inline-flex beats the
+       attribute and a button the page has hidden stays on screen. */
+    [hidden] { display: none !important; }
     body {
       margin: 0; background: var(--ground); color: var(--ink);
       font-family: 'Poppins', system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -83,21 +86,39 @@
     }
     .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
     .foot { text-align: center; color: var(--muted); font-size: .85rem; margin: 22px 0 40px; }
+    /* Paying: first thing on the page, above the invoice it is for. */
+    .paybox { margin: 0 0 22px; padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--ground); }
+    .paybox h2 { font-size: 1.05rem; margin: 0 0 12px; }
+    .paybar { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .method { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--line);
+      border-radius: 10px; margin-bottom: 8px; cursor: pointer; background: #fff; }
+    .method.on { border-color: var(--brand); box-shadow: inset 0 0 0 1px var(--brand); }
+    .method input { margin-top: 5px; accent-color: var(--brand); }
+    .method .t { font-weight: 600; }
+    .method .d { font-size: .85rem; color: var(--muted); }
+    .btn.big { width: 100%; justify-content: center; padding: 14px 18px; font-size: 1.02rem; margin-top: 6px; }
+    .btn:disabled { opacity: .6; cursor: default; }
+    .secure { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: .82rem; color: var(--muted); margin-top: 10px; }
+    .redirect { font-size: .85rem; color: var(--muted); margin: 6px 0 0; text-align: center; }
+    .bankinfo pre { font-family: inherit; white-space: pre-wrap; margin: 8px 0; background: #fff; padding: 12px;
+      border: 1px solid var(--line); border-radius: 8px; }
+    .linkish { background: none; border: 0; padding: 0; color: var(--brand); font: inherit; cursor: pointer; text-decoration: underline; }
+    #payNote:empty { display: none; }
     #state { max-width: 780px; margin: 60px auto; text-align: center; color: var(--muted); }
 
     @media print {
       body { background: #fff; }
       .sheet { box-shadow: none; margin: 0; max-width: none; }
-      .actions { display: none; }
+      .actions, .paybox, #payNote { display: none; }
     }
   </style>
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-    <link rel="stylesheet" href="/mobile.css?v=192">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=192">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=192">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=192">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=192">
-    <script src="/dialogs.js?v=192"></script>
+    <link rel="stylesheet" href="/mobile.css?v=193">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=193">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=193">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=193">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=193">
+    <script src="/dialogs.js?v=193"></script>
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="aniprotech">
     <meta property="og:title" content="Your invoice">
@@ -192,6 +213,12 @@
           '</div>' +
         '</div>' +
 
+        // Where paying happens. Drawn once the page knows which ways to pay
+        // this business offers; the note under it is where every "confirming",
+        // "cancelled" and "set up" message goes, so they are seen.
+        (!inv.is_settled ? '<div id="payBox" class="paybox" hidden></div>' : '') +
+        '<p class="small" id="payNote" style="margin:0 0 18px;"></p>' +
+
         '<div class="cols">' +
           '<div><div class="label">Billed to</div>' + esc(inv.to.name) +
             (inv.to.company ? '<br>' + esc(inv.to.company) : '') +
@@ -230,8 +257,7 @@
           // business sent, not a print of this page.
           '<a class="btn" href="/api/public/invoices/' + encodeURIComponent(id) + '/pdf" download="' + esc(inv.number) + '.pdf">Download PDF</a>' +
           '<button class="btn" onclick="window.print()">Print</button>' +
-        '</div>' +
-        '<p class="small muted" id="payNote" style="margin-top:10px;"></p>';
+        '</div>';
 
       document.getElementById('state').hidden = true;
       document.getElementById('sheet').hidden = false;
@@ -242,43 +268,108 @@
         foot.hidden = false;
       }
 
-      // Which buttons to draw is the server's answer, not a guess from what
-      // this page can see. A business that had saved Stripe keys used to be
-      // offered nothing, because the only button here was Razorpay's.
-      async function drawPayButtons() {
-        var host = document.getElementById('payButtons');
-        if (!host || !inv.payment) return;
-        var methods = [];
+      // Which ways to pay are the server's answer, not a guess from what this
+      // page can see. Review and pay in the email lands here with ?pay=1 and
+      // goes straight to choosing how - the invoice is underneath to review.
+      var METHODS = {
+        stripe: { title: 'Card', desc: 'Visa, Mastercard, American Express, Apple Pay and Google Pay', via: 'Stripe', run: 'payByCard' },
+        gocardless: { title: 'Direct Debit', desc: 'Straight from your bank account', via: 'GoCardless', run: 'payByBank' },
+        paypal: { title: 'PayPal', desc: 'Your PayPal balance, or a card saved in PayPal', via: 'PayPal', run: 'payWithPayPal' },
+        razorpay: { title: 'Card, UPI or netbanking', desc: 'Every way Razorpay accepts', via: 'Razorpay', run: 'payNow' }
+      };
+      var payOptions = [];
+
+      async function drawPayment() {
+        var box = document.getElementById('payBox');
+        if (!box) return;
+        var offered = [];
         try {
           var r = await fetch('/api/public/invoices/' + encodeURIComponent(id) + '/pay/methods');
-          if (!r.ok) return;
-          var data = await r.json();
-          if (data.is_paid) return;
-          methods = data.methods || [];
-        } catch (e) { return; }
-
-        var amount = money(sym, inv.amount_due);
-        var buttons = methods.map(function (m) {
-          if (m.provider === 'razorpay') {
-            return '<button class="btn primary" id="payBtn" onclick="payNow()">Pay ' +
-                   amount + ' now</button>';
+          if (r.ok) {
+            var data = await r.json();
+            if (data.is_paid) return;
+            offered = data.methods || [];
           }
-          if (m.provider === 'stripe') {
-            return '<button class="btn primary" id="payCardBtn" onclick="payByCard()">Pay ' +
-                   amount + ' by card</button>';
-          }
-          if (m.provider === 'gocardless') {
-            return '<button class="btn" id="payBankBtn" onclick="payByBank()">Pay ' +
-                   amount + ' by bank transfer</button>';
-          }
-          if (m.provider === 'paypal') {
-            return '<button class="btn" id="payPalBtn" onclick="payWithPayPal()">Pay ' +
-                   amount + ' with PayPal</button>';
-          }
-          return '';
-        }).join('');
-        host.insertAdjacentHTML('afterbegin', buttons);
+        } catch (e) { }
+        payOptions = offered.filter(function (m) { return METHODS[m.provider]; })
+          .map(function (m) { return Object.assign({ key: m.provider }, METHODS[m.provider]); });
+        if (inv.bank_details) {
+          payOptions.push({ key: 'bank', title: 'Bank transfer', desc: 'From your own banking app, with the reference we give you' });
+        }
+        box.hidden = false;
+        if (!payOptions.length) {
+          // Never a dead end: say who to ask.
+          box.innerHTML = '<h2>Paying this invoice</h2>' +
+            '<p class="small" style="margin:0;">' + esc(inv.from.company || 'The sender') +
+            ' has not set up a way to pay online yet.' +
+            (inv.from.email ? ' To pay, contact <a href="mailto:' + esc(inv.from.email) + '?subject=' +
+              encodeURIComponent('Paying invoice ' + inv.number) + '">' + esc(inv.from.email) + '</a>.' : '') + '</p>';
+          return;
+        }
+        drawPayBar();
+        if (new URLSearchParams(location.search).get('pay') === '1') openPayStep();
       }
+
+      function drawPayBar() {
+        var box = document.getElementById('payBox');
+        box.innerHTML = '<div class="paybar">' +
+          '<div><div class="label">Amount due</div><div class="due">' + money(sym, inv.amount_due) + '</div></div>' +
+          '<button class="btn primary" id="payOpen" onclick="openPayStep()">Pay ' + money(sym, inv.amount_due) + '</button>' +
+          '</div>';
+      }
+
+      window.openPayStep = function () {
+        var box = document.getElementById('payBox');
+        var first = payOptions[0].key;
+        box.innerHTML = '<h2>How would you like to pay?</h2>' +
+          '<div role="radiogroup" aria-label="Payment method">' +
+          payOptions.map(function (o) {
+            return '<label class="method' + (o.key === first ? ' on' : '') + '" data-method="' + esc(o.key) + '">' +
+              '<input type="radio" name="paymethod" value="' + esc(o.key) + '"' + (o.key === first ? ' checked' : '') + '>' +
+              '<span><span class="t">' + esc(o.title) + '</span><br><span class="d">' + esc(o.desc) + '</span></span></label>';
+          }).join('') + '</div>' +
+          '<div class="bankinfo" id="bankInfo" hidden>' +
+            '<div class="label" style="margin-top:6px;">Pay by bank transfer</div>' +
+            '<pre>' + esc(inv.bank_details || '') + '</pre>' +
+            '<div class="small">Amount: <strong>' + money(sym, inv.amount_due) + '</strong> &middot; Reference: <strong>' + esc(inv.number) + '</strong></div>' +
+            '<div class="small muted" style="margin-top:6px;">Use the reference so the payment is matched to this invoice. It shows as paid once ' +
+              esc(inv.from.company || 'the sender') + ' receives it.</div>' +
+          '</div>' +
+          '<button class="btn primary big" id="payContinue" onclick="continueToPay()">Continue to secure checkout</button>' +
+          '<div class="secure" id="paySecure"><span aria-hidden="true">&#128274;</span> Secure checkout</div>' +
+          '<p class="redirect" id="payVia"></p>' +
+          '<p class="small" style="text-align:center;margin:10px 0 0;"><button class="linkish" onclick="drawPayBar()">Back to the invoice</button></p>';
+        box.querySelectorAll('input[name="paymethod"]').forEach(function (r) {
+          r.addEventListener('change', pickMethod);
+        });
+        pickMethod();
+        if (box.scrollIntoView) box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      };
+      window.drawPayBar = drawPayBar;
+
+      function chosenMethod() {
+        var r = document.querySelector('input[name="paymethod"]:checked');
+        return r ? r.value : '';
+      }
+
+      function pickMethod() {
+        var key = chosenMethod();
+        document.querySelectorAll('.method').forEach(function (m) {
+          m.classList.toggle('on', m.getAttribute('data-method') === key);
+        });
+        var bank = key === 'bank';
+        var info = METHODS[key];
+        document.getElementById('bankInfo').hidden = !bank;
+        document.getElementById('payContinue').hidden = bank;
+        document.getElementById('paySecure').hidden = bank;
+        // What happens next, before it happens.
+        document.getElementById('payVia').textContent = info ? 'You will be redirected to ' + info.via + ' to complete payment.' : '';
+      }
+
+      window.continueToPay = function () {
+        var info = METHODS[chosenMethod()];
+        if (info && typeof window[info.run] === 'function') window[info.run]();
+      };
 
       // Coming back from Stripe's own page. The id in the URL is only a claim
       // that something happened - the server asks Stripe itself before any of
@@ -312,7 +403,7 @@
       // handled by settlePayPalReturn - the server captures and checks.
       window.payWithPayPal = async function () {
         var note = document.getElementById('payNote');
-        var btn = document.getElementById('payPalBtn');
+        var btn = document.getElementById('payContinue') || {};
         note.textContent = '';
         btn.disabled = true;
         try {
@@ -363,7 +454,7 @@
 
       window.payByBank = async function () {
         var note = document.getElementById('payNote');
-        var btn = document.getElementById('payBankBtn');
+        var btn = document.getElementById('payContinue') || {};
         note.textContent = '';
         btn.disabled = true;
         try {
@@ -398,7 +489,7 @@
 
       window.payByCard = async function () {
         var note = document.getElementById('payNote');
-        var btn = document.getElementById('payCardBtn');
+        var btn = document.getElementById('payContinue') || {};
         note.textContent = '';
         btn.disabled = true;
         try {
@@ -419,7 +510,7 @@
       // against the business's own secret.
       window.payNow = async function () {
         var note = document.getElementById('payNote');
-        var btn = document.getElementById('payBtn');
+        var btn = document.getElementById('payContinue') || {};
         note.textContent = '';
         if (typeof Razorpay === 'undefined') {
           note.textContent = 'The payment window could not load. Check your connection and try again.';
@@ -470,7 +561,7 @@
         rzp.open();
       };
 
-      drawPayButtons();
+      drawPayment();
       settleStripeReturn();
       settlePayPalReturn();
       noteBankReturn();

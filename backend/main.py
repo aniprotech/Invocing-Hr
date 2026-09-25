@@ -31341,6 +31341,9 @@ def invoice_pay_block(inv, cur_symbol, link=None, accent="#0f172a"):
                 f"View this invoice online: {link}")
     code = (inv.currency or "GBP").upper()
     amount_text = f"{cur_symbol}{owed:,.2f} {code}"
+    # The button goes to the payment step, not just the invoice: pay=1 opens
+    # "How would you like to pay?" with the invoice underneath to review.
+    link = link + ("&" if "?" in link else "?") + "pay=1"
     on = _parse_any_date(inv.due_date or "")
     due_text = on.strftime("%d %b %Y").lstrip("0") if on else (inv.due_date or "")
     return (pay_block_html(link, amount_text, due_text, inv.number, accent),

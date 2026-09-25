@@ -175,3 +175,27 @@ def test_the_amount_is_the_currency_the_invoice_is_in(tenant):
     row.currency = "usd"
     html, _ = main.invoice_pay_block(row, "$", "https://x.test/i")
     assert "$5.00 USD" in html
+
+
+def test_the_button_opens_the_payment_step_not_just_the_invoice(tenant, outbox):
+    """Review and pay has to land on "How would you like to pay?" - a link to
+    the invoice alone left the customer looking for a way to pay."""
+    inv = an_invoice(tenant)
+    send(tenant, inv)
+    html = outbox[0]["html"]
+    tracking = row_for(inv).tracking_id
+    assert f'invoice.html?id={tracking}&amp;pay=1"' in html, "escaped for the attribute"
+
+
+def test_the_plain_text_offer_goes_to_the_payment_step_too(tenant, outbox):
+    inv = an_invoice(tenant)
+    res = tenant.post(f"/api/invoices/{inv['number']}/send", json={"attach_pdf": False, "body": ""})
+    assert res.status_code == 200, res.text
+    assert f"invoice.html?id={row_for(inv).tracking_id}&pay=1" in outbox[0]["text"]
+
+
+def test_a_settled_invoice_is_linked_to_view_not_to_pay(tenant):
+    row = row_for(an_invoice(tenant))
+    row.status, row.due = "Paid", 0.0
+    html, text = main.invoice_pay_block(row, "£", "https://x.test/invoice.html?id=abc")
+    assert "pay=1" not in html and "pay=1" not in text
