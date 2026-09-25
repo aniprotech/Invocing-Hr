@@ -25360,7 +25360,32 @@ def apply_certification_fields(c, body):
     if "notes" in body:
         c.notes = str(body.get("notes") or "").strip()[:2000]
     if "document_data" in body:
-        c.document_data = image_upload_or_400(body.get("document_data"), "certificate")
+        c.document_data = certificate_document_or_400(body.get("document_data"))
+
+
+CERTIFICATE_PDF_RE = re.compile(r"data:application/pdf;base64,[A-Za-z0-9+/=\s]+")
+
+
+def certificate_document_or_400(raw):
+    """A picture of a certificate, or the PDF the training platform issued -
+    which is what nearly all of them issue. A PDF is checked to be one: its
+    bytes must start as a PDF does, whatever the data URL claims."""
+    doc = (raw or "").strip()
+    if not doc:
+        return ""
+    if not doc.startswith("data:application/pdf"):
+        return image_upload_or_400(doc, "certificate")
+    if not CERTIFICATE_PDF_RE.fullmatch(doc):
+        raise HTTPException(status_code=400, detail="That certificate is not a PDF, PNG, JPEG, GIF or WebP")
+    if len(doc) > 4_200_000:
+        raise HTTPException(status_code=413, detail="That certificate is too large - keep it under about 3MB")
+    try:
+        head = base64.b64decode(doc.split(",", 1)[1][:24] + "==", validate=False)
+    except Exception:
+        head = b""
+    if not head.startswith(b"%PDF-"):
+        raise HTTPException(status_code=400, detail="That file says it is a PDF but is not one")
+    return doc
 
 
 def _certifications_for(db, client_id, employee_id=None):
@@ -25474,6 +25499,223 @@ def hr_certification_document(cert_id: int, request: Request, db: Session = Depe
     if not c.document_data:
         raise HTTPException(status_code=404, detail="No document on this certification")
     return serve_image(c.document_data)
+
+
+# ---------------------------------------------------------------------------
+# TRAINING PARTNERS
+# ---------------------------------------------------------------------------
+# The care sector's learning platforms - Florence, CareTutor, EduCare and
+# the rest. The few with an API give it to their own customers under an
+# agreement; every one of them gives a business its certificates as PDFs
+# and a report of who has done what. So training comes in the way it can:
+# drop in the certificates or the report, look at what was read, correct
+# it, and file it. Nothing read is saved until the business has seen it.
+#
+# What each platform offers is in backend/training_import.py, as found on
+# their own sites.
+
+import training_import  # noqa: E402
+
+TRAINING_IMPORT_MAX_FILES = 25
+TRAINING_IMPORT_MAX_ITEMS = 1000
+
+
+def _decode_upload(raw, what="file"):
+    """(bytes, media type) out of a data URL or plain base64."""
+    text = (raw or "").strip()
+    media = ""
+    if text.startswith("data:"):
+        head, _, text = text.partition(",")
+        media = head[len("data:"):].split(";")[0]
+    try:
+        data = base64.b64decode(text, validate=False)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"That {what} could not be read")
+    if not data:
+        raise HTTPException(status_code=400, detail=f"That {what} is empty")
+    if len(data) > training_import.MAX_DOCUMENT_BYTES * 2:
+        raise HTTPException(status_code=413, detail=f"That {what} is too large")
+    return data, media
+
+
+def _training_staff(db, client_id):
+    people = db.query(models.DBEmployee).filter(models.DBEmployee.client_id == client_id).all()
+    return training_import.Staff([{"id": e.id, "first_name": e.first_name or "", "last_name": e.last_name or "",
+                                   "email": e.email or "", "employee_id": e.employee_id or ""}
+                                  for e in people if employee_is_current(e)])
+
+
+def _course_titles(db, client_id):
+    return [c.title for c in db.query(models.DBCourse).filter(models.DBCourse.client_id == client_id).all() if c.title]
+
+
+def training_partners_chosen(db, client_id):
+    raw = tenant_setting(db, client_id, "training.partners", "")
+    try:
+        keys = json.loads(raw) if raw else []
+    except ValueError:
+        keys = []
+    return [k for k in keys if k in training_import.PARTNERS_BY_KEY]
+
+
+@app.get("/api/training/partners")
+def get_training_partners(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    chosen = training_partners_chosen(db, client.id)
+    return {"partners": [{**{k: v for k, v in p.items() if k != "match"}, "chosen": p["key"] in chosen}
+                         for p in training_import.PARTNERS],
+            "chosen": chosen}
+
+
+@app.put("/api/training/partners")
+def put_training_partners(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    keys = (body or {}).get("chosen")
+    if not isinstance(keys, list):
+        raise HTTPException(status_code=400, detail="Say which platforms you use")
+    unknown = [k for k in keys if k not in training_import.PARTNERS_BY_KEY]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Not a training platform this knows: {', '.join(map(str, unknown))}")
+    keys = [k for k in training_import.PARTNER_KEYS if k in keys]
+    row = db.query(models.DBSettings).filter(models.DBSettings.client_id == client.id,
+                                             models.DBSettings.key == "training.partners").first()
+    if row:
+        row.value = json.dumps(keys)
+    else:
+        db.add(models.DBSettings(client_id=client.id, key="training.partners", value=json.dumps(keys)))
+    log_audit(db, client.id, "training_partners_changed", "settings", None, "training",
+              ", ".join(keys) or "none", request)
+    db.commit()
+    return get_training_partners(request, db)
+
+
+@app.post("/api/training/certificates/read")
+def read_training_certificates(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """What each certificate says, for the business to check. Saves nothing."""
+    client = get_client_user(request, db)
+    files = (body or {}).get("files") or []
+    if not isinstance(files, list) or not files:
+        raise HTTPException(status_code=400, detail="Add at least one certificate")
+    if len(files) > TRAINING_IMPORT_MAX_FILES:
+        raise HTTPException(status_code=400, detail=f"Up to {TRAINING_IMPORT_MAX_FILES} certificates at a time")
+    staff = _training_staff(db, client.id)
+    titles = _course_titles(db, client.id)
+    out = []
+    for f in files:
+        name = str((f or {}).get("name") or "certificate")[:200]
+        raw = (f or {}).get("data") or ""
+        try:
+            doc = certificate_document_or_400(raw)
+        except HTTPException as e:
+            out.append({"file_name": name, "problem": e.detail, "readable": False})
+            continue
+        data, media = _decode_upload(doc, "certificate")
+        text = training_import.pdf_text(data) if media == "application/pdf" else ""
+        found = training_import.read_certificate(text, staff, titles)
+        if not found["readable"]:
+            found["note"] = ("This is a picture, so there are no words to read - fill in its details."
+                             if media.startswith("image/") else
+                             "This PDF is a scanned picture with no words in it - fill in its details.")
+        out.append({"file_name": name, **found})
+    return {"certificates": out}
+
+
+@app.post("/api/training/report/read")
+def read_training_report(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Who has done what, from a platform's Excel or CSV export. Saves nothing."""
+    client = get_client_user(request, db)
+    body = body or {}
+    name = str(body.get("name") or "report.csv")[:200]
+    data, _media = _decode_upload(body.get("data"), "report")
+    try:
+        report = training_import.read_training_report(name, data, _training_staff(db, client.id),
+                                                      _course_titles(db, client.id))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("training report %s could not be read", name)
+        raise HTTPException(status_code=400, detail="That file could not be read as a spreadsheet")
+    if len(report["rows"]) > TRAINING_IMPORT_MAX_ITEMS:
+        raise HTTPException(status_code=400, detail=f"That report has more than {TRAINING_IMPORT_MAX_ITEMS} completions - split it and bring it in in parts")
+    return {"file_name": name, **report}
+
+
+@app.post("/api/training/import")
+def import_training(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """File what the business has checked. Each becomes a certification on
+    the person, verified by the business that imported it; one already on
+    file is not filed twice; a course the person was assigned is marked done;
+    a course that has to be renewed gives the certificate its expiry."""
+    client = get_client_user(request, db)
+    items = (body or {}).get("items") or []
+    if not isinstance(items, list) or not items:
+        raise HTTPException(status_code=400, detail="Nothing to import")
+    if len(items) > TRAINING_IMPORT_MAX_ITEMS:
+        raise HTTPException(status_code=400, detail=f"Up to {TRAINING_IMPORT_MAX_ITEMS} at a time")
+    people = {e.id: e for e in db.query(models.DBEmployee).filter(models.DBEmployee.client_id == client.id).all()}
+    courses = {(c.title or "").strip().lower(): c for c in
+               db.query(models.DBCourse).filter(models.DBCourse.client_id == client.id).all()}
+    existing = {(c.employee_id, (c.name or "").strip().lower(), c.issued_on or "")
+                for c in db.query(models.DBCertification).filter(models.DBCertification.client_id == client.id).all()}
+    who_verified = _hr_name(client)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    created, skipped, courses_done = [], [], 0
+    for i, item in enumerate(items, start=1):
+        item = item or {}
+        try:
+            emp_id = int(item.get("employee_id") or 0)
+        except (TypeError, ValueError):
+            emp_id = 0
+        emp = people.get(emp_id)
+        if not emp:
+            skipped.append({"item": i, "reason": "not matched to anyone on your staff"})
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            skipped.append({"item": i, "reason": "no course named"})
+            continue
+        try:
+            issued = _clean_ymd(item.get("issued_on"), "Completed on") if item.get("issued_on") else ""
+        except HTTPException as e:
+            skipped.append({"item": i, "reason": e.detail})
+            continue
+        key = (emp.id, name.lower(), issued)
+        if key in existing:
+            skipped.append({"item": i, "reason": f"{emp.first_name} {emp.last_name} already has {name} from {issued or 'that date'}"})
+            continue
+        course = courses.get(name.lower())
+        fields = {"name": name, "issuer": item.get("issuer") or "", "issued_on": issued,
+                  "expires_on": item.get("expires_on") or "", "reference": item.get("reference") or "",
+                  "notes": item.get("notes") or ""}
+        # A course that must be redone sets how long the certificate lasts,
+        # when the certificate itself did not say.
+        if not fields["expires_on"] and course is not None and course.renew_months and issued:
+            fields["expires_on"] = _add_months(_parse_date(issued), course.renew_months).isoformat()
+        if item.get("document_data"):
+            fields["document_data"] = item.get("document_data")
+        c = models.DBCertification(client_id=client.id, employee_id=emp.id, added_by="import",
+                                   verified_by=who_verified, verified_at=now)
+        try:
+            apply_certification_fields(c, fields)
+        except HTTPException as e:
+            skipped.append({"item": i, "reason": e.detail})
+            continue
+        db.add(c)
+        existing.add(key)
+        created.append({"employee_id": emp.id, "name": name, "issued_on": issued, "expires_on": c.expires_on})
+        if course is not None:
+            a = db.query(models.DBCourseAssignment).filter(
+                models.DBCourseAssignment.client_id == client.id,
+                models.DBCourseAssignment.course_id == course.id,
+                models.DBCourseAssignment.employee_id == emp.id).first()
+            if a is not None and (a.status != "done" or (a.completed_on or "") < issued):
+                complete_assignment(db, a, course, "import", note="From an imported certificate", on=issued or None)
+                courses_done += 1
+    if created:
+        log_audit(db, client.id, "training_imported", "certification", None, "import",
+                  f"{len(created)} certificates" + (f", {courses_done} courses completed" if courses_done else ""), request)
+    db.commit()
+    return {"created": len(created), "certificates": created, "skipped": skipped, "courses_completed": courses_done}
 
 
 # --- the employee's side ---------------------------------------------------------

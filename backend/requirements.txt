@@ -23,3 +23,7 @@ psycopg2-binary==2.9.9
 # logo and signature it is given. See backend/pdf.py.
 reportlab==4.2.5
 pillow==10.4.0
+# Reading training platforms' certificates (PDF) and reports (Excel).
+# See backend/training_import.py.
+pypdf==5.1.0
+openpyxl==3.1.5

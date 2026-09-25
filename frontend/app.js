@@ -8907,7 +8907,7 @@ showView = function(viewId) {
     if (viewId === 'feed-view') loadFeedView();
     if (viewId === 'expenses-view') loadExpensesView();
     if (viewId === 'reviews-view') loadReviewsView();
-    if (viewId === 'training-view') { loadTrainingView(); if (typeof loadCourses === 'function') loadCourses(); }
+    if (viewId === 'training-view') { loadTrainingView(); loadTrainingPartners(); if (typeof loadCourses === 'function') loadCourses(); }
     if (viewId === 'compensation-view') loadPayView();
     if (viewId === 'skills-view') loadSkillsView();
     if (viewId === 'policies-view') loadPoliciesView();
@@ -18208,6 +18208,235 @@ function switchTrainingTab(filter, btn) {
     loadTrainingView();
 }
 window.switchTrainingTab = switchTrainingTab;
+
+// --- Training partners ------------------------------------------------------------
+// The care sector's learning platforms. What each offers is the server's
+// record of what they actually offer: an API for a few, reports and PDFs for
+// all. Training comes in by reading what they issue; nothing read is filed
+// until the business has looked at it.
+var _trainingPartners = [];
+var API_LABELS = { 'available': ['API available', 'var(--success-color)'], 'planned': ['API planned', 'var(--warning-color)'],
+    'on request': ['API on request', 'var(--warning-color)'], 'none published': ['No API', 'var(--text-secondary)'],
+    'none': ['No API', 'var(--text-secondary)'], 'unknown': ['Unknown', 'var(--text-secondary)'] };
+
+async function loadTrainingPartners() {
+    var host = document.getElementById('training-partners-list');
+    if (!host) return;
+    try {
+        var data = await fetchJson('/api/training/partners');
+        _trainingPartners = (data && data.partners) || [];
+    } catch (e) { host.innerHTML = '<div style="color:var(--text-secondary);font-size:0.85rem;">' + esc(e.message) + '</div>'; return; }
+    var chosen = _trainingPartners.filter(function (p) { return p.chosen; });
+    if (!chosen.length) {
+        host.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">' +
+            '<div style="font-size:0.88rem;color:var(--text-secondary);">Say which platforms your staff train on - Florence, CareTutor, EduCare and the rest - and bring their certificates straight in.</div>' +
+            '<button class="btn btn-primary btn-sm" onclick="openTrainingPartners()">Choose platforms</button></div>';
+        return;
+    }
+    host.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;">' +
+        chosen.map(function (p) {
+            var api = API_LABELS[p.api] || [p.api, 'var(--text-secondary)'];
+            return '<div style="border:1px solid var(--border-color);border-radius:10px;padding:12px;" data-partner="' + esc(p.key) + '">' +
+                '<div style="font-weight:600;">' + esc(p.name) + '</div>' +
+                '<div style="font-size:0.75rem;margin:2px 0 6px;color:' + api[1] + ';">' + esc(api[0]) + '</div>' +
+                '<div style="font-size:0.8rem;color:var(--text-secondary);">' + esc(p.export) + '</div>' +
+                '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">' +
+                    (p.sign_in ? '<a class="btn btn-outline btn-sm" href="' + esc(p.sign_in) + '" target="_blank" rel="noopener">Sign in</a>' : '') +
+                    '<button class="btn btn-outline btn-sm" onclick="openTrainingImport()">Import</button>' +
+                '</div></div>';
+        }).join('') + '</div>';
+}
+window.loadTrainingPartners = loadTrainingPartners;
+
+async function openTrainingPartners() {
+    if (!_trainingPartners.length) await loadTrainingPartners();
+    var host = document.getElementById('training-partners-choices');
+    host.innerHTML = _trainingPartners.map(function (p) {
+        var api = API_LABELS[p.api] || [p.api, 'var(--text-secondary)'];
+        return '<label style="display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border-color);cursor:pointer;">' +
+            '<input type="checkbox" value="' + esc(p.key) + '"' + (p.chosen ? ' checked' : '') + ' style="margin-top:4px;">' +
+            '<span><span style="font-weight:600;">' + esc(p.name) + '</span> ' +
+            '<span style="font-size:0.75rem;color:' + api[1] + ';">' + esc(api[0]) + '</span><br>' +
+            '<span style="font-size:0.8rem;color:var(--text-secondary);">' + esc(p.api_note) + '</span></span></label>';
+    }).join('');
+    document.getElementById('training-partners-modal').style.display = 'flex';
+}
+window.openTrainingPartners = openTrainingPartners;
+
+function closeTrainingPartners() { document.getElementById('training-partners-modal').style.display = 'none'; }
+window.closeTrainingPartners = closeTrainingPartners;
+
+async function saveTrainingPartners() {
+    var chosen = [].map.call(document.querySelectorAll('#training-partners-choices input:checked'), function (i) { return i.value; });
+    try {
+        await fetchJson('/api/training/partners', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chosen: chosen }) });
+        closeTrainingPartners();
+        showToast('Training platforms saved', 'success');
+        loadTrainingPartners();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.saveTrainingPartners = saveTrainingPartners;
+
+// --- Import: read, look, correct, file ---------------------------------------------
+var _trainingImportMode = 'certificates';
+var _trainingImportRows = [];
+var _trainingStaff = [];
+
+async function openTrainingImport() {
+    _trainingImportRows = [];
+    document.getElementById('training-import-preview').innerHTML = '';
+    document.getElementById('training-import-status').innerHTML = '';
+    document.getElementById('training-import-go').disabled = true;
+    switchTrainingImport(_trainingImportMode, document.querySelector('#training-import-tabs [data-mode="' + _trainingImportMode + '"]'));
+    document.getElementById('training-import-modal').style.display = 'flex';
+    try {
+        var staff = await fetchJson('/api/employees');
+        _trainingStaff = (Array.isArray(staff) ? staff : (staff.employees || [])).filter(function (e) {
+            return ['terminated', 'inactive'].indexOf(e.status) === -1;
+        });
+    } catch (e) { _trainingStaff = []; }
+}
+window.openTrainingImport = openTrainingImport;
+
+function closeTrainingImport() { document.getElementById('training-import-modal').style.display = 'none'; }
+window.closeTrainingImport = closeTrainingImport;
+
+function switchTrainingImport(mode, btn) {
+    _trainingImportMode = mode;
+    document.querySelectorAll('#training-import-tabs .tab').forEach(function (t) { t.classList.toggle('active', t === btn); });
+    var file = document.getElementById('training-import-file');
+    file.value = '';
+    file.multiple = mode === 'certificates';
+    file.accept = mode === 'certificates' ? '.pdf,image/*' : '.xlsx,.csv';
+    document.getElementById('training-import-hint').textContent = mode === 'certificates'
+        ? 'Choose up to 25 certificates as downloaded from the platform. Each is read for who it belongs to, the course, the dates and its number - you check them before anything is filed.'
+        : 'Choose the training report or matrix the platform exports (Excel .xlsx or CSV). One row per course, or one row per person with a column for each course - both are read.';
+    _trainingImportRows = [];
+    document.getElementById('training-import-preview').innerHTML = '';
+    document.getElementById('training-import-status').innerHTML = '';
+    document.getElementById('training-import-go').disabled = true;
+}
+window.switchTrainingImport = switchTrainingImport;
+
+function readAsDataUrl(file) {
+    return new Promise(function (resolve, reject) {
+        var r = new FileReader();
+        r.onload = function () { resolve(r.result); };
+        r.onerror = function () { reject(new Error('Could not read ' + file.name)); };
+        r.readAsDataURL(file);
+    });
+}
+
+async function readTrainingFiles(files) {
+    var status = document.getElementById('training-import-status');
+    if (!files || !files.length) return;
+    status.textContent = 'Reading...';
+    try {
+        if (_trainingImportMode === 'certificates') {
+            var list = [];
+            for (var i = 0; i < files.length && i < 25; i++) list.push({ name: files[i].name, data: await readAsDataUrl(files[i]) });
+            var out = await fetchJson('/api/training/certificates/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ files: list }) });
+            _trainingImportRows = out.certificates.map(function (c, k) {
+                return { include: !c.problem && !!c.employee_id && !!c.name, file_name: c.file_name, problem: c.problem || '', note: c.note || '',
+                    missing: c.missing || [], employee_id: c.employee_id || '', name: c.name || '', issuer: c.issuer || '',
+                    issued_on: c.issued_on || '', expires_on: c.expires_on || '', reference: c.reference || '',
+                    document_data: (c.problem || !list[k]) ? '' : list[k].data };
+            });
+            status.textContent = files.length > 25 ? 'Only the first 25 were read.' : '';
+        } else {
+            var f = files[0];
+            var rep = await fetchJson('/api/training/report/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: f.name, data: await readAsDataUrl(f) }) });
+            _trainingImportRows = rep.rows.map(function (r) {
+                return { include: true, file_name: 'Row ' + r.row, problem: '', note: '', missing: [], employee_id: r.employee_id, name: r.name,
+                    issuer: r.issuer || '', issued_on: r.issued_on || '', expires_on: r.expires_on || '', reference: r.reference || '' };
+            });
+            status.innerHTML = 'Read as <strong>' + esc(rep.shape) + '</strong>: ' + rep.rows.length + ' completion' + (rep.rows.length === 1 ? '' : 's') + ' found' +
+                (rep.skipped ? ', ' + rep.skipped + ' not completed and left out' : '') + '.' +
+                (rep.unmatched.length ? '<div style="margin-top:6px;color:var(--warning-color);">Not matched to anyone on your staff, so left out: ' +
+                    rep.unmatched.map(function (u) { return esc(u.name) + ' (' + u.courses + ')'; }).join(', ') + '. Check their names or emails match their record here.</div>' : '');
+        }
+        renderTrainingPreview();
+    } catch (e) { status.innerHTML = '<span style="color:var(--danger-color);">' + esc(e.message) + '</span>'; }
+}
+window.readTrainingFiles = readTrainingFiles;
+
+function renderTrainingPreview() {
+    var host = document.getElementById('training-import-preview');
+    if (!_trainingImportRows.length) { host.innerHTML = '<div style="color:var(--text-secondary);">Nothing was found to import.</div>'; updateTrainingImportButton(); return; }
+    var staffOptions = '<option value="">Who is this?</option>' + _trainingStaff.map(function (e) {
+        return '<option value="' + e.id + '">' + esc((e.first_name || '') + ' ' + (e.last_name || '')) + '</option>';
+    }).join('');
+    host.innerHTML = '<div style="overflow-x:auto;"><table class="data-table" style="font-size:0.85rem;"><thead><tr>' +
+        '<th></th><th>From</th><th>Person</th><th>Course</th><th>Issued by</th><th>Completed</th><th>Expires</th><th>Number</th></tr></thead><tbody>' +
+        _trainingImportRows.map(function (r, i) {
+            var flag = r.problem || r.note || (r.missing.length ? 'Could not find ' + r.missing.join(', ') + ' - fill it in.' : '');
+            return '<tr data-row="' + i + '"' + (flag ? ' style="background:rgba(251, 191, 36, 0.08);"' : '') + '>' +
+                '<td><input type="checkbox" data-f="include"' + (r.include ? ' checked' : '') + (r.problem ? ' disabled' : '') + ' aria-label="Import this"></td>' +
+                '<td style="max-width:170px;"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(r.file_name) + '">' + esc(r.file_name) + '</div>' +
+                    (flag ? '<div style="font-size:0.75rem;color:var(--warning-color);">' + esc(flag) + '</div>' : '') + '</td>' +
+                '<td><select class="form-control" data-f="employee_id" style="min-width:150px;padding:4px 6px;">' + staffOptions + '</select></td>' +
+                '<td><input class="form-control" data-f="name" value="' + esc(r.name) + '" style="min-width:170px;padding:4px 6px;"></td>' +
+                '<td><input class="form-control" data-f="issuer" value="' + esc(r.issuer) + '" style="min-width:120px;padding:4px 6px;"></td>' +
+                '<td><input type="date" class="form-control" data-f="issued_on" value="' + esc(r.issued_on) + '" style="padding:4px 6px;"></td>' +
+                '<td><input type="date" class="form-control" data-f="expires_on" value="' + esc(r.expires_on) + '" style="padding:4px 6px;"></td>' +
+                '<td><input class="form-control" data-f="reference" value="' + esc(r.reference) + '" style="min-width:90px;padding:4px 6px;"></td>' +
+                '</tr>';
+        }).join('') + '</tbody></table></div>';
+    host.querySelectorAll('tr[data-row]').forEach(function (tr) {
+        var r = _trainingImportRows[+tr.getAttribute('data-row')];
+        var sel = tr.querySelector('[data-f="employee_id"]');
+        sel.value = r.employee_id ? String(r.employee_id) : '';
+        tr.querySelectorAll('[data-f]').forEach(function (el) {
+            el.addEventListener('change', function () {
+                var f = el.getAttribute('data-f');
+                r[f] = f === 'include' ? el.checked : el.value;
+                // Picking the person on a row that could not be read means
+                // it is wanted.
+                if (f !== 'include' && r.employee_id && r.name && !r.problem) {
+                    r.include = true;
+                    tr.querySelector('[data-f="include"]').checked = true;
+                }
+                updateTrainingImportButton();
+            });
+        });
+    });
+    updateTrainingImportButton();
+}
+
+function trainingRowsToImport() {
+    return _trainingImportRows.filter(function (r) { return r.include && r.employee_id && r.name; });
+}
+
+function updateTrainingImportButton() {
+    var btn = document.getElementById('training-import-go');
+    var n = trainingRowsToImport().length;
+    btn.disabled = !n;
+    btn.textContent = n ? 'Import ' + n : 'Import';
+}
+
+async function importTraining() {
+    var rows = trainingRowsToImport();
+    if (!rows.length) return;
+    var btn = document.getElementById('training-import-go');
+    btn.disabled = true;
+    try {
+        var out = await fetchJson('/api/training/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items: rows.map(function (r) {
+            return { employee_id: +r.employee_id, name: r.name, issuer: r.issuer, issued_on: r.issued_on, expires_on: r.expires_on,
+                reference: r.reference, document_data: r.document_data || '' };
+        }) }) });
+        var msg = out.created + ' certificate' + (out.created === 1 ? '' : 's') + ' filed' +
+            (out.courses_completed ? ', ' + out.courses_completed + ' course' + (out.courses_completed === 1 ? '' : 's') + ' marked done' : '');
+        if (out.skipped && out.skipped.length) {
+            await uiAlert(msg + '.\n\nLeft out:\n' + out.skipped.map(function (s) { return '- ' + s.reason; }).join('\n'), { title: 'Training imported' });
+        } else {
+            showToast(msg, 'success');
+        }
+        closeTrainingImport();
+        loadTrainingView();
+        if (typeof loadCourses === 'function') loadCourses();
+    } catch (e) { showToast(e.message, 'error'); updateTrainingImportButton(); }
+}
+window.importTraining = importTraining;
 
 async function loadTrainingView() {
     var host = document.getElementById('training-list');

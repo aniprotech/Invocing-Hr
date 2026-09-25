@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=193">
-    <link rel="stylesheet" href="mobile.css?v=193">
+    <link rel="stylesheet" href="styles.css?v=194">
+    <link rel="stylesheet" href="mobile.css?v=194">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,11 +57,11 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=193">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=193">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=193">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=193">
-    <script src="/dialogs.js?v=193"></script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=194">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=194">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=194">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=194">
+    <script src="/dialogs.js?v=194"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -2497,8 +2497,18 @@
                         </div>
                         <div class="invoices-actions">
                             <button class="btn btn-outline" onclick="editCourse()">+ New course</button>
+                            <button class="btn btn-outline" onclick="openTrainingImport()">Import certificates</button>
                             <button class="btn btn-primary" onclick="addCertification()">+ Add certification</button>
                         </div>
+                    </div>
+                    <!-- The learning platforms this business's staff train on, and
+                         what each one gives: an API, a report, or PDFs. -->
+                    <div class="glass-widget" style="margin-bottom:24px;" id="training-partners">
+                        <div class="widget-header">
+                            <h3>Training partners</h3>
+                            <button class="btn btn-outline btn-sm" style="margin-left:auto;" onclick="openTrainingPartners()">Choose platforms</button>
+                        </div>
+                        <div class="widget-content" id="training-partners-list"></div>
                     </div>
                     <!-- Courses: what people are asked to learn, who has, who is late. -->
                     <div class="glass-widget" style="margin-bottom:24px;">
@@ -4809,6 +4819,48 @@
     </div>
 
     <!-- ========== ADD EMPLOYEE MODAL ========== -->
+    <div id="training-partners-modal" class="modal-overlay" style="display:none;">
+        <div class="modal" style="max-width:680px;width:95%;max-height:90vh;overflow-y:auto;">
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:24px 24px 0;">
+                <h2 style="font-size:1.2rem;font-weight:700;">Which platforms do your staff train on?</h2>
+                <button class="btn-icon" onclick="closeTrainingPartners()" style="font-size:1.5rem;color:var(--text-secondary);" aria-label="Close">&times;</button>
+            </div>
+            <div style="padding:16px 24px 24px;">
+                <div id="training-partners-choices"></div>
+                <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:16px;">
+                    <button type="button" class="btn btn-outline" onclick="closeTrainingPartners()">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="training-partners-save" onclick="saveTrainingPartners()">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bringing training in: read, look, correct, file. -->
+    <div id="training-import-modal" class="modal-overlay" style="display:none;">
+        <div class="modal" style="max-width:1100px;width:96%;max-height:92vh;overflow-y:auto;">
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:24px 24px 0;">
+                <h2 style="font-size:1.2rem;font-weight:700;">Import training</h2>
+                <button class="btn-icon" onclick="closeTrainingImport()" style="font-size:1.5rem;color:var(--text-secondary);" aria-label="Close">&times;</button>
+            </div>
+            <div style="padding:16px 24px 24px;">
+                <div class="invoices-tabs" id="training-import-tabs" style="margin-bottom:14px;">
+                    <button class="tab active" data-mode="certificates" onclick="switchTrainingImport('certificates', this)">Certificates (PDF)</button>
+                    <button class="tab" data-mode="report" onclick="switchTrainingImport('report', this)">Training report (Excel / CSV)</button>
+                </div>
+                <div id="training-import-pick">
+                    <p id="training-import-hint" style="font-size:0.88rem;color:var(--text-secondary);margin:0 0 10px;"></p>
+                    <input type="file" id="training-import-file" class="form-control" multiple accept=".pdf,image/*" onchange="readTrainingFiles(this.files)">
+                </div>
+                <div id="training-import-status" style="margin-top:12px;font-size:0.88rem;"></div>
+                <div id="training-import-preview" style="margin-top:12px;"></div>
+                <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:16px;">
+                    <button type="button" class="btn btn-outline" onclick="closeTrainingImport()">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="training-import-go" onclick="importTraining()" disabled>Import</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="uk-payroll-modal" class="modal-overlay" style="display:none;">
         <div class="modal" style="max-width:640px;width:95%;max-height:90vh;overflow-y:auto;">
             <div style="display:flex;justify-content:space-between;align-items:center;padding:24px 24px 0;">
@@ -5073,8 +5125,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="feed.js?v=193"></script>
-    <script src="app.js?v=193"></script>
+    <script src="feed.js?v=194"></script>
+    <script src="app.js?v=194"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
@@ -5302,7 +5354,7 @@
             </div>
         </div>
     </div>
-    <script src="/install-hint.js?v=193"></script>
-    <script src="/pwa.js?v=193"></script>
+    <script src="/install-hint.js?v=194"></script>
+    <script src="/pwa.js?v=194"></script>
 </body>
 </html>
