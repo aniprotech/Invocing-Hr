@@ -21772,6 +21772,20 @@ def employee_payslip(ps_id: int, request: Request, db: Session = Depends(get_db)
         "other_deductions": round(ps.other_deductions or 0, 2),
         "total_deductions": round(ps.total_deductions or 0, 2),
         "net_pay": round(ps.net_pay or 0, 2),
+        # A UK payslip is a UK payslip in the portal too: the codes it was
+        # worked on, NI and the loans on their own lines, and the tax year
+        # to date. Left off, the person saw one "Tax" line and a total that
+        # did not add up.
+        "regime": ps.regime or "simple",
+        "uk": {
+            "tax_code": ps.tax_code, "ni_category": ps.ni_category, "ni_number": emp.ni_number or "",
+            "tax_year": uk_paye.tax_year_label(ps.tax_year) if ps.tax_year else "",
+            "tax_period": ps.tax_period, "taxable_pay": round(ps.taxable_pay or 0, 2),
+            "employee_ni": round(ps.employee_ni or 0, 2),
+            "student_loan": round(ps.student_loan or 0, 2), "student_loan_plan": emp.student_loan_plan or "",
+            "postgrad_loan": round(ps.postgrad_loan or 0, 2),
+            "year_to_date": uk_tax_year_to_date(db, ps.client_id, emp.id, ps.tax_year, up_to_id=ps.id),
+        } if ps.regime == "uk" else None,
         "employee": {
             "name": f"{emp.first_name} {emp.last_name}".strip(),
             "employee_id": emp.employee_id or "",
@@ -34028,6 +34042,15 @@ def app_manifest(request: Request):
                                else "People, leave, payroll, hiring and the staff portal.")
     return Response(json.dumps(data), media_type="application/manifest+json",
                     headers={"Cache-Control": "no-cache"})
+
+
+# The frontend folder holds its own test suites. They were being served to
+# anybody who asked for /tests/..., which told the world how the app is put
+# together and helps nobody using it.
+@app.api_route("/tests", methods=["GET", "HEAD"])
+@app.api_route("/tests/{rest:path}", methods=["GET", "HEAD"])
+def no_test_files(rest: str = ""):
+    raise HTTPException(status_code=404, detail="Not Found")
 
 
 # Serve frontend

@@ -47,3 +47,10 @@ def test_an_unversioned_script_is_always_revalidated(client):
 
 def test_an_unversioned_stylesheet_too(client):
     assert "no-cache" in cache_header(client, "/styles.css")
+
+
+def test_the_frontend_test_suites_are_not_served(client):
+    """They sit in frontend/tests and were downloadable by anyone."""
+    for path in ("/tests/uk-payroll.js", "/tests/employee-portal.js", "/tests", "/tests/"):
+        assert client.get(path).status_code == 404, path
+    assert client.get("/app.html").status_code == 200, "the rest of the frontend still is"

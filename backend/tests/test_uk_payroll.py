@@ -325,3 +325,29 @@ def test_the_emailed_flat_rate_payslip_is_as_it_was(tenant, outbox):
     tenant.post(f"/api/payslips/{ps['id']}/send", json={})
     html = outbox[-1]["html"]
     assert ">Tax<" in html and ">Retirement<" in html and "National Insurance" not in html
+
+
+# --- the staff portal -----------------------------------------------------------------
+def test_the_person_sees_their_uk_payslip_in_the_portal_too(tenant, client):
+    go_uk(tenant)
+    emp = uk_employee(tenant, student_loan_plan="2", password="EmpPass123")
+    ps = payslip(tenant, emp, "2026-04-30")
+    main.rate_limiter._hits.clear()
+    client.post("/api/client/logout")
+    assert client.post("/api/employee/auth/login", json={"email": emp["email"], "password": "EmpPass123"}).status_code == 200
+    got = client.get(f"/api/employee/payslips/{ps['id']}").json()
+    uk = got["uk"]
+    assert got["regime"] == "uk"
+    assert (uk["tax_code"], uk["ni_category"], uk["ni_number"], uk["tax_year"], uk["tax_period"]) == ("1257L", "A", "AB123456C", "2026-27", 1)
+    assert (uk["employee_ni"], uk["student_loan"], uk["student_loan_plan"]) == (156.16, 49.0, "2")
+    assert uk["year_to_date"]["tax"] == 390.20
+    assert "employer_ni" not in uk, "what the employer pays on top is the employer's business"
+
+
+def test_a_flat_rate_payslip_in_the_portal_has_no_uk_block(tenant, client):
+    emp = make_employee(tenant, salary=3000.0, tax_rate=20.0, password="EmpPass123")
+    ps = payslip(tenant, emp, "2026-04-30")
+    main.rate_limiter._hits.clear()
+    client.post("/api/client/logout")
+    client.post("/api/employee/auth/login", json={"email": emp["email"], "password": "EmpPass123"})
+    assert client.get(f"/api/employee/payslips/{ps['id']}").json()["uk"] is None

@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=194">
+  <link rel="stylesheet" href="tailwind.css?v=195">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,12 +50,12 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=194">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=194">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=194">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=194">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=194">
-    <script src="/dialogs.js?v=194"></script>
+    <link rel="stylesheet" href="mobile.css?v=195">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=195">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=195">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=195">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=195">
+    <script src="/dialogs.js?v=195"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -3684,8 +3684,14 @@
       if (ps.employee.bank_account) {
         doc.text('Account: ' + ps.employee.bank_account, W - M, y + 24, { align: 'right' });
       }
+      // UK: the tax code, NI number and category, and the tax period.
+      if (ps.uk) {
+        doc.text('Tax code ' + (ps.uk.tax_code || '-') + '   NI ' + (ps.uk.ni_category || '-') +
+                 (ps.uk.ni_number ? '   ' + ps.uk.ni_number : ''), M, y + 26);
+        doc.text((ps.uk.tax_year || '') + ' period ' + (ps.uk.tax_period || '-'), W - M, y + 36, { align: 'right' });
+      }
       doc.setTextColor(0);
-      y += 46;
+      y += ps.uk ? 56 : 46;
 
       // Two columns that have to reconcile: what was earned, what was taken off.
       function row(label, value, bold) {
@@ -3713,7 +3719,12 @@
       doc.setFont(undefined, 'bold'); doc.setFontSize(11);
       doc.text('Deductions', M, y); y += 16;
       doc.setFont(undefined, 'normal');
-      row('Tax', ps.tax_amount);
+      row(ps.uk ? 'Income Tax' : 'Tax', ps.tax_amount);
+      if (ps.uk) {
+        row('National Insurance', ps.uk.employee_ni);
+        if (ps.uk.student_loan) row('Student loan' + (ps.uk.student_loan_plan ? ' (plan ' + ps.uk.student_loan_plan + ')' : ''), ps.uk.student_loan);
+        if (ps.uk.postgrad_loan) row('Postgraduate loan', ps.uk.postgrad_loan);
+      }
       if (ps.insurance) row('Insurance', ps.insurance);
       if (ps.retirement) row('Pension', ps.retirement);
       if (ps.other_deductions) row('Other', ps.other_deductions);
@@ -3726,6 +3737,21 @@
       doc.setFont(undefined, 'bold'); doc.setFontSize(13);
       doc.text('Net pay', M, y + 8);
       doc.text(money(ps.net_pay), W - M, y + 8, { align: 'right' });
+
+      // The tax year so far, which HMRC's rules want on a UK payslip.
+      if (ps.uk && ps.uk.year_to_date) {
+        var t = ps.uk.year_to_date;
+        y += 40;
+        doc.setFont(undefined, 'bold'); doc.setFontSize(11);
+        doc.text('This tax year to date (' + (t.tax_year || '') + ')', M, y); y += 16;
+        doc.setFont(undefined, 'normal');
+        row('Gross pay', t.gross_pay);
+        row('Taxable pay', t.taxable_pay);
+        row('Income Tax', t.tax);
+        row('National Insurance', t.employee_ni);
+        if (t.student_loan) row('Student loan', t.student_loan);
+        row('Take-home', t.net_pay);
+      }
 
       doc.setFont(undefined, 'normal'); doc.setFontSize(8); doc.setTextColor(140);
       doc.text('This payslip is issued by ' + (ps.company.name || 'your employer') + '.',
@@ -4772,8 +4798,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=194"></script>
-    <script src="/pwa.js?v=194"></script>
-    <script src="/feed.js?v=194"></script>
+    <script src="/install-hint.js?v=195"></script>
+    <script src="/pwa.js?v=195"></script>
+    <script src="/feed.js?v=195"></script>
 </body>
 </html>
