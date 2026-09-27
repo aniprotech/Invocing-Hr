@@ -8915,6 +8915,7 @@ showView = function(viewId) {
     if (viewId === 'analytics-view') loadAnalyticsView();
     if (viewId === 'recruitment-view') {
         loadRecAnalytics();
+        loadJobBoards();
         var jobsTab = document.querySelector('#rec-tabs .tab');
         switchRecTab('jobs', jobsTab);
     }
@@ -12480,6 +12481,54 @@ async function loadRecAnalytics() {
     } catch (e) { /* the snapshot is optional; never block the page */ }
 }
 window.loadRecAnalytics = loadRecAnalytics;
+
+// --- Job boards --------------------------------------------------------------
+// Two ways a board gets a business's roles without that board approving
+// anything: a feed it pulls on its own (Indeed, ZipRecruiter, Adzuna all
+// take one the same way), or structured data on the careers page that
+// Google for Jobs reads on its own. Posting straight into a board's own
+// dashboard through its API is not on this list, because that needs the
+// board to approve this product first - a business decision, not a toggle.
+var JOB_BOARD_METHOD_LABEL = { feed: 'Add the feed URL', automatic: 'Nothing to add', manual: 'Posted by hand' };
+
+async function copyText(text, okMessage) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        try { await navigator.clipboard.writeText(text); showToast(okMessage || 'Copied', 'success'); return; }
+        catch (e) { /* fall through */ }
+    }
+    showToast('Could not copy - select the text and copy it by hand', 'error');
+}
+async function loadJobBoards() {
+    var host = document.getElementById('job-boards-content');
+    if (!host) return;
+    try {
+        var data = await fetchJson('/api/job-board/settings');
+    } catch (e) { host.innerHTML = '<div style="color:var(--text-secondary);font-size:0.85rem;">' + esc(e.message) + '</div>'; return; }
+    var feedRow = '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid var(--border-color);">' +
+        '<div style="flex:1;min-width:220px;">' +
+            '<div style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.4px;color:var(--text-secondary);margin-bottom:4px;">Your job feed</div>' +
+            '<code style="font-size:0.82rem;word-break:break-all;">' + esc(data.feed_url) + '</code>' +
+        '</div>' +
+        '<button class="btn btn-outline btn-sm" data-copy-feed>Copy</button>' +
+        '<span style="font-size:0.8rem;color:var(--text-secondary);">' + data.open_jobs + ' open role' + (data.open_jobs === 1 ? '' : 's') + ' published</span>' +
+    '</div>';
+    var rows = data.boards.map(function (b) {
+        var badge = JOB_BOARD_METHOD_LABEL[b.method] || b.method;
+        var tone = b.method === 'automatic' ? 'var(--success-color)' : (b.method === 'manual' ? 'var(--text-secondary)' : 'var(--primary-color)');
+        return '<div style="display:flex;gap:14px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border-color);">' +
+            '<div style="min-width:130px;font-weight:600;">' + esc(b.name) + '</div>' +
+            '<div style="flex:1;">' +
+                '<span style="font-size:0.72rem;font-weight:700;color:' + tone + ';text-transform:uppercase;letter-spacing:0.3px;">' + esc(badge) + '</span>' +
+                '<div style="font-size:0.82rem;color:var(--text-secondary);margin-top:2px;">' + esc(b.note) + '</div>' +
+            '</div>' +
+            (b.add_url ? '<a class="btn btn-outline btn-sm" href="' + esc(b.add_url) + '" target="_blank" rel="noopener">Open</a>' : '') +
+        '</div>';
+    }).join('');
+    host.innerHTML = feedRow + rows;
+    var copyBtn = host.querySelector('[data-copy-feed]');
+    if (copyBtn) copyBtn.addEventListener('click', function () { copyText(data.feed_url, 'Feed URL copied'); });
+}
+window.loadJobBoards = loadJobBoards;
 
 // --- Jobs ------------------------------------------------------------------
 async function loadJobs() {

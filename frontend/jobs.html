@@ -60,12 +60,12 @@
         }
         @media (max-width: 1024px) { input, select, textarea, button { font-size: 16px; } }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=195">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=195">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=195">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=195">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=195">
-    <script src="/dialogs.js?v=195"></script>
+    <link rel="stylesheet" href="mobile.css?v=196">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=196">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=196">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=196">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=196">
+    <script src="/dialogs.js?v=196"></script>
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="aniprotech">
     <meta property="og:title" content="Jobs at aniprotech">
@@ -152,7 +152,7 @@
                 var apply = j.apply_token
                     ? '<a class="apply" href="/recruitment.html?token=' + encodeURIComponent(j.apply_token) + '">Apply for this role &rarr;</a>'
                     : '<span class="apply closed">Applications not open yet</span>';
-                return '<article class="job">' +
+                return '<article class="job" id="job-' + j.id + '">' +
                     '<div class="job-top"><h2>' + esc(j.title) + '</h2><span class="ref">' + esc(j.reference) + '</span></div>' +
                     '<div class="meta">' + chips + payChip(j) + '</div>' +
                     (j.description ? '<p class="desc">' + esc(j.description) + '</p>' : '') +
@@ -160,9 +160,41 @@
                         esc(j.requirements) + '</p></details>' : '') +
                     (j.closing_date ? '<p class="ref" style="margin-top:10px;">Closes ' + esc(j.closing_date) + '</p>' : '') +
                     apply +
+                    jobPostingLd(j, data) +
                 '</article>';
             }).join('');
         }
+
+        // Google for Jobs finds roles from this structured data alone - no
+        // account, no feed, no approval from anybody. One script tag per
+        // role, next to the listing it describes, is what Google's own
+        // guidance asks for. A field Google requires but this job has none
+        // of (a description, say) is left out rather than sent empty,
+        // which is what "required if present" means in their spec.
+        function jobPostingLd(j, data) {
+            var ld = {
+                '@context': 'https://schema.org/', '@type': 'JobPosting',
+                title: j.title, description: j.description || j.title,
+                identifier: { '@type': 'PropertyValue', name: data.company || 'Employer', value: String(j.reference || j.id) },
+                datePosted: j.posted_on || undefined,
+                validThrough: j.closing_date ? j.closing_date + 'T23:59:59' : undefined,
+                employmentType: EMPLOYMENT_LD[j.employment_type] || undefined,
+                hiringOrganization: { '@type': 'Organization', name: data.company || 'Employer' },
+                jobLocationType: j.work_mode === 'remote' ? 'TELECOMMUTE' : undefined,
+                jobLocation: j.work_mode === 'remote' ? undefined : {
+                    '@type': 'Place', address: { '@type': 'PostalAddress', addressLocality: j.location || '' }
+                },
+                baseSalary: (j.salary_min || j.salary_max) ? {
+                    '@type': 'MonetaryAmount', currency: j.salary_currency || 'GBP',
+                    value: { '@type': 'QuantitativeValue', minValue: j.salary_min || j.salary_max,
+                            maxValue: j.salary_max || j.salary_min, unitText: 'YEAR' }
+                } : undefined,
+            };
+            Object.keys(ld).forEach(function (k) { if (ld[k] === undefined) delete ld[k]; });
+            return '<script type="application/ld+json">' + JSON.stringify(ld) + '<' + '/script>';
+        }
+        var EMPLOYMENT_LD = { full_time: 'FULL_TIME', part_time: 'PART_TIME', contract: 'CONTRACTOR',
+            casual: 'TEMPORARY', internship: 'INTERN' };
 
         (async function () {
             var params = new URLSearchParams(window.location.search);

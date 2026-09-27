@@ -13128,12 +13128,153 @@ def public_job_board(client_ref: str, db: Session = Depends(get_db)):
             "salary_max": job.salary_max if job.show_salary else None,
             "salary_currency": job.salary_currency or client.currency or "",
             "closing_date": job.closing_date or "",
+            # Google for Jobs' structured data requires a posted date on
+            # every listing; without it the page fails validation.
+            "posted_on": (job.opened_at or job.created_at or "")[:10],
             "apply_token": form.form_token if form else None,
         })
     return {
         "company": client.company_name or "",
         "logo_url": client.logo_url or "",
         "jobs": listings,
+    }
+
+
+# ---------------------------------------------------------------------------
+# JOB BOARDS
+# ---------------------------------------------------------------------------
+# Indeed, and every board built the same way, takes jobs one of two ways:
+# an XML feed it pulls on its own schedule, or its own API under a signed
+# partner agreement. aniprotech is not an Indeed partner, so posting
+# straight to Indeed's own dashboard through their API is not something
+# this can turn on by itself - that takes Indeed approving this product,
+# a business decision, not a line of code.
+#
+# What is real without anyone's approval: a standing XML feed in the
+# format Indeed's own spec defines (docs.indeed.com/job-sync-xml), which
+# Indeed and most other boards - ZipRecruiter, Adzuna, Jooble, CV-Library,
+# Talent.com - accept as a self-serve "add your feed URL" in their
+# employer dashboard; and Google for Jobs structured data on the careers
+# page itself, which needs nothing from anybody and Google's own crawler
+# picks up on its own schedule. Both point at jobs already published to
+# the existing public board - nothing new to keep in step.
+
+def _xml_text(v) -> str:
+    """XML does not accept a bare & < > in text content - not an "HTML
+    entity" in Indeed's sense (those are for the description's HTML), just
+    what well-formed XML requires everywhere else in the feed."""
+    return (str(v or "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+JOB_TYPE_FOR_FEED = {"full_time": "Full-time", "part_time": "Part-time", "contract": "Contract",
+                     "casual": "Temporary", "internship": "Internship"}
+REMOTE_TYPE_FOR_FEED = {"remote": "Fully remote", "hybrid": "Hybrid", "onsite": ""}
+
+
+def job_feed_entry(job, client, request=None) -> str:
+    apply_url = page_url(f"/jobs.html?c={client.id}#job-{job.id}", request)
+    salary = ""
+    if job.show_salary and (job.salary_min or job.salary_max):
+        code = job.salary_currency or client.currency or ""
+        if job.salary_min and job.salary_max and job.salary_min != job.salary_max:
+            salary = f"{job.salary_min:g} - {job.salary_max:g} {code}".strip()
+        else:
+            salary = f"{(job.salary_min or job.salary_max):g} {code}".strip()
+    description = (job.description or "") + (("\n\n" + job.requirements) if job.requirements else "")
+    parts = [
+        "  <job>",
+        f"    <title>{_xml_text(job.title)}</title>",
+        f"    <date>{_xml_text(job.opened_at or job.created_at or '')}</date>",
+        f"    <referencenumber>{_xml_text(job.reference or job.id)}</referencenumber>",
+        f"    <requisitionid>{_xml_text(job.reference or job.id)}</requisitionid>",
+        f"    <url>{_xml_text(apply_url)}</url>",
+        f"    <company>{_xml_text(client.company_name or '')}</company>",
+        f"    <city>{_xml_text(job.location or '')}</city>",
+        "    <state></state>",
+        "    <country></country>",
+        f"    <description><![CDATA[{description}]]></description>",
+    ]
+    if salary:
+        parts.append(f"    <salary>{_xml_text(salary)}</salary>")
+    job_type = JOB_TYPE_FOR_FEED.get(job.employment_type or "")
+    if job_type:
+        parts.append(f"    <jobtype>{_xml_text(job_type)}</jobtype>")
+    remote = REMOTE_TYPE_FOR_FEED.get(job.work_mode or "")
+    if remote:
+        parts.append(f"    <remotetype>{_xml_text(remote)}</remotetype>")
+    if job.closing_date:
+        parts.append(f"    <expirationdate>{_xml_text(job.closing_date)}</expirationdate>")
+    if job.department:
+        parts.append(f"    <category>{_xml_text(job.department.name)}</category>")
+    parts.append("  </job>")
+    return "\n".join(parts)
+
+
+def open_jobs_for_feed(db, client_id):
+    today = datetime.now().date()
+    jobs = db.query(models.DBJobRequisition).filter(
+        models.DBJobRequisition.client_id == client_id,
+        models.DBJobRequisition.status == "open",
+        models.DBJobRequisition.is_published == True,
+    ).order_by(models.DBJobRequisition.id.desc()).all()
+    out = []
+    for job in jobs:
+        closing = _parse_date(job.closing_date)
+        if closing and closing < today:
+            continue
+        out.append(job)
+    return out
+
+
+@app.get("/api/public/jobs/{client_ref}/feed.xml")
+def public_job_feed(client_ref: str, request: Request, db: Session = Depends(get_db)):
+    """The same published roles as the public job board, in the format
+    Indeed's Job Sync XML spec defines - paste this URL into Indeed's (or
+    ZipRecruiter's, or Adzuna's) "add an XML feed" box and it is kept in
+    step on its own, because it reads live every time it is fetched."""
+    try:
+        client_id = int(client_ref)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=404, detail="Not found")
+    client = db.query(models.DBClient).filter(
+        models.DBClient.id == client_id, models.DBClient.is_active == True).first()
+    if not client:
+        raise HTTPException(status_code=404, detail="Not found")
+    jobs = open_jobs_for_feed(db, client_id)
+    body = "\n".join(job_feed_entry(j, client, request) for j in jobs)
+    xml = '<?xml version="1.0" encoding="UTF-8"?>\n<source>\n' + body + '\n</source>\n'
+    return Response(content=xml, media_type="application/xml",
+                    headers={"Cache-Control": "public, max-age=1800"})
+
+
+@app.get("/api/job-board/settings")
+def job_board_settings(request: Request, db: Session = Depends(get_db)):
+    """The URLs a business pastes into each board's own dashboard, and what
+    is honestly true about each - a self-serve feed a board pulls on its
+    own, or a connection that needs that board's approval first."""
+    client = get_client_user(request, db)
+    feed_url = page_url(f"/api/public/jobs/{client.id}/feed.xml", request)
+    board_url = page_url(f"/jobs.html?c={client.id}", request)
+    open_count = len(open_jobs_for_feed(db, client.id))
+    return {
+        "feed_url": feed_url, "board_url": board_url, "open_jobs": open_count,
+        "boards": [
+            {"key": "indeed", "name": "Indeed", "method": "feed",
+             "note": "Add the feed URL under Employer settings → XML feed. Indeed pulls it on its own schedule; posting through Indeed's own API needs Indeed to approve this product as a partner first, which is not something switched on from here.",
+             "add_url": "https://employers.indeed.com/"},
+            {"key": "google", "name": "Google for Jobs", "method": "automatic",
+             "note": "Nothing to add. Every published role carries the structured data Google's own crawler looks for, and Google indexes it on its own schedule once the page is public.",
+             "add_url": ""},
+            {"key": "ziprecruiter", "name": "ZipRecruiter", "method": "feed",
+             "note": "Add the feed URL under their employer XML feed settings.",
+             "add_url": "https://www.ziprecruiter.com/employer"},
+            {"key": "adzuna", "name": "Adzuna", "method": "feed",
+             "note": "Add the feed URL when adding a job source in their employer area.",
+             "add_url": "https://www.adzuna.co.uk/"},
+            {"key": "linkedin", "name": "LinkedIn Jobs", "method": "manual",
+             "note": "LinkedIn does not accept a self-serve XML feed - each role is posted by hand from your LinkedIn company page.",
+             "add_url": "https://www.linkedin.com/talent/post-a-job"},
+        ],
     }
 
 
