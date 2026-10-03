@@ -712,6 +712,19 @@ class DBEmployee(Base):
     onboarding_complete = Column(Boolean, default=False)
     offboarding_complete = Column(Boolean, default=False)
 
+    # What the portal lets this person reach, apart from their employment
+    # status: initiated -> submitted -> active. Everyone who existed before the
+    # pre-boarding flow is "active", so nothing changes for them. "Verified" is
+    # the moment of approval, not a state: approval makes them active in the
+    # same transaction, and verified_at records when.
+    portal_stage = Column(String, default="active", index=True)
+    must_change_password = Column(Boolean, default=False)
+    temp_password_expires_at = Column(String, default="")
+    docs_submitted_at = Column(String, default="")
+    verified_at = Column(String, default="")
+    verified_by = Column(String, default="")
+    offer_letter_sent_at = Column(String, default="")
+
     # UK PAYE, used only when the business runs UK payroll. Empty on
     # everybody else, whose payroll stays the flat rate above.
     ni_number = Column(String, default="")

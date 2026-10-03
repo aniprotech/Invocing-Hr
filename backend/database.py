@@ -1866,6 +1866,26 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 67: {sys.exc_info()[1]}")
 
+            # 68. Pre-boarding: what a new hire's portal login can reach. The
+            # default is "active" so every existing employee keeps full access;
+            # only people hired through recruitment start as "initiated".
+            try:
+                for ddl in (
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS portal_stage VARCHAR DEFAULT 'active'",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT FALSE",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS temp_password_expires_at VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS docs_submitted_at VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS verified_at VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS verified_by VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS offer_letter_sent_at VARCHAR DEFAULT ''",
+                    "UPDATE employees SET portal_stage = 'active' WHERE portal_stage IS NULL",
+                    "CREATE INDEX IF NOT EXISTS ix_employees_portal_stage ON employees (portal_stage)",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 68: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the
