@@ -129,6 +129,17 @@ def test_an_existing_employee_is_never_locked_out(client, tenant, outbox):
     assert client.get("/api/employee/profile").status_code == 200
 
 
+def test_a_password_hr_sets_is_not_temporary(client, tenant, outbox):
+    hired, email = hire(client, tenant)
+    res = tenant.put(f"/api/employees/{hired['employee_id']}/set-password",
+                     json={"password": "Chosen-By-HR-9x"})
+    assert res.status_code == 200, res.text
+    login = client.post("/api/employee/auth/login",
+                        json={"email": email, "password": "Chosen-By-HR-9x"}).json()
+    assert login["must_change_password"] is False
+    assert client.get("/api/employee/document-requests").status_code == 200
+
+
 def test_an_expired_temporary_password_is_refused(client, tenant, outbox):
     hired, email = hire(client, tenant)
     welcome = next(m for m in outbox if "Congratulations" in m["subject"])

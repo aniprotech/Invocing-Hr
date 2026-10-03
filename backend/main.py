@@ -7116,6 +7116,9 @@ def reset_password(body: ResetPasswordIn, request: Request, db: Session = Depend
             raise HTTPException(status_code=400,
                                 detail="That reset link is invalid or has expired")
         subject.password_hash = models.hash_password(body.password)
+        # A password they chose is no longer the temporary one.
+        subject.must_change_password = False
+        subject.temp_password_expires_at = ""
         client_id, who = subject.client_id, subject.email
     else:
         subject = db.query(models.DBClient).filter(
@@ -10200,6 +10203,9 @@ def reset_employee_password(emp_id: int, body: dict, request: Request, db: Sessi
     if not new_pass or len(new_pass) < 4:
         raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
     emp.password_hash = models.hash_password(new_pass)
+    # HR picked this one, so it is not a temporary password awaiting expiry.
+    emp.must_change_password = False
+    emp.temp_password_expires_at = ""
     db.commit()
     return {"message": "Password updated successfully"}
 
@@ -12551,6 +12557,8 @@ def set_employee_password(emp_id: int, request: Request, body: dict = None, db: 
     # everybody else now.
     validate_password_strength(body["password"])
     emp.password_hash = models.hash_password(body["password"])
+    emp.must_change_password = False
+    emp.temp_password_expires_at = ""
     db.commit()
     return {"message": "Password set successfully"}
 
