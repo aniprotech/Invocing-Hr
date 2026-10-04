@@ -151,3 +151,33 @@ def test_an_expired_temporary_password_is_refused(client, tenant, outbox):
     res = client.post("/api/employee/auth/login", json={"email": email, "password": password})
     assert res.status_code == 401 and "expired" in res.json()["detail"]
     assert tenant.post(f"/api/employees/{hired['employee_id']}/resend-credentials").status_code == 200
+
+
+def test_approve_all_opens_the_portal_and_sends_the_offer(client, tenant, outbox):
+    hired, email = hire(client, tenant)
+    emp_id = hired["employee_id"]
+    password, _ = sign_in_as_hire(client, outbox, email)
+    client.post("/api/employee/preboarding/change-password",
+                json={"current_password": password, "new_password": "Brand-New-Pass1"})
+    # Not everything in yet: refused, and says what is missing.
+    res = tenant.post(f"/api/employees/{emp_id}/approve-documents")
+    assert res.status_code == 400 and "Still waiting on" in res.json()["detail"]
+    upload_all(client)
+    client.post("/api/employee/preboarding/submit")
+    # Reissuing the login while HR reviews must not undo the submission.
+    assert tenant.post(f"/api/employees/{emp_id}/resend-credentials").status_code == 200
+    board = tenant.get("/api/onboarding/pipeline").json()
+    card = next(c for s in board["stages"] for c in s["cards"] if c["employee_id"] == emp_id)
+    assert card["portal_stage"] == "submitted"
+    res = tenant.post(f"/api/employees/{emp_id}/approve-documents")
+    assert res.status_code == 200 and res.json()["portal_stage"] == "active"
+    assert sum("offer of employment" in m["subject"].lower() for m in outbox) == 1
+
+
+def test_the_pages_exist_and_the_login_routes_new_hires_there(client):
+    import pathlib
+    root = pathlib.Path(main.__file__).resolve().parent.parent / "frontend"
+    assert (root / "preboarding.html").exists()
+    assert "/preboarding.html" in (root / "employee-login.html").read_text()
+    assert "/preboarding.html" in (root / "employee-dashboard.html").read_text()
+    assert client.get("/preboarding.html").status_code == 200

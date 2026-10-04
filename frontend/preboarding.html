@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Welcome - finish your onboarding</title>
+<link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=196">
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#111827; --sub:#6b7280; --line:#e5e7eb;
+          --brand:#2563eb; --ok:#059669; --warn:#d97706; --bad:#dc2626; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1115; --card:#181b21; --ink:#f3f4f6; --sub:#9ca3af; --line:#2a2f38; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  .wrap { max-width:640px; margin:0 auto; padding:24px 16px 64px; }
+  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; }
+  h1 { font-size:1.4rem; margin:0 0 4px; }
+  .sub { color:var(--sub); font-size:.95rem; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:18px; margin-top:14px; }
+  .row { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; flex-wrap:wrap; }
+  .name { font-weight:600; }
+  .badge { font-size:.75rem; padding:2px 9px; border-radius:999px; border:1px solid var(--line); }
+  .pending { color:var(--warn); } .submitted { color:var(--brand); }
+  .approved { color:var(--ok); } .rejected { color:var(--bad); }
+  .note { color:var(--bad); font-size:.9rem; margin-top:6px; }
+  label { display:block; font-size:.85rem; color:var(--sub); margin:10px 0 4px; }
+  input[type=password], input[type=date], input[type=file] {
+    width:100%; padding:10px; border:1px solid var(--line); border-radius:10px;
+    background:var(--bg); color:var(--ink); font:inherit; }
+  button { font:inherit; cursor:pointer; border-radius:10px; padding:10px 16px; border:1px solid var(--line);
+           background:var(--card); color:var(--ink); }
+  button.primary { background:var(--brand); border-color:var(--brand); color:#fff; font-weight:600; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .msg { margin-top:10px; font-size:.9rem; min-height:1.2em; }
+  .msg.error { color:var(--bad); } .msg.ok { color:var(--ok); }
+  .center { text-align:center; padding:32px 12px; }
+  .center h2 { margin:0 0 8px; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div><h1 id="title">Welcome aboard</h1><div class="sub" id="sub">Loading…</div></div>
+    <button id="logout" type="button">Sign out</button>
+  </header>
+
+  <!-- Step 1: replace the temporary password -->
+  <section id="pwSection" class="card" hidden>
+    <div class="name">Choose your own password</div>
+    <div class="sub">The password in your welcome email is temporary. Pick one only you know.</div>
+    <label for="curPw">Temporary password (from your email)</label>
+    <input id="curPw" type="password" autocomplete="current-password">
+    <label for="newPw">New password</label>
+    <input id="newPw" type="password" autocomplete="new-password">
+    <div style="margin-top:14px"><button id="pwBtn" class="primary" type="button">Save password</button></div>
+    <div id="pwMsg" class="msg" role="status"></div>
+  </section>
+
+  <!-- Step 2: documents -->
+  <section id="docSection" hidden>
+    <div id="docList"></div>
+    <div class="card" id="submitCard">
+      <button id="submitBtn" class="primary" type="button" disabled>Submit for verification</button>
+      <div id="submitMsg" class="msg" role="status"></div>
+    </div>
+  </section>
+
+  <!-- Step 3: waiting on HR -->
+  <section id="waitSection" class="card center" hidden>
+    <h2>Pending verification</h2>
+    <div class="sub">HR is checking your documents. This page updates by itself, and your
+      full portal opens as soon as they are approved. You will also get your offer letter by email.</div>
+  </section>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var pollTimer = null;
+
+  function go(url) { window.location.href = url; }
+  function say(el, text, kind) { el.textContent = text || ''; el.className = 'msg' + (kind ? ' ' + kind : ''); }
+  async function api(path, opts) {
+    var res = await fetch(path, Object.assign({ credentials: 'same-origin' }, opts || {}));
+    var data = await res.json().catch(function () { return {}; });
+    if (res.status === 401) { go('/employee-login.html'); throw new Error('signed out'); }
+    return { ok: res.ok, status: res.status, data: data };
+  }
+  function postJson(path, body) {
+    return api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                       body: JSON.stringify(body || {}) });
+  }
+
+  async function refresh() {
+    var s = await api('/api/employee/preboarding/status');
+    if (!s.ok) { $('sub').textContent = 'Could not load your status.'; return; }
+    var st = s.data;
+    if (st.portal_stage === 'active' && !st.must_change_password) { go('/employee-dashboard.html'); return; }
+
+    $('pwSection').hidden = !st.must_change_password;
+    $('docSection').hidden = st.must_change_password || st.portal_stage !== 'initiated';
+    $('waitSection').hidden = st.must_change_password || st.portal_stage !== 'submitted';
+
+    if (st.must_change_password) {
+      $('title').textContent = 'Welcome aboard';
+      $('sub').textContent = 'Step 1 of 2 - set your password';
+    } else if (st.portal_stage === 'initiated') {
+      $('title').textContent = 'Upload your documents';
+      $('sub').textContent = 'Step 2 of 2 - HR needs these before your start date';
+      await renderDocs(st);
+    } else {
+      $('title').textContent = 'Thank you';
+      $('sub').textContent = 'Your documents are with HR';
+    }
+    clearInterval(pollTimer);
+    if (st.portal_stage === 'submitted') pollTimer = setInterval(refresh, 30000);
+  }
+
+  async function renderDocs(st) {
+    var r = await api('/api/employee/document-requests');
+    if (!r.ok) return;
+    var host = $('docList');
+    host.textContent = '';
+    (r.data.requests || []).forEach(function (q) {
+      var card = document.createElement('div'); card.className = 'card';
+      var head = document.createElement('div'); head.className = 'row';
+      var left = document.createElement('div');
+      var nm = document.createElement('div'); nm.className = 'name'; nm.textContent = q.name;
+      left.appendChild(nm);
+      if (q.description) { var d = document.createElement('div'); d.className = 'sub'; d.textContent = q.description; left.appendChild(d); }
+      var badge = document.createElement('span'); badge.className = 'badge ' + q.status; badge.textContent = q.status;
+      head.appendChild(left); head.appendChild(badge); card.appendChild(head);
+      if (q.status === 'rejected' && q.review_note) {
+        var n = document.createElement('div'); n.className = 'note'; n.textContent = 'HR: ' + q.review_note; card.appendChild(n);
+      }
+      if (q.status !== 'approved') {
+        var exp = null;
+        if (q.requires_expiry) {
+          var l = document.createElement('label'); l.textContent = 'Expiry date shown on the document'; card.appendChild(l);
+          exp = document.createElement('input'); exp.type = 'date'; card.appendChild(exp);
+        }
+        var l2 = document.createElement('label'); l2.textContent = q.status === 'pending' || q.status === 'rejected' ? 'Choose a file' : 'Replace file'; card.appendChild(l2);
+        var f = document.createElement('input'); f.type = 'file'; f.accept = (r.data.limits.allowed || []).join(',');
+        card.appendChild(f);
+        var m = document.createElement('div'); m.className = 'msg'; m.setAttribute('role', 'status'); card.appendChild(m);
+        f.addEventListener('change', function () { upload(q, f, exp, m); });
+      }
+      host.appendChild(card);
+    });
+    $('submitBtn').disabled = !st.can_submit;
+    say($('submitMsg'), st.can_submit ? '' : 'Upload every document above to continue.');
+  }
+
+  function upload(q, input, exp, msg) {
+    var file = input.files && input.files[0];
+    if (!file) return;
+    if (exp && !exp.value) { say(msg, 'Enter the expiry date first, then choose the file again.', 'error'); input.value = ''; return; }
+    say(msg, 'Uploading ' + file.name + '…');
+    var reader = new FileReader();
+    reader.onerror = function () { say(msg, 'Could not read that file. Try another copy.', 'error'); };
+    reader.onload = async function (e) {
+      try {
+        var res = await postJson('/api/employee/document-requests/' + q.id + '/upload', {
+          file_name: file.name, file_type: file.type,
+          file_data: String(e.target.result).split(',')[1], expires_on: exp ? exp.value : '' });
+        if (!res.ok) { say(msg, res.data.detail || 'Upload failed', 'error'); return; }
+        await refresh();
+      } catch (err) { say(msg, err.message, 'error'); }
+    };
+    reader.readAsDataURL(file);
+  }
+
+  $('pwBtn').addEventListener('click', async function () {
+    var b = $('pwBtn'); b.disabled = true;
+    try {
+      var res = await postJson('/api/employee/preboarding/change-password',
+        { current_password: $('curPw').value, new_password: $('newPw').value });
+      if (!res.ok) { say($('pwMsg'), res.data.detail || 'Could not change the password', 'error'); return; }
+      $('curPw').value = ''; $('newPw').value = '';
+      say($('pwMsg'), 'Password saved', 'ok');
+      await refresh();
+    } catch (e) { /* signed out: already redirected */ } finally { b.disabled = false; }
+  });
+
+  $('submitBtn').addEventListener('click', async function () {
+    var b = $('submitBtn'); b.disabled = true;
+    try {
+      var res = await postJson('/api/employee/preboarding/submit');
+      if (!res.ok) { say($('submitMsg'), res.data.detail || 'Could not submit', 'error'); b.disabled = false; return; }
+      await refresh();
+    } catch (e) { b.disabled = false; }
+  });
+
+  $('logout').addEventListener('click', async function () {
+    try { await fetch('/api/employee/auth/logout', { method: 'POST', credentials: 'same-origin' }); } catch (e) {}
+    go('/employee-login.html');
+  });
+
+  refresh().catch(function () {});
+})();
+</script>
+</body>
+</html>

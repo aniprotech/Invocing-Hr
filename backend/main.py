@@ -1010,7 +1010,7 @@ HR_SLUGS = frozenset((
     "policies", "assets", "recruitment", "onboarding",
 ))
 BUSINESS_PAGES = ("/app.html", "/login.html", "/onboard.html", "/hr.html", "/hr-login.html")
-EMPLOYEE_PAGES = ("/employee-login.html", "/employee-dashboard.html")
+EMPLOYEE_PAGES = ("/employee-login.html", "/employee-dashboard.html", "/preboarding.html")
 OPERATOR_PAGES = ("/superadmin.html", "/superadmin-login.html")
 
 
@@ -7843,6 +7843,8 @@ def onboarding_pipeline(request: Request, db: Session = Depends(get_db)):
             "email": emp.email or "",
         }
         card.update(snap)
+        card["portal_stage"] = emp.portal_stage or preboarding.ACTIVE
+        card["docs_submitted_at"] = emp.docs_submitted_at or ""
         # Where they came from, so the hire and the onboarding are one story.
         card["hired_from"] = ({
             "submission_id": sub.id,
@@ -7943,7 +7945,10 @@ def issue_preboarding_credentials(db, client, emp, request, background_tasks):
     emp.password_hash = models.hash_password(password)
     emp.must_change_password = True
     emp.temp_password_expires_at = preboarding.temp_password_expiry()
-    emp.portal_stage = preboarding.INITIATED
+    # A new hire starts at initiated; reissuing a login must not undo a
+    # submission HR is already reviewing.
+    if emp.portal_stage not in preboarding.RESTRICTED:
+        emp.portal_stage = preboarding.INITIATED
     ready, missing = email_delivery_ready(db, client.id)
     if not ready:
         return f"not sent - {missing}"
@@ -8054,6 +8059,47 @@ def preboarding_submit(request: Request, background_tasks: BackgroundTasks,
             f"Review them: {page_url('/app.html', request)} (Onboarding).\n",
             _company_sender(db, client), None, None, "", "", client_id=client.id)
     return {"message": "Submitted for verification", "portal_stage": emp.portal_stage}
+
+
+@app.post("/api/employees/{emp_id}/approve-documents")
+def approve_all_documents(emp_id: int, request: Request, background_tasks: BackgroundTasks,
+                          body: dict = None, db: Session = Depends(get_db)):
+    """Approve everything the starter has submitted in one click.
+
+    Refuses while a mandatory document is still missing or was rejected, and
+    says which, so HR cannot open the portal on incomplete paperwork. Rejecting
+    stays per document, since each rejection needs its own reason.
+    """
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    reqs = db.query(models.DBDocumentRequest).filter(
+        models.DBDocumentRequest.employee_id == emp.id).all()
+    mandatory = [r for r in reqs if r.is_mandatory]
+    gaps = [r.name for r in mandatory if r.status not in ("submitted", "approved")]
+    if not mandatory or gaps:
+        raise HTTPException(
+            status_code=400,
+            detail=("Still waiting on: " + ", ".join(gaps)) if gaps
+            else "No documents have been requested from this person")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    reviewer = ((body or {}).get("reviewed_by") or "HR")
+    for r in reqs:
+        if r.status == "submitted":
+            r.status, r.reviewed_at, r.reviewed_by, r.review_note = "approved", now, reviewer, ""
+            db.add(models.DBNotification(
+                client_id=client.id, employee_id=emp.id, type="success",
+                title=f"Document approved: {r.name}",
+                message=f"Your {r.name} has been approved."))
+    if emp.portal_stage in preboarding.RESTRICTED:
+        verify_and_activate(db, client, emp, reviewer, request, background_tasks)
+    maybe_complete_onboarding(db, emp)
+    log_audit(db, client.id, "documents_approved", "employee", emp.id,
+              f"{emp.first_name} {emp.last_name}".strip(), "All submitted documents approved", request)
+    db.commit()
+    return {"message": "Documents approved", "portal_stage": emp.portal_stage}
 
 
 @app.post("/api/employees/{emp_id}/resend-credentials")
