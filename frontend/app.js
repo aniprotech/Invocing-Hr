@@ -15263,7 +15263,9 @@ function onboardingCardHtml(c) {
         '<div class="onb-card-meta">' + c.items_done + '/' + c.items_total + ' tasks · ' +
             c.docs_approved + '/' + c.docs_total + ' documents' +
             (c.days_since_start !== null && c.days_since_start !== undefined
-                ? ' · day ' + c.days_since_start : '') + '</div>' +
+                ? (c.days_since_start < 0
+                    ? ' · starts in ' + (-c.days_since_start) + ' day' + (c.days_since_start === -1 ? '' : 's')
+                    : ' · day ' + c.days_since_start) : '') + '</div>' +
         '<div class="onb-card-actions">' + actions + '</div>' +
     '</div>';
 }

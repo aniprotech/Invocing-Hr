@@ -22,6 +22,10 @@
           padding:18px; margin-top:14px; }
   .row { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; flex-wrap:wrap; }
   .name { font-weight:600; }
+  .row > div:first-child { flex:1 1 0; min-width:0; }
+  .row { flex-wrap:nowrap; }
+  .badge { flex:none; }
+  .sent { font-size:.85rem; color:var(--sub); margin-top:8px; word-break:break-all; }
   .badge { font-size:.75rem; padding:2px 9px; border-radius:999px; border:1px solid var(--line); }
   .pending { color:var(--warn); } .submitted { color:var(--brand); }
   .approved { color:var(--ok); } .rejected { color:var(--bad); }
@@ -136,6 +140,10 @@
       head.appendChild(left); head.appendChild(badge); card.appendChild(head);
       if (q.status === 'rejected' && q.review_note) {
         var n = document.createElement('div'); n.className = 'note'; n.textContent = 'HR: ' + q.review_note; card.appendChild(n);
+      }
+      if (q.file_name && q.status !== 'rejected') {
+        var sent = document.createElement('div'); sent.className = 'sent';
+        sent.textContent = 'Sent: ' + q.file_name; card.appendChild(sent);
       }
       if (q.status !== 'approved') {
         var exp = null;
