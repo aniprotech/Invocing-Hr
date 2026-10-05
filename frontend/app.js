@@ -15232,6 +15232,12 @@ function onboardingCardHtml(c) {
     }
     if (c.awaiting_hr && c.awaiting_hr.length) {
         actions += '<button class="btn btn-outline btn-sm" onclick="showView(\'onboarding-hub-view\');loadDocumentQueue()">Review</button>';
+        if (c.portal_stage === 'submitted') {
+            actions += '<button class="btn btn-primary btn-sm" onclick="approveStarterDocuments(' + c.employee_id + ')">Approve all</button>';
+        }
+    }
+    if (c.portal_stage === 'initiated' || c.portal_stage === 'submitted') {
+        actions += '<button class="btn btn-outline btn-sm" onclick="resendStarterCredentials(' + c.employee_id + ')">Resend login</button>';
     }
     if (c.stage === 'ready') {
         actions += '<button class="btn btn-primary btn-sm" onclick="finishOnboarding(' + c.employee_id + ')">Complete</button>';
@@ -15244,6 +15250,11 @@ function onboardingCardHtml(c) {
         (c.hired_from
             ? '<div class="onb-card-sub">Hired from application by ' + esc(c.hired_from.candidate_name) + '</div>'
             : '') +
+        (c.portal_stage === 'initiated' || c.portal_stage === 'submitted'
+            ? '<div class="onb-card-meta">Portal: ' +
+              (c.portal_stage === 'submitted' ? 'documents submitted, locked until you approve' : 'uploading documents') +
+              '</div>'
+            : '') +
         (waiting ? '<div class="onb-card-meta">' + esc(waiting) + '</div>' : '') +
         (blockers.length
             ? '<div class="onb-card-meta" style="color:var(--danger-color);">' + esc(blockers.join(' · ')) + '</div>'
@@ -15252,10 +15263,40 @@ function onboardingCardHtml(c) {
         '<div class="onb-card-meta">' + c.items_done + '/' + c.items_total + ' tasks · ' +
             c.docs_approved + '/' + c.docs_total + ' documents' +
             (c.days_since_start !== null && c.days_since_start !== undefined
-                ? ' · day ' + c.days_since_start : '') + '</div>' +
+                ? (c.days_since_start < 0
+                    ? ' · starts in ' + (-c.days_since_start) + ' day' + (c.days_since_start === -1 ? '' : 's')
+                    : ' · day ' + c.days_since_start) : '') + '</div>' +
         '<div class="onb-card-actions">' + actions + '</div>' +
     '</div>';
 }
+
+async function approveStarterDocuments(empId) {
+    if (!await uiConfirm('Approve all their documents? Their portal opens and the offer letter is emailed.')) return;
+    try {
+        var res = await fetch('/api/employees/' + empId + '/approve-documents', {
+            method: 'POST', credentials: 'same-origin',
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) { reportApiError(res, data, 'Could not approve the documents'); return; }
+        showToast('Approved. Offer letter sent and portal opened.', 'success');
+        loadOnboardingPipeline();
+    } catch (e) { showToast('Failed: ' + e.message, 'error'); }
+}
+window.approveStarterDocuments = approveStarterDocuments;
+
+async function resendStarterCredentials(empId) {
+    if (!await uiConfirm('Send a new temporary password? The old one stops working.')) return;
+    try {
+        var res = await fetch('/api/employees/' + empId + '/resend-credentials', {
+            method: 'POST', credentials: 'same-origin',
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (!res.ok) { reportApiError(res, data, 'Could not send a new login'); return; }
+        var sent = data.email === 'queued';
+        showToast(sent ? 'New login emailed' : 'Login reset but ' + data.email, sent ? 'success' : 'error');
+    } catch (e) { showToast('Failed: ' + e.message, 'error'); }
+}
+window.resendStarterCredentials = resendStarterCredentials;
 
 async function nudgeStarter(empId) {
     try {

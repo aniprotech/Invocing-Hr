@@ -481,6 +481,32 @@ async def a_leaver_is_out(request: Request, call_next):
 
 
 @app.middleware("http")
+async def preboarding_sandbox(request: Request, call_next):
+    """A new hire who is not verified can reach the document upload and nothing
+    else. Default-deny: preboarding.request_allowed lists what is open, so a
+    route added later is closed to them without anyone remembering to close it.
+    The stage is read from the database on every request, not from the cookie,
+    so approval opens the portal on the next click and no session needs
+    reissuing."""
+    path = request.url.path
+    if path.startswith(STAFF_PATHS) and not path.startswith("/api/employee/auth/login"):
+        emp_id = request.session.get("employee_id")
+        if emp_id:
+            with SessionLocal() as db:
+                row = db.query(models.DBEmployee.portal_stage,
+                               models.DBEmployee.must_change_password).filter(
+                    models.DBEmployee.id == emp_id).first()
+            if row and not preboarding.request_allowed(
+                    path, request.method, row[0] or preboarding.ACTIVE, bool(row[1])):
+                return JSONResponse(
+                    {"detail": "Your account is not open yet. Finish the steps on your "
+                               "onboarding page.", "portal_stage": row[0],
+                     "must_change_password": bool(row[1])},
+                    status_code=403)
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def front_door(request: Request, call_next):
     """The face each host shows. See ONE APP, THREE FRONT DOORS.
 
@@ -984,7 +1010,7 @@ HR_SLUGS = frozenset((
     "policies", "assets", "recruitment", "onboarding",
 ))
 BUSINESS_PAGES = ("/app.html", "/login.html", "/onboard.html", "/hr.html", "/hr-login.html")
-EMPLOYEE_PAGES = ("/employee-login.html", "/employee-dashboard.html")
+EMPLOYEE_PAGES = ("/employee-login.html", "/employee-dashboard.html", "/preboarding.html")
 OPERATOR_PAGES = ("/superadmin.html", "/superadmin-login.html")
 
 
@@ -4445,6 +4471,7 @@ def bill_to_dict(doc):
 # every send that arrives without a PDF gets this one.
 # ============================================================================
 import pdf as pdf_engine  # noqa: E402
+import preboarding  # noqa: E402
 
 
 def pdf_document_data(db, obj, client, kind="invoice"):
@@ -4904,6 +4931,8 @@ def auto_clock_in_on_sign_in(db: Session, emp, request, lat=0.0, lng=0.0,
     morning is not two shifts. Shared so Google sign-in and password sign-in
     record attendance the same way.
     """
+    if emp.portal_stage in preboarding.RESTRICTED:
+        return None     # not on the payroll floor yet; there is no shift to start
     today = datetime.now().strftime("%Y-%m-%d")
     existing = db.query(models.DBAttendance).filter(
         models.DBAttendance.employee_id == emp.id,
@@ -7087,6 +7116,9 @@ def reset_password(body: ResetPasswordIn, request: Request, db: Session = Depend
             raise HTTPException(status_code=400,
                                 detail="That reset link is invalid or has expired")
         subject.password_hash = models.hash_password(body.password)
+        # A password they chose is no longer the temporary one.
+        subject.must_change_password = False
+        subject.temp_password_expires_at = ""
         client_id, who = subject.client_id, subject.email
     else:
         subject = db.query(models.DBClient).filter(
@@ -7811,6 +7843,8 @@ def onboarding_pipeline(request: Request, db: Session = Depends(get_db)):
             "email": emp.email or "",
         }
         card.update(snap)
+        card["portal_stage"] = emp.portal_stage or preboarding.ACTIVE
+        card["docs_submitted_at"] = emp.docs_submitted_at or ""
         # Where they came from, so the hire and the onboarding are one story.
         card["hired_from"] = ({
             "submission_id": sub.id,
@@ -7889,6 +7923,200 @@ def nudge_onboarding(emp_id: int, request: Request, db: Session = Depends(get_db
     ))
     db.commit()
     return {"message": "Reminder sent", "items": snap["awaiting_employee"]}
+
+
+# ----------------------------------------------------------------------------
+# PRE-BOARDING - credentials, the upload sandbox, verification, offer letter
+# State machine and the request allow-list live in preboarding.py.
+# ----------------------------------------------------------------------------
+
+def _company_sender(db, client):
+    name = "".join(ch for ch in (client.company_name or "HR") if ch not in '<>"\r\n')
+    return f"{name.strip() or 'HR'} <{platform_from_address(db)}>"
+
+
+def issue_preboarding_credentials(db, client, emp, request, background_tasks):
+    """New temporary password, stage back to initiated, welcome email queued.
+
+    Only a hash is stored; the plaintext exists in the email and nowhere else.
+    Returns a status string for the HR response.
+    """
+    password = preboarding.temp_password()
+    emp.password_hash = models.hash_password(password)
+    emp.must_change_password = True
+    emp.temp_password_expires_at = preboarding.temp_password_expiry()
+    # A new hire starts at initiated; reissuing a login must not undo a
+    # submission HR is already reviewing.
+    if emp.portal_stage not in preboarding.RESTRICTED:
+        emp.portal_stage = preboarding.INITIATED
+    ready, missing = email_delivery_ready(db, client.id)
+    if not ready:
+        return f"not sent - {missing}"
+    subject, text = preboarding.welcome_email(
+        emp.first_name, client.company_name or "the team", emp.email, password,
+        page_url("/employee-login.html", request))
+    background_tasks.add_task(
+        send_email_background, emp.email, subject, text, _company_sender(db, client),
+        None, None, "", "", client_id=client.id)
+    return "queued"
+
+
+def verify_and_activate(db, client, emp, reviewer, request, background_tasks):
+    """Approval, in one transaction: portal opens and the offer letter is queued.
+
+    The caller commits. The email is queued on the response, so it only goes
+    out if the state change was saved - and a failed send is recorded by
+    send_email_background, not lost.
+    """
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    emp.portal_stage = preboarding.ACTIVE
+    emp.verified_at, emp.verified_by = now, reviewer or "HR"
+    name = f"{emp.first_name} {emp.last_name}".strip()
+    company = client.company_name or "the company"
+    pdf_bytes = preboarding.offer_letter_pdf(
+        company, name, emp.job_title, emp.start_date, emp.salary, emp.pay_frequency,
+        client.contact_name)
+    background_tasks.add_task(
+        send_email_background, emp.email, f"Your offer of employment - {company}",
+        f"Hi {emp.first_name},\n\nYour documents have been verified. Your official "
+        f"offer letter is attached, and your employee portal is now fully open - "
+        f"sign in again or refresh.\n\nWelcome aboard,\n{company}\n",
+        _company_sender(db, client), None, base64.b64encode(pdf_bytes).decode(),
+        "Offer-Letter.pdf", "", client_id=client.id)
+    emp.offer_letter_sent_at = now
+    db.add(models.DBNotification(
+        client_id=client.id, employee_id=emp.id, type="success",
+        title="You're verified", message="Your offer letter is on its way to your email."))
+    log_audit(db, client.id, "preboarding_verified", "employee", emp.id, name,
+              "Offer letter sent; portal opened", request)
+
+
+@app.get("/api/employee/preboarding/status")
+def preboarding_status(request: Request, db: Session = Depends(get_db)):
+    emp_id = request.session.get("employee_id")
+    emp = db.query(models.DBEmployee).filter(models.DBEmployee.id == emp_id).first() if emp_id else None
+    if not emp:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    reqs = db.query(models.DBDocumentRequest).filter(
+        models.DBDocumentRequest.employee_id == emp.id,
+        models.DBDocumentRequest.is_mandatory == True).all()   # noqa: E712
+    return {
+        "portal_stage": emp.portal_stage,
+        "must_change_password": bool(emp.must_change_password),
+        "can_submit": bool(reqs) and all(r.status in ("submitted", "approved") for r in reqs),
+        "rejected": [{"name": r.name, "note": r.review_note or ""}
+                     for r in reqs if r.status == "rejected"],
+    }
+
+
+@app.post("/api/employee/preboarding/change-password")
+def preboarding_change_password(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    emp_id = request.session.get("employee_id")
+    emp = db.query(models.DBEmployee).filter(models.DBEmployee.id == emp_id).first() if emp_id else None
+    if not emp:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    body = body or {}
+    if not emp.password_hash or not models.verify_password(body.get("current_password") or "", emp.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is wrong")
+    validate_password_strength(body.get("new_password") or "")
+    emp.password_hash = models.hash_password(body["new_password"])
+    emp.must_change_password = False
+    emp.temp_password_expires_at = ""
+    db.commit()
+    return {"message": "Password changed"}
+
+
+@app.post("/api/employee/preboarding/submit")
+def preboarding_submit(request: Request, background_tasks: BackgroundTasks,
+                       db: Session = Depends(get_db)):
+    emp_id = request.session.get("employee_id")
+    emp = db.query(models.DBEmployee).filter(models.DBEmployee.id == emp_id).first() if emp_id else None
+    if not emp:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if emp.portal_stage != preboarding.INITIATED:
+        raise HTTPException(status_code=409, detail="Nothing to submit right now")
+    reqs = db.query(models.DBDocumentRequest).filter(
+        models.DBDocumentRequest.employee_id == emp.id,
+        models.DBDocumentRequest.is_mandatory == True).all()   # noqa: E712
+    missing = [r.name for r in reqs if r.status not in ("submitted", "approved")]
+    if not reqs or missing:
+        raise HTTPException(
+            status_code=400,
+            detail="Still needed: " + ", ".join(missing) if missing
+            else "HR has not asked for any documents yet")
+    emp.portal_stage = preboarding.SUBMITTED
+    emp.docs_submitted_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    client = db.query(models.DBClient).filter(models.DBClient.id == emp.client_id).first()
+    name = f"{emp.first_name} {emp.last_name}".strip()
+    log_audit(db, emp.client_id, "preboarding_submitted", "employee", emp.id, name,
+              f"{len(reqs)} document(s) submitted for review", request, user_type="employee",
+              user_name=name)
+    db.commit()
+    if client and client.email and email_delivery_ready(db, client.id)[0]:
+        background_tasks.add_task(
+            send_email_background, client.email, f"Documents ready for review - {name}",
+            f"{name} has submitted {len(reqs)} document(s) for verification.\n\n"
+            f"Review them: {page_url('/app.html', request)} (Onboarding).\n",
+            _company_sender(db, client), None, None, "", "", client_id=client.id)
+    return {"message": "Submitted for verification", "portal_stage": emp.portal_stage}
+
+
+@app.post("/api/employees/{emp_id}/approve-documents")
+def approve_all_documents(emp_id: int, request: Request, background_tasks: BackgroundTasks,
+                          body: dict = None, db: Session = Depends(get_db)):
+    """Approve everything the starter has submitted in one click.
+
+    Refuses while a mandatory document is still missing or was rejected, and
+    says which, so HR cannot open the portal on incomplete paperwork. Rejecting
+    stays per document, since each rejection needs its own reason.
+    """
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    reqs = db.query(models.DBDocumentRequest).filter(
+        models.DBDocumentRequest.employee_id == emp.id).all()
+    mandatory = [r for r in reqs if r.is_mandatory]
+    gaps = [r.name for r in mandatory if r.status not in ("submitted", "approved")]
+    if not mandatory or gaps:
+        raise HTTPException(
+            status_code=400,
+            detail=("Still waiting on: " + ", ".join(gaps)) if gaps
+            else "No documents have been requested from this person")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    reviewer = ((body or {}).get("reviewed_by") or "HR")
+    for r in reqs:
+        if r.status == "submitted":
+            r.status, r.reviewed_at, r.reviewed_by, r.review_note = "approved", now, reviewer, ""
+            db.add(models.DBNotification(
+                client_id=client.id, employee_id=emp.id, type="success",
+                title=f"Document approved: {r.name}",
+                message=f"Your {r.name} has been approved."))
+    if emp.portal_stage in preboarding.RESTRICTED:
+        verify_and_activate(db, client, emp, reviewer, request, background_tasks)
+    maybe_complete_onboarding(db, emp)
+    log_audit(db, client.id, "documents_approved", "employee", emp.id,
+              f"{emp.first_name} {emp.last_name}".strip(), "All submitted documents approved", request)
+    db.commit()
+    return {"message": "Documents approved", "portal_stage": emp.portal_stage}
+
+
+@app.post("/api/employees/{emp_id}/resend-credentials")
+def resend_preboarding_credentials(emp_id: int, request: Request, background_tasks: BackgroundTasks,
+                                   db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(
+        models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    if emp.portal_stage not in preboarding.RESTRICTED:
+        raise HTTPException(status_code=400, detail="This person already has full access")
+    result = issue_preboarding_credentials(db, client, emp, request, background_tasks)
+    log_audit(db, client.id, "preboarding_credentials_reissued", "employee", emp.id,
+              f"{emp.first_name} {emp.last_name}".strip(), result, request)
+    db.commit()
+    return {"message": "New temporary password " + result, "email": result}
 
 
 # ============================================================================
@@ -10021,6 +10249,9 @@ def reset_employee_password(emp_id: int, body: dict, request: Request, db: Sessi
     if not new_pass or len(new_pass) < 4:
         raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
     emp.password_hash = models.hash_password(new_pass)
+    # HR picked this one, so it is not a temporary password awaiting expiry.
+    emp.must_change_password = False
+    emp.temp_password_expires_at = ""
     db.commit()
     return {"message": "Password updated successfully"}
 
@@ -12372,6 +12603,8 @@ def set_employee_password(emp_id: int, request: Request, body: dict = None, db: 
     # everybody else now.
     validate_password_strength(body["password"])
     emp.password_hash = models.hash_password(body["password"])
+    emp.must_change_password = False
+    emp.temp_password_expires_at = ""
     db.commit()
     return {"message": "Password set successfully"}
 
@@ -12412,10 +12645,18 @@ def employee_login(request: Request, body: dict = None, db: Session = Depends(ge
     emp = matched[0]
     if emp.status in ("terminated",):
         raise HTTPException(status_code=403, detail="Account deactivated")
+    if preboarding.temp_password_expired(emp):
+        raise HTTPException(
+            status_code=401,
+            detail="Your temporary password has expired. Ask HR to send you a new one.")
     start_employee_session(request, emp)
 
     today = datetime.now().strftime("%Y-%m-%d")
     who = {"id": emp.id, "name": f"{emp.first_name} {emp.last_name}", "email": emp.email}
+    if emp.portal_stage in preboarding.RESTRICTED or emp.must_change_password:
+        return {"message": "Signed in", "employee": who, "clock_in": "",
+                "auto_clock_in": False, "portal_stage": emp.portal_stage,
+                "must_change_password": bool(emp.must_change_password)}
     existing = db.query(models.DBAttendance).filter(
         models.DBAttendance.employee_id == emp.id,
         models.DBAttendance.date == today,
@@ -16381,7 +16622,8 @@ def download_document_request_file(req_id: int, request: Request, db: Session = 
 
 
 @app.post("/api/onboarding/document-requests/{req_id}/review")
-def review_document_request(req_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+def review_document_request(req_id: int, request: Request, background_tasks: BackgroundTasks,
+                            body: dict = None, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
     body = body or {}
     row = db.query(models.DBDocumentRequest).filter(
@@ -16421,6 +16663,24 @@ def review_document_request(req_id: int, request: Request, body: dict = None, db
     # so completion is checked here as well as on the checklist.
     emp = db.query(models.DBEmployee).filter(
         models.DBEmployee.id == row.employee_id).first()
+    if emp and emp.portal_stage in preboarding.RESTRICTED:
+        if decision == "reject":
+            # Back to uploading. The sandbox hides in-app notices, so say it by email.
+            emp.portal_stage = preboarding.INITIATED
+            if email_delivery_ready(db, client.id)[0]:
+                background_tasks.add_task(
+                    send_email_background, emp.email, f"Please re-upload: {row.name}",
+                    f"Hi {emp.first_name},\n\nWe couldn't accept your {row.name}: {note}\n\n"
+                    f"Please sign in and upload it again: "
+                    f"{page_url('/employee-login.html', request)}\n",
+                    _company_sender(db, client), None, None, "", "", client_id=client.id)
+        else:
+            db.flush()
+            mandatory = db.query(models.DBDocumentRequest).filter(
+                models.DBDocumentRequest.employee_id == emp.id,
+                models.DBDocumentRequest.is_mandatory == True).all()   # noqa: E712
+            if mandatory and all(r.status == "approved" for r in mandatory):
+                verify_and_activate(db, client, emp, row.reviewed_by, request, background_tasks)
     maybe_complete_onboarding(db, emp)
     db.commit()
     return request_to_dict(row)
@@ -16999,7 +17259,8 @@ def get_submission_history(sub_id: int, request: Request, db: Session = Depends(
 
 
 @app.post("/api/recruitment/submissions/{sub_id}/hire")
-def hire_candidate(sub_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+def hire_candidate(sub_id: int, request: Request, background_tasks: BackgroundTasks,
+                   body: dict = None, db: Session = Depends(get_db)):
     """Turn a successful candidate into an employee.
 
     Previously a hire had to be retyped by hand into the employee form, which
@@ -17072,6 +17333,8 @@ def hire_candidate(sub_id: int, request: Request, body: dict = None, db: Session
     # asks new starters for. Without this a hire arrived with nothing to do
     # and nothing asked of them.
     start_onboarding(db, client.id, emp)
+    # A portal login, locked to the upload page until HR verifies the documents.
+    welcome = issue_preboarding_credentials(db, client, emp, request, background_tasks)
 
     sub.hired_employee_id = emp.id
     sub.status = "hired"
@@ -17094,6 +17357,7 @@ def hire_candidate(sub_id: int, request: Request, body: dict = None, db: Session
     return {
         "message": f"{first_name} {last_name} added as {emp.employee_id}",
         "employee_id": emp.id, "employee_number": emp.employee_id,
+        "welcome_email": welcome,
     }
 
 

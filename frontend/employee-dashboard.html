@@ -4275,6 +4275,11 @@
       try {
         var res = await apiGet('/api/employee/auth/me');
         if (res.status === 401) { window.location.href = '/employee-login.html'; return; }
+        if (res.status === 403) {
+          // Not verified yet: the only page open to them is the upload page.
+          var gate = await res.json().catch(function () { return {}; });
+          if (gate.portal_stage || gate.must_change_password) { window.location.href = '/preboarding.html'; return; }
+        }
         empData = await res.json();
         // Everything below this line is startup too, so reading a letter off a
         // name that did not arrive would silently skip the clock-in state.

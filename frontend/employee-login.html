@@ -181,7 +181,9 @@
         });
         var data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Login failed');
-        window.location.href = '/employee-dashboard.html';
+        // A new hire who is not verified yet gets the upload page, not the portal.
+        var restricted = data.must_change_password || (data.portal_stage && data.portal_stage !== 'active');
+        window.location.href = restricted ? '/preboarding.html' : '/employee-dashboard.html';
       } catch (e) {
         err.textContent = e.message; err.classList.remove('hidden');
       } finally {
