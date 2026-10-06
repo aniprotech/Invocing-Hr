@@ -31,6 +31,24 @@ def _reset_limiter():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _leave_collection_mode_as_found():
+    """Collection mode is one setting for the whole platform, not per test.
+    These tests switch it to "platform"; left there, every later test that
+    takes payments directly - autopay's, say - finds the tenant's own keys
+    ignored and fails, but only when run after this file. Alphabetical order
+    kept that hidden in the full suite."""
+    yield
+    with main.SessionLocal() as db:
+        row = db.query(models.DBSettings).filter(
+            models.DBSettings.key == main.COLLECTION_SETTING,
+            models.DBSettings.client_id == None,        # noqa: E711
+        ).first()
+        if row is not None:
+            row.value = "direct"
+            db.commit()
+
+
 @pytest.fixture
 def superadmin():
     """The operator, on a session of their own - a tenant signing in on the
