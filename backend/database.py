@@ -1896,6 +1896,23 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 69: {sys.exc_info()[1]}")
 
+            # 70. Stock: which item a sold line is for, and an item's reorder
+            # level and average cost. The movements table is new, so create_all
+            # makes it.
+            try:
+                for ddl in (
+                    "ALTER TABLE line_items ADD COLUMN IF NOT EXISTS item_id INTEGER",
+                    "ALTER TABLE quote_line_items ADD COLUMN IF NOT EXISTS item_id INTEGER",
+                    "ALTER TABLE items ADD COLUMN IF NOT EXISTS reorder_level DOUBLE PRECISION DEFAULT 0",
+                    "ALTER TABLE items ADD COLUMN IF NOT EXISTS average_cost DOUBLE PRECISION DEFAULT 0",
+                    "CREATE INDEX IF NOT EXISTS ix_line_items_item_id ON line_items (item_id)",
+                    "CREATE INDEX IF NOT EXISTS ix_quote_line_items_item_id ON quote_line_items (item_id)",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 70: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

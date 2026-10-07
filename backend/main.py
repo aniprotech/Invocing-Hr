@@ -557,6 +557,9 @@ class LineItem(BaseModel):
     disc: Optional[float] = 0.0
     account: Optional[str] = "200 - Sales"
     tax_rate: Optional[str] = "20% (VAT on Income)"
+    # The saved item this line sells, when it was picked from the catalogue.
+    # What takes stock out when the invoice is issued.
+    item_id: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -1088,6 +1091,7 @@ MODULE_PATHS = (
     ("/api/bills", "invoicing"),
     ("/api/recurring", "invoicing"),
     ("/api/items", "invoicing"),
+    ("/api/inventory", "invoicing"),
 )
 
 
@@ -1415,6 +1419,10 @@ def item_to_dict(it):
         "purchase_tax_rate": it.purchase_tax_rate or "",
         "track_inventory": bool(it.track_inventory),
         "quantity_on_hand": it.quantity_on_hand or 0.0,
+        "reorder_level": it.reorder_level or 0.0,
+        "average_cost": it.average_cost or 0.0,
+        "stock_value": inventory.stock_value(it.quantity_on_hand, it.average_cost) if it.track_inventory else 0.0,
+        "stock_status": inventory.stock_status(it.track_inventory, it.quantity_on_hand, it.reorder_level),
         "is_active": bool(it.is_active),
     }
 
@@ -1440,6 +1448,25 @@ def _item_money(raw, field):
     if value < 0:
         raise HTTPException(status_code=400, detail=f"{field} cannot be negative")
     return round(value, 2)
+
+
+def resolve_line_item_ids(db, client_id, lines):
+    """The saved item each line names, checked to be this business's.
+
+    An id from the browser is only a claim. One that names somebody else's item
+    would otherwise let a line move another business's stock, so anything that
+    is not found here is refused rather than quietly dropped - dropping it
+    would leave an invoice that looks linked and is not.
+    """
+    wanted = {l.item_id for l in lines if getattr(l, "item_id", None)}
+    if not wanted:
+        return [None] * len(lines)
+    found = {r[0] for r in db.query(models.DBItem.id).filter(
+        models.DBItem.client_id == client_id, models.DBItem.id.in_(wanted)).all()}
+    if wanted - found:
+        raise HTTPException(status_code=400,
+                            detail="A line names an item that is not in your items")
+    return [l.item_id or None for l in lines]
 
 
 @app.get("/api/items")
@@ -1493,10 +1520,23 @@ def create_item(request: Request, body: dict = None, db: Session = Depends(get_d
         purchase_price=_item_money(body.get("purchase_price"), "Purchase price"),
         purchase_account=str(body.get("purchase_account") or "")[:120],
         purchase_tax_rate=str(body.get("purchase_tax_rate") or "")[:60],
-        track_inventory=bool(body.get("track_inventory", False)),
-        quantity_on_hand=_item_money(body.get("quantity_on_hand"), "Quantity"),
+        # Never set directly for a tracked item: the opening count below is
+        # what writes it, so the ledger and the number cannot disagree.
+        track_inventory=False,
+        quantity_on_hand=0.0 if body.get("track_inventory") else _item_money(body.get("quantity_on_hand"), "Quantity"),
+        reorder_level=_item_money(body.get("reorder_level"), "Reorder level"),
     )
     db.add(row)
+    if body.get("track_inventory"):
+        db.flush()
+        try:
+            inventory.start_tracking(
+                db, row, _item_money(body.get("quantity_on_hand"), "Quantity"),
+                body.get("average_cost") if body.get("average_cost") not in (None, "")
+                else row.purchase_price, created_by=client.email or "")
+        except inventory.StockError as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc))
     log_audit(db, client.id, "item_created", "item", None, code, "", request)
     db.commit()
     db.refresh(row)
@@ -1533,13 +1573,36 @@ def update_item(item_id: int, request: Request, body: dict = None,
 
     for field, label in (("sale_price", "Sale price"),
                          ("purchase_price", "Purchase price"),
-                         ("quantity_on_hand", "Quantity")):
+                         ("reorder_level", "Reorder level")):
         if field in body:
             setattr(row, field, _item_money(body[field], label))
 
-    for flag in ("is_sold", "is_purchased", "track_inventory", "is_active"):
+    for flag in ("is_sold", "is_purchased", "is_active"):
         if flag in body:
             setattr(row, flag, bool(body[flag]))
+
+    # Stock goes through the ledger. Turning tracking on is a count, turning it
+    # off stops adding to it, and a new quantity on a tracked item is a count
+    # that differs from the book - never a number written over it.
+    try:
+        wants = bool(body["track_inventory"]) if "track_inventory" in body else bool(row.track_inventory)
+        if wants and not row.track_inventory:
+            counted = body["quantity_on_hand"] if "quantity_on_hand" in body else row.quantity_on_hand
+            inventory.start_tracking(db, row, counted, body.get("average_cost"),
+                                     created_by=client.email or "")
+        elif not wants and row.track_inventory:
+            inventory.stop_tracking(row)
+        elif "quantity_on_hand" in body:
+            if row.track_inventory:
+                counted = inventory.clean_quantity(body["quantity_on_hand"], "Quantity", allow_zero=True)
+                if abs(counted - (row.quantity_on_hand or 0.0)) > inventory.EPS:
+                    inventory.count(db, row, counted, "other", note="Changed on the item",
+                                    created_by=client.email or "")
+            else:
+                row.quantity_on_hand = _item_money(body["quantity_on_hand"], "Quantity")
+    except inventory.StockError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
 
     db.commit()
     return item_to_dict(row)
@@ -1564,6 +1627,212 @@ def delete_item(item_id: int, request: Request, db: Session = Depends(get_db)):
     log_audit(db, client.id, "item_retired", "item", row.id, row.code, "", request)
     db.commit()
     return {"retired": row.id}
+
+
+# ============================================================================
+# INVENTORY
+#
+# Items already carried a quantity that nothing maintained, which is the worst
+# kind of number: it looks authoritative and is wrong. Now every change is a row
+# in the stock ledger (see inventory.py), a sale takes stock out when its invoice
+# is issued, and the Inventory screen under Sales is where it is looked after.
+#
+# Out of scope, and said so on the screen: purchase orders and bills adding
+# stock by themselves, serial numbers, and more than one location.
+# ============================================================================
+import inventory  # noqa: E402
+
+inventory.install()
+
+INVENTORY_VIEWS = ("tracked", "all", "low", "out", "untracked")
+
+
+def _own_item(db, client, item_id):
+    row = db.query(models.DBItem).filter(
+        models.DBItem.id == item_id, models.DBItem.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return row
+
+
+def _csv_safe(value):
+    """A cell a spreadsheet will show as text. One that starts with = + - or @
+    is read as a formula, and an item name is typed by anybody."""
+    text = "" if value is None else str(value)
+    return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+
+
+@app.get("/api/inventory")
+def inventory_overview(request: Request, q: str = "", view: str = "tracked",
+                       limit: int = 200, db: Session = Depends(get_db)):
+    """The shelf: what is tracked, how much, what it is worth, and what needs
+    attention - with totals over everything, not just what the filter shows."""
+    client = get_client_user(request, db)
+    view = view if view in INVENTORY_VIEWS else "tracked"
+    items = db.query(models.DBItem).filter(
+        models.DBItem.client_id == client.id,
+        models.DBItem.is_active == True).order_by(models.DBItem.code.asc()).all()      # noqa: E712
+
+    totals = {"tracked": 0, "untracked": 0, "stock_value": 0.0, "low": 0, "out": 0, "over": 0}
+    shown = []
+    needle = (q or "").strip().lower()
+    for it in items:
+        d = item_to_dict(it)
+        status = d["stock_status"]
+        if status == "untracked":
+            totals["untracked"] += 1
+        else:
+            totals["tracked"] += 1
+            totals["stock_value"] += d["stock_value"]
+            if status in ("low", "out", "over"):
+                totals[status] += 1
+        if needle and needle not in (it.code or "").lower() and needle not in (it.name or "").lower():
+            continue
+        if view == "tracked" and status == "untracked":
+            continue
+        if view == "untracked" and status != "untracked":
+            continue
+        if view == "low" and status not in ("low", "out", "over"):
+            continue
+        if view == "out" and status not in ("out", "over"):
+            continue
+        shown.append(d)
+    totals["stock_value"] = money(totals["stock_value"])
+    cap = max(1, min(int(limit or 200), 1000))
+    return {"items": shown[:cap], "shown": len(shown), "totals": totals, "view": view,
+            "currency": (client.currency or "").upper()}
+
+
+def _stock_args(body):
+    """The request body, as a dict, whatever was sent."""
+    return body if isinstance(body, dict) else {}
+
+
+@app.post("/api/inventory/{item_id}/track")
+def inventory_start_tracking(item_id: int, request: Request, body: dict = None,
+                             db: Session = Depends(get_db)):
+    """Start tracking stock for an item, from a count. Declares what is on the
+    shelf now; invoices already issued are not taken out of it again."""
+    client = get_client_user(request, db)
+    row = _own_item(db, client, item_id)
+    body = _stock_args(body)
+    if row.track_inventory:
+        raise HTTPException(status_code=409, detail="This item is already tracked")
+    try:
+        inventory.start_tracking(db, row, body.get("quantity", 0), body.get("unit_cost"),
+                                 created_by=client.email or "")
+        if "reorder_level" in body:
+            row.reorder_level = _item_money(body.get("reorder_level"), "Reorder level")
+    except inventory.StockError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    log_audit(db, client.id, "stock_tracking_started", "item", row.id, row.code,
+              f"Counted {row.quantity_on_hand:g}", request)
+    db.commit()
+    return item_to_dict(row)
+
+
+@app.post("/api/inventory/{item_id}/stop")
+def inventory_stop_tracking(item_id: int, request: Request, db: Session = Depends(get_db)):
+    """Stop tracking. The history and the last quantity are kept; sales stop
+    moving it."""
+    client = get_client_user(request, db)
+    row = _own_item(db, client, item_id)
+    inventory.stop_tracking(row)
+    log_audit(db, client.id, "stock_tracking_stopped", "item", row.id, row.code, "", request)
+    db.commit()
+    return item_to_dict(row)
+
+
+@app.post("/api/inventory/{item_id}/receive")
+def inventory_receive(item_id: int, request: Request, body: dict = None,
+                      db: Session = Depends(get_db)):
+    """Stock arrives, at a cost. The average cost moves with it."""
+    client = get_client_user(request, db)
+    row = _own_item(db, client, item_id)
+    body = _stock_args(body)
+    moved_on = _clean_ymd(body.get("date"), "Date")
+    if moved_on and moved_on > date.today().isoformat():
+        raise HTTPException(status_code=400, detail="Stock cannot arrive in the future")
+    try:
+        mv = inventory.receive(db, row, body.get("quantity"), body.get("unit_cost"),
+                               note=str(body.get("note") or ""), moved_on=moved_on,
+                               created_by=client.email or "")
+    except inventory.StockError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    log_audit(db, client.id, "stock_received", "item", row.id, row.code,
+              f"+{mv.quantity:g} at {mv.unit_cost:g}", request)
+    db.commit()
+    return item_to_dict(row)
+
+
+@app.post("/api/inventory/{item_id}/count")
+def inventory_count(item_id: int, request: Request, body: dict = None,
+                    db: Session = Depends(get_db)):
+    """A physical count. What differs from the book is recorded, with a reason."""
+    client = get_client_user(request, db)
+    row = _own_item(db, client, item_id)
+    body = _stock_args(body)
+    try:
+        mv = inventory.count(db, row, body.get("counted"), body.get("reason"),
+                             note=str(body.get("note") or ""), created_by=client.email or "")
+    except inventory.StockError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    log_audit(db, client.id, "stock_counted", "item", row.id, row.code,
+              f"{mv.quantity:+g} ({mv.reason})", request)
+    db.commit()
+    return item_to_dict(row)
+
+
+@app.put("/api/inventory/{item_id}/reorder")
+def inventory_reorder_level(item_id: int, request: Request, body: dict = None,
+                            db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = _own_item(db, client, item_id)
+    row.reorder_level = _item_money(_stock_args(body).get("reorder_level"), "Reorder level")
+    db.commit()
+    return item_to_dict(row)
+
+
+@app.get("/api/inventory/{item_id}/movements")
+def inventory_movements(item_id: int, request: Request, limit: int = 200,
+                        db: Session = Depends(get_db)):
+    """Why the number is what it is: newest first."""
+    client = get_client_user(request, db)
+    row = _own_item(db, client, item_id)
+    moves = db.query(models.DBStockMovement).filter(
+        models.DBStockMovement.client_id == client.id,
+        models.DBStockMovement.item_id == row.id,
+    ).order_by(models.DBStockMovement.id.desc()).limit(max(1, min(int(limit or 200), 1000))).all()
+    return {
+        "item": item_to_dict(row),
+        "movements": [{
+            "id": m.id, "kind": m.kind, "quantity": m.quantity,
+            "affects_stock": bool(m.affects_stock), "unit_cost": m.unit_cost or 0.0,
+            "balance_after": m.balance_after, "invoice_number": m.invoice_number or "",
+            "reason": m.reason or "", "note": m.note or "", "moved_on": m.moved_on or "",
+            "created_by": m.created_by or "", "created_at": m.created_at or "",
+        } for m in moves],
+    }
+
+
+@app.get("/api/inventory/export.csv")
+def inventory_csv(request: Request, db: Session = Depends(get_db)):
+    """The stock valuation as the spreadsheet an accountant asks for."""
+    client = get_client_user(request, db)
+    items = db.query(models.DBItem).filter(
+        models.DBItem.client_id == client.id, models.DBItem.is_active == True,       # noqa: E712
+        models.DBItem.track_inventory == True).order_by(models.DBItem.code.asc()).all()     # noqa: E712
+    rows = []
+    for it in items:
+        d = item_to_dict(it)
+        rows.append([_csv_safe(it.code), _csv_safe(it.name), f"{d['quantity_on_hand']:g}",
+                     f"{d['average_cost']:.2f}", f"{d['stock_value']:.2f}",
+                     f"{d['reorder_level']:g}", d["stock_status"]])
+    return _csv_response("stock-valuation.csv",
+                         ["Code", "Name", "On hand", "Average cost", "Value", "Reorder level", "Status"], rows)
 
 
 EMAIL_TEMPLATE_KINDS = ("invoice", "quote")
@@ -3806,6 +4075,7 @@ def get_invoice(number: str, request: Request, db: Session = Depends(get_db)):
             "disc": li.disc,
             "account": li.account,
             "tax_rate": li.tax_rate,
+            "item_id": li.item_id,
             "tax_percent": round(parse_tax_rate(li.tax_rate) * 100, 4),
             "amount": money(line_net_amount(li.qty, li.price, li.disc)),
             "tax_amount": money(
@@ -3907,6 +4177,7 @@ def create_invoice(invoice: InvoiceCreate, request: Request, db: Session = Depen
 
     validate_line_items(invoice.line_items)
     validate_invoice_dates(invoice.issue_date, invoice.due_date)
+    line_item_ids = resolve_line_item_ids(db, client.id, invoice.line_items)
 
     subtotal, tax, total = compute_invoice_totals(invoice.line_items, invoice.tax_type)
 
@@ -3949,7 +4220,7 @@ def create_invoice(invoice: InvoiceCreate, request: Request, db: Session = Depen
     db.add(db_invoice)
     db.flush()
 
-    for item in invoice.line_items:
+    for item, item_id in zip(invoice.line_items, line_item_ids):
         db_line_item = models.DBLineItem(
             invoice_id=db_invoice.id,
             name=item.name or "",
@@ -3958,7 +4229,8 @@ def create_invoice(invoice: InvoiceCreate, request: Request, db: Session = Depen
             price=item.price,
             disc=item.disc or 0.0,
             account=item.account,
-            tax_rate=item.tax_rate
+            tax_rate=item.tax_rate,
+            item_id=item_id,
         )
         db.add(db_line_item)
 
@@ -5847,6 +6119,7 @@ def update_invoice(number: str, invoice: InvoiceCreate, request: Request, db: Se
         )
     validate_line_items(invoice.line_items)
     validate_invoice_dates(invoice.issue_date, invoice.due_date)
+    line_item_ids = resolve_line_item_ids(db, client.id, invoice.line_items)
 
     if invoice.invoice_number and invoice.invoice_number.strip() and invoice.invoice_number.strip() != inv.number:
         new_number = invoice.invoice_number.strip()
@@ -5883,11 +6156,11 @@ def update_invoice(number: str, invoice: InvoiceCreate, request: Request, db: Se
         inv.status = invoice.status
 
     db.query(models.DBLineItem).filter(models.DBLineItem.invoice_id == inv.id).delete()
-    for item in invoice.line_items:
+    for item, item_id in zip(invoice.line_items, line_item_ids):
         db.add(models.DBLineItem(
             invoice_id=inv.id, name=item.name or "", description=item.description,
             qty=item.qty, price=item.price, disc=item.disc or 0.0,
-            account=item.account, tax_rate=item.tax_rate,
+            account=item.account, tax_rate=item.tax_rate, item_id=item_id,
         ))
     db.flush()
     reconcile_late_fees(db, inv, client)
@@ -8401,6 +8674,7 @@ def quote_to_dict(q, client, db, detail=False):
         "disc": li.disc,
         "account": li.account,
         "tax_rate": li.tax_rate,
+        "item_id": li.item_id,
         "tax_percent": round(parse_tax_rate(li.tax_rate) * 100, 4),
         "amount": money(line_net_amount(li.qty, li.price, li.disc)),
     } for li in q.line_items]
@@ -8443,6 +8717,7 @@ def create_quote(quote: QuoteCreate, request: Request, db: Session = Depends(get
 
     validate_line_items(quote.line_items)
     validate_quote_dates(quote.issue_date, quote.expiry_date)
+    quote_item_ids = resolve_line_item_ids(db, client.id, quote.line_items)
 
     subtotal, tax, total = compute_invoice_totals(quote.line_items, quote.tax_type)
 
@@ -8485,7 +8760,7 @@ def create_quote(quote: QuoteCreate, request: Request, db: Session = Depends(get
     db.add(db_quote)
     db.flush()
 
-    for item in quote.line_items:
+    for item, item_id in zip(quote.line_items, quote_item_ids):
         db.add(models.DBQuoteLineItem(
             quote_id=db_quote.id,
             name=item.name or "",
@@ -8495,6 +8770,7 @@ def create_quote(quote: QuoteCreate, request: Request, db: Session = Depends(get
             disc=item.disc or 0.0,
             account=item.account,
             tax_rate=item.tax_rate,
+            item_id=item_id,
         ))
 
     db.commit()
@@ -8515,6 +8791,7 @@ def update_quote(number: str, quote: QuoteCreate, request: Request, db: Session 
 
     validate_line_items(quote.line_items)
     validate_quote_dates(quote.issue_date, quote.expiry_date)
+    quote_item_ids = resolve_line_item_ids(db, client.id, quote.line_items)
     subtotal, tax, total = compute_invoice_totals(quote.line_items, quote.tax_type)
 
     q.ref = quote.reference or ""
@@ -8535,7 +8812,7 @@ def update_quote(number: str, quote: QuoteCreate, request: Request, db: Session 
         q.status = quote.status
 
     db.query(models.DBQuoteLineItem).filter(models.DBQuoteLineItem.quote_id == q.id).delete()
-    for item in quote.line_items:
+    for item, item_id in zip(quote.line_items, quote_item_ids):
         db.add(models.DBQuoteLineItem(
             quote_id=q.id,
             name=item.name or "",
@@ -8545,6 +8822,7 @@ def update_quote(number: str, quote: QuoteCreate, request: Request, db: Session 
             disc=item.disc or 0.0,
             account=item.account,
             tax_rate=item.tax_rate,
+            item_id=item_id,
         ))
 
     log_audit(db, client.id, "quote_updated", "quote", q.id, q.number,
@@ -8653,6 +8931,7 @@ def convert_quote_to_invoice(number: str, request: Request,
             disc=li.disc or 0.0,
             account=li.account,
             tax_rate=li.tax_rate,
+            item_id=li.item_id,
         ))
 
     q.status = "Invoiced"
@@ -33956,7 +34235,8 @@ def raise_invoice_from_quote(db, client, q, request=None):
     db.flush()
     for li in q.line_items:
         db.add(models.DBLineItem(invoice_id=invoice.id, name=li.name or "", description=li.description, qty=li.qty,
-                                 price=li.price, disc=li.disc or 0.0, account=li.account, tax_rate=li.tax_rate))
+                                 price=li.price, disc=li.disc or 0.0, account=li.account, tax_rate=li.tax_rate,
+                                 item_id=li.item_id))
     q.status = "Invoiced"
     q.invoice_number = inv_number
     log_audit(db, client.id, "quote_converted", "quote", q.id, q.number, f"Invoice {inv_number} raised on acceptance", request)
@@ -35300,6 +35580,16 @@ def attention_items(db: Session, client) -> list:
         models.DBQuote.client_id == client.id, models.DBQuote.status == "Sent").all()
     add("quotes_open", len(quotes), "Quotes awaiting an answer", "sent and not yet accepted or declined",
         ("quotes-view",), "info", sum(q.total or 0 for q in quotes), cur)
+
+    # Tracked stock that has reached its reorder line, run out, or been sold
+    # past zero. Only items somebody chose to track, so a business that does
+    # not keep stock never sees this.
+    held = db.query(models.DBItem).filter(
+        models.DBItem.client_id == client.id, models.DBItem.is_active == True,       # noqa: E712
+        models.DBItem.track_inventory == True).all()                                  # noqa: E712
+    short = [i for i in held if inventory.stock_status(True, i.quantity_on_hand, i.reorder_level) in ("low", "out", "over")]
+    add("stock_low", len(short), "Items to reorder", "at their reorder level, or out of stock",
+        ("inventory-view", "low"), "warn")
 
     leave = db.query(models.DBLeaveRequest).filter(
         models.DBLeaveRequest.client_id == client.id,

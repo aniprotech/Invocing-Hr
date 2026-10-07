@@ -196,6 +196,10 @@ class DBLineItem(Base):
     disc = Column(Float, default=0.0)
     account = Column(String, default="200 - Sales")
     tax_rate = Column(String, default="20% (VAT on Income)")
+    # The saved item this line sells, when it was picked from the catalogue.
+    # A plain number and not a foreign key: an item is retired and never
+    # removed, and an invoice must keep meaning what it said regardless.
+    item_id = Column(Integer, nullable=True, index=True)
 
     invoice = relationship("DBInvoice", back_populates="line_items")
 
@@ -509,6 +513,9 @@ class DBQuoteLineItem(Base):
     disc = Column(Float, default=0.0)
     account = Column(String, default="200 - Sales")
     tax_rate = Column(String, default="20% (VAT on Income)")
+    # Carried onto the invoice the quote becomes, so what was quoted from stock
+    # is taken from stock when it is invoiced.
+    item_id = Column(Integer, nullable=True, index=True)
 
     quote = relationship("DBQuote", back_populates="line_items")
 
@@ -1617,10 +1624,59 @@ class DBItem(Base):
     # and a quantity nobody maintains is worse than no quantity at all.
     track_inventory = Column(Boolean, default=False)
     quantity_on_hand = Column(Float, default=0.0)
+    # At or below this it is "low". Zero means no reorder line was set.
+    reorder_level = Column(Float, default=0.0)
+    # What one unit cost us, averaged over what is on the shelf: it moves when
+    # stock is received and not when it is sold. Stock value is this times the
+    # quantity, and each sale remembers it so margin can be worked out later.
+    average_cost = Column(Float, default=0.0)
 
     # Retired rather than deleted once it has been billed, so old invoices
     # keep meaning what they said.
     is_active = Column(Boolean, default=True, index=True)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBStockMovement(Base):
+    """One thing that happened to the stock of one item.
+
+    The quantity on an item is a running total, and a running total nobody can
+    explain is exactly what makes people stop trusting stock figures. Every
+    change goes through here, so "why is it 14" has an answer, and the total can
+    be rebuilt from this table if it is ever doubted.
+
+    kind is one of:
+      opening        a count taken when tracking started
+      received       stock arriving, at a cost
+      adjustment     a count that differs from the book - damage, loss, a find
+      sale           stock leaving on an issued invoice
+      sale_reversal  that invoice was voided, deleted, or lowered
+      baseline       a sale that was already out before tracking (re)started.
+                     It moves no stock (affects_stock is false); it exists so
+                     that touching that old invoice does not take it out again.
+
+    Sales are matched to their invoice by invoice_id - a plain number, not a
+    foreign key, so the history survives an invoice being deleted.
+    """
+    __tablename__ = "stock_movements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    item_id = Column(Integer, nullable=False, index=True)
+    kind = Column(String, default="adjustment", index=True)
+    # Signed: what it did to the stock. Negative takes stock out.
+    quantity = Column(Float, default=0.0)
+    affects_stock = Column(Boolean, default=True)
+    unit_cost = Column(Float, default=0.0)
+    # The item's quantity once this had happened.
+    balance_after = Column(Float, default=0.0)
+
+    invoice_id = Column(Integer, nullable=True, index=True)
+    invoice_number = Column(String, default="")
+    reason = Column(String, default="")
+    note = Column(String, default="")
+    moved_on = Column(String, default="")
+    created_by = Column(String, default="")
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 

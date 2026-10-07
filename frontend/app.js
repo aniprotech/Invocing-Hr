@@ -319,6 +319,7 @@ var NAV_FOR_VIEW = {
     'create-quote-view': 'nav-quotes',
     'view-quote-view': 'nav-quotes',
     'credit-notes-view': 'nav-credit-notes',
+    'inventory-view': 'nav-inventory',
     'view-credit-note-view': 'nav-credit-notes',
     'bank-view': 'nav-bank',
     'chasing-view': 'nav-chasing',
@@ -372,6 +373,7 @@ var ROUTE_SLUGS = {
     'create-invoice-view': 'invoices/new',
     'quotes-view': 'quotes',
     'credit-notes-view': 'credit-notes',
+    'inventory-view': 'inventory',
     'create-quote-view': 'quotes/new',
     'sales-pipeline-view': 'pipeline',
     'recurring-view': 'recurring',
@@ -574,6 +576,7 @@ function showView(viewId) {
     if (viewId === 'invoices-view' && typeof fetchInvoices === 'function') fetchInvoices();
     if (viewId === 'quotes-view' && typeof fetchQuotes === 'function') fetchQuotes();
     if (viewId === 'credit-notes-view' && typeof fetchCreditNotes === 'function') fetchCreditNotes();
+    if (viewId === 'inventory-view' && typeof loadInventory === 'function') loadInventory();
     if (viewId === 'sales-pipeline-view' && typeof loadSalesPipeline === 'function') loadSalesPipeline();
     if (viewId === 'recurring-view' && typeof loadRecurring === 'function') loadRecurring();
     // Dates and currency are filled before the number is fetched, because the
@@ -2122,6 +2125,8 @@ function attentionRow(it) {
 }
 
 function goToAttention(it) {
+    // The Inventory screen reads its tab when it opens, so set it first.
+    if (it.view === 'inventory-view' && it.filter) _inventory.view = it.filter;
     showView(it.view);
     if (!it.filter) return;
     if (it.view === 'bank-view') {
@@ -2688,6 +2693,10 @@ async function editInvoice(number) {
         put('.item-disc', item.disc || 0);
         put('.item-account', item.account);
         put('.item-tax-rate', item.tax_rate);
+        if (item.item_id) {
+            row.dataset.itemId = item.item_id;
+            row.dataset.itemName = item.name || '';
+        }
     });
     calculateTotals();
 }
@@ -5268,7 +5277,7 @@ async function submitComplexInvoice(status) {
         var account = row.querySelector('.item-account') ? row.querySelector('.item-account').value : '200 - Sales';
         var tax_rate = row.querySelector('.item-tax-rate') ? row.querySelector('.item-tax-rate').value : 'No Tax';
         if (name || desc || qty > 0 || price > 0) {
-            line_items.push({ name: name, description: desc, qty: qty, price: price, disc: disc, account: account, tax_rate: tax_rate });
+            line_items.push({ name: name, description: desc, qty: qty, price: price, disc: disc, account: account, tax_rate: tax_rate, item_id: lineItemId(row) });
         }
     });
     if (line_items.length === 0) { showToast('Add at least one line item', 'error'); return; }
@@ -5861,6 +5870,13 @@ function onItemBoxInput(input) {
     if (!dropdown) return;
     closeItemLookups(dropdown);
 
+    // Retyping the box after picking an item cuts the link: the line is no
+    // longer that item, and a stale link would take stock for the wrong thing.
+    var linkedRow = input.closest('tr');
+    if (linkedRow && linkedRow.dataset.itemId && input.value !== (linkedRow.dataset.itemName || '')) {
+        unlinkItemFromRow(linkedRow);
+    }
+
     var typed = input.value.trim();
     clearTimeout(_itemLookupTimer);
     _itemLookupTimer = setTimeout(function () {
@@ -5881,7 +5897,9 @@ function renderItemLookup(dropdown, input, items, typed) {
             '<div class="ca-icon">' + esc((it.code || '?')[0].toUpperCase()) + '</div>' +
             '<div><div class="ca-name">' + esc(it.code) +
                 (it.name ? ' - ' + esc(it.name) : '') + '</div>' +
-            '<div class="ca-email">' + esc(getCurrencySymbol()) + price + '</div></div>' +
+            '<div class="ca-email">' + esc(getCurrencySymbol()) + price +
+                (it.track_inventory ? ' &middot; ' + (it.quantity_on_hand > 0 ? esc(String(it.quantity_on_hand)) + ' in stock' : 'none in stock') : '') +
+            '</div></div>' +
         '</div>';
     }).join('');
 
@@ -5928,6 +5946,13 @@ function applyItemToRow(row, item) {
     // The code is what you search by rather than what you sell, so it is kept
     // on the row instead of taking a column somebody reads.
     if (item.code) row.dataset.itemCode = item.code;
+    // Which saved item this line is. Read back when the document is saved, so
+    // issuing it can take stock out - and cleared again if the box is retyped.
+    row.dataset.itemId = item.id;
+    // What the box shows, which is the item's name only when it has one.
+    row.dataset.itemName = (row.querySelector('.item-name') || {}).value || '';
+    row.dataset.stockTracked = item.track_inventory ? '1' : '';
+    row.dataset.stockOnHand = item.quantity_on_hand || 0;
     // Only when the line is still empty - somebody who has written their own
     // description should not lose it by picking the item afterwards.
     var desc = row.querySelector('.item-desc');
@@ -5937,6 +5962,7 @@ function applyItemToRow(row, item) {
     if (qty && (!qty.value || Number(qty.value) === 0)) qty.value = 1;
     set('.item-account', item.sale_account);
     set('.item-tax-rate', item.sale_tax_rate);
+    updateStockHint(row);
 
     var scope = row.closest('tbody') && row.closest('tbody').id === 'quote-items-body'
         ? 'quote' : 'invoice';
@@ -14951,7 +14977,7 @@ function collectQuotePayload(status) {
         var account = row.querySelector('.item-account') ? row.querySelector('.item-account').value : '200 - Sales';
         var tax_rate = row.querySelector('.item-tax-rate') ? row.querySelector('.item-tax-rate').value : 'No Tax';
         if (name || desc || qty > 0 || price > 0) {
-            line_items.push({ name: name, description: desc, qty: qty, price: price, disc: disc, account: account, tax_rate: tax_rate });
+            line_items.push({ name: name, description: desc, qty: qty, price: price, disc: disc, account: account, tax_rate: tax_rate, item_id: lineItemId(row) });
         }
     });
     if (line_items.length === 0) { showToast('Add at least one line item', 'error'); return null; }
@@ -20177,3 +20203,352 @@ async function setDigest(on) {
     } catch (e) { showToast(e.message, 'error'); }
 }
 window.setDigest = setDigest;
+
+
+// ============================================================================
+// INVENTORY, under Sales
+//
+// What is held, what it is worth, and what needs ordering. Every number here is
+// read from the stock ledger on the server; this screen only asks and shows.
+// The actions - receive, count, start tracking - are questions in a dialog and
+// a request, and nothing is worked out in the browser.
+// ============================================================================
+
+var _inventory = { view: 'tracked', data: null, timer: null, history: null };
+
+var INVENTORY_STATUS = {
+    ok: { label: 'In stock', cls: 'status-paid' },
+    low: { label: 'Low', cls: 'status-low' },
+    out: { label: 'Out of stock', cls: 'status-out' },
+    over: { label: 'Oversold', cls: 'status-out' },
+    untracked: { label: 'Not tracked', cls: 'status-draft' }
+};
+
+var INVENTORY_REASONS = [
+    { value: 'stocktake', label: 'Stocktake' },
+    { value: 'damaged', label: 'Damaged' },
+    { value: 'lost', label: 'Lost or stolen' },
+    { value: 'found', label: 'Found' },
+    { value: 'returned', label: 'Returned by a customer' },
+    { value: 'other', label: 'Something else' }
+];
+
+function inventoryQty(n) {
+    return Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
+function inventoryMoney(n) {
+    return getCurrencySymbol() + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function inventoryToday() {
+    return typeof localDate === 'function' ? localDate() : new Date().toISOString().slice(0, 10);
+}
+
+async function loadInventory() {
+    var q = ((document.getElementById('inventory-search') || {}).value || '').trim();
+    try {
+        _inventory.data = await fetchJson('/api/inventory?view=' + encodeURIComponent(_inventory.view) +
+            '&q=' + encodeURIComponent(q));
+    } catch (e) {
+        _inventory.data = null;
+        var body = document.getElementById('inventory-table-body');
+        if (body) body.innerHTML = '<tr><td colspan="7" style="padding:32px;text-align:center;color:var(--text-secondary);">Could not load your inventory. ' + esc(e.message || '') + '</td></tr>';
+        return;
+    }
+    renderInventory();
+}
+window.loadInventory = loadInventory;
+
+function debounceInventory() {
+    clearTimeout(_inventory.timer);
+    _inventory.timer = setTimeout(loadInventory, 250);
+}
+window.debounceInventory = debounceInventory;
+
+function setInventoryView(view) {
+    _inventory.view = view;
+    loadInventory();
+}
+window.setInventoryView = setInventoryView;
+
+function renderInventory() {
+    var d = _inventory.data;
+    if (!d) return;
+    var t = d.totals || {};
+
+    var tiles = document.getElementById('inventory-tiles');
+    if (tiles) {
+        var tile = function (label, value, view, tone) {
+            return '<button type="button" class="stat-card" data-inv-view="' + view + '">' +
+                '<span class="stat-label">' + esc(label) + '</span>' +
+                '<span class="stat-value"' + (tone ? ' style="color:' + tone + ';"' : '') + '>' + value + '</span></button>';
+        };
+        tiles.innerHTML =
+            tile('Items tracked', inventoryQty(t.tracked), 'tracked') +
+            tile('Stock value', inventoryMoney(t.stock_value), 'tracked') +
+            tile('Low on stock', inventoryQty(t.low), 'low', t.low ? 'var(--warning-color)' : '') +
+            tile('Out of stock', inventoryQty((t.out || 0) + (t.over || 0)), 'out', (t.out || t.over) ? 'var(--danger-text)' : '');
+        tiles.querySelectorAll('[data-inv-view]').forEach(function (b) {
+            b.addEventListener('click', function () { setInventoryView(b.getAttribute('data-inv-view')); });
+        });
+    }
+
+    document.querySelectorAll('#inventory-tabs .tab').forEach(function (b) {
+        b.classList.toggle('active', b.getAttribute('data-inv-view') === _inventory.view);
+    });
+    var untrackedTab = document.getElementById('inventory-tab-untracked');
+    if (untrackedTab) untrackedTab.textContent = 'Not tracked' + (t.untracked ? ' (' + t.untracked + ')' : '');
+
+    var count = document.getElementById('inventory-count');
+    if (count) count.textContent = d.shown + ' item' + (d.shown === 1 ? '' : 's') +
+        (d.shown > d.items.length ? ', showing ' + d.items.length : '');
+
+    var tbody = document.getElementById('inventory-table-body');
+    if (!tbody) return;
+    if (!d.items.length) {
+        var empty = {
+            tracked: 'Nothing is tracked yet. Press New item, or open the Not tracked tab and start tracking something you already sell.',
+            low: 'Nothing is running low.',
+            out: 'Nothing is out of stock.',
+            untracked: 'Everything you sell is being tracked.',
+            all: 'No items yet. Press New item.'
+        }[d.view] || 'No items.';
+        tbody.innerHTML = '<tr><td colspan="7" style="padding:32px;text-align:center;color:var(--text-secondary);">' + esc(empty) + '</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = d.items.map(function (it) {
+        var st = INVENTORY_STATUS[it.stock_status] || INVENTORY_STATUS.ok;
+        var tracked = it.track_inventory;
+        var acts = tracked
+            ? btn('receive', it.id, 'Receive') + btn('count', it.id, 'Count') + btn('history', it.id, 'History') + btn('edit', it.id, 'Edit')
+            : btn('track', it.id, 'Start tracking') + btn('edit', it.id, 'Edit');
+        return '<tr>' +
+            '<td><div style="font-weight:600;">' + esc(it.code) + '</div>' +
+              (it.name ? '<div style="font-size:0.8rem;color:var(--text-secondary);">' + esc(it.name) + '</div>' : '') + '</td>' +
+            '<td class="text-right" style="font-weight:600;' + (it.stock_status === 'over' ? 'color:var(--danger-text);' : '') + '">' +
+              (tracked ? inventoryQty(it.quantity_on_hand) : '-') + '</td>' +
+            '<td class="text-right">' + (tracked && it.reorder_level ? inventoryQty(it.reorder_level) : '-') + '</td>' +
+            '<td class="text-right">' + (tracked ? inventoryMoney(it.average_cost) : '-') + '</td>' +
+            '<td class="text-right">' + (tracked ? inventoryMoney(it.stock_value) : '-') + '</td>' +
+            '<td><span class="status-pill ' + st.cls + '">' + esc(st.label) + '</span></td>' +
+            '<td style="white-space:nowrap;text-align:right;">' + acts + '</td></tr>';
+    }).join('');
+
+    function btn(act, id, label) {
+        return '<button type="button" class="btn btn-outline" style="font-size:0.78rem;padding:4px 10px;margin-left:4px;" ' +
+            'data-inv-act="' + act + '" data-inv-id="' + id + '">' + esc(label) + '</button>';
+    }
+}
+
+// One listener for every row's buttons: no handler text inside the markup.
+document.addEventListener('click', function (e) {
+    var b = e.target.closest && e.target.closest('[data-inv-act]');
+    if (!b) return;
+    var id = Number(b.getAttribute('data-inv-id'));
+    var it = ((_inventory.data || {}).items || []).filter(function (x) { return x.id === id; })[0];
+    if (!it) return;
+    var act = b.getAttribute('data-inv-act');
+    var run = { receive: inventoryReceive, count: inventoryCount, track: inventoryTrack, edit: inventoryEdit, history: inventoryHistory }[act];
+    if (run) run(it);
+});
+
+async function inventoryPost(path, body, done) {
+    try {
+        await fetchJson(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+        showToast(done, 'success');
+        await loadInventory();
+        if (_inventory.history) inventoryHistory(_inventory.history);
+        return true;
+    } catch (e) {
+        showToast(e.message, 'error');
+        return false;
+    }
+}
+
+async function inventoryReceive(it) {
+    var out = await uiForm([
+        { name: 'quantity', label: 'How many arrived', type: 'number', placeholder: 'e.g. 24', required: true },
+        { name: 'unit_cost', label: 'What each one cost (' + getCurrencySymbol() + ')', type: 'number', value: it.average_cost || '' },
+        { name: 'date', label: 'Date it arrived', type: 'date', value: inventoryToday() },
+        { name: 'note', label: 'Note', type: 'text', placeholder: 'Supplier, delivery number' }
+    ], { title: 'Receive ' + it.code, confirmText: 'Add to stock',
+         message: inventoryQty(it.quantity_on_hand) + ' on hand now. The average cost moves with what you add.' });
+    if (!out) return;
+    inventoryPost('/api/inventory/' + it.id + '/receive',
+        { quantity: out.quantity, unit_cost: out.unit_cost, date: out.date, note: out.note }, 'Stock received');
+}
+
+async function inventoryCount(it) {
+    var out = await uiForm([
+        { name: 'counted', label: 'How many are there', type: 'number', value: it.quantity_on_hand, required: true },
+        { name: 'reason', label: 'Why it differs', type: 'select', value: 'stocktake', options: INVENTORY_REASONS },
+        { name: 'note', label: 'Note', type: 'text', placeholder: 'Optional' }
+    ], { title: 'Count ' + it.code, confirmText: 'Record the count',
+         message: 'The book says ' + inventoryQty(it.quantity_on_hand) + '. What you enter is recorded, with the reason, as the difference.' });
+    if (!out) return;
+    inventoryPost('/api/inventory/' + it.id + '/count', { counted: out.counted, reason: out.reason, note: out.note }, 'Count recorded');
+}
+
+async function inventoryTrack(it) {
+    var out = await uiForm([
+        { name: 'quantity', label: 'How many are on the shelf now', type: 'number', value: it.quantity_on_hand || 0, required: true },
+        { name: 'unit_cost', label: 'What each one cost (' + getCurrencySymbol() + ')', type: 'number', value: it.average_cost || it.purchase_price || '' },
+        { name: 'reorder_level', label: 'Tell me when it falls to', type: 'number', value: it.reorder_level || '', placeholder: 'Optional' }
+    ], { title: 'Start tracking ' + it.code, confirmText: 'Start tracking',
+         message: 'Count what you have today. Invoices you have already issued are not taken out of it again; from now on, issuing an invoice takes stock out.' });
+    if (!out) return;
+    inventoryPost('/api/inventory/' + it.id + '/track',
+        { quantity: out.quantity, unit_cost: out.unit_cost, reorder_level: out.reorder_level }, 'Now tracking ' + it.code);
+}
+
+async function inventoryEdit(it) {
+    var fields = [
+        { name: 'name', label: 'Name', type: 'text', value: it.name || '' },
+        { name: 'sale_price', label: 'Sells for (' + getCurrencySymbol() + ')', type: 'number', value: it.sale_price || '' },
+        { name: 'purchase_price', label: 'Usually costs (' + getCurrencySymbol() + ')', type: 'number', value: it.purchase_price || '' }
+    ];
+    if (it.track_inventory) {
+        fields.push({ name: 'reorder_level', label: 'Tell me when it falls to', type: 'number', value: it.reorder_level || '' });
+        fields.push({ name: 'tracking', label: 'Stock tracking', type: 'select', value: 'on',
+            options: [{ value: 'on', label: 'On - sales take stock out' }, { value: 'off', label: 'Off - stop moving this number' }] });
+    }
+    var out = await uiForm(fields, { title: 'Edit ' + it.code, confirmText: 'Save' });
+    if (!out) return;
+    var body = { name: out.name, sale_price: out.sale_price, purchase_price: out.purchase_price };
+    if (it.track_inventory) {
+        body.reorder_level = out.reorder_level;
+        if (out.tracking === 'off') body.track_inventory = false;
+    }
+    try {
+        await fetchJson('/api/items/' + it.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        showToast('Saved', 'success');
+        loadInventory();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function newInventoryItem() {
+    var out = await uiForm([
+        { name: 'code', label: 'Code', type: 'text', placeholder: 'What you type on an invoice', required: true },
+        { name: 'name', label: 'Name', type: 'text' },
+        { name: 'sale_price', label: 'Sells for (' + getCurrencySymbol() + ')', type: 'number' },
+        { name: 'purchase_price', label: 'Costs (' + getCurrencySymbol() + ')', type: 'number' },
+        { name: 'tracking', label: 'Track stock', type: 'select', value: 'yes',
+          options: [{ value: 'yes', label: 'Yes - count it and take it out when sold' }, { value: 'no', label: 'No - just a thing I sell' }] },
+        { name: 'quantity', label: 'How many do you have', type: 'number', value: 0 },
+        { name: 'reorder_level', label: 'Tell me when it falls to', type: 'number', placeholder: 'Optional' }
+    ], { title: 'New item', confirmText: 'Create' });
+    if (!out) return;
+    var tracked = out.tracking === 'yes';
+    try {
+        await fetchJson('/api/items', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+            code: out.code, name: out.name, sale_price: out.sale_price, purchase_price: out.purchase_price,
+            track_inventory: tracked, quantity_on_hand: tracked ? out.quantity : 0, reorder_level: out.reorder_level }) });
+        showToast('Item created', 'success');
+        _inventory.view = tracked ? 'tracked' : 'untracked';
+        loadInventory();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.newInventoryItem = newInventoryItem;
+
+function downloadInventoryCsv() { window.location.href = '/api/inventory/export.csv'; }
+window.downloadInventoryCsv = downloadInventoryCsv;
+
+var INVENTORY_KIND = {
+    opening: 'Opening count', received: 'Received', sale: 'Sold', sale_reversal: 'Put back',
+    adjustment: 'Count', baseline: 'Already out before tracking'
+};
+
+async function inventoryHistory(it) {
+    _inventory.history = it;
+    var card = document.getElementById('inventory-history');
+    if (!card) return;
+    card.style.display = 'block';
+    document.getElementById('inventory-history-title').textContent = it.code + (it.name ? ' - ' + it.name : '');
+    var body = document.getElementById('inventory-history-body');
+    body.innerHTML = '<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text-secondary);">Loading...</td></tr>';
+    try {
+        var d = await fetchJson('/api/inventory/' + it.id + '/movements');
+        body.innerHTML = d.movements.map(function (m) {
+            var what = INVENTORY_KIND[m.kind] || m.kind;
+            if (m.kind === 'adjustment' && m.reason) {
+                var r = INVENTORY_REASONS.filter(function (x) { return x.value === m.reason; })[0];
+                what = 'Count: ' + (r ? r.label.toLowerCase() : m.reason);
+            }
+            var change = m.affects_stock ? (m.quantity > 0 ? '+' : '') + inventoryQty(m.quantity) : '-';
+            var ref = m.invoice_number
+                ? '<a href="#/invoices/' + encodeURIComponent(m.invoice_number) + '">' + esc(m.invoice_number) + '</a>'
+                : '';
+            return '<tr' + (m.affects_stock ? '' : ' style="opacity:0.6;"') + '>' +
+                '<td>' + esc(m.moved_on || (m.created_at || '').slice(0, 10)) + '</td>' +
+                '<td>' + esc(what) + (ref ? ' ' + ref : '') + '</td>' +
+                '<td class="text-right" style="font-weight:600;' + (m.affects_stock && m.quantity < 0 ? 'color:var(--danger-text);' : '') + '">' + esc(change) + '</td>' +
+                '<td class="text-right">' + inventoryQty(m.balance_after) + '</td>' +
+                '<td class="text-right">' + (m.unit_cost ? inventoryMoney(m.unit_cost) : '-') + '</td>' +
+                '<td style="color:var(--text-secondary);">' + esc(m.note || '') + '</td></tr>';
+        }).join('') || '<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text-secondary);">Nothing has happened to this item yet.</td></tr>';
+        if (card.scrollIntoView) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (e) {
+        body.innerHTML = '<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text-secondary);">' + esc(e.message) + '</td></tr>';
+    }
+}
+
+function closeInventoryHistory() {
+    _inventory.history = null;
+    var card = document.getElementById('inventory-history');
+    if (card) card.style.display = 'none';
+}
+window.closeInventoryHistory = closeInventoryHistory;
+
+// --- the invoice and quote lines -------------------------------------------------
+
+// The saved item a line is for, or null. Read when the document is saved, so
+// the server can take stock out for it.
+function lineItemId(row) {
+    var id = row && row.dataset ? Number(row.dataset.itemId) : 0;
+    return id > 0 ? id : null;
+}
+
+// Retyping the item box cuts the link. The line is no longer that item, and a
+// stale link would take stock for the wrong thing.
+function unlinkItemFromRow(row) {
+    delete row.dataset.itemId;
+    delete row.dataset.itemName;
+    delete row.dataset.stockTracked;
+    delete row.dataset.stockOnHand;
+    updateStockHint(row);
+}
+
+// "12 in stock" under the item, in the warning colour once the line asks for
+// more than there is. A warning and not a refusal: a count a day behind should
+// not stop an invoice going out.
+function updateStockHint(row) {
+    if (!row) return;
+    var box = row.querySelector('.item-name');
+    var cell = box ? box.parentElement : null;
+    if (!cell) return;
+    var hint = cell.querySelector('.stock-hint');
+    if (!lineItemId(row) || row.dataset.stockTracked !== '1') {
+        if (hint) hint.remove();
+        return;
+    }
+    if (!hint) {
+        hint = document.createElement('div');
+        hint.className = 'stock-hint';
+        cell.appendChild(hint);
+    }
+    var onHand = Number(row.dataset.stockOnHand || 0);
+    var qty = parseFloat((row.querySelector('.item-qty') || {}).value) || 0;
+    var short = qty > onHand + 1e-9;
+    hint.classList.toggle('is-short', short);
+    hint.textContent = short
+        ? (onHand > 0 ? 'Only ' + inventoryQty(onHand) + ' in stock' : 'None in stock')
+        : inventoryQty(onHand) + ' in stock';
+}
+
+document.addEventListener('input', function (e) {
+    if (e.target && e.target.classList && e.target.classList.contains('item-qty')) {
+        updateStockHint(e.target.closest('tr'));
+    }
+});
