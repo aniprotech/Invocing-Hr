@@ -367,12 +367,12 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=197">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=197">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=197">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=197">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=197">
-    <script src="/dialogs.js?v=197"></script>
+    <link rel="stylesheet" href="mobile.css?v=198">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=198">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=198">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=198">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=198">
+    <script src="/dialogs.js?v=198"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -964,7 +964,7 @@
                 var liveNow = primary.filter(function (p) { return p.enabled; });
                 var el = document.getElementById('gateway-status');
                 el.textContent = liveNow.length === primary.length
-                    ? 'Both payment gateways are live'
+                    ? 'All payment gateways are live'
                     : liveNow.length
                         ? liveNow.map(function (p) { return p.label; }).join(' and ') + ' live, ' +
                           primary.filter(function (p) { return !p.enabled; })
@@ -1002,10 +1002,18 @@
                             ? '<div style="font-size:0.72rem;color:' +
                               (p.webhook_ready ? '#94a3b8' : '#fbbf24') + ';">' +
                               (p.webhook_ready
-                                ? 'Webhook: ' + esc(p.webhook_url)
+                                ? (p.webhook_urls && p.webhook_urls.length
+                                    ? 'Callbacks to set on their dashboard: ' + esc(p.webhook_urls.join(', '))
+                                    : 'Webhook: ' + esc(p.webhook_url))
                                 : 'Webhook secret missing - ' + esc(p.webhook_url) +
                                   ' will refuse everything until it is set') +
                               '</div>'
+                            : '') +
+                          // What is still missing from an otherwise-set-up gateway
+                          // (Salt Edge needs somewhere for the money to land).
+                          ((p.missing && p.missing.length)
+                            ? '<div style="font-size:0.72rem;color:#fbbf24;margin-top:4px;">Still needed: ' +
+                              esc(p.missing.join(', ')) + '</div>'
                             : '')
                         : '<div style="font-size:0.72rem;color:#94a3b8;">Needs ' + esc(missing) + '</div>') +
                     '</div>';
@@ -2217,9 +2225,13 @@
             if (!d.platform_keys_ready) {
                 var warn = document.createElement('div');
                 warn.style.cssText = 'margin-top:10px;font-size:0.78rem;color:#fbbf24;';
-                warn.textContent = "The platform's own Razorpay keys are not set (" +
-                    (d.platform_key_env || []).join(', ') +
-                    '), so payments cannot be collected into it.';
+                // Any one of these is enough: Razorpay, or Salt Edge with the
+                // account its payments land in.
+                var ways = (d.platform_key_alternatives && d.platform_key_alternatives.length)
+                    ? d.platform_key_alternatives : [d.platform_key_env || []];
+                warn.textContent = 'No gateway the platform collects through is set up yet, so payments ' +
+                    'cannot be collected into it. Set one of: ' +
+                    ways.map(function (w) { return w.join(', '); }).join('  \u2014 or \u2014  ') + '.';
                 box.appendChild(warn);
             }
 
@@ -3020,6 +3032,6 @@
         <div id="wallet-panel-body"></div>
       </div>
     </div>
-    <script src="/pwa.js?v=197"></script>
+    <script src="/pwa.js?v=198"></script>
 </body>
 </html>

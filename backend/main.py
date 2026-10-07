@@ -16401,7 +16401,38 @@ def superadmin_gateways(request: Request):
              "webhook_ready": True,   # capture is verified server-side, no webhook needed
              "required_env": ["PAYPAL_CLIENT_ID", "PAYPAL_SECRET", "PAYPAL_MODE"],
              "webhook_url": ""},
+            _saltedge_gateway_status(),
         ],
+    }
+
+
+def _saltedge_gateway_status():
+    """Salt Edge for the operator's gateways panel: what is set, what is still
+    missing, and the three addresses to give Salt Edge."""
+    cfg = saltedge_cfg()
+    base = (os.getenv("APP_BASE_URL", "") or "").strip().rstrip("/")
+    missing = [name for name, ok in (
+        ("SALTEDGE_APP_ID", cfg["app_id"]), ("SALTEDGE_SECRET", cfg["secret"]),
+        ("SALTEDGE_CREDITOR_NAME", cfg["creditor_name"]),
+        ("SALTEDGE_CREDITOR_SORT_CODE / SALTEDGE_CREDITOR_ACCOUNT_NUMBER",
+         len(cfg["sort_code"]) == 6 and len(cfg["account_number"]) == 8),
+        ("APP_BASE_URL", base)) if not ok]
+    return {
+        "key": "saltedge", "label": "Salt Edge",
+        "role": "primary",
+        "used_for": "Invoice payment from the payer's own bank, and autodebit",
+        "enabled": saltedge.is_configured(cfg),
+        "webhook_ready": bool(saltedge.is_configured(cfg) and base),
+        "required_env": ["SALTEDGE_APP_ID", "SALTEDGE_SECRET", "SALTEDGE_PRIVATE_KEY",
+                         "SALTEDGE_CREDITOR_NAME", "SALTEDGE_CREDITOR_SORT_CODE",
+                         "SALTEDGE_CREDITOR_ACCOUNT_NUMBER"],
+        "webhook_url": "/api/saltedge/callback/success",
+        "webhook_urls": [f"/api/saltedge/callback/{k}" for k in SALTEDGE_CALLBACKS],
+        "signing": bool(cfg["private_key"]),
+        "missing": missing,
+        "note": ("Open banking: the money goes from the payer's account to the platform's. "
+                 "Offered while the platform is collecting. Requests are signed once a "
+                 "private key is set, which Salt Edge requires of a Live client."),
     }
 
 # ============ ONBOARDING DOCUMENT REQUIREMENTS ============
@@ -23509,6 +23540,9 @@ def list_invoice_payment_methods(tracking_id: str, db: Session = Depends(get_db)
         "amount_due": money(inv.due or 0),
         "is_paid": settled,
         "methods": [] if settled else invoice_payment_methods(db, inv),
+        # Taking the next invoices from their bank without asking again. Offered
+        # only when there is a customer to attach the agreement to.
+        "autodebit": None if settled else saltedge_autodebit_offer(db, inv),
     }
 
 
@@ -24278,6 +24312,18 @@ def collection_mode(db: Session) -> str:
     return value if value in COLLECTION_MODES else "direct"
 
 
+def platform_can_collect() -> bool:
+    """Whether the platform has a way to take a customer's payment into its
+    own account: Razorpay's keys, or Salt Edge with an account for the money
+    to land in. Either one is enough - Salt Edge is only offered in platform
+    mode, so a switch that wanted Razorpay as well would make it unusable."""
+    rz = gateway_config()["razorpay"]
+    if rz["key_id"] and rz["key_secret"]:
+        return True
+    cfg = saltedge_cfg()
+    return saltedge.can_take(cfg, "GBP") or saltedge.can_take(cfg, "EUR")
+
+
 def collecting_keys(db: Session, client_id: int, provider: str = "razorpay"):
     """(key_id, key_secret, mode) for taking a payment on this invoice.
 
@@ -24345,6 +24391,14 @@ def invoice_payment_methods(db: Session, inv):
             and (inv.currency or "").upper() in GOCARDLESS_CURRENCIES):
         out.append({"provider": "gocardless",
                     "label": "Bank payment (GoCardless)",
+                    "mode": "platform"})
+
+    # Salt Edge pays into the platform's own account, so like GoCardless it is
+    # offered only where the platform is the one collecting, and only for a
+    # currency it has an account to land in.
+    if saltedge_ready(db, (inv.currency or "").upper()):
+        out.append({"provider": "saltedge",
+                    "label": "Pay from your bank (Salt Edge)",
                     "mode": "platform"})
     return out
 
@@ -24699,7 +24753,6 @@ def remove_landing_item(item_id: int, request: Request,
 def read_collection_mode(request: Request, db: Session = Depends(get_db)):
     require_superadmin(request)
     mode = collection_mode(db)
-    cfg = gateway_config()["razorpay"]
     owed = db.query(models.DBSettlement).filter(
         models.DBSettlement.status == "owed").all()
 
@@ -24710,15 +24763,22 @@ def read_collection_mode(request: Request, db: Session = Depends(get_db)):
     return {
         "mode": mode,
         "modes": list(COLLECTION_MODES),
-        "platform_keys_ready": bool(cfg["key_id"] and cfg["key_secret"]),
+        "platform_keys_ready": platform_can_collect(),
         "platform_key_env": ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"],
+        # Any one of these is enough to collect into the platform account.
+        "platform_key_alternatives": [
+            ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"],
+            ["SALTEDGE_APP_ID", "SALTEDGE_SECRET", "SALTEDGE_CREDITOR_NAME",
+             "SALTEDGE_CREDITOR_SORT_CODE", "SALTEDGE_CREDITOR_ACCOUNT_NUMBER"],
+        ],
         "owed_to_tenants": [
             {"currency": c, "amount": to_major(v, c)} for c, v in sorted(by_currency.items())
         ],
         "owed_count": len(owed),
         "note": ("In platform mode every customer payment lands in the platform's "
-                 "Razorpay account, so each one is money owed to the business that "
-                 "raised the invoice until it is paid out."),
+                 "own account (Razorpay, or Salt Edge's bank transfers), so each one is "
+                 "money owed to the business that raised the invoice until it is "
+                 "paid out."),
     }
 
 
@@ -24732,12 +24792,14 @@ def set_collection_mode(request: Request, body: dict = None,
                             detail="Mode must be direct or platform")
 
     if mode == "platform":
-        cfg = gateway_config()["razorpay"]
-        if not (cfg["key_id"] and cfg["key_secret"]):
+        if not platform_can_collect():
             raise HTTPException(
                 status_code=400,
-                detail="Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET before "
-                       "collecting into the platform account")
+                detail="Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET, or "
+                       "SALTEDGE_APP_ID, SALTEDGE_SECRET and the SALTEDGE_CREDITOR_* "
+                       "account (SALTEDGE_CREDITOR_NAME, SALTEDGE_CREDITOR_SORT_CODE "
+                       "and SALTEDGE_CREDITOR_ACCOUNT_NUMBER), before collecting "
+                       "into the platform account")
 
     row = db.query(models.DBSettings).filter(
         models.DBSettings.key == COLLECTION_SETTING,
@@ -24826,7 +24888,10 @@ def mark_settlement_paid(settlement_id: int, request: Request,
 # it has already happened is all ordinary code with tests behind it.
 # ============================================================================
 
-MANDATE_STATUSES = ("active", "cancelled", "failed")
+# "pending" is an agreement the payer has been sent to approve at their bank
+# and has not yet. Nothing is ever charged against one: mandate_for_customer
+# and mandate_allows only look at "active".
+MANDATE_STATUSES = ("pending", "active", "cancelled", "failed")
 
 
 def mandate_for_customer(db: Session, client_id: int, contact: str):
@@ -25022,6 +25087,14 @@ def job_invoice_autopay(db, now):
     """
     charged, failed = 0, 0
     for inv, mandate, amount_minor in invoices_due_for_autopay(db, now.date()):
+        if mandate.provider == "saltedge":
+            # Taken from the customer's own bank under the agreement they made
+            # there. Requested here and confirmed later, by Salt Edge, the same
+            # way a bank debit is - see charge_saltedge_mandate.
+            ok, _why = charge_saltedge_mandate(db, inv, mandate, amount_minor)
+            charged += 1 if ok else 0
+            failed += 0 if ok else 1
+            continue
         key_id, key_secret, mode = collecting_keys(db, inv.client_id)
         attempt, error = run_auto_charge(
             db, mandate, amount_minor, inv.currency or mandate.currency,
@@ -25041,6 +25114,666 @@ def job_invoice_autopay(db, now):
         charged += 1
     db.commit()
     return {"charged": charged, "failed": failed}
+
+
+# ============================================================================
+# SALT EDGE: paying an invoice from the payer's own bank, and taking the next
+# ones without asking again.
+#
+# Salt Edge is the licensed party that talks to the payer's bank (open
+# banking). A payment is the payer approving one transfer at their bank. An
+# autodebit is a variable recurring payment: a ceiling the payer approves once,
+# inside which later invoices are taken with nobody present. In both the money
+# goes from their account straight to the account named in SALTEDGE_CREDITOR_*,
+# which is the platform's own - so this is offered only where the platform is
+# collecting, and the business is owed what arrives like any other platform
+# collection. What is sent, and how it is signed, is in saltedge.py.
+#
+# Nothing here marks an invoice paid on the payer's say-so. A payment is paid
+# when Salt Edge says so - in a callback that verifies, or in answer to our own
+# authenticated question - and which invoice, and for how much, comes from the
+# row written before the bank was asked, never from the message.
+# ============================================================================
+import saltedge  # noqa: E402
+
+SALTEDGE_CALLBACKS = ("success", "fail", "notify")
+SALTEDGE_BANKS_TTL = 900            # seconds a list of banks is kept
+SALTEDGE_PENDING_DAYS = 14          # how long a payment is still asked about
+SALTEDGE_CONSENT_DAYS = 3           # how long a payer has to approve at their bank
+_saltedge_banks = {"key": "", "at": 0.0, "banks": []}
+
+
+def saltedge_cfg():
+    return saltedge.settings()
+
+
+def _se_now():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def saltedge_ready(db, currency, autodebit=False):
+    """Whether Salt Edge can be offered for this currency right now: the keys,
+    an account for the money to land in, and the platform being the one that
+    collects - because that account is the platform's own."""
+    if collection_mode(db) != "platform":
+        return False
+    cfg = saltedge_cfg()
+    if autodebit:
+        return saltedge.can_autodebit(cfg, currency)
+    return saltedge.can_take(cfg, currency)
+
+
+def saltedge_autodebit_offer(db, inv):
+    """What the invoice page shows about automatic payment, or nothing. An
+    agreement is kept against a customer, so an invoice with none cannot have
+    one."""
+    if not (inv.to_contact or "").strip():
+        return None
+    currency = (inv.currency or "").upper()
+    if not saltedge_ready(db, currency, autodebit=True):
+        return None
+    return {"provider": "saltedge", "currency": currency,
+            "label": "Pay future invoices from your bank automatically"}
+
+
+def saltedge_customer_for(inv):
+    who = (inv.to_contact or "").strip() or (inv.email or "").strip() or inv.tracking_id
+    return saltedge.customer_identifier(inv.client_id, who)
+
+
+def saltedge_payer_ip(request):
+    """Where the payer is. Behind our proxy the connecting address is rewritten
+    to the one the proxy saw, so this is the payer and not the proxy."""
+    return saltedge.valid_ip(request.client.host if request.client else "")
+
+
+def saltedge_return_url(request, inv, flag):
+    base = (os.getenv("APP_BASE_URL", "") or str(request.base_url)).rstrip("/")
+    return f"{base}/invoice.html?id={inv.tracking_id}&{flag}=return"
+
+
+def _saltedge_error_text(exc):
+    return f"{exc.error_class or exc.status}: {exc.message}"[:200]
+
+
+def _saltedge_limited(request, what):
+    ip = request.client.host if request.client else "unknown"
+    if rate_limiter.is_rate_limited(f"saltedge_{what}:{ip}", max_requests=30, window=300):
+        raise HTTPException(status_code=429, detail="Please wait a moment and try again")
+
+
+# --- a payment ------------------------------------------------------------------
+
+@app.post("/api/public/invoices/{tracking_id}/pay/saltedge/start")
+def start_saltedge_invoice_payment(tracking_id: str, request: Request,
+                                   db: Session = Depends(get_db)):
+    """Send the payer to their bank to approve this invoice's payment.
+
+    The redirect proves nothing. The invoice is paid when Salt Edge says the
+    bank accepted the payment, which arrives as a callback and is also asked
+    for when the payer comes back.
+    """
+    inv = payable_invoice(db, tracking_id)
+    if inv.status == "Paid" or (inv.due or 0) <= 0:
+        raise HTTPException(status_code=409, detail="This invoice is already paid")
+
+    currency = (inv.currency or "GBP").upper()
+    if not saltedge_ready(db, currency):
+        raise HTTPException(status_code=503,
+                            detail="Bank payment is not set up for this invoice")
+
+    ip = saltedge_payer_ip(request)
+    if not ip:
+        raise HTTPException(
+            status_code=400,
+            detail="We could not tell where this payment is coming from. "
+                   "Please pay another way.")
+
+    amount = money(inv.due or 0)
+    amount_minor = to_minor_units(amount, currency)
+    if amount_minor <= 0:
+        raise HTTPException(status_code=409, detail="Nothing left to pay")
+
+    cfg = saltedge_cfg()
+    customer = saltedge_customer_for(inv)
+    e2e = saltedge.end_to_end_id("", inv.number)
+    try:
+        body = saltedge.payment_request(
+            cfg, currency, amount, e2e, f"Invoice {inv.number}", ip,
+            reference=inv.number, customer=customer,
+            return_to=saltedge_return_url(request, inv, "saltedge"),
+            custom_fields={"invoice_id": str(inv.id), "client_id": str(inv.client_id),
+                           "end_to_end_id": e2e})
+    except ValueError:
+        raise HTTPException(status_code=409,
+                            detail="Bank payment is not available for this invoice")
+
+    # Written, and committed, before Salt Edge is asked: a crash partway
+    # through leaves a record rather than a payment nobody can find.
+    row = models.DBSaltEdgePayment(
+        client_id=inv.client_id, invoice_id=inv.id, kind="payment",
+        end_to_end_id=e2e, customer_identifier=customer,
+        amount_minor=amount_minor, currency=currency, status="requested")
+    db.add(row)
+    db.commit()
+
+    try:
+        made = saltedge.create_payment(cfg, body)
+    except saltedge.SaltEdgeError as exc:
+        row.outcome, row.failure_reason, row.updated_at = "failed", _saltedge_error_text(exc), _se_now()
+        db.commit()
+        logger.error("Salt Edge would not start a payment for %s: %s", inv.number, exc)
+        raise HTTPException(status_code=502,
+                            detail="This bank payment could not be started. "
+                                   "Please try another way to pay.")
+
+    payment_id = str(made.get("payment_id") or "")
+    url = str(made.get("payment_url") or "")
+    if not payment_id or not url.startswith(("https://", "http://")):
+        row.outcome, row.failure_reason, row.updated_at = "failed", "No payment address came back", _se_now()
+        db.commit()
+        raise HTTPException(status_code=502,
+                            detail="This bank payment could not be started.")
+
+    row.payment_id, row.status, row.updated_at = payment_id, "initiated", _se_now()
+    db.commit()
+    return {
+        "payment_url": url, "payment_id": payment_id,
+        "amount": amount_minor, "currency": currency,
+        "invoice_number": inv.number,
+        # Said plainly, because the payer is about to be told it is on its way.
+        "settles_immediately": False,
+    }
+
+
+def _saltedge_close_charge(db, row, ok, reason=""):
+    """Tell the autodebit attempt behind a payment how it ended."""
+    if not row.mandate_id:
+        return
+    now = _se_now()
+    charge = db.query(models.DBAutoCharge).filter(
+        models.DBAutoCharge.mandate_id == row.mandate_id,
+        models.DBAutoCharge.invoice_id == row.invoice_id,
+        models.DBAutoCharge.status.in_(("pending", "requested")),
+    ).order_by(models.DBAutoCharge.id.desc()).first()
+    if charge:
+        charge.status = "succeeded" if ok else "failed"
+        if ok:
+            charge.settled_at = now
+        else:
+            charge.failure_reason = (reason or "The bank did not take it")[:200]
+    mandate = db.get(models.DBPaymentMandate, row.mandate_id)
+    if mandate and ok:
+        mandate.last_used_at = now
+
+
+def apply_saltedge_status(db, row, status, raw_status="", error=""):
+    """Take what Salt Edge says about a payment and act on it. Safe to call
+    again with the same answer, or with a late one.
+
+    Returns True only for the call that recorded the money. Paid is final: a
+    later message cannot un-pay an invoice, which is a decision for the
+    business and not for a callback. The row is locked while this runs, so a
+    callback and the payer's own return cannot both record the same payment.
+    """
+    db.flush()
+    row = db.query(models.DBSaltEdgePayment).filter(
+        models.DBSaltEdgePayment.id == row.id
+    ).populate_existing().with_for_update().first()
+
+    if status:
+        row.status = str(status)[:40]
+    if raw_status:
+        row.raw_provider_status = str(raw_status)[:80]
+    row.updated_at = _se_now()
+
+    if row.outcome == "paid":
+        return False
+    outcome = saltedge.payment_outcome(status)
+
+    if outcome == "failed":
+        row.outcome = "failed"
+        row.failure_reason = (error or "The bank did not take the payment")[:200]
+        _saltedge_close_charge(db, row, False, row.failure_reason)
+        return False
+    if outcome != "paid":
+        return False
+
+    inv = db.get(models.DBInvoice, row.invoice_id) if row.invoice_id else None
+    row.outcome = "paid"
+    row.settled_at = row.updated_at
+    if not inv or inv.client_id != row.client_id:
+        # Money moved for something that is gone. Said, not hidden.
+        row.failure_reason = "The invoice this paid for no longer exists"
+        logger.error("Salt Edge payment %s was paid for a missing invoice", row.payment_id)
+        return False
+
+    amount = money(row.amount_minor / 100.0)
+    reference = row.payment_id or row.end_to_end_id
+    recorded = record_invoice_payment(
+        db, inv, amount, "saltedge", reference,
+        note="Paid from the payer's own bank")
+    if recorded:
+        record_settlement(db, inv, row.amount_minor, row.currency, reference,
+                          gateway="saltedge")
+        online_payment_recorded(db, inv, "saltedge", amount, reference)
+    _saltedge_close_charge(db, row, True)
+    return bool(recorded)
+
+
+def refresh_saltedge_payment(db, row):
+    """Ask Salt Edge, with our own keys, where a payment stands. This is what
+    makes the payer's return useful even if no callback ever reaches us."""
+    cfg = saltedge_cfg()
+    try:
+        data = saltedge.show_payment(cfg, row.payment_id)
+        if saltedge.payment_outcome(data.get("status")) == "pending":
+            try:
+                data = saltedge.refresh_payment(cfg, row.payment_id) or data
+            except saltedge.SaltEdgeError:
+                pass        # already final or already being refreshed: what we have stands
+    except saltedge.SaltEdgeError as exc:
+        logger.warning("Salt Edge would not say where payment %s is: %s", row.payment_id, exc)
+        return False
+    apply_saltedge_status(db, row, data.get("status"), data.get("raw_provider_status") or "")
+    return True
+
+
+@app.post("/api/public/invoices/{tracking_id}/pay/saltedge/check")
+def check_saltedge_invoice_payment(tracking_id: str, request: Request,
+                                   db: Session = Depends(get_db)):
+    """The payer is back from their bank: is it paid yet?
+
+    Which payment is asked about is ours - the newest one still open on this
+    invoice - and the answer is Salt Edge's. Nothing the payer sends is read.
+    """
+    _saltedge_limited(request, "check")
+    inv = payable_invoice(db, tracking_id)
+    open_rows = db.query(models.DBSaltEdgePayment).filter(
+        models.DBSaltEdgePayment.invoice_id == inv.id,
+        models.DBSaltEdgePayment.kind == "payment",
+        models.DBSaltEdgePayment.outcome == "pending",
+        models.DBSaltEdgePayment.payment_id != "",
+    ).order_by(models.DBSaltEdgePayment.id.desc()).limit(3).all()
+    if open_rows and saltedge.is_configured(saltedge_cfg()):
+        for row in open_rows:
+            refresh_saltedge_payment(db, row)
+        db.commit()
+        db.refresh(inv)
+
+    latest = db.query(models.DBSaltEdgePayment).filter(
+        models.DBSaltEdgePayment.invoice_id == inv.id,
+        models.DBSaltEdgePayment.kind == "payment",
+    ).order_by(models.DBSaltEdgePayment.id.desc()).first()
+    return {
+        "paid": inv.status == "Paid" or (inv.due or 0) <= 0,
+        "outcome": latest.outcome if latest else "none",
+        "status": latest.status if latest else "",
+        "reason": (latest.failure_reason or "") if latest and latest.outcome == "failed" else "",
+    }
+
+
+@app.post("/api/saltedge/callback/{kind}")
+async def saltedge_callback(kind: str, request: Request, db: Session = Depends(get_db)):
+    """Where Salt Edge tells us a payment moved.
+
+    Three addresses - success, fail and notify - set on their dashboard. A
+    message counts only if its signature verifies against Salt Edge's key over
+    the address they were given and the exact bytes of the body; anything else
+    is refused before it is read. That address is APP_BASE_URL plus this path,
+    not what the request seems to have arrived on, since a proxy changes that.
+    """
+    if kind not in SALTEDGE_CALLBACKS:
+        raise HTTPException(status_code=404, detail="Not found")
+    cfg = saltedge_cfg()
+    raw = await request.body()
+    base = (os.getenv("APP_BASE_URL", "") or "").strip().rstrip("/")
+
+    if not saltedge.is_configured(cfg) or not base:
+        # Unverified, anyone who found this address could mark an invoice paid.
+        logger.error("Salt Edge callback rejected: SALTEDGE keys or APP_BASE_URL not set")
+        raise HTTPException(status_code=503, detail="Salt Edge callbacks are not configured")
+
+    url = f"{base}/api/saltedge/callback/{kind}"
+    if not saltedge.verify_callback(cfg["callback_public_key"],
+                                    request.headers.get("signature", ""), url, raw):
+        logger.warning("Salt Edge callback failed verification (key version %s)",
+                       request.headers.get("signature-key-version", "?"))
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    try:
+        event = saltedge.parse_callback(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Not a payment callback")
+
+    row = db.query(models.DBSaltEdgePayment).filter(
+        models.DBSaltEdgePayment.payment_id == event["payment_id"]).first()
+    if not row:
+        # Not one of ours. Acknowledged so Salt Edge stops sending it.
+        return {"received": True, "ignored": "unknown payment"}
+
+    status = event["status"] or ("failed" if kind == "fail" else "")
+    recorded = apply_saltedge_status(
+        db, row, status, event["raw_provider_status"],
+        event["error_message"] or event["error_class"])
+    db.commit()
+    return {"received": True, "outcome": row.outcome, "recorded": recorded}
+
+
+# --- an agreement to be paid automatically -----------------------------------------------------
+
+def saltedge_banks(cfg):
+    """The banks that can be asked for an agreement. Kept briefly, because the
+    list is long and the same for everybody."""
+    key = f"{cfg['app_id']}|{cfg['vrp_type']}|{cfg['base']}"
+    cached = _saltedge_banks
+    if cached["key"] == key and time.time() - cached["at"] < SALTEDGE_BANKS_TTL:
+        return cached["banks"]
+    banks = saltedge.list_vrp_banks(cfg)
+    cached.update(key=key, at=time.time(), banks=banks)
+    return banks
+
+
+def _round_up_to(amount, step):
+    whole = int(-(-float(amount) // step)) * step
+    return float(max(step, whole))
+
+
+@app.get("/api/public/invoices/{tracking_id}/autopay/saltedge/banks")
+def list_saltedge_autodebit_banks(tracking_id: str, request: Request,
+                                  db: Session = Depends(get_db)):
+    """The banks to choose from, and limits to start from. An agreement is made
+    at one bank, so unlike a payment the payer has to pick it here."""
+    _saltedge_limited(request, "banks")
+    inv = payable_invoice(db, tracking_id)
+    offer = saltedge_autodebit_offer(db, inv)
+    if not offer:
+        raise HTTPException(status_code=503,
+                            detail="Automatic payment is not set up for this invoice")
+    try:
+        banks = saltedge_banks(saltedge_cfg())
+    except saltedge.SaltEdgeError as exc:
+        logger.error("Salt Edge bank list failed: %s", exc)
+        raise HTTPException(status_code=502, detail="We could not load the list of banks")
+    per_payment = _round_up_to(money(inv.due or 0), 50)
+    return {"banks": banks, "currency": offer["currency"],
+            "amount_due": money(inv.due or 0),
+            # Where to start, not what to use: the payer sets their own limits.
+            "suggested_per_payment": per_payment,
+            "suggested_per_month": per_payment * 3}
+
+
+@app.post("/api/public/invoices/{tracking_id}/autopay/saltedge/start")
+def start_saltedge_autodebit(tracking_id: str, request: Request, body: dict = None,
+                             db: Session = Depends(get_db)):
+    """Send the payer to their bank to approve a ceiling for automatic payments.
+
+    The two limits are required and are the payer's: there is no default for how
+    much of somebody's money may be taken. The bank has the final say on both,
+    and checks every later payment against them.
+    """
+    inv = payable_invoice(db, tracking_id)
+    if not saltedge_autodebit_offer(db, inv):
+        raise HTTPException(status_code=503,
+                            detail="Automatic payment is not set up for this invoice")
+    body = body or {}
+    cfg = saltedge_cfg()
+
+    try:
+        per_payment = money(float(body.get("max_amount")))
+        per_period = money(float(body.get("period_max_amount")))
+    except (TypeError, ValueError, ArithmeticError):      # ArithmeticError: infinity
+        raise HTTPException(status_code=400, detail="Say how much may be taken")
+    # Written so that NaN and infinity - which a JSON body can carry - fail
+    # the comparison instead of getting through it, and so that nobody is
+    # offered a limit no invoice here could need.
+    if not (0 < per_payment < 1_000_000 and 0 < per_period < 1_000_000):
+        raise HTTPException(status_code=400, detail="Say how much may be taken")
+    if per_period < per_payment:
+        raise HTTPException(
+            status_code=400,
+            detail="The limit for a month cannot be less than the limit for one payment")
+    period = str(body.get("period_type") or "month").lower()
+    if period not in saltedge.VRP_PERIODS:
+        raise HTTPException(status_code=400, detail="Choose how often the limit applies")
+
+    # Only a bank Salt Edge itself listed: the code is passed on to them.
+    code = str(body.get("provider_code") or "").strip()
+    try:
+        banks = saltedge_banks(cfg)
+    except saltedge.SaltEdgeError as exc:
+        logger.error("Salt Edge bank list failed: %s", exc)
+        raise HTTPException(status_code=502, detail="We could not load the list of banks")
+    bank = next((b for b in banks if b["code"] == code), None)
+    if not bank:
+        raise HTTPException(status_code=400, detail="Choose a bank from the list")
+
+    contact = (inv.to_contact or "").strip()
+    customer = saltedge.customer_identifier(inv.client_id, contact)
+    until = date.today() + timedelta(days=365)
+    company = _company_name_for(db, inv.client_id) or "your supplier"
+
+    mandate = models.DBPaymentMandate(
+        client_id=inv.client_id, payer_type="customer", payer_ref=contact,
+        provider="saltedge", token_id="", customer_id=customer,
+        method="open_banking", masked=bank["name"][:40], status="pending",
+        currency="GBP", max_amount_minor=to_minor_units(per_payment, "GBP"),
+        created_from_invoice_id=inv.id)
+    db.add(mandate)
+    db.commit()
+
+    try:
+        request_body = saltedge.consent_request(
+            cfg, customer, bank["code"], per_payment, per_period, period, until,
+            f"Invoices from {company}",
+            return_to=saltedge_return_url(request, inv, "autodebit"),
+            custom_fields={"mandate_id": str(mandate.id), "invoice_id": str(inv.id)})
+        made = saltedge.create_consent(cfg, request_body)
+    except ValueError:
+        mandate.status, mandate.failure_reason = "failed", "Could not be set up"
+        db.commit()
+        raise HTTPException(status_code=409,
+                            detail="Automatic payment is not available for this invoice")
+    except saltedge.SaltEdgeError as exc:
+        mandate.status, mandate.failure_reason = "failed", _saltedge_error_text(exc)
+        db.commit()
+        logger.error("Salt Edge would not start an agreement for %s: %s", inv.number, exc)
+        if exc.error_class == "VrpNotSupported":
+            raise HTTPException(status_code=409,
+                                detail="That bank does not offer automatic payments. "
+                                       "Please choose another.")
+        raise HTTPException(status_code=502,
+                            detail="This could not be set up. Please try again later.")
+
+    consent_id = str(made.get("vrp_consent_id") or "")
+    url = str(made.get("consent_url") or "")
+    if not consent_id or not url.startswith(("https://", "http://")):
+        mandate.status, mandate.failure_reason = "failed", "No agreement address came back"
+        db.commit()
+        raise HTTPException(status_code=502, detail="This could not be set up.")
+
+    mandate.token_id = consent_id
+    db.commit()
+    return {"consent_url": url, "mandate_id": mandate.id,
+            "max_amount": per_payment, "period_max_amount": per_period,
+            "period_type": period, "valid_until": until.isoformat(), "bank": bank["name"]}
+
+
+def revoke_saltedge_consent(mandate):
+    """End an agreement at the bank, so stopping it here stops it there too.
+    Returns whether Salt Edge said yes."""
+    if mandate.provider != "saltedge" or not mandate.token_id:
+        return False
+    try:
+        saltedge.revoke_consent(saltedge_cfg(), mandate.token_id)
+        return True
+    except saltedge.SaltEdgeError as exc:
+        logger.warning("Salt Edge would not revoke agreement %s: %s", mandate.token_id, exc)
+        return False
+
+
+def sync_saltedge_mandate(db, mandate):
+    """Ask Salt Edge where an agreement stands, and follow it. Returns our
+    status for it afterwards."""
+    if mandate.provider != "saltedge" or not mandate.token_id:
+        return mandate.status
+    try:
+        data = saltedge.show_consent(saltedge_cfg(), mandate.token_id)
+    except saltedge.SaltEdgeError as exc:
+        logger.warning("Salt Edge would not say where agreement %s is: %s", mandate.token_id, exc)
+        return mandate.status
+
+    state = saltedge.consent_outcome(data.get("status"))
+    if state == "active" and mandate.status == "pending":
+        # One standing agreement per customer: the newest replaces any before.
+        earlier = db.query(models.DBPaymentMandate).filter(
+            models.DBPaymentMandate.client_id == mandate.client_id,
+            models.DBPaymentMandate.payer_type == "customer",
+            models.DBPaymentMandate.status == "active",
+            sqlfunc.lower(models.DBPaymentMandate.payer_ref) == (mandate.payer_ref or "").lower(),
+            models.DBPaymentMandate.id != mandate.id).all()
+        for old in earlier:
+            old.status, old.cancelled_at = "cancelled", _se_now()
+            old.failure_reason = "Replaced by a newer agreement"
+            revoke_saltedge_consent(old)
+        mandate.status = "active"
+    elif state == "closed" and mandate.status in ("pending", "active"):
+        mandate.status, mandate.cancelled_at = "cancelled", _se_now()
+        mandate.failure_reason = f"The bank reported the agreement {data.get('status')}"
+    return mandate.status
+
+
+@app.post("/api/public/invoices/{tracking_id}/autopay/saltedge/check")
+def check_saltedge_autodebit(tracking_id: str, request: Request,
+                             db: Session = Depends(get_db)):
+    """The payer is back from their bank: did they approve it?
+
+    The agreement asked about is the newest one made from this invoice, and
+    the answer is Salt Edge's.
+    """
+    _saltedge_limited(request, "agreement")
+    inv = payable_invoice(db, tracking_id)
+    mandate = db.query(models.DBPaymentMandate).filter(
+        models.DBPaymentMandate.created_from_invoice_id == inv.id,
+        models.DBPaymentMandate.provider == "saltedge",
+    ).order_by(models.DBPaymentMandate.id.desc()).first()
+    if not mandate:
+        return {"status": "none", "active": False}
+    if mandate.status == "pending" and saltedge.is_configured(saltedge_cfg()):
+        sync_saltedge_mandate(db, mandate)
+        db.commit()
+    return {"status": mandate.status, "active": mandate.status == "active",
+            "bank": mandate.masked or "",
+            "max_amount": to_major(mandate.max_amount_minor or 0, "GBP") or None}
+
+
+def charge_saltedge_mandate(db, inv, mandate, amount_minor):
+    """Ask Salt Edge to take one invoice under an agreement the payer made.
+
+    Requested here, confirmed later: the invoice is paid when Salt Edge says
+    the bank accepted the payment, by callback or by the sync job, exactly as
+    for a payment the payer approves in person. Returns (requested, why not).
+    """
+    cfg = saltedge_cfg()
+    key = invoice_charge_key(inv)
+    if already_attempted(db, key):
+        return False, "already_attempted"
+    if not mandate_allows(mandate, amount_minor):
+        return False, "not_permitted"
+    # The account the money lands in is the platform's own, so this follows the
+    # same rule as offering the payment: only while the platform is collecting.
+    if not saltedge_ready(db, "GBP", autodebit=True):
+        return False, "not_available"
+    if (inv.currency or "").upper() != "GBP" or (mandate.currency or "").upper() != "GBP":
+        return False, "not_available"
+    if not mandate.token_id:
+        return False, "no_agreement"
+
+    e2e = saltedge.end_to_end_id("", inv.number)
+    amount = money(amount_minor / 100.0)
+    attempt = models.DBAutoCharge(
+        client_id=mandate.client_id, mandate_id=mandate.id, purpose="invoice",
+        invoice_id=inv.id, amount_minor=amount_minor, currency="GBP",
+        idempotency_key=key, status="pending")
+    row = models.DBSaltEdgePayment(
+        client_id=inv.client_id, invoice_id=inv.id, mandate_id=mandate.id, kind="vrp",
+        end_to_end_id=e2e, customer_identifier=mandate.customer_id,
+        amount_minor=amount_minor, currency="GBP", status="requested")
+    # Both are written, and committed, before the bank is asked - the same
+    # reason as run_auto_charge: a crash partway leaves evidence, and a retry
+    # finds the key and does not charge twice.
+    db.add(attempt)
+    db.add(row)
+    db.commit()
+
+    try:
+        made = saltedge.create_vrp_payment(cfg, saltedge.vrp_payment_request(
+            mandate.token_id, amount, e2e, mandate.customer_id,
+            {"invoice_id": str(inv.id), "client_id": str(inv.client_id),
+             "end_to_end_id": e2e}))
+    except (saltedge.SaltEdgeError, ValueError) as exc:
+        reason = _saltedge_error_text(exc) if isinstance(exc, saltedge.SaltEdgeError) else "Bad request"
+        attempt.status, attempt.failure_reason = "failed", reason
+        row.outcome, row.failure_reason, row.updated_at = "failed", reason, _se_now()
+        # An agreement the bank says is over will keep being refused, so stop
+        # using it rather than failing against it every night.
+        if getattr(exc, "error_class", "") in ("VrpConsentInactive", "VrpConsentRevoked",
+                                                "VrpConsentNotFound"):
+            mandate.status, mandate.failure_reason = "failed", reason
+        db.commit()
+        logger.error("Salt Edge would not take %s under agreement %s: %s",
+                     inv.number, mandate.token_id, exc)
+        return False, reason
+
+    row.payment_id = str(made.get("payment_id") or made.get("id") or "")
+    attempt.gateway_payment_id = row.payment_id
+    attempt.status = "requested"
+    row.status = str(made.get("status") or "initiated")[:40]
+    # Often final already: no approval step, so the answer can come straight back.
+    apply_saltedge_status(db, row, made.get("status"), made.get("raw_provider_status") or "")
+    db.commit()
+    return True, ""
+
+
+@scheduled_job("saltedge_sync", period_key_fn=lambda now: now.strftime("%Y-%m-%d %H:%M"))
+def job_saltedge_sync(db, now):
+    """Catch up on what no callback told us.
+
+    Payments still open are asked about; agreements waiting on the payer are
+    followed, and given up on after a few days. Everything here is also
+    reachable by callback or the payer's own return - this is for when neither
+    came.
+    """
+    if not saltedge.is_configured(saltedge_cfg()):
+        return "not configured"
+    since = (now - timedelta(days=SALTEDGE_PENDING_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    rows = db.query(models.DBSaltEdgePayment).filter(
+        models.DBSaltEdgePayment.outcome == "pending",
+        models.DBSaltEdgePayment.payment_id != "",
+        models.DBSaltEdgePayment.created_at >= since,
+    ).order_by(models.DBSaltEdgePayment.id).limit(100).all()
+    settled = 0
+    for row in rows:
+        if refresh_saltedge_payment(db, row) and row.outcome == "paid":
+            settled += 1
+    db.commit()
+
+    lapsed = (now - timedelta(days=SALTEDGE_CONSENT_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    pending = db.query(models.DBPaymentMandate).filter(
+        models.DBPaymentMandate.provider == "saltedge",
+        models.DBPaymentMandate.status == "pending",
+        models.DBPaymentMandate.token_id != "",
+    ).order_by(models.DBPaymentMandate.id).limit(100).all()
+    activated = abandoned = 0
+    for mandate in pending:
+        if sync_saltedge_mandate(db, mandate) == "active":
+            activated += 1
+        elif mandate.status == "pending" and (mandate.created_at or "") < lapsed:
+            mandate.status, mandate.cancelled_at = "cancelled", _se_now()
+            mandate.failure_reason = "Never approved at the bank"
+            abandoned += 1
+    db.commit()
+    return f"{settled} paid, {activated} agreements active, {abandoned} abandoned"
 
 
 def _collect_gocardless_autotopup(db, wallet, mandate, amount_minor, day):
@@ -25149,6 +25882,7 @@ def job_wallet_auto_topup(db, now):
 def mandate_to_dict(m):
     return {
         "id": m.id, "payer_type": m.payer_type, "payer_ref": m.payer_ref or "",
+        "provider": m.provider or "",
         "method": m.method or "", "masked": m.masked or "",
         "status": m.status, "currency": m.currency,
         "max_amount": to_major(m.max_amount_minor, m.currency) if m.max_amount_minor else None,
@@ -25238,8 +25972,15 @@ def cancel_mandate(mandate_id: int, request: Request,
         raise HTTPException(status_code=404, detail="Not found")
     m.status = "cancelled"
     m.cancelled_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    out = {"id": m.id, "status": m.status}
+    if m.provider == "saltedge":
+        # Stopping it here has to stop it at the bank too, or the permission
+        # the payer gave stays live there with nothing using it. If Salt Edge
+        # cannot be reached it is still stopped here, and we say so: the payer
+        # can end it in their own banking app.
+        out["revoked_at_bank"] = revoke_saltedge_consent(m)
     db.commit()
-    return {"id": m.id, "status": m.status}
+    return out
 
 
 @app.get("/api/wallet/auto-topup")
@@ -29835,7 +30576,8 @@ def set_company_values(request: Request, body: dict = None, db: Session = Depend
 
 ACCOUNT_KINDS = ("bank", "cash", "gateway", "other")
 GATEWAY_ACCOUNT_NAMES = {"stripe": "Stripe", "razorpay": "Razorpay", "paypal": "PayPal",
-                         "gocardless": "GoCardless", "platform": "Collected by aniprotech"}
+                         "gocardless": "GoCardless", "saltedge": "Bank payment (Salt Edge)",
+                         "platform": "Collected by aniprotech"}
 
 
 def account_to_dict(a):
@@ -30309,7 +31051,8 @@ def capture_paypal_invoice_payment(tracking_id: str, body: dict = None, db: Sess
 # did before. A customer paying online was as quiet as a customer not
 # paying at all.
 
-ONLINE_PAYMENT_METHODS = {"stripe": "card", "razorpay": "Razorpay", "paypal": "PayPal", "gocardless": "bank debit"}
+ONLINE_PAYMENT_METHODS = {"stripe": "card", "razorpay": "Razorpay", "paypal": "PayPal", "gocardless": "bank debit",
+                          "saltedge": "bank transfer"}
 
 
 def online_payment_recorded(db, inv, method, amount, reference):

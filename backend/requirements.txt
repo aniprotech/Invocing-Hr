@@ -27,3 +27,7 @@ pillow==10.4.0
 # See backend/training_import.py.
 pypdf==5.1.0
 openpyxl==3.1.5
+# Signs what is sent to Salt Edge (RSA-SHA256) and checks what they send
+# back. authlib already installs it, but this file is what production
+# runs, so the dependency is stated rather than assumed. See saltedge.py.
+cryptography==48.0.0

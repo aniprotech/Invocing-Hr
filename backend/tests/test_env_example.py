@@ -35,12 +35,13 @@ def documented():
 def read_by_the_code():
     """Every variable the backend actually looks up.
 
-    Four ways it does that: os.getenv, the _env_key helper the payment
+    Five ways it does that: os.getenv, the _env_key helper the payment
     gateways use, the provider table in llm.py, which builds its names from
-    data rather than writing them out, and a platform setting declared with
+    data rather than writing them out, a platform setting declared with
     env="X" - which the registry reads as its fallback when nothing has been
     set on the screen, so the variable is honoured without being named in a
-    getenv anywhere.
+    getenv anywhere - and env.get("X") in saltedge.py, which is handed the
+    environment as an argument so that a test can give it a different one.
     """
     names = set()
     for path in (ROOT / "backend").glob("*.py"):
@@ -48,6 +49,7 @@ def read_by_the_code():
         names |= set(re.findall(r"os\.getenv\(\s*[\"']([A-Z0-9_]+)", src))
         names |= set(re.findall(r"_env_key\(\s*[\"']([A-Z0-9_]+)", src))
         names |= set(re.findall(r"\benv=[\"']([A-Z0-9_]+)[\"']", src))
+        names |= set(re.findall(r"\benv\.get\(\s*[\"']([A-Z0-9_]+)", src))
 
     for spec in llm.PROVIDERS:
         names.add(spec["key_env"])

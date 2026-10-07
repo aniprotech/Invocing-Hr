@@ -11,7 +11,10 @@ on:
 jobs:
   pytest:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The suite took 19.5 minutes against a limit of 20, so any new feature's
+    # tests would have turned a passing run into a timeout. The limit is there
+    # to catch a hang, not to ration the tests.
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4

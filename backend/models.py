@@ -2281,6 +2281,45 @@ class DBAutoCharge(Base):
     settled_at = Column(String, default="")
 
 
+class DBSaltEdgePayment(Base):
+    """One payment asked of Salt Edge, kept whatever becomes of it.
+
+    Written before Salt Edge is called, so a crash midway leaves a record. It is
+    also what a callback is matched against: which invoice a message is about,
+    and for how much, comes from this row and never from the message, so
+    nothing a payer or a forged callback says decides what gets paid.
+
+    kind 'payment' is the payer approving one transfer at their bank; kind
+    'vrp' is a payment taken under a recurring agreement, with nobody present.
+    """
+    __tablename__ = "saltedge_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=True, index=True)
+    mandate_id = Column(Integer, ForeignKey("payment_mandates.id"), nullable=True, index=True)
+
+    kind = Column(String, default="payment")                     # payment | vrp
+    # Ours: it goes to the bank, comes back on every callback, and is unique.
+    end_to_end_id = Column(String, nullable=False, unique=True, index=True)
+    # Salt Edge's, once they have made it.
+    payment_id = Column(String, default="", index=True)
+    customer_identifier = Column(String, default="")
+
+    amount_minor = Column(Integer, default=0)
+    currency = Column(String, default="GBP")
+
+    # Salt Edge's own word for where it is, and ours: pending | paid | failed.
+    status = Column(String, default="")
+    raw_provider_status = Column(String, default="")
+    outcome = Column(String, default="pending", index=True)
+    failure_reason = Column(String, default="")
+
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    updated_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    settled_at = Column(String, default="")
+
+
 # ============================================================================
 # THE COMPANY FEED
 #

@@ -154,6 +154,45 @@ def test_platform_mode_needs_the_platform_keys(superadmin, monkeypatch):
     assert "RAZORPAY_KEY_ID" in res.json()["detail"]
 
 
+def _only_salt_edge(monkeypatch, with_account=True):
+    for name in ("RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("SALTEDGE_APP_ID", "app")
+    monkeypatch.setenv("SALTEDGE_SECRET", "secret")
+    if with_account:
+        monkeypatch.setenv("SALTEDGE_CREDITOR_NAME", "Aniprotech Ltd")
+        monkeypatch.setenv("SALTEDGE_CREDITOR_SORT_CODE", "123456")
+        monkeypatch.setenv("SALTEDGE_CREDITOR_ACCOUNT_NUMBER", "12345678")
+
+
+def test_salt_edge_alone_is_enough_to_collect_into_the_platform(superadmin, monkeypatch):
+    """Salt Edge is offered only in platform mode, so a switch that wanted
+    Razorpay's keys as well would have made it impossible to use."""
+    _only_salt_edge(monkeypatch)
+    assert superadmin.get("/api/superadmin/collection-mode").json()["platform_keys_ready"] is True
+    assert set_mode(superadmin, "platform")["mode"] == "platform"
+
+
+def test_salt_edge_keys_with_nowhere_for_the_money_to_land_are_not_enough(superadmin, monkeypatch):
+    _only_salt_edge(monkeypatch, with_account=False)
+    assert superadmin.get("/api/superadmin/collection-mode").json()["platform_keys_ready"] is False
+    res = superadmin.put("/api/superadmin/collection-mode", json={"mode": "platform"})
+    assert res.status_code == 400 and "SALTEDGE_CREDITOR_NAME" in res.json()["detail"]
+
+
+def test_the_operator_is_told_every_way_to_get_ready(superadmin, monkeypatch):
+    for name in ("RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "SALTEDGE_APP_ID", "SALTEDGE_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+    got = superadmin.get("/api/superadmin/collection-mode").json()
+    assert got["platform_keys_ready"] is False
+    assert got["platform_key_env"] == ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"]
+    ways = got["platform_key_alternatives"]
+    assert ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"] in ways
+    assert any("SALTEDGE_APP_ID" in w and "SALTEDGE_CREDITOR_SORT_CODE" in w for w in ways)
+    res = superadmin.put("/api/superadmin/collection-mode", json={"mode": "platform"})
+    assert res.status_code == 400 and "SALTEDGE_APP_ID" in res.json()["detail"]
+
+
 def test_the_mode_sticks(superadmin, platform_keys):
     set_mode(superadmin, "platform")
     assert superadmin.get("/api/superadmin/collection-mode").json()["mode"] == "platform"
