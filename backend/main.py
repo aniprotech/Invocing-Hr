@@ -9843,6 +9843,9 @@ def get_employee(emp_id: int, request: Request, db: Session = Depends(get_db)):
         "ni_number": emp.ni_number or "", "tax_code": emp.tax_code or "", "ni_category": emp.ni_category or "",
         "student_loan_plan": emp.student_loan_plan or "", "postgrad_loan": bool(emp.postgrad_loan),
         "is_director": bool(emp.is_director), "director_since": emp.director_since or "",
+        "pension_status": emp.pension_status or "", "pension_group": emp.pension_group or "",
+        "pension_joined_on": emp.pension_joined_on or "", "pension_postponed_until": emp.pension_postponed_until or "",
+        "pension_letter_due": emp.pension_letter_due or "",
         "starter_declaration": emp.starter_declaration or "",
         "p45_tax_year": emp.p45_tax_year or 0, "p45_taxable_pay": emp.p45_taxable_pay or 0.0, "p45_tax": emp.p45_tax or 0.0,
         "allowances": emp.allowances, "bonus": emp.bonus,
@@ -10685,16 +10688,23 @@ def uk_payslip_context(db, client_id, emp, pay_date_str, self_id=None) -> dict:
         director_weeks = 52 - uk_paye.tax_week(since) + 1
 
     return {"pay_date": pay_date, "frequency": frequency, "tax_code": code, "ni_category": category,
-            "director_weeks": director_weeks, "ytd": ytd, "notes": notes, "tax_year": year}
+            "director_weeks": director_weeks, "ytd": ytd, "notes": notes, "tax_year": year,
+            "scheme": pension_scheme(db, client_id),
+            # An edit to a payslip already made must not enrol anybody.
+            "no_new_enrolments": self_id is not None}
 
 
 def uk_payslip_figures(emp, data, ctx, *, hours, ot_hours, ot_rate, basic, ot_pay, bonus, allowances, gross):
+    pen = pension_for_period(emp, ctx, gross=gross, basic=basic)
     try:
         r = uk_paye.run_period(uk_paye.PayPeriod(
             gross=Decimal(str(gross)), pay_date=ctx["pay_date"], frequency=ctx["frequency"],
             tax_code=ctx["tax_code"], ni_category=ctx["ni_category"],
             student_loan_plan=emp.student_loan_plan or "", postgraduate_loan=bool(emp.postgrad_loan),
-            is_director=bool(emp.is_director), director_weeks=ctx["director_weeks"], ytd=ctx["ytd"]))
+            is_director=bool(emp.is_director), director_weeks=ctx["director_weeks"], ytd=ctx["ytd"],
+            # On a net pay arrangement the employee's share comes off before
+            # tax - but not before National Insurance, which is on the lot.
+            pre_tax_deductions=Decimal(str(pen["reduces_taxable"]))))
     except uk_paye.PayeError as e:
         raise _paye_error(e)
     insurance = money(data.get("insurance") or 0)
@@ -10704,7 +10714,7 @@ def uk_payslip_figures(emp, data, ctx, *, hours, ot_hours, ot_rate, basic, ot_pa
     tax = money(r["tax"])
     ee, er = money(r["employee_ni"]), money(r["employer_ni"])
     sl, pgl = money(r["student_loan"]), money(r["postgraduate_loan"])
-    total = money(tax + ee + sl + pgl + insurance + retirement + other + standing)
+    total = money(tax + ee + sl + pgl + insurance + retirement + other + standing + pen["employee"])
     nd = r["ni_detail"]
     return {
         "hours_worked": hours, "overtime_hours": ot_hours, "overtime_rate": money(ot_rate),
@@ -10717,7 +10727,422 @@ def uk_payslip_figures(emp, data, ctx, *, hours, ot_hours, ot_rate, basic, ot_pa
         "employee_ni": ee, "employer_ni": er, "student_loan": sl, "postgrad_loan": pgl,
         "ni_at_lel": money(nd["earnings_at_lel"]), "ni_lel_to_pt": money(nd["earnings_lel_to_pt"]),
         "ni_pt_to_uel": money(nd["earnings_pt_to_uel"]),
+        "pension_earnings": pen["earnings"], "pension_employee": pen["employee"],
+        "pension_employer": pen["employer"], "pension_relief": pen["relief"],
     }
+
+
+# ---------------------------------------------------------------------------
+# WORKPLACE PENSIONS (auto-enrolment)
+# ---------------------------------------------------------------------------
+# A UK business must put eligible staff into a workplace pension and pay in
+# at least the minimum. The rules, and every figure, are in
+# backend/uk_pension.py with their sources. This is the part that joins them
+# to people and payslips: the scheme a business has chosen, assessing each
+# person as their pay is worked out, saving where they stand, and the
+# actions the law leaves to a person - opting in, opting out, being
+# re-enrolled.
+
+import uk_pension  # noqa: E402
+
+PENSION_SETTING = "pension.scheme"
+PENSION_STATUSES = ("", "member", "postponed", "opted_out")
+
+
+def pension_scheme(db, client_id) -> dict:
+    raw = tenant_setting(db, client_id, PENSION_SETTING, "")
+    try:
+        return uk_pension.clean_scheme(json.loads(raw)) if raw else uk_pension.default_scheme()
+    except (ValueError, uk_pension.PensionError):
+        return uk_pension.default_scheme()
+
+
+def _pension_zero(decision=None):
+    return {"earnings": 0.0, "employee": 0.0, "employer": 0.0, "relief": 0.0, "reduces_taxable": 0.0,
+            "decision": decision}
+
+
+def pension_for_period(emp, ctx, *, gross, basic) -> dict:
+    """The workplace pension for this payslip. Leaves what the payroll should
+    then do about the person in ctx["pension_decision"]; nothing is saved
+    here, so a preview and a real payslip work it out the same way."""
+    ctx["pension_decision"] = None
+    scheme = ctx.get("scheme") or {}
+    if not scheme.get("enabled"):
+        return _pension_zero()
+    pay_date, year, freq = ctx["pay_date"], ctx["tax_year"], ctx["frequency"]
+    status = emp.pension_status or ""
+    joined = _parse_date(emp.pension_joined_on)
+    if status == "member" and joined and joined > pay_date:
+        # They joined after the date of this payslip: not a member of it.
+        return _pension_zero()
+    try:
+        decision = uk_pension.assess(
+            status=status, postponed_until=emp.pension_postponed_until or "", scheme=scheme,
+            dob=_parse_date(emp.date_of_birth), start_date=_parse_date(emp.start_date),
+            earnings=gross, frequency=freq, on=pay_date, year=year)
+    except uk_pension.PensionError as e:
+        if status == "member":
+            decision = {"group": emp.pension_group or "eligible_jobholder", "action": "member", "postponed_until": ""}
+        else:
+            ctx["notes"].append(f"not assessed for a workplace pension: {e}")
+            return _pension_zero()
+    if ctx.get("no_new_enrolments") and decision["action"] in ("enrol", "postpone"):
+        decision = {**decision, "action": "none"}
+    ctx["pension_decision"] = decision
+    if decision["action"] not in ("member", "enrol"):
+        return _pension_zero(decision)
+    try:
+        c = uk_pension.contributions(
+            scheme=scheme, gross=gross, basic=basic, frequency=freq, year=year,
+            employer_due=decision["group"] in ("eligible_jobholder", "non_eligible_jobholder"))
+    except uk_pension.PensionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"earnings": float(c["pensionable"]), "employee": float(c["employee_deduction"]),
+            "employer": float(c["employer"]), "relief": float(c["relief"]),
+            "reduces_taxable": float(c["reduces_taxable_pay"]), "decision": decision}
+
+
+def apply_pension_decision(emp, ctx):
+    """Save what the assessment found. Called when a payslip is made, never
+    for a preview or an edit."""
+    d = ctx.get("pension_decision")
+    if not d or ctx.get("no_new_enrolments"):
+        return
+    day = ctx["pay_date"].isoformat()
+    emp.pension_group = d["group"]
+    if d["action"] == "enrol":
+        emp.pension_status, emp.pension_joined_on, emp.pension_joined_how = "member", day, "auto"
+        emp.pension_postponed_until, emp.pension_opted_out_on = "", ""
+        emp.pension_letter_due = "enrolment"
+    elif d["action"] == "postpone":
+        emp.pension_status, emp.pension_postponed_until = "postponed", d["postponed_until"]
+        emp.pension_letter_due = "postponement"
+    elif d["action"] == "none" and emp.pension_status == "postponed":
+        emp.pension_status, emp.pension_postponed_until = "", ""
+
+
+def _indicative_pay(db, emp):
+    """What to assess somebody on when there is no payslip to look at: their
+    latest UK gross, else their salary for the period."""
+    last = db.query(models.DBPayslip).filter(
+        models.DBPayslip.employee_id == emp.id, models.DBPayslip.regime == "uk",
+        models.DBPayslip.status != "Void").order_by(models.DBPayslip.pay_date.desc(), models.DBPayslip.id.desc()).first()
+    return float(last.gross_pay) if last else float(emp.salary or 0)
+
+
+def _pension_row(db, emp, scheme, today):
+    dob = _parse_date(emp.date_of_birth)
+    pay = _indicative_pay(db, emp)
+    freq = uk_paye.frequency_key(emp.pay_frequency or "monthly")
+    year = uk_paye.tax_year_of(today)
+    row = {"id": emp.id, "name": f"{emp.first_name} {emp.last_name}".strip(), "pay": money(pay),
+           "age": uk_pension.age_on(dob, today) if dob else None, "has_dob": bool(dob),
+           "status": emp.pension_status or "", "joined_on": emp.pension_joined_on or "",
+           "joined_how": emp.pension_joined_how or "", "opted_out_on": emp.pension_opted_out_on or "",
+           "postponed_until": emp.pension_postponed_until or "", "letter_due": emp.pension_letter_due or "",
+           "group": "", "group_label": "", "next": ""}
+    if not dob:
+        row["next"] = "Needs a date of birth before they can be assessed"
+        return row
+    try:
+        a = uk_pension.assess(status=emp.pension_status or "", postponed_until=emp.pension_postponed_until or "",
+                              scheme=scheme, dob=dob, start_date=_parse_date(emp.start_date), earnings=pay,
+                              frequency=freq, on=today, year=year)
+    except uk_pension.PensionError as e:
+        row["next"] = str(e)
+        return row
+    row["group"], row["group_label"] = a["group"], uk_pension.GROUP_LABELS[a["group"]]
+    row["next"] = {
+        "member": "Contributing", "opted_out": "Opted out - re-enrolled at the next re-enrolment",
+        "enrol": "Will be enrolled at the next payroll",
+        "postpone": f"Will be postponed until {a['postponed_until']}",
+        "postponed": f"Postponed until {a['postponed_until']}",
+        "none": {"non_eligible_jobholder": "Not enrolled - may opt in",
+                 "entitled_worker": "Not enrolled - may ask to join", "none": "Not covered"}.get(a["group"], "Not enrolled"),
+    }[a["action"]]
+    return row
+
+
+def _pension_staff(db, client):
+    return [e for e in db.query(models.DBEmployee).filter(models.DBEmployee.client_id == client.id).all()
+            if employee_is_current(e)]
+
+
+@app.get("/api/pension/scheme")
+def get_pension_scheme(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    scheme = pension_scheme(db, client.id)
+    today = datetime.now().date()
+    year = uk_paye.tax_year_of(today)
+    th = uk_pension.THRESHOLDS.get(year)
+    nxt = uk_pension.next_reenrolment(scheme.get("duties_start", ""), today)
+    return {
+        "scheme": scheme, "regime": payroll_regime(db, client.id),
+        "bases": [{"key": k, "label": v["label"], "min_employer": float(v["min"][0]), "min_total": float(v["min"][1])}
+                  for k, v in uk_pension.BASES.items()],
+        "methods": [{"key": k, "label": v} for k, v in uk_pension.METHODS.items()],
+        "thresholds": ({"year": th["label"], "source": th["source"],
+                        "lower": float(th["annual"][0]), "trigger": float(th["annual"][1]), "upper": float(th["annual"][2])}
+                       if th else None),
+        "next_reenrolment": nxt.isoformat() if nxt else "",
+        "not_built": ["Salary sacrifice", "Provider-specific upload files", "The Regulator's declaration of compliance"],
+    }
+
+
+@app.put("/api/pension/scheme")
+def put_pension_scheme(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    try:
+        scheme = uk_pension.clean_scheme(body or {})
+    except uk_pension.PensionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    row = db.query(models.DBSettings).filter(models.DBSettings.client_id == client.id,
+                                             models.DBSettings.key == PENSION_SETTING).first()
+    if row:
+        row.value = json.dumps(scheme)
+    else:
+        db.add(models.DBSettings(client_id=client.id, key=PENSION_SETTING, value=json.dumps(scheme)))
+    log_audit(db, client.id, "pension_scheme_saved", "settings", None, "pension",
+              f"{'on' if scheme['enabled'] else 'off'}: {scheme['employer_pct']:g}% + {scheme['employee_pct']:g}% on {scheme['basis']}", request)
+    db.commit()
+    return get_pension_scheme(request, db)
+
+
+@app.get("/api/pension/staff")
+def get_pension_staff(request: Request, db: Session = Depends(get_db)):
+    """Everyone, assessed as of today: which kind of worker, where they stand,
+    and what happens to them next."""
+    client = get_client_user(request, db)
+    scheme = pension_scheme(db, client.id)
+    today = datetime.now().date()
+    rows = [_pension_row(db, e, scheme, today) for e in _pension_staff(db, client)]
+    counts = Counter(r["status"] or "none" for r in rows)
+    return {"staff": rows, "scheme_enabled": scheme["enabled"],
+            "counts": {"member": counts.get("member", 0), "postponed": counts.get("postponed", 0),
+                       "opted_out": counts.get("opted_out", 0), "not_in": counts.get("none", 0)}}
+
+
+def _pension_employee_or_404(db, client, emp_id):
+    emp = db.query(models.DBEmployee).filter(models.DBEmployee.id == emp_id,
+                                             models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    return emp
+
+
+def _require_scheme(db, client):
+    scheme = pension_scheme(db, client.id)
+    if not scheme["enabled"]:
+        raise HTTPException(status_code=409, detail="Switch the workplace pension on first")
+    return scheme
+
+
+@app.post("/api/pension/staff/{emp_id}/join")
+def pension_join(emp_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Somebody the law does not make enrol asks to join: a non-eligible
+    jobholder opting in (the employer must then contribute), or an entitled
+    worker asking to (the employer need not)."""
+    client = get_client_user(request, db)
+    scheme = _require_scheme(db, client)
+    emp = _pension_employee_or_404(db, client, emp_id)
+    if emp.pension_status == "member":
+        raise HTTPException(status_code=409, detail="Already in the pension")
+    dob = _parse_date(emp.date_of_birth)
+    if not dob:
+        raise HTTPException(status_code=400, detail="Add their date of birth first")
+    today = datetime.now().date()
+    try:
+        group = uk_pension.worker_group(dob=dob, earnings=_indicative_pay(db, emp),
+                                        frequency=uk_paye.frequency_key(emp.pay_frequency or "monthly"),
+                                        on=today, year=uk_paye.tax_year_of(today))
+    except (uk_pension.PensionError, uk_paye.PayeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if group == "none":
+        raise HTTPException(status_code=400, detail="They are outside the ages a workplace pension covers")
+    how = "join_request" if group == "entitled_worker" else "opt_in"
+    # Joining takes effect from the day they asked, which is not always today.
+    on = _clean_ymd((body or {}).get("date"), "Joining date") or today.isoformat()
+    emp.pension_status, emp.pension_joined_on, emp.pension_joined_how = "member", on, how
+    emp.pension_group, emp.pension_postponed_until, emp.pension_opted_out_on = group, "", ""
+    log_audit(db, client.id, "pension_joined", "employee", emp.id, f"{emp.first_name} {emp.last_name}", how, request)
+    db.commit()
+    return _pension_row(db, emp, scheme, today)
+
+
+@app.post("/api/pension/staff/{emp_id}/opt-out")
+def pension_opt_out(emp_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """They opted out - told to the pension provider, not to the employer.
+    Contributions stop at the next payslip. Within a month of joining it is
+    as if they never joined, and what was taken from their pay is repaid."""
+    client = get_client_user(request, db)
+    _require_scheme(db, client)
+    emp = _pension_employee_or_404(db, client, emp_id)
+    if emp.pension_status != "member":
+        raise HTTPException(status_code=409, detail="They are not in the pension")
+    on = _clean_ymd((body or {}).get("date"), "Opt-out date") or datetime.now().date().isoformat()
+    taken = db.query(models.DBPayslip).filter(
+        models.DBPayslip.client_id == client.id, models.DBPayslip.employee_id == emp.id,
+        models.DBPayslip.regime == "uk", models.DBPayslip.status != "Void",
+        models.DBPayslip.pay_date >= (emp.pension_joined_on or "")).all()
+    deducted = money(sum(p.pension_employee or 0 for p in taken))
+    employer_paid = money(sum(p.pension_employer or 0 for p in taken))
+    refund = uk_pension.opt_out_refund_window(emp.pension_joined_on or "", on)
+    emp.pension_status, emp.pension_opted_out_on, emp.pension_letter_due = "opted_out", on, ""
+    log_audit(db, client.id, "pension_opted_out", "employee", emp.id, f"{emp.first_name} {emp.last_name}",
+              f"{'within' if refund else 'after'} the first month", request)
+    db.commit()
+    return {"opted_out_on": on, "within_refund_window": refund,
+            "refund_due": deducted if refund else 0.0, "employer_contributions_made": employer_paid,
+            "message": ("Within a month of joining: treated as never having joined. Repay what was taken from their pay."
+                        if refund else "More than a month after joining: contributions stop, and what was paid in stays in.")}
+
+
+@app.post("/api/pension/staff/{emp_id}/letter-sent")
+def pension_letter_sent(emp_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    emp = _pension_employee_or_404(db, client, emp_id)
+    emp.pension_letter_due = ""
+    db.commit()
+    return {"ok": True}
+
+
+def pension_letter(kind, emp, scheme, company):
+    name = emp.first_name or "there"
+    er, ee = f"{scheme['employer_pct']:g}%", f"{scheme['employee_pct']:g}%"
+    prov = scheme.get("provider") or "your employer's pension scheme"
+    basis = {"qualifying": "your qualifying earnings (pay between the lower and upper limits)",
+             "basic": "your basic pay", "total": "all your pay"}[scheme["basis"]]
+    opt = (f"You can opt out. If you decide to, you must tell {prov} - not {company} - and you should do so within one "
+           "month of joining: you will then be treated as never having joined and your contributions repaid. "
+           "Opting out means you lose the employer contribution, and it could mean a smaller pension in retirement.")
+    sub = {
+        "enrolment": "You have been enrolled in a workplace pension",
+        "postponement": "Your enrolment in a workplace pension has been postponed",
+        "re_enrolment": "You have been enrolled again in a workplace pension",
+        "non_eligible": "Your right to join a workplace pension",
+        "entitled": "Your right to join a workplace pension",
+    }.get(kind)
+    if not sub:
+        raise HTTPException(status_code=400, detail="Unknown letter")
+    body = {
+        "enrolment": (f"Hello {name},\n\n{company} has put you into a workplace pension with {prov}, as the law asks of employers.\n\n"
+                      f"Each payday you will pay {ee} of {basis}, and {company} will add {er}. "
+                      f"The pension is a defined contribution scheme: what you get depends on what is paid in and how it grows.\n\n"
+                      f"{opt}\n\nKind regards,\n{company}\n"),
+        "re_enrolment": (f"Hello {name},\n\nEvery three years {company} has to put people who opted out back into the workplace "
+                         f"pension, if they are eligible - and you are. You have been enrolled again with {prov}.\n\n"
+                         f"Each payday you will pay {ee} of {basis}, and {company} will add {er}.\n\n{opt}\n\nKind regards,\n{company}\n"),
+        "postponement": (f"Hello {name},\n\n{company} is postponing your enrolment in its workplace pension. You will be enrolled "
+                         f"automatically on {emp.pension_postponed_until or 'the date shown on your next payslip'} if you are still eligible, "
+                         "and you can ask to join earlier at any time.\n\nKind regards,\n" + company + "\n"),
+        "non_eligible": (f"Hello {name},\n\nYou are not automatically enrolled in {company}'s workplace pension, but you have the right "
+                         f"to join it. If you do, {company} will pay in {er} of {basis} and you pay {ee}. "
+                         f"Tell us and we will start from your next payday.\n\nKind regards,\n{company}\n"),
+        "entitled": (f"Hello {name},\n\nYou are not automatically enrolled in {company}'s workplace pension, but you have the right "
+                     f"to ask to join it. At your current pay {company} is not required to pay in, but you can still save "
+                     f"into the scheme through your pay. Tell us if you would like to.\n\nKind regards,\n{company}\n"),
+    }[kind]
+    return {"subject": sub, "body": body}
+
+
+@app.get("/api/pension/staff/{emp_id}/letter")
+def pension_letter_route(emp_id: int, request: Request, kind: str = "", db: Session = Depends(get_db)):
+    """The letter the law says they are owed, ready to send. A template the
+    business should read before it goes out - not legal advice."""
+    client = get_client_user(request, db)
+    scheme = _require_scheme(db, client)
+    emp = _pension_employee_or_404(db, client, emp_id)
+    if not kind:
+        kind = emp.pension_letter_due or {"non_eligible_jobholder": "non_eligible", "entitled_worker": "entitled"}.get(emp.pension_group or "", "")
+    if not kind:
+        raise HTTPException(status_code=404, detail="No letter is due to them")
+    out = pension_letter(kind, emp, scheme, _company_name_for(db, client.id) or "Your employer")
+    return {**out, "kind": kind, "to": emp.email or ""}
+
+
+@app.post("/api/pension/reenrol")
+def pension_reenrol(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Every three years: people who opted out and are eligible again go back in.
+    The business does this in a window around the third anniversary of its
+    duties start date; the date is on the screen."""
+    client = get_client_user(request, db)
+    scheme = _require_scheme(db, client)
+    today = datetime.now().date()
+    on = _clean_ymd((body or {}).get("date"), "Re-enrolment date") or today.isoformat()
+    done, skipped = [], []
+    for emp in _pension_staff(db, client):
+        if emp.pension_status != "opted_out":
+            continue
+        who = f"{emp.first_name} {emp.last_name}".strip()
+        dob = _parse_date(emp.date_of_birth)
+        if not dob:
+            skipped.append({"id": emp.id, "name": who, "reason": "no date of birth"})
+            continue
+        try:
+            group = uk_pension.worker_group(dob=dob, earnings=_indicative_pay(db, emp),
+                                            frequency=uk_paye.frequency_key(emp.pay_frequency or "monthly"),
+                                            on=_parse_date(on), year=uk_paye.tax_year_of(_parse_date(on)))
+        except (uk_pension.PensionError, uk_paye.PayeError) as e:
+            # Not quietly passed over: somebody the law says to re-enrol who
+            # was not, with nothing to say so, is the worst outcome here.
+            skipped.append({"id": emp.id, "name": who, "reason": str(e)})
+            continue
+        if group != "eligible_jobholder":
+            skipped.append({"id": emp.id, "name": who, "reason": "no longer an eligible jobholder"})
+            continue
+        emp.pension_status, emp.pension_joined_on, emp.pension_joined_how = "member", on, "re_enrolment"
+        emp.pension_group, emp.pension_opted_out_on, emp.pension_letter_due = group, "", "re_enrolment"
+        done.append({"id": emp.id, "name": f"{emp.first_name} {emp.last_name}".strip()})
+    log_audit(db, client.id, "pension_reenrolled", "employee", None, "re-enrolment", f"{len(done)} people", request)
+    db.commit()
+    return {"re_enrolled": done, "count": len(done), "date": on, "skipped": skipped}
+
+
+def _pension_report(db, client, start, end):
+    q = db.query(models.DBPayslip).filter(
+        models.DBPayslip.client_id == client.id, models.DBPayslip.regime == "uk",
+        models.DBPayslip.status != "Void").filter(
+        (models.DBPayslip.pension_employee > 0) | (models.DBPayslip.pension_employer > 0))
+    if start:
+        q = q.filter(models.DBPayslip.pay_date >= start)
+    if end:
+        q = q.filter(models.DBPayslip.pay_date <= end)
+    slips = q.order_by(models.DBPayslip.pay_date, models.DBPayslip.id).all()
+    people = {e.id: e for e in db.query(models.DBEmployee).filter(models.DBEmployee.client_id == client.id).all()}
+    rows = []
+    for p in slips:
+        e = people.get(p.employee_id)
+        rows.append({"pay_date": p.pay_date, "payslip": p.number,
+                     "employee": f"{e.first_name} {e.last_name}".strip() if e else "",
+                     "ni_number": (e.ni_number if e else "") or "", "dob": (e.date_of_birth if e else "") or "",
+                     "pensionable": money(p.pension_earnings or 0), "employee_deducted": money(p.pension_employee or 0),
+                     "relief": money(p.pension_relief or 0), "employer": money(p.pension_employer or 0),
+                     "total": money((p.pension_employee or 0) + (p.pension_relief or 0) + (p.pension_employer or 0))})
+    totals = {k: money(sum(r[k] for r in rows)) for k in ("pensionable", "employee_deducted", "relief", "employer", "total")}
+    return rows, totals
+
+
+@app.get("/api/pension/contributions")
+def pension_contributions(request: Request, from_: str = Query("", alias="from"), to: str = "", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    rows, totals = _pension_report(db, client, _clean_ymd(from_, "From") if from_ else "", _clean_ymd(to, "To") if to else "")
+    return {"rows": rows, "totals": totals}
+
+
+@app.get("/api/pension/contributions.csv")
+def pension_contributions_csv(request: Request, from_: str = Query("", alias="from"), to: str = "", db: Session = Depends(get_db)):
+    """A plain schedule of what was paid in. Providers each want their own
+    upload layout; this is the figures, not any one provider's file."""
+    client = get_client_user(request, db)
+    rows, totals = _pension_report(db, client, _clean_ymd(from_, "From") if from_ else "", _clean_ymd(to, "To") if to else "")
+    header = ["Pay date", "Payslip", "Employee", "NI number", "Date of birth", "Pensionable pay",
+              "Deducted from employee", "Tax relief claimed", "Employer", "Total paid in"]
+    body = [[r["pay_date"], r["payslip"], r["employee"], r["ni_number"], r["dob"], f"{r['pensionable']:.2f}",
+             f"{r['employee_deducted']:.2f}", f"{r['relief']:.2f}", f"{r['employer']:.2f}", f"{r['total']:.2f}"] for r in rows]
+    body.append(["Total", "", "", "", "", f"{totals['pensionable']:.2f}", f"{totals['employee_deducted']:.2f}",
+                 f"{totals['relief']:.2f}", f"{totals['employer']:.2f}", f"{totals['total']:.2f}"])
+    return _csv_response("pension-contributions.csv", header, body)
 
 
 def uk_tax_year_to_date(db, client_id, employee_id, year, up_to_id=None) -> dict:
@@ -10737,6 +11162,7 @@ def uk_tax_year_to_date(db, client_id, employee_id, year, up_to_id=None) -> dict
             "gross_pay": total("gross_pay"), "taxable_pay": total("taxable_pay"), "tax": total("tax_amount"),
             "employee_ni": total("employee_ni"), "employer_ni": total("employer_ni"),
             "student_loan": total("student_loan"), "postgrad_loan": total("postgrad_loan"),
+            "pension_employee": total("pension_employee"), "pension_employer": total("pension_employer"),
             "net_pay": total("net_pay")}
 
 
@@ -10902,6 +11328,8 @@ def create_payslip(request: Request, body: PayslipCreate, allow_overlap: bool = 
     ps_number = next_sequence_number(db, models.DBPayslip, client.id, "PS-")
     uk = uk_payslip_context(db, client.id, emp, body.pay_date) if payroll_regime(db, client.id) == "uk" else None
     figures = compute_payslip_figures(emp, body.model_dump(), uk=uk)
+    if uk:
+        apply_pension_decision(emp, uk)
 
     ps = models.DBPayslip(
         client_id=client.id, employee_id=body.employee_id, number=ps_number,
@@ -10960,6 +11388,7 @@ def run_payroll(request: Request, body: PayrollRunRequest, db: Session = Depends
 
     created, skipped, warnings, total_net, total_gross = [], [], [], 0.0, 0.0
     total_tax, total_ee_ni, total_er_ni, total_loans = 0.0, 0.0, 0.0, 0.0
+    total_pension_er, total_pension_ee = 0.0, 0.0
     uk_payroll = payroll_regime(db, client.id) == "uk"
     next_number = next_sequence_number(db, models.DBPayslip, client.id, "PS-")
     seq = int(next_number.split("-")[1])
@@ -11004,6 +11433,9 @@ def run_payroll(request: Request, body: PayrollRunRequest, db: Session = Depends
             "bonus": emp.bonus or 0, "allowances": emp.allowances or 0,
         }, uk=uk)
         if uk:
+            apply_pension_decision(emp, uk)
+            total_pension_er += figures["pension_employer"]
+            total_pension_ee += figures["pension_employee"]
             for note in uk["notes"]:
                 warnings.append({"employee_id": emp.id, "name": f"{emp.first_name} {emp.last_name}",
                                  "number": f"PS-{seq:04d}", "reason": note})
@@ -11054,7 +11486,8 @@ def run_payroll(request: Request, body: PayrollRunRequest, db: Session = Depends
         **({"total_tax": money(total_tax), "total_employee_ni": money(total_ee_ni),
             "total_employer_ni": money(total_er_ni), "total_student_loans": money(total_loans),
             "owed_to_hmrc": money(total_tax + total_ee_ni + total_er_ni + total_loans),
-            "employer_cost": money(total_gross + total_er_ni)} if uk_payroll else {}),
+            "total_pension_employee": money(total_pension_ee), "total_pension_employer": money(total_pension_er),
+            "employer_cost": money(total_gross + total_er_ni + total_pension_er)} if uk_payroll else {}),
         "period_start": body.period_start, "period_end": body.period_end, "pay_date": body.pay_date,
     }
 
@@ -11124,7 +11557,8 @@ def get_payslip(ps_id: int, request: Request, db: Session = Depends(get_db)):
         "standing_deduction": money(
             (ps.total_deductions or 0) - (ps.tax_amount or 0) - (ps.insurance or 0)
             - (ps.retirement or 0) - (ps.other_deductions or 0)
-            - (ps.employee_ni or 0) - (ps.student_loan or 0) - (ps.postgrad_loan or 0)),
+            - (ps.employee_ni or 0) - (ps.student_loan or 0) - (ps.postgrad_loan or 0)
+            - (ps.pension_employee or 0)),
         "regime": ps.regime or "simple",
         "uk": {
             "tax_code": ps.tax_code, "ni_category": ps.ni_category,
@@ -11136,6 +11570,9 @@ def get_payslip(ps_id: int, request: Request, db: Session = Depends(get_db)):
             "employee_ni": ps.employee_ni, "employer_ni": ps.employer_ni,
             "student_loan": ps.student_loan, "postgrad_loan": ps.postgrad_loan,
             "student_loan_plan": (emp.student_loan_plan or "") if emp else "",
+            "pension": {"pensionable": ps.pension_earnings or 0, "employee": ps.pension_employee or 0,
+                        "employer": ps.pension_employer or 0, "relief": ps.pension_relief or 0}
+                       if (ps.pension_employee or ps.pension_employer) else None,
             "year_to_date": uk_tax_year_to_date(db, client.id, ps.employee_id, ps.tax_year, up_to_id=ps.id),
         } if ps.regime == "uk" else None,
         "net_pay": ps.net_pay, "status": ps.status, "sent": ps.sent, "notes": ps.notes,
@@ -11291,6 +11728,7 @@ Best regards,
                     + _ded(f"National Insurance (category {ps.ni_category})", ps.employee_ni)
                     + (_ded(f"Student loan (plan {emp.student_loan_plan})", ps.student_loan) if ps.student_loan else "")
                     + (_ded("Postgraduate loan", ps.postgrad_loan) if ps.postgrad_loan else "")
+                    + (_ded("Workplace pension", ps.pension_employee) if ps.pension_employee else "")
                     + (_ded("Insurance", ps.insurance) if ps.insurance else "")
                     + (_ded("Pension", ps.retirement) if ps.retirement else "")
                     + (_ded("Other deductions", ps.other_deductions) if ps.other_deductions else ""))
@@ -21925,6 +22363,9 @@ def employee_payslip(ps_id: int, request: Request, db: Session = Depends(get_db)
             "employee_ni": round(ps.employee_ni or 0, 2),
             "student_loan": round(ps.student_loan or 0, 2), "student_loan_plan": emp.student_loan_plan or "",
             "postgrad_loan": round(ps.postgrad_loan or 0, 2),
+            # What was paid in for them, both halves: it is their pension.
+            "pension": {"employee": round(ps.pension_employee or 0, 2), "employer": round(ps.pension_employer or 0, 2),
+                        "relief": round(ps.pension_relief or 0, 2)} if (ps.pension_employee or ps.pension_employer) else None,
             "year_to_date": uk_tax_year_to_date(db, ps.client_id, emp.id, ps.tax_year, up_to_id=ps.id),
         } if ps.regime == "uk" else None,
         "employee": {

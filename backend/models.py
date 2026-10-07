@@ -727,6 +727,19 @@ class DBEmployee(Base):
     p45_taxable_pay = Column(Float, default=0.0)
     p45_tax = Column(Float, default=0.0)
 
+    # Workplace pension (auto-enrolment). status: "" never in | member |
+    # postponed | opted_out. Written by the payroll when it assesses them and
+    # by the actions on the Payroll screen.
+    pension_status = Column(String, default="", index=True)
+    pension_group = Column(String, default="")          # last assessed worker category
+    pension_joined_on = Column(String, default="")
+    pension_joined_how = Column(String, default="")     # auto | opt_in | join_request | re_enrolment
+    pension_opted_out_on = Column(String, default="")
+    pension_postponed_until = Column(String, default="")
+    # A letter the law says they are owed and has not been marked as sent:
+    # enrolment | postponement | re_enrolment | "" (none due).
+    pension_letter_due = Column(String, default="")
+
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     client = relationship("DBClient", back_populates="employees")
@@ -794,6 +807,13 @@ class DBPayslip(Base):
     ni_at_lel = Column(Float, default=0.0)
     ni_lel_to_pt = Column(Float, default=0.0)
     ni_pt_to_uel = Column(Float, default=0.0)
+    # Workplace pension for the period: the pay it was worked on, what left the
+    # employee's pay, what the employer adds, and the 20% a relief-at-source
+    # provider claims back from HMRC.
+    pension_earnings = Column(Float, default=0.0)
+    pension_employee = Column(Float, default=0.0)
+    pension_employer = Column(Float, default=0.0)
+    pension_relief = Column(Float, default=0.0)
 
     tracking_id = Column(String, unique=True, index=True, default=lambda: str(uuid.uuid4()))
     open_count = Column(Integer, default=0)

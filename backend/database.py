@@ -1866,6 +1866,36 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 67: {sys.exc_info()[1]}")
 
+            # 68. Workplace pension state on the employee.
+            try:
+                for ddl in (
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS pension_status VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS pension_group VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS pension_joined_on VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS pension_joined_how VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS pension_opted_out_on VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS pension_postponed_until VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS pension_letter_due VARCHAR DEFAULT ''",
+                    "CREATE INDEX IF NOT EXISTS ix_employees_pension_status ON employees (pension_status)",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 68: {sys.exc_info()[1]}")
+
+            # 69. Workplace pension contributions on the payslip.
+            try:
+                for ddl in (
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS pension_earnings DOUBLE PRECISION DEFAULT 0",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS pension_employee DOUBLE PRECISION DEFAULT 0",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS pension_employer DOUBLE PRECISION DEFAULT 0",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS pension_relief DOUBLE PRECISION DEFAULT 0",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 69: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

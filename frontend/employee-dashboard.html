@@ -10,7 +10,7 @@
        marketing page. -->
   <link rel="manifest" href="/employee.webmanifest">
   <meta name="theme-color" content="#0f172a">
-  <link rel="stylesheet" href="tailwind.css?v=196">
+  <link rel="stylesheet" href="tailwind.css?v=197">
   <!-- The payslip is built here, in the browser, the same way the owner's side
        builds one. There is no server-side generator to call. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -50,12 +50,12 @@
     .app-bar { padding-top: env(safe-area-inset-top, 0px); }
     .app-bar-second { top: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   </style>
-    <link rel="stylesheet" href="mobile.css?v=196">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=196">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=196">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=196">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=196">
-    <script src="/dialogs.js?v=196"></script>
+    <link rel="stylesheet" href="mobile.css?v=197">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=197">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=197">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=197">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-staff.png?v=197">
+    <script src="/dialogs.js?v=197"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -3724,6 +3724,7 @@
         row('National Insurance', ps.uk.employee_ni);
         if (ps.uk.student_loan) row('Student loan' + (ps.uk.student_loan_plan ? ' (plan ' + ps.uk.student_loan_plan + ')' : ''), ps.uk.student_loan);
         if (ps.uk.postgrad_loan) row('Postgraduate loan', ps.uk.postgrad_loan);
+        if (ps.uk.pension) row('Workplace pension', ps.uk.pension.employee);
       }
       if (ps.insurance) row('Insurance', ps.insurance);
       if (ps.retirement) row('Pension', ps.retirement);
@@ -3751,6 +3752,13 @@
         row('National Insurance', t.employee_ni);
         if (t.student_loan) row('Student loan', t.student_loan);
         row('Take-home', t.net_pay);
+        if (t.pension_employee || t.pension_employer) {
+          y += 8;
+          doc.setFont(undefined, 'bold'); doc.text('Paid into your pension this tax year', M, y); y += 16;
+          doc.setFont(undefined, 'normal');
+          row('From your pay', t.pension_employee);
+          row('From your employer', t.pension_employer);
+        }
       }
 
       doc.setFont(undefined, 'normal'); doc.setFontSize(8); doc.setTextColor(140);
@@ -4798,8 +4806,8 @@
       </div>
     </div>
   </div>
-    <script src="/install-hint.js?v=196"></script>
-    <script src="/pwa.js?v=196"></script>
-    <script src="/feed.js?v=196"></script>
+    <script src="/install-hint.js?v=197"></script>
+    <script src="/pwa.js?v=197"></script>
+    <script src="/feed.js?v=197"></script>
 </body>
 </html>

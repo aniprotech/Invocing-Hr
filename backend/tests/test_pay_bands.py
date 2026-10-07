@@ -8,6 +8,8 @@ one effective date. Pay on the profile is per period, so it is
 annualised by how often it is paid before it meets the band. Staff see
 their own band only if the business switches that on.
 """
+from datetime import date, timedelta
+
 import pytest
 
 import main
@@ -127,9 +129,13 @@ def test_leavers_are_not_in_the_review(tenant):
 # --- applying changes --------------------------------------------------------------------
 
 def test_several_salaries_change_on_one_date_and_everybody_is_told(tenant):
+    # A date ahead of today, always: the history is newest first and "joined"
+    # is dated today, so a fixed date in the past (this said 2026-10-01) went
+    # red the day the calendar passed it.
+    when = (date.today() + timedelta(days=30)).isoformat()
     a = person(tenant, first_name="Ann", level="L3", salary=3000.0)
     b = person(tenant, first_name="Bob", level="L3", salary=3000.0)
-    res = tenant.post("/api/pay-review", json={"effective_on": "2026-10-01", "note": "Annual review", "changes": [
+    res = tenant.post("/api/pay-review", json={"effective_on": when, "note": "Annual review", "changes": [
         {"employee_id": a["id"], "salary": 3300},
         {"employee_id": b["id"], "salary": 3000},          # unchanged: skipped
     ]})
@@ -137,7 +143,7 @@ def test_several_salaries_change_on_one_date_and_everybody_is_told(tenant):
     assert res.json()["applied"] == 1 and res.json()["changes"][0]["was"] == 3000.0
     assert tenant.get(f"/api/employees/{a['id']}").json()["salary"] == 3300.0
     hist = tenant.get(f"/api/employees/{a['id']}/history").json()["history"]
-    assert hist[0]["kind"] == "pay_change" and hist[0]["effective_on"] == "2026-10-01" and hist[0]["note"] == "Annual review"
+    assert hist[0]["kind"] == "pay_change" and hist[0]["effective_on"] == when and hist[0]["note"] == "Annual review"
     assert [h["kind"] for h in tenant.get(f"/api/employees/{b['id']}/history").json()["history"]] == ["joined"]
     as_staff(tenant, a)
     titles = [n["title"] for n in tenant.get("/api/employee/notifications").json()["notifications"]]

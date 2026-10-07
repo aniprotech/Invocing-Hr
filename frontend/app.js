@@ -7414,6 +7414,7 @@ async function batchGeneratePayslips() {
                 'Employee NI: ' + formatCurrency(data.total_employee_ni) + '\n' +
                 'Employer NI: ' + formatCurrency(data.total_employer_ni) + '\n' +
                 (data.total_student_loans ? 'Student loans: ' + formatCurrency(data.total_student_loans) + '\n' : '') +
+                (data.total_pension_employee || data.total_pension_employer ? 'Pension: ' + formatCurrency(data.total_pension_employee) + ' from pay + ' + formatCurrency(data.total_pension_employer) + ' from you, to pay to the provider\n' : '') +
                 '\nOwed to HMRC: ' + formatCurrency(data.owed_to_hmrc) + '\n' +
                 'Total cost of this payroll: ' + formatCurrency(data.employer_cost), { title: 'Payroll summary' });
         }
@@ -7516,6 +7517,7 @@ async function setPayrollRegime(value) {
         _payrollSettings = await fetchJson('/api/payroll/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ regime: value }) });
         showToast(value === 'uk' ? 'UK PAYE is on' : 'Simple payroll is on', 'success');
         renderPayrollRegime();
+        loadPensionPanel();
     } catch (e) { showToast(e.message, 'error'); if (sel) sel.value = before; }
 }
 window.setPayrollRegime = setPayrollRegime;
@@ -7542,6 +7544,7 @@ async function renderEmployeeUk(emp) {
         (emp.postgrad_loan ? ukSummaryRow('Postgraduate loan', 'Yes') : '') +
         (emp.is_director ? ukSummaryRow('Director', 'Yes' + (emp.director_since ? ', since ' + emp.director_since : '') + ' - NI worked on the year') : '') +
         (emp.starter_declaration ? ukSummaryRow('Starter declaration', decl[emp.starter_declaration] || emp.starter_declaration) : '') +
+        (emp.pension_status ? ukSummaryRow('Workplace pension', (PEN_STATUS[emp.pension_status] || ['-'])[0] + (emp.pension_joined_on && emp.pension_status === 'member' ? ' since ' + emp.pension_joined_on : '') + (emp.pension_status === 'postponed' ? ' until ' + emp.pension_postponed_until : '')) : '') +
         (emp.p45_tax_year ? ukSummaryRow('P45', (emp.p45_tax_year + '-' + String(emp.p45_tax_year + 1).slice(2)) + ': pay ' + formatCurrency(emp.p45_taxable_pay || 0) + ', tax ' + formatCurrency(emp.p45_tax || 0)) : '');
     var missing = [];
     if (!emp.ni_number) missing.push('an NI number');
@@ -7620,6 +7623,171 @@ async function previewUkPayslip() {
 }
 window.previewUkPayslip = previewUkPayslip;
 
+// --- Workplace pension ------------------------------------------------------------
+// The panel on the Payroll screen: who is in, who has to be, what each is owed,
+// and the things the law leaves to a person - joining, opting out, the letter.
+var _pension = null;
+var PEN_STATUS = { member: ['In the scheme', 'var(--success-color)'], postponed: ['Postponed', 'var(--warning-color)'],
+    opted_out: ['Opted out', 'var(--text-secondary)'], '': ['Not in', 'var(--text-secondary)'] };
+var PEN_LETTER = { enrolment: 'Enrolment letter', postponement: 'Postponement letter', re_enrolment: 'Re-enrolment letter' };
+
+async function loadPensionPanel() {
+    var panel = document.getElementById('pension-panel');
+    if (!panel) return;
+    await loadPayrollSettings();
+    if (!isUkPayroll()) { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    var host = document.getElementById('pension-content');
+    try {
+        var scheme = await fetchJson('/api/pension/scheme');
+        _pension = scheme;
+        var staff = scheme.scheme.enabled ? await fetchJson('/api/pension/staff') : null;
+    } catch (e) { host.innerHTML = '<div style="color:var(--text-secondary);">' + esc(e.message) + '</div>'; return; }
+    var s = scheme.scheme;
+    document.getElementById('pension-reenrol-btn').style.display = s.enabled ? '' : 'none';
+    document.getElementById('pension-csv').style.display = s.enabled ? '' : 'none';
+    if (!s.enabled) {
+        host.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">' +
+            '<div style="font-size:0.88rem;color:var(--text-secondary);max-width:640px;">UK employers must put eligible staff into a workplace pension and pay in at least the minimum. Turn it on and each payslip assesses the person, enrols them if the law says so, takes their share from pay and records yours.</div>' +
+            '<button class="btn btn-primary btn-sm" onclick="openPensionScheme()">Set up the scheme</button></div>';
+        return;
+    }
+    var c = staff.counts;
+    var basis = (scheme.bases.find(function (b) { return b.key === s.basis; }) || {}).label || s.basis;
+    var head = '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;font-size:0.85rem;">' +
+        '<div><span style="color:var(--text-secondary);">Provider</span><br><strong>' + esc(s.provider || 'Not named yet') + '</strong></div>' +
+        '<div><span style="color:var(--text-secondary);">Paid in</span><br><strong>' + s.employer_pct + '% you + ' + s.employee_pct + '% them</strong> on ' + esc(String(basis).split(' (')[0].toLowerCase()) + '</div>' +
+        '<div><span style="color:var(--text-secondary);">In the scheme</span><br><strong>' + c.member + '</strong>' + (c.postponed ? ' (' + c.postponed + ' postponed)' : '') + (c.opted_out ? ', ' + c.opted_out + ' opted out' : '') + '</div>' +
+        (scheme.next_reenrolment ? '<div><span style="color:var(--text-secondary);">Next re-enrolment</span><br><strong>' + esc(scheme.next_reenrolment) + '</strong></div>' : '') +
+    '</div>';
+    var rows = staff.staff.map(function (r) {
+        var st = PEN_STATUS[r.status] || PEN_STATUS[''];
+        var actions = '';
+        if (r.letter_due) actions += '<button class="btn btn-outline btn-sm" data-pen-letter="' + r.id + '">' + esc(PEN_LETTER[r.letter_due] || 'Letter') + '</button> ';
+        if (r.status === 'member') actions += '<button class="btn btn-outline btn-sm" data-pen-optout="' + r.id + '">Opted out</button>';
+        else if (r.status !== 'opted_out' && r.has_dob && r.group && r.group !== 'none') actions += '<button class="btn btn-outline btn-sm" data-pen-join="' + r.id + '">Join</button>';
+        if (!r.letter_due && !r.status && (r.group === 'non_eligible_jobholder' || r.group === 'entitled_worker'))
+            actions += ' <button class="btn btn-outline btn-sm" data-pen-letter="' + r.id + '" data-kind="' + (r.group === 'entitled_worker' ? 'entitled' : 'non_eligible') + '">Letter</button>';
+        return '<tr><td>' + esc(r.name) + '</td><td>' + (r.age === null ? '-' : r.age) + '</td>' +
+            '<td style="font-size:0.82rem;">' + esc(r.group_label || '-') + '</td>' +
+            '<td><span style="color:' + st[1] + ';font-weight:600;font-size:0.82rem;">' + esc(st[0]) + '</span>' +
+                (r.joined_on ? '<div style="font-size:0.72rem;color:var(--text-secondary);">since ' + esc(r.joined_on) + '</div>' : '') + '</td>' +
+            '<td style="font-size:0.82rem;color:var(--text-secondary);">' + esc(r.next) + '</td>' +
+            '<td style="white-space:nowrap;text-align:right;">' + actions + '</td></tr>';
+    }).join('');
+    host.innerHTML = head + '<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Person</th><th>Age</th><th>Worker</th><th>Status</th><th>What happens</th><th></th></tr></thead><tbody>' +
+        (rows || '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);padding:20px;">No staff yet.</td></tr>') + '</tbody></table></div>';
+    host.querySelectorAll('[data-pen-join]').forEach(function (b) { b.addEventListener('click', function () { joinPension(+b.getAttribute('data-pen-join')); }); });
+    host.querySelectorAll('[data-pen-optout]').forEach(function (b) { b.addEventListener('click', function () { optOutPension(+b.getAttribute('data-pen-optout')); }); });
+    host.querySelectorAll('[data-pen-letter]').forEach(function (b) { b.addEventListener('click', function () { openPensionLetter(+b.getAttribute('data-pen-letter'), b.getAttribute('data-kind') || ''); }); });
+    var csv = document.getElementById('pension-csv');
+    if (csv) csv.setAttribute('href', '/api/pension/contributions.csv');
+}
+window.loadPensionPanel = loadPensionPanel;
+
+async function openPensionScheme() {
+    if (!_pension) _pension = await fetchJson('/api/pension/scheme');
+    var s = _pension.scheme;
+    document.getElementById('pen-enabled').checked = !!s.enabled;
+    document.getElementById('pen-provider').value = s.provider || '';
+    document.getElementById('pen-basis').innerHTML = _pension.bases.map(function (b) { return '<option value="' + esc(b.key) + '">' + esc(b.label) + '</option>'; }).join('');
+    document.getElementById('pen-basis').value = s.basis;
+    document.getElementById('pen-method').innerHTML = _pension.methods.map(function (m) { return '<option value="' + esc(m.key) + '">' + esc(m.label) + '</option>'; }).join('');
+    document.getElementById('pen-method').value = s.method;
+    document.getElementById('pen-employer').value = s.employer_pct;
+    document.getElementById('pen-employee').value = s.employee_pct;
+    document.getElementById('pen-postpone').value = String(s.postponement_months || 0);
+    document.getElementById('pen-duties').value = s.duties_start || '';
+    var t = _pension.thresholds;
+    document.getElementById('pen-thresholds').textContent = t
+        ? 'Thresholds for ' + t.year + ' (' + t.source + '): lower limit £' + t.lower + ', earnings trigger £' + t.trigger + ', upper limit £' + t.upper + ' a year.'
+        : 'No thresholds are loaded for this tax year.';
+    document.getElementById('pen-not-built').textContent = 'Not built yet: ' + (_pension.not_built || []).join('; ').toLowerCase() + '.';
+    penBasisChanged();
+    document.getElementById('pension-scheme-modal').style.display = 'flex';
+}
+window.openPensionScheme = openPensionScheme;
+
+function penBasisChanged() {
+    var b = (_pension.bases.find(function (x) { return x.key === document.getElementById('pen-basis').value; }) || {});
+    document.getElementById('pen-minimum').textContent = 'The law\u2019s minimum on this basis: ' + b.min_total + '% in total, at least ' + b.min_employer + '% from the employer.';
+}
+window.penBasisChanged = penBasisChanged;
+
+function closePensionScheme() { document.getElementById('pension-scheme-modal').style.display = 'none'; }
+window.closePensionScheme = closePensionScheme;
+
+async function savePensionScheme() {
+    var body = { enabled: document.getElementById('pen-enabled').checked, provider: document.getElementById('pen-provider').value,
+        basis: document.getElementById('pen-basis').value, method: document.getElementById('pen-method').value,
+        employer_pct: parseFloat(document.getElementById('pen-employer').value) || 0,
+        employee_pct: parseFloat(document.getElementById('pen-employee').value) || 0,
+        postponement_months: parseInt(document.getElementById('pen-postpone').value, 10) || 0,
+        duties_start: document.getElementById('pen-duties').value };
+    try {
+        _pension = await fetchJson('/api/pension/scheme', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        closePensionScheme();
+        showToast('Pension scheme saved', 'success');
+        loadPensionPanel();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.savePensionScheme = savePensionScheme;
+
+async function joinPension(id) {
+    if (!await uiConfirm('Put them into the pension from today? If they are a non-eligible jobholder you must pay in too; for an entitled worker you need not.', { title: 'Join the pension', confirmText: 'Join' })) return;
+    try { await fetchJson('/api/pension/staff/' + id + '/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); showToast('Joined', 'success'); loadPensionPanel(); }
+    catch (e) { showToast(e.message, 'error'); }
+}
+
+async function optOutPension(id) {
+    // The day they opted out is what decides whether they are owed their money
+    // back (within a month of joining), so it is asked, not assumed to be today.
+    var when = await uiForm([{ name: 'date', label: 'The day they opted out', type: 'date', value: localDate(new Date()), required: true,
+        hint: 'They tell the pension provider, not you. Contributions stop from the next payslip.' }],
+        { title: 'Record an opt-out', confirmText: 'Record it' });
+    if (!when) return;
+    try {
+        var out = await fetchJson('/api/pension/staff/' + id + '/opt-out', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date: when.date }) });
+        await uiAlert(out.message + (out.refund_due ? '\n\nRepay them: ' + formatCurrency(out.refund_due) + '.' : ''), { title: 'Opt-out recorded' });
+        loadPensionPanel();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function reEnrolPensions() {
+    var when = _pension && _pension.next_reenrolment ? ' Your next re-enrolment is due ' + _pension.next_reenrolment + '.' : '';
+    if (!await uiConfirm('Put everybody who opted out and is eligible again back into the pension?' + when, { title: 'Re-enrol', confirmText: 'Re-enrol' })) return;
+    try {
+        var out = await fetchJson('/api/pension/reenrol', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        var left = (out.skipped || []).map(function (s) { return '- ' + s.name + ': ' + s.reason; }).join('\n');
+        await uiAlert(out.count + ' re-enrolled.' + (left ? '\n\nNot re-enrolled:\n' + left : ''), { title: 'Re-enrolment' });
+        loadPensionPanel();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.reEnrolPensions = reEnrolPensions;
+
+var _penLetterFor = 0;
+async function openPensionLetter(id, kind) {
+    try {
+        var l = await fetchJson('/api/pension/staff/' + id + '/letter' + (kind ? '?kind=' + encodeURIComponent(kind) : ''));
+        _penLetterFor = id;
+        document.getElementById('pen-letter-title').textContent = l.subject;
+        document.getElementById('pen-letter-to').textContent = l.to || '(no email on record)';
+        document.getElementById('pen-letter-subject').textContent = l.subject;
+        document.getElementById('pen-letter-body').value = l.body;
+        document.getElementById('pen-letter-sent').style.display = kind ? 'none' : '';
+        document.getElementById('pension-letter-modal').style.display = 'flex';
+    } catch (e) { showToast(e.message, 'error'); }
+}
+function closePensionLetter() { document.getElementById('pension-letter-modal').style.display = 'none'; }
+window.closePensionLetter = closePensionLetter;
+function copyPensionLetter() { copyText(document.getElementById('pen-letter-body').value, 'Letter copied'); }
+window.copyPensionLetter = copyPensionLetter;
+async function markPensionLetterSent() {
+    try { await fetchJson('/api/pension/staff/' + _penLetterFor + '/letter-sent', { method: 'POST' }); closePensionLetter(); loadPensionPanel(); }
+    catch (e) { showToast(e.message, 'error'); }
+}
+window.markPensionLetterSent = markPensionLetterSent;
+
 function renderPayslipUk(ps) {
     var uk = ps.uk;
     var show = function (id, on) { var el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
@@ -7629,6 +7797,7 @@ function renderPayslipUk(ps) {
     show('ps-detail-ni-row', !!uk);
     show('ps-detail-sl-row', !!(uk && uk.student_loan));
     show('ps-detail-pgl-row', !!(uk && uk.postgrad_loan));
+    show('ps-detail-pension-row', !!(uk && uk.pension));
     show('ps-detail-uk-codes', !!uk);
     // The flat-rate rows mean nothing at zero on a UK payslip, and the PDF
     // and the email leave them out, so the screen does too. Pension is the
@@ -7645,6 +7814,7 @@ function renderPayslipUk(ps) {
     set('ps-detail-sl', (uk.student_loan || 0).toFixed(2));
     set('ps-detail-sl-label', 'Student loan' + (uk.student_loan_plan ? ' (plan ' + uk.student_loan_plan + ')' : ''));
     set('ps-detail-pgl', (uk.postgrad_loan || 0).toFixed(2));
+    set('ps-detail-pension', ((uk.pension && uk.pension.employee) || 0).toFixed(2));
     if (codes) codes.textContent = 'Tax code ' + (uk.tax_code || '-') + ' \u00b7 NI ' + (uk.ni_category || '-') +
         (uk.ni_number ? ' \u00b7 ' + uk.ni_number : '') + ' \u00b7 ' + (uk.tax_year || '') + ' period ' + (uk.tax_period || '-');
     var y = uk.year_to_date || {};
@@ -7657,7 +7827,8 @@ function renderPayslipUk(ps) {
             cell('National Insurance', y.employee_ni) + (y.student_loan ? cell('Student loan', y.student_loan) : '') + cell('Take-home', y.net_pay) +
             '</div>' +
             '<div style="margin-top:10px;font-size:0.82rem;color:var(--text-secondary);">Employer\'s National Insurance this period: ' + formatCurrency(uk.employer_ni || 0) +
-            ' (paid by the employer on top of gross pay, not taken from it).</div>';
+            ' (paid by the employer on top of gross pay, not taken from it).' +
+            (uk.pension ? ' Employer\u2019s pension contribution: ' + formatCurrency(uk.pension.employer || 0) + (uk.pension.relief ? '; tax relief claimed by the provider: ' + formatCurrency(uk.pension.relief) : '') + '.' : '') + '</div>';
     }
 }
 window.renderPayslipUk = renderPayslipUk;
@@ -8111,6 +8282,7 @@ function generatePayslipPDF() {
         ['National Insurance', ps.uk.employee_ni]
     ].concat(ps.uk.student_loan ? [['Student loan' + (ps.uk.student_loan_plan ? ' (plan ' + ps.uk.student_loan_plan + ')' : ''), ps.uk.student_loan]] : [])
      .concat(ps.uk.postgrad_loan ? [['Postgraduate loan', ps.uk.postgrad_loan]] : [])
+     .concat(ps.uk.pension ? [['Workplace pension', ps.uk.pension.employee]] : [])
      .concat((ps.insurance || 0) ? [['Insurance', ps.insurance]] : [])
      .concat((ps.retirement || 0) ? [['Pension', ps.retirement]] : [])
      .concat((ps.other_deductions || 0) ? [['Other', ps.other_deductions]] : []) : [
@@ -8901,7 +9073,7 @@ showView = function(viewId) {
     if (viewId === 'workflows-view' && typeof loadWorkflows === 'function') loadWorkflows();
     if (viewId === 'departments-view') fetchDepartments();
     if (viewId === 'onboarding-hub-view') { loadOnboardingHub(); loadDocumentQueue(); loadExpiringDocuments(); loadOnboardingPipeline(); loadProbations(); }
-    if (viewId === 'payroll-view') { fetchPayslips(currentPsFilter); loadPayrollAnomalies(); renderPayrollRegime(); }
+    if (viewId === 'payroll-view') { fetchPayslips(currentPsFilter); loadPayrollAnomalies(); renderPayrollRegime(); loadPensionPanel(); }
     if (viewId === 'attendance-view') { loadAttendanceStats(); loadAttendanceButtons(); loadAttendance(); loadLiveAttendance(); loadAttendanceSettings(); switchAttTab('live'); }
     if (viewId === 'orgchart-view') loadOrgChart();
     if (viewId === 'feed-view') loadFeedView();
