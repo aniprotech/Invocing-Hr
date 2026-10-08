@@ -2,15 +2,14 @@
 
 An address was never checked on the way in. The form carries type="email",
 which is a convenience rather than a rule - anything posting straight at the
-endpoint skipped it. The account was made, the code was sent nowhere, and
-because an unconfirmed account is not allowed to send, that account could
-never work and its owner had no way to find out why.
+endpoint skipped it, and an account made with something that is not an address
+can never be written to.
 
 Signing in added to whatever session was already there instead of starting a
 fresh one, which every other way in does.
 
-And the verification code was the one message in the product that could fail
-in silence.
+(The verification code that used to be sent at this point is gone: see
+test_no_email_verification.py.)
 """
 import uuid
 
@@ -140,66 +139,13 @@ def test_a_stale_google_token_does_not_follow_you_into_the_new_account(
     assert client.get("/api/client/me").json()["email"] == mine
 
 
-# --- the code that has to arrive ----------------------------------------------------
-
-def test_the_verification_code_is_written_down_like_any_other_send(
-        client, monkeypatch):
-    """It used to be fired off and forgotten. A code that never left looked
-    exactly like a code somebody had not read yet.
-
-    The send is stubbed to succeed because the suite's mail server is not a
-    real one - what is being checked is that the outcome gets written down,
-    not what this machine's network can reach."""
-    monkeypatch.setattr(main, "send_email_background", lambda *a, **k: (True, "sent"))
-    email = address()
-    res = register(client, email)
-    assert res.json()["verification_sent"] is True
-
-    with main.SessionLocal() as db:
-        row = db.query(models.DBClient).filter(
-            main.sqlfunc.lower(models.DBClient.email) == email).first()
-    rows = deliveries_for(row.id, "verification")
-    assert len(rows) == 1, rows
-    assert rows[0]["to"] == email
-    # The outcome, not just the attempt. A row that stays "pending" forever
-    # says only that we meant to send something.
-    assert rows[0]["status"] == "sent", rows
-
-
-def test_a_code_that_never_left_is_recorded_as_failed(client, monkeypatch):
-    monkeypatch.setattr(main, "send_email_background",
-                        lambda *a, **k: (False, "mailbox unavailable"))
-    email = address()
-    register(client, email)
-
-    with main.SessionLocal() as db:
-        row = db.query(models.DBClient).filter(
-            main.sqlfunc.lower(models.DBClient.email) == email).first()
-    rows = deliveries_for(row.id, "verification")
-    assert rows and rows[0]["status"] == "failed", rows
-    assert "mailbox unavailable" in rows[0]["error"]
-
-
-def test_and_the_owner_can_see_it_on_the_failures_list(client, monkeypatch):
-    """Otherwise the only person who can find out is whoever reads the logs."""
-    monkeypatch.setattr(main, "send_email_background",
-                        lambda *a, **k: (False, "mailbox unavailable"))
-    email = address()
-    register(client, email)
-    assert client.post("/api/client/login",
-                       json={"email": email, "password": "Passw0rdTest"}
-                       ).status_code == 200
-
-    listed = client.get("/api/deliveries?status=failed")
-    assert listed.status_code == 200, listed.text
-    kinds = [d["kind"] for d in listed.json()["deliveries"]]
-    assert "verification" in kinds, listed.json()
-
+# --- an outage is not the newcomer's loss -------------------------------------------
 
 def test_a_signup_is_not_lost_when_the_server_cannot_send_at_all(
         client, monkeypatch):
-    """The account is still made; the code can be asked for again. Refusing
-    the signup would lose somebody over an outage that is ours, not theirs."""
+    """Refusing the signup would lose somebody over an outage that is ours, not
+    theirs. (Nothing is sent at signup any more; this is the case that was
+    stranding people when it did.)"""
     monkeypatch.delenv("SMTP_HOST", raising=False)
     with main.SessionLocal() as db:
         row = db.query(models.DBSettings).filter(
@@ -212,5 +158,4 @@ def test_a_signup_is_not_lost_when_the_server_cannot_send_at_all(
     email = address()
     res = register(client, email)
     assert res.status_code == 200, res.text
-    assert res.json()["verification_sent"] is False
     assert accounts_matching(email) == 1

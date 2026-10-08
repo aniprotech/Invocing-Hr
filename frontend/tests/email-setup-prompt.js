@@ -58,7 +58,7 @@ function boot(status) {
             json: () => Promise.resolve(b) });
         if (p === '/api/auth/me') return give({ user: { email: 'a@b' }, client_id: 1 });
         if (p === '/api/client/me') return give({ id: 1, modules: ['invoicing', 'hr'] });
-        if (p === '/api/client/verification-status') return give(status || CAN_SEND);
+        if (p === '/api/client/account-status') return give(status || CAN_SEND);
         return give(p.endsWith('s') ? [] : {});
     };
     if (!w.requestAnimationFrame) w.requestAnimationFrame = cb => setTimeout(cb, 0);

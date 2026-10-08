@@ -196,9 +196,9 @@ def test_the_last_day_still_counts_as_free(client, tenant):
 # --- what the screens are told --------------------------------------------------------------
 
 def test_the_app_is_told_without_asking_for_it(client, tenant):
-    """Every screen already loads verification-status, so a trial about to end
+    """Every screen already loads account-status, so a trial about to end
     can be said everywhere rather than only on the money screen."""
-    said = tenant.get("/api/client/verification-status").json()["trial"]
+    said = tenant.get("/api/client/account-status").json()["trial"]
     assert said["active"] is True
     assert "ends_at" in said
 

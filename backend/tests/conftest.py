@@ -134,16 +134,6 @@ def account(client):
     res = client.post("/api/client/login", json={"email": email, "password": password})
     assert res.status_code == 200, res.text
 
-    # An established account, which is what nearly every test is about. A new
-    # signup has to confirm its address before it can send invoices as that
-    # address; the tests for that make their own unconfirmed accounts.
-    with main.SessionLocal() as db:
-        row = db.query(models.DBClient).filter(
-            main.sqlfunc.lower(models.DBClient.email) == email.lower()).first()
-        if row is not None:
-            row.email_verified_at = "2020-01-01 00:00:00"
-            db.commit()
-
     return {"client": client, "email": email, "password": password}
 
 

@@ -1138,146 +1138,30 @@ SuperAdmin = Depends(require_superadmin)
 
 
 # ============================================================================
-# PROVING THE ADDRESS
+# NO EMAIL VERIFICATION
 #
-# Signing up asked for an address and believed it. Anybody could register with
-# somebody else's, and then set the platform to send invoices from it.
+# Signing up used to send a six-digit code, and an account could not send
+# anything until it was typed back. In practice the code often never arrived -
+# the platform's own mail was not always able to send it - so new people were
+# stuck at the first step, and Google sign-ins were asked to prove an address
+# Google had just proved. An account is now usable the moment it exists.
 #
-# The account is created either way - refusing to create it would mean losing
-# the signup when mail is slow - but it cannot send email until the address is
-# proved, which is the thing an unproved address could be used to abuse.
+# What that gives up, plainly: anybody can register with an address that is not
+# theirs. The tables and the column that held the old codes are left where they
+# are, unused, rather than dropped.
 # ============================================================================
 
-VERIFY_MINUTES = 30
-VERIFY_MAX_ATTEMPTS = 5
-
-
-def email_is_verified(client) -> bool:
-    return bool(getattr(client, "email_verified_at", "") or "")
-
-
-def issue_verification(db, background_tasks, client, request):
-    """Make a code, retire any earlier one, and send it."""
-    db.query(models.DBEmailVerification).filter(
-        models.DBEmailVerification.client_id == client.id,
-        models.DBEmailVerification.used_at == "").update(
-            {"used_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-
-    code = "".join(secrets.choice("0123456789") for _ in range(6))
-    db.add(models.DBEmailVerification(
-        client_id=client.id,
-        code_hash=_hash_otp(code),
-        expires_at=(datetime.now() + timedelta(minutes=VERIFY_MINUTES)
-                    ).strftime("%Y-%m-%d %H:%M:%S")))
-    db.commit()
-
-    from_email = platform_from_address()
-    # Written down before it is attempted, and the outcome written after. This
-    # was the one message in the product that could fail in silence: somebody
-    # waits for a code that never left, and nothing anywhere says so. It is
-    # also the worst one to lose, being the first thing a new account needs.
-    row = start_delivery(db, client.id, "verification", client.email,
-                         client.email, None)
-    background_tasks.add_task(
-        deliver_and_record,
-        row.id,
-        client.email,
-        f"Your verification code: {code}",
-        f"Welcome to aniprotech.\n\n"
-        f"Your code is {code}. It expires in {VERIFY_MINUTES} minutes.\n\n"
-        "If you did not sign up, somebody used your address by mistake. "
-        "Ignore this and the account cannot send anything.",
-        from_email)
-
-
-@app.post("/api/client/verify-email")
-def verify_client_email(request: Request, body: dict = None,
-                        db: Session = Depends(get_db)):
-    """Prove the address, with the code that was sent to it."""
-    ip = request.client.host if request.client else "unknown"
-    if rate_limiter.is_rate_limited(f"verify:{ip}", max_requests=10, window=300):
-        raise HTTPException(status_code=429,
-                            detail="Too many attempts. Try again shortly.")
-
-    client = get_client_user(request, db)
-    body = body or {}
-    code = (body.get("code") or "").strip()
-    refused = HTTPException(status_code=400, detail="That code is not valid")
-    if not code:
-        raise refused
-
-    if email_is_verified(client):
-        return {"verified": True, "message": "Already verified"}
-
-    row = db.query(models.DBEmailVerification).filter(
-        models.DBEmailVerification.client_id == client.id,
-        models.DBEmailVerification.used_at == "").order_by(
-            models.DBEmailVerification.id.desc()).first()
-
-    live = bool(row) and (row.attempts or 0) < VERIFY_MAX_ATTEMPTS
-    if live:
-        try:
-            live = datetime.strptime(row.expires_at, "%Y-%m-%d %H:%M:%S") > datetime.now()
-        except Exception:
-            live = False
-    if not live:
-        raise refused
-
-    # Counted before it is compared, so a wrong guess costs an attempt.
-    row.attempts = (row.attempts or 0) + 1
-    db.commit()
-
-    if not hmac.compare_digest(row.code_hash, _hash_otp(code)):
-        raise refused
-
-    row.used_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    client.email_verified_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_audit(db, client.id, "email_verified", "client", client.id,
-              client.email, "", request)
-    db.commit()
-    return {"verified": True, "message": "Email verified"}
-
-
-@app.post("/api/client/resend-verification")
-def resend_client_verification(request: Request, background_tasks: BackgroundTasks,
-                               db: Session = Depends(get_db)):
-    ip = request.client.host if request.client else "unknown"
-    if rate_limiter.is_rate_limited(f"verify_send:{ip}", max_requests=3, window=300):
-        raise HTTPException(status_code=429,
-                            detail="Too many codes requested. Try again shortly.")
-
-    client = get_client_user(request, db)
-    if email_is_verified(client):
-        return {"verified": True, "message": "Already verified"}
-
-    ready, missing = email_delivery_ready(db)
-    if not ready:
-        raise HTTPException(
-            status_code=503,
-            detail=f"This server cannot send email at the moment - {missing}.")
-
-    issue_verification(db, background_tasks, client, request)
-    return {"verified": False, "message": "A new code is on its way."}
-
-
+# The old path is kept as well, because a tab opened before this change is still
+# running the old page, which asks for it.
+@app.get("/api/client/account-status")
 @app.get("/api/client/verification-status")
-def client_verification_status(request: Request, db: Session = Depends(get_db)):
+def client_account_status(request: Request, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
-    # Whether a code can be sent at all. Registering does not create one when
-    # the server cannot send, so without this the screen asks somebody to
-    # confirm their address with a code that was never made - and the only way
-    # to find that out was to press resend and read the error. The code goes
-    # out on the platform's transport, not the tenant's, because at this point
-    # they have not set one up.
-    ready, missing = email_delivery_ready(db)
     return {
-        "verified": email_is_verified(client),
         "email": client.email or "",
-        "can_send": ready,
-        "blocked_reason": "" if ready else missing,
-        # Whether this business can send its own mail, which is a different
-        # question: the platform being fine says nothing about a tenant who
-        # has chosen their own server and got it wrong.
+        # Whether this business can send its own mail: the platform being fine
+        # says nothing about a tenant who has chosen their own server and got
+        # it wrong.
         "mine": client_email_readiness(db, client),
         # Carried here because every screen already asks this endpoint on load,
         # so the banner does not need a request of its own - and a trial that
@@ -1309,8 +1193,7 @@ def trial_with_credit(db, client) -> dict:
 
 
 @app.post("/api/client/register")
-def client_register(body: ClientRegister, background_tasks: BackgroundTasks,
-                    request: Request, db: Session = Depends(get_db)):
+def client_register(body: ClientRegister, request: Request, db: Session = Depends(get_db)):
     ip = request.client.host if request.client else "unknown"
     if rate_limiter.is_rate_limited(f"register:{ip}", max_requests=5, window=300):
         raise HTTPException(status_code=429, detail="Too many registration attempts. Try again later.")
@@ -1348,14 +1231,7 @@ def client_register(body: ClientRegister, background_tasks: BackgroundTasks,
     db.commit()
     db.refresh(client)
 
-    # Sent if it can be. A signup is not lost because mail is down - the
-    # account exists, and the code can be asked for again.
-    ready, _missing = email_delivery_ready(db)
-    if ready:
-        issue_verification(db, background_tasks, client, request)
-
-    return {"message": "Account created", "client_id": client.id,
-            "verification_sent": ready, "email_verified": False}
+    return {"message": "Account created", "client_id": client.id}
 
 @app.post("/api/client/login")
 def client_login(body: ClientLogin, request: Request, db: Session = Depends(get_db)):
@@ -4244,14 +4120,6 @@ def create_invoice(invoice: InvoiceCreate, request: Request, db: Session = Depen
 @app.post("/api/invoices/{number}/send")
 def send_invoice_email(number: str, background_tasks: BackgroundTasks, request: Request, payload: Optional[SendInvoiceEmail] = None, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
-    # The one thing an unproved address is actually good for: signing up as
-    # somebody else and sending invoices in their name. Everything else about
-    # the account works meanwhile, and the bar in the app says how to fix it.
-    if not email_is_verified(client):
-        raise HTTPException(
-            status_code=403,
-            detail="Confirm your email address before sending invoices. "
-                   "There is a code in your inbox, or ask for a new one.")
     if payload is None:
         payload = SendInvoiceEmail()
     inv = db.query(models.DBInvoice).filter(models.DBInvoice.number == number, models.DBInvoice.client_id == client.id).first()
@@ -32016,8 +31884,6 @@ def statement_email(client, contact, start, end, statements, note=""):
 def send_customer_statement(contact_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
     """Email the statement to the customer, from the business."""
     client = get_client_user(request, db)
-    if not email_is_verified(client):
-        raise HTTPException(status_code=403, detail="Confirm your email address before sending statements.")
     contact = _contact_or_404(db, client, contact_id)
     body = body or {}
     to = (body.get("to") or contact.email or "").strip()
@@ -32051,8 +31917,6 @@ def job_monthly_statements(db, now):
     sent = 0
     for client in db.query(models.DBClient).filter(models.DBClient.is_active == True).all():  # noqa: E712
         if str(tenant_setting(db, client.id, "monthly_statements", "0")).lower() not in ("1", "true", "yes", "on"):
-            continue
-        if not email_is_verified(client):
             continue
         for contact in db.query(models.DBContact).filter(models.DBContact.client_id == client.id).all():
             to = (contact.email or "").strip()
@@ -33964,8 +33828,6 @@ def send_credit_note_email(number: str, background_tasks: BackgroundTasks, reque
     client = get_client_user(request, db)
     payload = payload or SendCreditNoteEmail()
     cn = _credit_note_or_404(db, client, number)
-    if not email_is_verified(client):
-        raise HTTPException(status_code=403, detail="Confirm your email address before sending documents.")
     if cn.status == "Void":
         raise HTTPException(status_code=400, detail="This credit note is void")
     if not cn.email or not validate_email_address(cn.email):

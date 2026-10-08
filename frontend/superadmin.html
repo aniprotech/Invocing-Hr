@@ -367,12 +367,12 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=199">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=199">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=199">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=199">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=199">
-    <script src="/dialogs.js?v=199"></script>
+    <link rel="stylesheet" href="mobile.css?v=200">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=200">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=200">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=200">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=200">
+    <script src="/dialogs.js?v=200"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -2646,7 +2646,7 @@
                     ? 'Going out over SMTP.'
                     : 'Going out through ' + (d.connected_as || 'the connected Google account') + '.')
                 : (d.blocked_reason || 'No transport is set up.') +
-                  ' Every verification code and password reset is failing until this is fixed.';
+                  ' Every password reset and sign-in code is failing until this is fixed.';
             box.appendChild(why);
 
             // A token that no longer works looks exactly like one that does,
@@ -2701,7 +2701,7 @@
             // Worth asking: with nothing else set up this stops every code the
             // product sends, which "Disconnect" does not convey on its own.
             if (!await uiConfirm('Disconnect the Google account the platform sends through?\n\n' +
-                         'If no mail server is set up, verification codes and ' +
+                         'If no mail server is set up, sign-in codes and ' +
                          'password resets will stop working for everyone.',
                          { title: 'Disconnect Google', confirmText: 'Disconnect', danger: true })) return;
             try {
@@ -3032,6 +3032,6 @@
         <div id="wallet-panel-body"></div>
       </div>
     </div>
-    <script src="/pwa.js?v=199"></script>
+    <script src="/pwa.js?v=200"></script>
 </body>
 </html>
