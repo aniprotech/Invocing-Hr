@@ -23,3 +23,6 @@ Thumbs.db
 
 # Node dependencies for the frontend PDF smoke test
 node_modules/
+
+# HMRC's downloaded packs and specification (large; the runtime files are in backend/hmrc/rim)
+backend/hmrc/spec/

@@ -1,0 +1,3 @@
+# HMRC's published definitions are checked by hash (backend/tests/test_hmrc_rti_files.py),
+# so git must hand them back byte for byte - no line-ending conversion on any machine.
+backend/hmrc/rim/** -text

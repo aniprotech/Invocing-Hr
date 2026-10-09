@@ -1913,6 +1913,19 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 70: {sys.exc_info()[1]}")
 
+            # 71. HMRC payroll filings (RTI): what an employee record needs for
+            # them. The submissions table is new, so create_all makes it.
+            try:
+                for ddl in (
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS gender VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS postcode VARCHAR DEFAULT ''",
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS hours_band VARCHAR DEFAULT ''",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 71: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

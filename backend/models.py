@@ -736,6 +736,13 @@ class DBEmployee(Base):
     p45_taxable_pay = Column(Float, default=0.0)
     p45_tax = Column(Float, default=0.0)
 
+    # What HMRC's payroll filings (RTI) need that the payroll itself does not:
+    # the gender HMRC has on record (M or F), a home postcode, and which band
+    # of usual weekly hours the person falls in (A to E).
+    gender = Column(String, default="")
+    postcode = Column(String, default="")
+    hours_band = Column(String, default="")
+
     # Workplace pension (auto-enrolment). status: "" never in | member |
     # postponed | opted_out. Written by the payroll when it assesses them and
     # by the actions on the Payroll screen.
@@ -830,6 +837,42 @@ class DBPayslip(Base):
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     employee = relationship("DBEmployee", back_populates="payslips")
+
+
+class DBRtiSubmission(Base):
+    """One Full Payment Submission or Employer Payment Summary, from the
+    moment it was built to HMRC's answer.
+
+    The message is kept as it was sent (without the Government Gateway
+    password, which is never stored here), so "what did we tell HMRC on that
+    day" has an answer. status:
+      checked    built and held up against HMRC's rules, not sent
+      rejected   HMRC's own rules refused it before it left (problems says why)
+      sent       with HMRC, answer awaited
+      accepted   HMRC accepted it
+      refused    HMRC's Gateway refused it (hmrc_errors says why)
+      failed     could not reach HMRC; nothing was recorded there
+    mode is "test" for the Gateway's test service, which validates and
+    answers but records nothing, or "live".
+    """
+    __tablename__ = "rti_submissions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    kind = Column(String, default="FPS", index=True)
+    tax_year = Column(Integer, default=0)
+    pay_date = Column(String, default="", index=True)
+    status = Column(String, default="checked", index=True)
+    mode = Column(String, default="test")
+    people = Column(Integer, default=0)
+    summary = Column(String, default="")
+    correlation_id = Column(String, default="", index=True)
+    problems = Column(Text, default="")
+    hmrc_errors = Column(Text, default="")
+    body_xml = Column(Text, default="")
+    created_by = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    updated_at = Column(String, default="")
 
 
 class DBOnboardingItem(Base):

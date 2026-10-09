@@ -6485,6 +6485,9 @@ async function submitNewEmployee() {
         payload.student_loan_plan = (document.getElementById('emp-student-loan') || {}).value || '';
         payload.postgrad_loan = !!(document.getElementById('emp-postgrad-loan') || {}).checked;
         payload.is_director = !!(document.getElementById('emp-is-director') || {}).checked;
+        payload.gender = (document.getElementById('emp-gender') || {}).value || '';
+        payload.postcode = (document.getElementById('emp-postcode') || {}).value || '';
+        payload.hours_band = (document.getElementById('emp-hours-band') || {}).value || '';
     }
     try {
         var res = await fetch('/api/employees', {
@@ -7570,11 +7573,13 @@ async function renderEmployeeUk(emp) {
         (emp.postgrad_loan ? ukSummaryRow('Postgraduate loan', 'Yes') : '') +
         (emp.is_director ? ukSummaryRow('Director', 'Yes' + (emp.director_since ? ', since ' + emp.director_since : '') + ' - NI worked on the year') : '') +
         (emp.starter_declaration ? ukSummaryRow('Starter declaration', decl[emp.starter_declaration] || emp.starter_declaration) : '') +
+        ukSummaryRow('HMRC records', [emp.gender ? 'Gender ' + emp.gender : 'No gender', emp.postcode || 'no postcode', emp.hours_band ? 'hours band ' + emp.hours_band : 'no usual hours'].join(', ')) +
         (emp.pension_status ? ukSummaryRow('Workplace pension', (PEN_STATUS[emp.pension_status] || ['-'])[0] + (emp.pension_joined_on && emp.pension_status === 'member' ? ' since ' + emp.pension_joined_on : '') + (emp.pension_status === 'postponed' ? ' until ' + emp.pension_postponed_until : '')) : '') +
         (emp.p45_tax_year ? ukSummaryRow('P45', (emp.p45_tax_year + '-' + String(emp.p45_tax_year + 1).slice(2)) + ': pay ' + formatCurrency(emp.p45_taxable_pay || 0) + ', tax ' + formatCurrency(emp.p45_tax || 0)) : '');
     var missing = [];
     if (!emp.ni_number) missing.push('an NI number');
     if (!emp.tax_code) missing.push('a tax code');
+    if (!emp.gender) missing.push('a gender for HMRC');
     document.getElementById('emp-uk-summary').innerHTML = rows +
         (missing.length ? '<div style="margin-top:10px;font-size:0.82rem;color:var(--warning-color);">Still needed: ' + esc(missing.join(' and ')) + '.</div>' : '') +
         '<div id="emp-uk-preview" style="margin-top:10px;"></div>';
@@ -7591,6 +7596,9 @@ function openUkPayroll() {
     document.getElementById('ukp-postgrad-loan').checked = !!emp.postgrad_loan;
     document.getElementById('ukp-is-director').checked = !!emp.is_director;
     document.getElementById('ukp-director-since').value = emp.director_since || '';
+    document.getElementById('ukp-gender').value = emp.gender || '';
+    document.getElementById('ukp-postcode').value = emp.postcode || '';
+    document.getElementById('ukp-hours-band').value = emp.hours_band || '';
     var year = document.getElementById('ukp-p45-year');
     var thisYear = parseInt(((_payrollSettings && _payrollSettings.tax_year) || '').slice(0, 4), 10);
     year.innerHTML = '<option value="0">No P45</option>' + (thisYear ? '<option value="' + thisYear + '">' + thisYear + '-' + String(thisYear + 1).slice(2) + '</option>' : '');
@@ -7616,6 +7624,9 @@ async function saveUkPayroll() {
         postgrad_loan: document.getElementById('ukp-postgrad-loan').checked,
         is_director: document.getElementById('ukp-is-director').checked,
         director_since: document.getElementById('ukp-director-since').value,
+        gender: document.getElementById('ukp-gender').value,
+        postcode: document.getElementById('ukp-postcode').value,
+        hours_band: document.getElementById('ukp-hours-band').value,
         p45_tax_year: parseInt(document.getElementById('ukp-p45-year').value, 10) || 0,
         p45_taxable_pay: parseFloat(document.getElementById('ukp-p45-pay').value) || 0,
         p45_tax: parseFloat(document.getElementById('ukp-p45-tax').value) || 0
@@ -7813,6 +7824,206 @@ async function markPensionLetterSent() {
     catch (e) { showToast(e.message, 'error'); }
 }
 window.markPensionLetterSent = markPensionLetterSent;
+
+// --- HMRC payroll filings (RTI) -----------------------------------------------------
+// Every UK payday is reported to HMRC. This panel shows what stands between the
+// business and its first filing, lets each pay date be checked against HMRC's own
+// rules (found here, with a name on it, not by HMRC), and sends when it can.
+var _hmrc = null;
+var HMRC_STATE = { sent: ['Sent to HMRC', 'var(--success-color)'], tested: ['Tested', 'var(--warning-color)'], not_sent: ['Not reported', 'var(--text-secondary)'] };
+var HMRC_STATUS = { accepted: ['Accepted', 'var(--success-color)'], sent: ['With HMRC', 'var(--warning-color)'], refused: ['Refused by HMRC', 'var(--danger-color)'],
+    rejected: ['Failed our check', 'var(--danger-color)'], failed: ['Could not reach HMRC', 'var(--danger-color)'], checked: ['Checked', 'var(--text-secondary)'] };
+
+async function loadHmrcPanel() {
+    var panel = document.getElementById('hmrc-panel');
+    if (!panel) return;
+    await loadPayrollSettings();
+    if (!isUkPayroll()) { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    var host = document.getElementById('hmrc-content');
+    try { _hmrc = await fetchJson('/api/hmrc/rti'); }
+    catch (e) { host.innerHTML = '<div style="color:var(--text-secondary);">' + esc(e.message) + '</div>'; return; }
+    var h = _hmrc;
+    if (!h || !Array.isArray(h.readiness)) { host.innerHTML = '<div style="color:var(--text-secondary);">HMRC filings are not available right now.</div>'; return; }
+    h.pay_dates = h.pay_dates || []; h.submissions = h.submissions || []; h.not_built = h.not_built || []; h.employer = h.employer || {};
+    var todo = h.readiness.filter(function (r) { return !r.ok; });
+    var mode = h.mode === 'live'
+        ? '<span style="color:var(--danger-color);font-weight:600;">Live - what you send is recorded at HMRC</span>'
+        : '<span style="color:var(--text-secondary);">Test mode - HMRC checks it and answers, and records nothing</span>';
+    var out = '<div style="font-size:0.85rem;margin-bottom:12px;">' + mode + '</div>';
+    if (todo.length) {
+        out += '<div style="margin-bottom:14px;"><div style="font-weight:600;font-size:0.88rem;margin-bottom:6px;">Before the first filing</div>' +
+            h.readiness.map(function (r) {
+                return '<div style="display:flex;gap:8px;align-items:baseline;font-size:0.84rem;padding:3px 0;">' +
+                    '<span style="min-width:54px;font-weight:600;color:' + (r.ok ? 'var(--success-color)' : 'var(--warning-color)') + ';">' + (r.ok ? 'Done' : 'To do') + '</span>' +
+                    '<span style="flex:1;">' + esc(r.label) + (r.ok ? '' : '<div style="font-size:0.78rem;color:var(--text-secondary);">' + esc(r.detail) + '</div>') + '</span>' +
+                    (r.ok ? '' : '<span style="font-size:0.74rem;color:var(--text-secondary);white-space:nowrap;">' + (r.owner === 'you' ? 'you' : 'platform admin') + '</span>') + '</div>';
+            }).join('') + '</div>';
+    } else {
+        out += '<div style="font-size:0.85rem;color:var(--success-color);margin-bottom:12px;">Everything needed to send is in place.</div>';
+    }
+    // Pay days are rows that wrap, not table columns: on a phone the buttons are the point and must not fall off the edge.
+    var rows = h.pay_dates.map(function (d) {
+        var st = HMRC_STATE[d.state] || HMRC_STATE.not_sent;
+        return '<div data-hmrc-day="' + esc(d.pay_date) + '" style="display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:space-between;padding:10px 0;border-top:1px solid var(--border-color);">' +
+            '<div style="min-width:140px;"><strong>' + esc(d.pay_date) + '</strong><div style="font-size:0.78rem;color:var(--text-secondary);">' + d.people + (d.people === 1 ? ' person' : ' people') + '</div></div>' +
+            '<span style="color:' + st[1] + ';font-weight:600;font-size:0.82rem;">' + esc(st[0]) + '</span>' +
+            '<div style="display:flex;gap:8px;">' +
+            '<button class="btn btn-outline btn-sm" data-hmrc-check="' + esc(d.pay_date) + '"' + (h.can_check ? '' : ' disabled title="Add your PAYE references first"') + '>Check</button>' +
+            '<button class="btn btn-primary btn-sm" data-hmrc-send="' + esc(d.pay_date) + '"' + (h.can_send ? '' : ' disabled title="Finish the list above first"') + '>' + (d.state === 'sent' ? 'Send again' : 'Send') + '</button></div></div>';
+    }).join('');
+    out += '<div style="font-weight:600;font-size:0.88rem;margin-bottom:6px;">Pay days to report</div>' +
+        (rows || '<div style="text-align:center;color:var(--text-secondary);padding:18px;">No UK payslips yet. Make a payslip and its pay day appears here.</div>');
+    if (h.submissions.length) {
+        out += '<div style="font-weight:600;font-size:0.88rem;margin:16px 0 6px;">What has been sent</div>' +
+            '<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>When</th><th>Filing</th><th>For</th><th>Status</th><th></th></tr></thead><tbody>' +
+            h.submissions.slice(0, 10).map(function (s) {
+                var st = HMRC_STATUS[s.status] || [s.status, 'var(--text-secondary)'];
+                return '<tr><td style="font-size:0.82rem;">' + esc(s.created_at) + '</td><td>' + (s.kind === 'FPS' ? 'Full Payment' : 'Employer Summary') + (s.mode === 'test' ? ' <span style="font-size:0.72rem;color:var(--text-secondary);">(test)</span>' : '') + '</td>' +
+                    '<td style="font-size:0.82rem;">' + esc(s.pay_date || s.summary || '') + '</td>' +
+                    '<td><span style="color:' + st[1] + ';font-weight:600;font-size:0.82rem;">' + esc(st[0]) + '</span></td>' +
+                    '<td style="text-align:right;"><button class="btn btn-outline btn-sm" data-hmrc-view="' + s.id + '">View</button></td></tr>';
+            }).join('') + '</tbody></table></div>';
+    }
+    out += '<div style="font-size:0.78rem;color:var(--text-secondary);margin-top:12px;">Not covered yet: ' + esc((h.not_built || []).join('; ').toLowerCase()) + '.</div>';
+    host.innerHTML = out;
+    host.querySelectorAll('[data-hmrc-check]').forEach(function (b) { b.addEventListener('click', function () { hmrcCheck(b.getAttribute('data-hmrc-check')); }); });
+    host.querySelectorAll('[data-hmrc-send]').forEach(function (b) { b.addEventListener('click', function () { hmrcSend(b.getAttribute('data-hmrc-send')); }); });
+    host.querySelectorAll('[data-hmrc-view]').forEach(function (b) { b.addEventListener('click', function () { hmrcView(+b.getAttribute('data-hmrc-view')); }); });
+}
+window.loadHmrcPanel = loadHmrcPanel;
+
+async function hmrcPost(path, body) {
+    var res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    var data = {};
+    try { data = await res.json(); } catch (e) { data = {}; }
+    return { ok: res.ok, status: res.status, data: data };
+}
+
+function showHmrcResult(title, r) {
+    var statusLine, tone;
+    if (r.ok) { tone = 'var(--success-color)'; statusLine = r.sent ? ((HMRC_STATUS[r.status] || [r.status])[0] + (r.mode === 'test' ? ' by HMRC\'s test service - nothing was recorded' : '') + '.') : 'Passes HMRC\'s own rules. Nothing has been sent.'; }
+    else if (r.status === 'sent') { tone = 'var(--warning-color)'; statusLine = 'Sent. HMRC has not answered yet - look again in a few minutes.'; }
+    else { tone = 'var(--danger-color)'; statusLine = r.status === 'refused' ? 'HMRC refused it.' : r.status === 'failed' ? 'Could not reach HMRC. Nothing was recorded there.' : 'Not sent - it would be refused.'; }
+    var list = function (items, fn) { return '<ul style="margin:8px 0 0 18px;padding:0;font-size:0.86rem;">' + items.map(function (x) { return '<li style="margin-bottom:4px;">' + fn(x) + '</li>'; }).join('') + '</ul>'; };
+    var html = '<div style="font-weight:600;color:' + tone + ';">' + esc(statusLine) + '</div>';
+    if (r.people) html += '<div style="font-size:0.84rem;color:var(--text-secondary);margin-top:4px;">' + r.people + (r.people === 1 ? ' person' : ' people') + (r.pay_date ? ' paid on ' + esc(r.pay_date) : '') + '</div>';
+    if (r.starters && r.starters.length) html += '<div style="font-size:0.84rem;margin-top:8px;">New starters in this filing: ' + esc(r.starters.join(', ')) + '</div>';
+    if (r.problems && r.problems.length) html += '<div style="font-weight:600;font-size:0.86rem;margin-top:12px;">To put right</div>' + list(r.problems, esc);
+    if (r.hmrc_errors && r.hmrc_errors.length) html += '<div style="font-weight:600;font-size:0.86rem;margin-top:12px;">HMRC says</div>' + list(r.hmrc_errors, function (e) { return esc((e.number ? e.number + ': ' : '') + e.text); });
+    if (r.xml) html += '<details style="margin-top:12px;"><summary style="cursor:pointer;font-size:0.84rem;">The message that would be sent</summary><pre style="max-height:260px;overflow:auto;font-size:0.72rem;background:var(--bg-secondary);padding:10px;border-radius:6px;white-space:pre-wrap;word-break:break-all;">' + esc(r.xml) + '</pre></details>';
+    document.getElementById('hmrc-result-title').textContent = title;
+    document.getElementById('hmrc-result-body').innerHTML = html;
+    document.getElementById('hmrc-result-modal').style.display = 'flex';
+}
+
+function closeHmrcResult() { document.getElementById('hmrc-result-modal').style.display = 'none'; }
+window.closeHmrcResult = closeHmrcResult;
+
+async function hmrcCheck(day) {
+    var r = await hmrcPost('/api/hmrc/rti/fps/check', { pay_date: day });
+    if (!r.ok) { showToast((r.data && r.data.detail) || 'Could not check', 'error'); return; }
+    showHmrcResult('Pay day ' + day, r.data);
+}
+
+async function hmrcSend(day) {
+    var live = _hmrc && _hmrc.mode === 'live';
+    if (!await uiConfirm(live ? 'Send the Full Payment Submission for ' + day + ' to HMRC? This is recorded at HMRC.'
+        : 'Send this to HMRC\'s test service? HMRC will check it and answer, and will not record it.', { title: 'Send to HMRC', confirmText: 'Send' })) return;
+    var r = await hmrcPost('/api/hmrc/rti/fps/send', { pay_date: day });
+    if (r.status === 409) {
+        if (!await uiConfirm(r.data.detail, { title: 'Send again?', confirmText: 'Send again' })) return;
+        r = await hmrcPost('/api/hmrc/rti/fps/send', { pay_date: day, confirm_resend: true });
+    }
+    if (!r.ok) { showToast((r.data && r.data.detail) || 'Could not send', 'error'); return; }
+    showHmrcResult('Pay day ' + day, r.data);
+    loadHmrcPanel();
+}
+
+async function hmrcView(id) {
+    try {
+        var s = await fetchJson('/api/hmrc/rti/submissions/' + id);
+        showHmrcResult((s.kind === 'FPS' ? 'Full Payment Submission' : 'Employer Payment Summary') + (s.pay_date ? ' - ' + s.pay_date : ''),
+            { ok: s.status === 'accepted', sent: true, status: s.status, mode: s.mode, people: s.people, pay_date: s.pay_date, problems: s.problems, hmrc_errors: s.hmrc_errors, xml: s.body_xml });
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+function openHmrcSettings() {
+    var h = _hmrc || {};
+    var e = h.employer || {};
+    ['office_no', 'paye_ref', 'ao_ref', 'contact_name', 'contact_email', 'contact_phone', 'gateway_user'].forEach(function (k) {
+        document.getElementById('hmrc-' + k.replace(/_/g, '-')).value = e[k] || '';
+    });
+    var pw = document.getElementById('hmrc-gateway-password');
+    pw.value = '';
+    pw.placeholder = h.has_gateway_password ? 'Saved - type a new one to change it' : 'Your Government Gateway password';
+    document.getElementById('hmrc-settings-modal').style.display = 'flex';
+}
+window.openHmrcSettings = openHmrcSettings;
+
+function closeHmrcSettings() { document.getElementById('hmrc-settings-modal').style.display = 'none'; }
+window.closeHmrcSettings = closeHmrcSettings;
+
+async function saveHmrcSettings() {
+    var body = {};
+    ['office_no', 'paye_ref', 'ao_ref', 'contact_name', 'contact_email', 'contact_phone', 'gateway_user'].forEach(function (k) {
+        body[k] = document.getElementById('hmrc-' + k.replace(/_/g, '-')).value;
+    });
+    var pw = document.getElementById('hmrc-gateway-password').value;
+    if (pw) body.gateway_password = pw;
+    try {
+        _hmrc = await fetchJson('/api/hmrc/rti/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        closeHmrcSettings();
+        showToast('HMRC details saved', 'success');
+        loadHmrcPanel();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.saveHmrcSettings = saveHmrcSettings;
+
+var HMRC_RECOVER = [['smp', 'SMP'], ['spp', 'SPP'], ['sap', 'SAP'], ['shpp', 'ShPP'], ['spbp', 'SPBP']];
+function openHmrcEps() {
+    var m = document.getElementById('hmrc-eps-month');
+    if (!m.options.length) {
+        m.innerHTML = '<option value="">Choose...</option>' + Array.from({ length: 12 }, function (_, i) { return '<option value="' + (i + 1) + '">Month ' + (i + 1) + '</option>'; }).join('');
+    }
+    ['hmrc-eps-from', 'hmrc-eps-to'].forEach(function (id) { document.getElementById(id).value = ''; });
+    document.getElementById('hmrc-eps-allowance').value = '';
+    document.getElementById('hmrc-eps-month').value = '';
+    HMRC_RECOVER.forEach(function (r) { document.getElementById('hmrc-eps-' + r[0]).value = ''; document.getElementById('hmrc-eps-nic-' + r[0]).value = ''; });
+    document.getElementById('hmrc-eps-send').disabled = !(_hmrc && _hmrc.can_send);
+    document.getElementById('hmrc-eps-modal').style.display = 'flex';
+}
+window.openHmrcEps = openHmrcEps;
+
+function closeHmrcEps() { document.getElementById('hmrc-eps-modal').style.display = 'none'; }
+window.closeHmrcEps = closeHmrcEps;
+
+function hmrcEpsBody() {
+    var body = {};
+    var from = document.getElementById('hmrc-eps-from').value, to = document.getElementById('hmrc-eps-to').value;
+    if (from || to) { body.no_payment_from = from; body.no_payment_to = to; }
+    var al = document.getElementById('hmrc-eps-allowance').value;
+    if (al !== '') body.employment_allowance = al === 'yes';
+    var rec = {};
+    HMRC_RECOVER.forEach(function (r) {
+        var v = parseFloat(document.getElementById('hmrc-eps-' + r[0]).value), n = parseFloat(document.getElementById('hmrc-eps-nic-' + r[0]).value);
+        if (v > 0) rec[r[0]] = v;
+        if (n > 0) rec['nic_' + r[0]] = n;
+    });
+    if (Object.keys(rec).length) { body.recoverable = rec; body.recoverable_month = parseInt(document.getElementById('hmrc-eps-month').value, 10) || 0; }
+    return body;
+}
+
+async function hmrcEps(send) {
+    var body = hmrcEpsBody();
+    if (send && !await uiConfirm((_hmrc && _hmrc.mode === 'live') ? 'Send this Employer Payment Summary to HMRC? This is recorded at HMRC.' : 'Send this to HMRC\'s test service? It will not be recorded.', { title: 'Send to HMRC', confirmText: 'Send' })) return;
+    var r = await hmrcPost('/api/hmrc/rti/eps/' + (send ? 'send' : 'check'), body);
+    if (!r.ok) { showToast((r.data && r.data.detail) || 'Could not ' + (send ? 'send' : 'check'), 'error'); return; }
+    closeHmrcEps();
+    showHmrcResult('Employer Payment Summary', r.data);
+    if (send) loadHmrcPanel();
+}
+window.hmrcEps = hmrcEps;
 
 function renderPayslipUk(ps) {
     var uk = ps.uk;
@@ -9099,7 +9310,7 @@ showView = function(viewId) {
     if (viewId === 'workflows-view' && typeof loadWorkflows === 'function') loadWorkflows();
     if (viewId === 'departments-view') fetchDepartments();
     if (viewId === 'onboarding-hub-view') { loadOnboardingHub(); loadDocumentQueue(); loadExpiringDocuments(); loadOnboardingPipeline(); loadProbations(); }
-    if (viewId === 'payroll-view') { fetchPayslips(currentPsFilter); loadPayrollAnomalies(); renderPayrollRegime(); loadPensionPanel(); }
+    if (viewId === 'payroll-view') { fetchPayslips(currentPsFilter); loadPayrollAnomalies(); renderPayrollRegime(); loadPensionPanel(); loadHmrcPanel(); }
     if (viewId === 'attendance-view') { loadAttendanceStats(); loadAttendanceButtons(); loadAttendance(); loadLiveAttendance(); loadAttendanceSettings(); switchAttTab('live'); }
     if (viewId === 'orgchart-view') loadOrgChart();
     if (viewId === 'feed-view') loadFeedView();

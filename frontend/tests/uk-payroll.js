@@ -22,7 +22,7 @@ const SETTINGS = (regime) => ({ regime, tax_year: '2026-27', rates_ready: true, 
     rates_source: 'HMRC rates and thresholds for employers 2026 to 2027', ni_categories: ['A', 'B', 'C', 'H', 'J', 'M', 'V', 'Z'],
     student_loan_plans: ['1', '2', '4', '5'] });
 
-const EMP = { id: 7, first_name: 'Ann', last_name: 'Lee', ni_number: 'AB123456C', tax_code: '1257L', ni_category: 'A',
+const EMP = { id: 7, first_name: 'Ann', last_name: 'Lee', ni_number: 'AB123456C', tax_code: '1257L', ni_category: 'A', gender: 'F',
     student_loan_plan: '2', postgrad_loan: false, is_director: false, director_since: '', starter_declaration: '',
     p45_tax_year: 0, p45_taxable_pay: 0, p45_tax: 0 };
 

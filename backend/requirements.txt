@@ -31,3 +31,6 @@ openpyxl==3.1.5
 # back. authlib already installs it, but this file is what production
 # runs, so the dependency is stated rather than assumed. See saltedge.py.
 cryptography==48.0.0
+# Runs HMRC's own schema and Schematron rules over every payroll filing
+# before it is sent. See hmrc_rti.py and hmrc/README.md.
+lxml==6.1.2

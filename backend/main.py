@@ -1080,6 +1080,7 @@ MODULE_PATHS = (
     ("/api/departments", "hr"),
     ("/api/payroll", "hr"),
     ("/api/payslips", "hr"),
+    ("/api/hmrc", "hr"),
     ("/api/leave", "hr"),
     ("/api/attendance", "hr"),
     ("/api/onboarding", "hr"),
@@ -9048,12 +9049,17 @@ class EmployeeCreate(BaseModel):
     is_director: Optional[bool] = False
     director_since: Optional[str] = ""
     starter_declaration: Optional[str] = ""
+    # What HMRC's payroll filings need beyond the above.
+    gender: Optional[str] = ""
+    postcode: Optional[str] = ""
+    hours_band: Optional[str] = ""
     p45_tax_year: Optional[int] = 0
     p45_taxable_pay: Optional[float] = 0.0
     p45_tax: Optional[float] = 0.0
 
 UK_PAYROLL_FIELDS = ("ni_number", "tax_code", "ni_category", "student_loan_plan", "postgrad_loan",
                      "is_director", "director_since", "starter_declaration",
+                     "gender", "postcode", "hours_band",
                      "p45_tax_year", "p45_taxable_pay", "p45_tax")
 
 class PayslipCreate(BaseModel):
@@ -9994,6 +10000,7 @@ def get_employee(emp_id: int, request: Request, db: Session = Depends(get_db)):
         "pension_joined_on": emp.pension_joined_on or "", "pension_postponed_until": emp.pension_postponed_until or "",
         "pension_letter_due": emp.pension_letter_due or "",
         "starter_declaration": emp.starter_declaration or "",
+        "gender": emp.gender or "", "postcode": emp.postcode or "", "hours_band": emp.hours_band or "",
         "p45_tax_year": emp.p45_tax_year or 0, "p45_taxable_pay": emp.p45_taxable_pay or 0.0, "p45_tax": emp.p45_tax or 0.0,
         "allowances": emp.allowances, "bonus": emp.bonus,
         "bank_name": emp.bank_name, "bank_account": emp.bank_account, "tax_id": emp.tax_id,
@@ -10688,6 +10695,7 @@ def get_employee_pay_details(emp_id: int, request: Request, period_start: str = 
 # add up the UK ones.
 
 import uk_paye  # noqa: E402
+import hmrc_rti  # noqa: E402
 
 PAYROLL_REGIMES = ("simple", "uk")
 
@@ -10749,6 +10757,21 @@ def validate_uk_payroll_fields(body: dict) -> None:
         body["starter_declaration"] = decl
     if "director_since" in body:
         body["director_since"] = _clean_ymd(body.get("director_since"), "Director since")
+    if "gender" in body:
+        g = str(body.get("gender") or "").strip().upper()[:1]
+        if g not in ("", "M", "F"):
+            raise HTTPException(status_code=400, detail="HMRC records gender as M or F")
+        body["gender"] = g
+    if "postcode" in body:
+        raw = str(body.get("postcode") or "").strip()
+        body["postcode"] = hmrc_rti.clean_postcode(raw)
+        if raw and not body["postcode"]:
+            raise HTTPException(status_code=400, detail="That is not a UK postcode - like LS1 4AB")
+    if "hours_band" in body:
+        band = str(body.get("hours_band") or "").strip().upper()
+        if band and band not in hmrc_rti.HOURS_BANDS:
+            raise HTTPException(status_code=400, detail="Usual hours is one of A, B, C, D or E")
+        body["hours_band"] = band
     for key in ("p45_taxable_pay", "p45_tax"):
         if key in body:
             try:
@@ -35519,6 +35542,534 @@ def app_manifest(request: Request):
                                else "People, leave, payroll, hiring and the staff portal.")
     return Response(json.dumps(data), media_type="application/manifest+json",
                     headers={"Cache-Control": "no-cache"})
+
+
+# ---------------------------------------------------------------------------
+# HMRC PAYROLL FILINGS (RTI)
+# ---------------------------------------------------------------------------
+# Every UK payday has to be reported to HMRC on or before the day: a Full
+# Payment Submission (who was paid what, and the tax and National Insurance
+# taken) and, when there is something that is not a payment, an Employer
+# Payment Summary. The messages, and the checking of them against HMRC's own
+# published rules, are in backend/hmrc_rti.py; this is the part that joins
+# them to a business's payslips, keeps what HMRC needs to know about the
+# business, and sends.
+#
+# Nothing leaves until HMRC has given us a Vendor ID and the address to send
+# to (HMRC_VENDOR_ID, HMRC_RTI_ENDPOINT) and the business has entered its
+# own Government Gateway details. Until then everything still works as a
+# check: the message is built and held up against HMRC's rules, so a
+# problem is found here, with a name on it, and not by HMRC.
+
+RTI_FIELDS = ("office_no", "paye_ref", "ao_ref", "contact_name", "contact_email", "contact_phone", "gateway_user")
+RTI_PASSWORD_KEY = "hmrc.gateway_password"
+
+
+def rti_cfg() -> dict:
+    return {
+        "vendor_id": os.getenv("HMRC_VENDOR_ID", "").strip(),
+        "endpoint": os.getenv("HMRC_RTI_ENDPOINT", "").strip(),
+        "mode": "live" if os.getenv("HMRC_RTI_MODE", "test").strip().lower() == "live" else "test",
+        "irmark": os.getenv("HMRC_RTI_IRMARK", "").strip() == "1",
+        "product": os.getenv("HMRC_PRODUCT_NAME", "aniprotech").strip() or "aniprotech",
+        "key": os.getenv("HMRC_ENCRYPTION_KEY", "").strip(),
+    }
+
+
+def rti_employer(db, client_id) -> dict:
+    return {k: str(tenant_setting(db, client_id, "hmrc." + k, "")) for k in RTI_FIELDS}
+
+
+def rti_put(db, client_id, key, value):
+    row = db.query(models.DBSettings).filter(models.DBSettings.client_id == client_id,
+                                             models.DBSettings.key == key).first()
+    if row:
+        row.value = value
+    else:
+        db.add(models.DBSettings(client_id=client_id, key=key, value=value))
+
+
+def rti_employer_problems(e: dict) -> list:
+    out = []
+    if not re.fullmatch(r"\d{3}", e.get("office_no", "")):
+        out.append("The tax office number is three digits - the part of your PAYE reference before the slash, like 123")
+    if not re.fullmatch(r"[A-Za-z0-9]{1,10}", e.get("paye_ref", "")):
+        out.append("The PAYE reference is the part after the slash, up to 10 letters and numbers, like AB456")
+    if not re.fullmatch(r"\d{3}P[A-Z]\d{7}[\dX]", e.get("ao_ref", "").upper()):
+        out.append("The Accounts Office reference looks like 123PA00012345 - three digits, P, a letter, seven digits, then a digit or X")
+    return out
+
+
+def rti_readiness(db, client_id) -> list:
+    """What stands between this business and its first filing, each with who
+    has to fix it: the business, or whoever runs the platform."""
+    cfg = rti_cfg()
+    emp = rti_employer(db, client_id)
+    today_year = uk_paye.tax_year_of(datetime.now().date())
+    problems = rti_employer_problems(emp)
+    has_password = bool(tenant_setting(db, client_id, RTI_PASSWORD_KEY, ""))
+    password_ok = False
+    if has_password and cfg["key"]:
+        try:
+            hmrc_rti.unseal(tenant_setting(db, client_id, RTI_PASSWORD_KEY, ""), cfg["key"])
+            password_ok = True
+        except hmrc_rti.RtiError:
+            password_ok = False
+    return [
+        {"key": "regime", "owner": "you", "ok": payroll_regime(db, client_id) == "uk",
+         "label": "UK payroll is switched on", "detail": "Choose UK PAYE under Payroll settings."},
+        {"key": "year", "owner": "platform", "ok": today_year in hmrc_rti.supported_years(),
+         "label": f"HMRC's {hmrc_rti.tax_year_folder(today_year)} filing definitions are installed",
+         "detail": "A new tax year needs HMRC's new pack added to the platform."},
+        {"key": "refs", "owner": "you", "ok": not problems,
+         "label": "Your PAYE and Accounts Office references",
+         "detail": "; ".join(problems) or "From your HMRC employer letter or your PAYE online account."},
+        {"key": "gateway", "owner": "you", "ok": bool(emp["gateway_user"]) and password_ok,
+         "label": "Your Government Gateway user ID and password",
+         "detail": ("The password stored cannot be read - enter it again." if has_password and not password_ok and cfg["key"]
+                    else "The ones you use for HMRC's PAYE for employers online service.")},
+        {"key": "vendor", "owner": "platform", "ok": bool(cfg["vendor_id"]),
+         "label": "HMRC has recognised this software (Vendor ID)", "detail": "HMRC_VENDOR_ID is not set."},
+        {"key": "endpoint", "owner": "platform", "ok": bool(cfg["endpoint"]),
+         "label": "The address of HMRC's Gateway", "detail": "HMRC_RTI_ENDPOINT is not set."},
+        {"key": "encryption", "owner": "platform", "ok": bool(cfg["key"]),
+         "label": "A key to keep Gateway passwords safe", "detail": "HMRC_ENCRYPTION_KEY is not set."},
+    ]
+
+
+_RTI_DONE = ("regime", "year", "refs")
+
+
+def rti_pay_dates(db, client_id, limit=12) -> list:
+    rows = db.query(models.DBPayslip.pay_date).filter(
+        models.DBPayslip.client_id == client_id, models.DBPayslip.regime == "uk",
+        models.DBPayslip.status != "Void", models.DBPayslip.pay_date != "").distinct().all()
+    days = sorted({r[0] for r in rows if r[0]}, reverse=True)[:limit]
+    subs = db.query(models.DBRtiSubmission).filter(
+        models.DBRtiSubmission.client_id == client_id, models.DBRtiSubmission.kind == "FPS").all()
+    out = []
+    for day in days:
+        mine = [s for s in subs if s.pay_date == day]
+        live = [s for s in mine if s.mode == "live" and s.status == "accepted"]
+        tested = [s for s in mine if s.mode == "test" and s.status == "accepted"]
+        n = db.query(models.DBPayslip).filter(
+            models.DBPayslip.client_id == client_id, models.DBPayslip.regime == "uk",
+            models.DBPayslip.status != "Void", models.DBPayslip.pay_date == day).count()
+        out.append({"pay_date": day, "people": n,
+                    "state": "sent" if live else ("tested" if tested else "not_sent")})
+    return out
+
+
+def rti_submission_dict(s, full=False) -> dict:
+    out = {"id": s.id, "kind": s.kind, "tax_year": s.tax_year, "pay_date": s.pay_date, "status": s.status,
+           "mode": s.mode, "people": s.people, "summary": s.summary, "correlation_id": s.correlation_id,
+           "problems": json.loads(s.problems) if s.problems else [],
+           "hmrc_errors": json.loads(s.hmrc_errors) if s.hmrc_errors else [],
+           "created_at": s.created_at, "updated_at": s.updated_at or "", "created_by": s.created_by}
+    if full:
+        out["body_xml"] = s.body_xml or ""
+    return out
+
+
+@app.get("/api/hmrc/rti")
+def rti_status(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    cfg = rti_cfg()
+    ready = rti_readiness(db, client.id)
+    checkable = all(r["ok"] for r in ready if r["key"] in _RTI_DONE)
+    subs = db.query(models.DBRtiSubmission).filter(models.DBRtiSubmission.client_id == client.id) \
+        .order_by(models.DBRtiSubmission.id.desc()).limit(30).all()
+    return {
+        "employer": rti_employer(db, client.id),
+        "has_gateway_password": bool(tenant_setting(db, client.id, RTI_PASSWORD_KEY, "")),
+        "readiness": ready, "can_check": checkable, "can_send": all(r["ok"] for r in ready),
+        "mode": cfg["mode"], "irmark": cfg["irmark"],
+        "hours_bands": [{"key": k, "label": v} for k, v in hmrc_rti.HOURS_BANDS.items()],
+        "pay_dates": rti_pay_dates(db, client.id),
+        "submissions": [rti_submission_dict(s) for s in subs],
+        "not_built": ["Statutory pay (SMP, SPP, SAP) on the payslip", "Payrolled benefits and company cars",
+                      "Starters who are seconded or taking an occupational pension",
+                      "Employees with more than one job under the same PAYE scheme",
+                      "Foreign addresses", "Corrections to an earlier year"],
+    }
+
+
+@app.put("/api/hmrc/rti/settings")
+def rti_save_settings(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    cfg = rti_cfg()
+    cur = rti_employer(db, client.id)
+    new = dict(cur)
+    for k in RTI_FIELDS:
+        if k in body:
+            new[k] = re.sub(r"\s+", " ", str(body.get(k) or "")).strip()[:120]
+    new["office_no"] = re.sub(r"\s+", "", new["office_no"])
+    new["paye_ref"] = re.sub(r"\s+", "", new["paye_ref"]).upper()
+    new["ao_ref"] = re.sub(r"\s+", "", new["ao_ref"]).upper()
+    # "123/AB456" typed whole: split it.
+    if "/" in new["office_no"] and not new["paye_ref"]:
+        new["office_no"], new["paye_ref"] = [x.strip().upper() for x in new["office_no"].split("/", 1)]
+    if new["office_no"] or new["paye_ref"] or new["ao_ref"]:
+        problems = rti_employer_problems(new)
+        if problems:
+            raise HTTPException(status_code=400, detail=problems[0])
+    if new["contact_email"] and not re.fullmatch(r"[^@\s'<>\"]+@[^@\s'<>\"]+", new["contact_email"]):
+        raise HTTPException(status_code=400, detail="That contact email is not an email address")
+    for k in RTI_FIELDS:
+        rti_put(db, client.id, "hmrc." + k, new[k])
+    typed = body.get("gateway_password")
+    if body.get("clear_gateway_password"):
+        rti_put(db, client.id, RTI_PASSWORD_KEY, "")
+    elif isinstance(typed, str) and typed:
+        try:
+            rti_put(db, client.id, RTI_PASSWORD_KEY, hmrc_rti.seal(typed[:200], cfg["key"]))
+        except hmrc_rti.RtiError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+    # The password is never written to the audit trail.
+    log_audit(db, client.id, "hmrc_rti_settings_saved", "settings", None, "hmrc",
+              "references and Gateway details updated" + (" (password changed)" if typed else ""), request)
+    db.commit()
+    return rti_status(request, db)
+
+
+_POSTCODE_AT_END = re.compile(r"([A-Za-z]{1,2}\d[A-Za-z\d]?\s*\d[A-Za-z]{2})\s*$")
+
+
+def rti_address(emp) -> tuple:
+    """(lines, postcode). The employee record keeps the address as one piece
+    of text; HMRC wants lines and a postcode separately."""
+    raw = (emp.address or "").replace("\r", "").strip()
+    postcode = hmrc_rti.clean_postcode(emp.postcode)
+    if not postcode:
+        m = _POSTCODE_AT_END.search(raw)
+        if m:
+            postcode = hmrc_rti.clean_postcode(m.group(1))
+    if postcode:
+        raw = _POSTCODE_AT_END.sub("", raw) if _POSTCODE_AT_END.search(raw) else raw
+    lines = [x.strip() for x in re.split(r"[\n,]+", raw) if x.strip()]
+    return lines[:4], postcode
+
+
+def rti_already_reported(db, client_id, payroll_id) -> bool:
+    """Has HMRC already been told about this person by a live filing? Then
+    their start details have gone and must not go again."""
+    if not payroll_id:
+        return False
+    rows = db.query(models.DBRtiSubmission).filter(
+        models.DBRtiSubmission.client_id == client_id, models.DBRtiSubmission.kind == "FPS",
+        models.DBRtiSubmission.mode == "live", models.DBRtiSubmission.status == "accepted").all()
+    needle = f"<PayId>{payroll_id}</PayId>"
+    return any(needle in (r.body_xml or "") for r in rows)
+
+
+def rti_fps_payments(db, client, pay_date_str: str, late_reason: str = "") -> dict:
+    """The people paid on one day, as the Full Payment Submission wants them,
+    and everything that stops any of them being reported."""
+    pay_date = _parse_date(pay_date_str)
+    if not pay_date:
+        raise HTTPException(status_code=400, detail="Choose the pay date to report, as YYYY-MM-DD")
+    year = uk_paye.tax_year_of(pay_date)
+    if year not in hmrc_rti.supported_years():
+        raise HTTPException(status_code=400, detail=f"HMRC's definitions for the {uk_paye.tax_year_label(year)} tax year are not installed yet")
+    day = pay_date.isoformat()
+    slips = db.query(models.DBPayslip).filter(
+        models.DBPayslip.client_id == client.id, models.DBPayslip.regime == "uk",
+        models.DBPayslip.status != "Void", models.DBPayslip.pay_date == day).order_by(models.DBPayslip.id).all()
+    if not slips:
+        raise HTTPException(status_code=404, detail=f"There are no UK payslips with the pay date {day}")
+    scheme = pension_scheme(db, client.id)
+    net_pay_method = (scheme.get("method") or "net_pay") == "net_pay"
+    year_start, _ = uk_paye.tax_year_bounds(year)
+
+    payments, issues, starters, seen = [], [], [], set()
+    for p in slips:
+        emp = p.employee
+        who = f"{emp.first_name} {emp.last_name}".strip()
+        if emp.id in seen:
+            issues.append(f"{who} has more than one payslip dated {day}. HMRC takes one payment per person per day - give one of them a different pay date.")
+            continue
+        seen.add(emp.id)
+
+        prior = db.query(models.DBPayslip).filter(
+            models.DBPayslip.client_id == client.id, models.DBPayslip.employee_id == emp.id,
+            models.DBPayslip.regime == "uk", models.DBPayslip.tax_year == year,
+            models.DBPayslip.status != "Void", models.DBPayslip.pay_date <= day).all()
+        # Up to and including this one. Pay and tax from a previous job (the
+        # P45) count for working out tax but are NOT reported here: HMRC wants
+        # only what this employer has paid.
+        upto = [x for x in prior if (x.pay_date, x.id) <= (p.pay_date, p.id)]
+        tot = lambda f, rows=upto: sum(getattr(x, f) or 0 for x in rows)
+
+        # National Insurance, one block per letter used this year.
+        letters = []
+        for letter in sorted({(x.ni_category or "A").upper() for x in upto}):
+            mine = [x for x in upto if (x.ni_category or "A").upper() == letter]
+            now = [x for x in mine if x.id == p.id]
+            letters.append({
+                "letter": letter,
+                "gross_pd": sum(x.ni_earnings or 0 for x in now), "gross_ytd": sum(x.ni_earnings or 0 for x in mine),
+                "lel_ytd": sum(x.ni_at_lel or 0 for x in mine), "lel_pt_ytd": sum(x.ni_lel_to_pt or 0 for x in mine),
+                "pt_uel_ytd": sum(x.ni_pt_to_uel or 0 for x in mine),
+                "er_pd": sum(x.employer_ni or 0 for x in now), "er_ytd": sum(x.employer_ni or 0 for x in mine),
+                "ee_pd": sum(x.employee_ni or 0 for x in now), "ee_ytd": sum(x.employee_ni or 0 for x in mine),
+            })
+
+        code, regime, non_cumulative = hmrc_rti.split_tax_code(p.tax_code or emp.tax_code)
+        lines, postcode = rti_address(emp)
+        payroll_id = (emp.employee_id or f"E{emp.id}").strip()
+        start = _parse_date(emp.start_date)
+        first_ever = not db.query(models.DBPayslip).filter(
+            models.DBPayslip.client_id == client.id, models.DBPayslip.employee_id == emp.id,
+            models.DBPayslip.status != "Void", models.DBPayslip.pay_date < day).count()
+        is_starter = bool(start and first_ever and year_start <= start <= pay_date + timedelta(days=30)
+                          and not rti_already_reported(db, client.id, payroll_id))
+        left = _parse_date(emp.end_date)
+        later = db.query(models.DBPayslip).filter(
+            models.DBPayslip.client_id == client.id, models.DBPayslip.employee_id == emp.id,
+            models.DBPayslip.status != "Void", models.DBPayslip.pay_date > day).count()
+        leaving = left if (left and not later and left <= pay_date + timedelta(days=30)
+                           and year_start <= left <= date(year + 1, 4, 5)) else None
+        director = None
+        if emp.is_director:
+            since = _parse_date(emp.director_since)
+            week = uk_paye.tax_week(since) if since and uk_paye.tax_year_of(since) == year else 0
+            director = {"nic_method": "AN", "appointed_week": week if week > 1 else 0}
+        band = (emp.hours_band or "").upper() or ("D" if (emp.employment_type or "") == "full_time" else "")
+        pension = sum(x.pension_employee or 0 for x in upto)
+
+        if not emp.gender:
+            issues.append(f"{who}: HMRC needs their gender (M or F). Add it on their employee record.")
+        if not emp.date_of_birth:
+            issues.append(f"{who}: HMRC needs their date of birth.")
+        if not band:
+            issues.append(f"{who}: choose their usual weekly hours (A to E) on their employee record.")
+        if not (emp.ni_number or "").strip() and (len(lines) < 2 or not postcode or not emp.date_of_birth):
+            issues.append(f"{who}: no NI number. HMRC will take a payment without one only if you give a full address (two lines and a postcode) and a date of birth.")
+        if is_starter and (len(lines) < 2 or not postcode):
+            issues.append(f"{who} is a new starter - HMRC needs their address (two lines and a postcode) to be told about them.")
+        if is_starter and not (emp.starter_declaration or "").strip():
+            issues.append(f"{who} is a new starter ({start}) - choose their starter declaration (A, B or C) so HMRC can be told.")
+        if is_starter:
+            starters.append(who)
+
+        payments.append({
+            "payroll_id": payroll_id, "nino": re.sub(r"\s+", "", emp.ni_number or "").upper(),
+            "first_name": emp.first_name, "last_name": emp.last_name, "address_lines": lines, "postcode": postcode,
+            "birth_date": _parse_date(emp.date_of_birth), "gender": (emp.gender or "").upper(),
+            "start_date": start if is_starter else None, "start_decl": (emp.starter_declaration or "").upper(),
+            "student_loan_starter": bool(emp.student_loan_plan), "postgrad_starter": bool(emp.postgrad_loan),
+            "leaving_date": leaving, "pay_after_leaving": bool(left and pay_date > left),
+            "frequency": p.pay_frequency or emp.pay_frequency or "monthly", "pay_date": pay_date,
+            "hours_band": band, "tax_code": code, "tax_regime": regime, "non_cumulative": non_cumulative,
+            "taxable_pay": p.taxable_pay or 0, "tax": p.tax_amount or 0,
+            "taxable_pay_ytd": tot("taxable_pay"), "tax_ytd": tot("tax_amount"),
+            "student_loan": p.student_loan or 0, "student_loan_plan": (emp.student_loan_plan or "").strip(),
+            "student_loan_ytd": tot("student_loan"), "postgrad": p.postgrad_loan or 0, "postgrad_ytd": tot("postgrad_loan"),
+            "pension_net_pay": (p.pension_employee or 0) if net_pay_method else 0, "pension_net_pay_ytd": pension if net_pay_method else 0,
+            "pension_not_net": 0 if net_pay_method else (p.pension_employee or 0), "pension_not_net_ytd": 0 if net_pay_method else pension,
+            "director": director, "ni": letters, "late_reason": late_reason,
+            "_who": who,
+        })
+    return {"payments": payments, "issues": issues, "starters": starters, "tax_year": year, "pay_date": day,
+            "people": len(payments)}
+
+
+def rti_employer_for_build(db, client) -> dict:
+    e = rti_employer(db, client.id)
+    problems = rti_employer_problems(e)
+    if problems:
+        raise HTTPException(status_code=400, detail=problems[0] + ". Add your references under HMRC filings.")
+    e["ao_ref"] = e["ao_ref"].upper()
+    return e
+
+
+def rti_log(db, client, request, *, kind, year, day, status, mode, people, summary, problems=None, errors=None,
+            body=None, correlation="", row=None):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if row is None:
+        row = models.DBRtiSubmission(client_id=client.id, kind=kind, tax_year=year, pay_date=day,
+                                     created_by=client.company_name or client.email or "", created_at=now)
+        db.add(row)
+    row.status, row.mode, row.people, row.summary = status, mode, people, summary[:300]
+    row.problems = json.dumps(problems or [])
+    row.hmrc_errors = json.dumps(errors or [])
+    if body is not None:
+        row.body_xml = body
+    row.correlation_id = correlation or row.correlation_id or ""
+    row.updated_at = now
+    db.flush()
+    return row
+
+
+def rti_run(db, client, request, kind, built, *, send: bool, confirm_resend: bool = False) -> dict:
+    """Build the message for `built` (a prepared FPS or EPS), hold it up to
+    HMRC's rules, and, if asked and everything is in place, send it."""
+    cfg = rti_cfg()
+    employer = rti_employer_for_build(db, client)
+    year, day, people = built["tax_year"], built["pay_date"], built["people"]
+    result = {"kind": kind, "tax_year": year, "pay_date": day, "people": people, "starters": built.get("starters", []),
+              "mode": cfg["mode"], "ok": False, "status": "rejected", "problems": list(built.get("issues", [])),
+              "hmrc_errors": [], "sent": False, "summary": built.get("summary", "")}
+    if result["problems"]:
+        # What cannot even be built is named, person by person, before HMRC's rules run.
+        if send:
+            rti_log(db, client, request, kind=kind, year=year, day=day, status="rejected", mode=cfg["mode"],
+                    people=people, summary=result["summary"], problems=result["problems"])
+            db.commit()
+        return result
+    ready = rti_readiness(db, client.id)
+    sender, password = employer["gateway_user"], ""
+    if send:
+        missing = [r for r in ready if not r["ok"]]
+        if missing:
+            raise HTTPException(status_code=503, detail="Not ready to send to HMRC yet: " + "; ".join(
+                f"{m['label']} ({'you' if m['owner'] == 'you' else 'the platform'})" for m in missing))
+        try:
+            password = hmrc_rti.unseal(tenant_setting(db, client.id, RTI_PASSWORD_KEY, ""), cfg["key"])
+        except hmrc_rti.RtiError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if kind == "FPS" and cfg["mode"] == "live" and not confirm_resend:
+            prior = db.query(models.DBRtiSubmission).filter(
+                models.DBRtiSubmission.client_id == client.id, models.DBRtiSubmission.kind == "FPS",
+                models.DBRtiSubmission.pay_date == day, models.DBRtiSubmission.mode == "live",
+                models.DBRtiSubmission.status == "accepted").first()
+            if prior:
+                raise HTTPException(status_code=409, detail=f"HMRC already accepted a Full Payment Submission for {day} on {prior.created_at[:10]}. "
+                                                            "Send again only to correct it - confirm to go ahead.")
+    test = cfg["mode"] != "live"
+    message = hmrc_rti.govtalk_message(built["body"], kind, employer, sender_id=sender, password=password,
+                                       vendor_id=cfg["vendor_id"], product=cfg["product"], test=test,
+                                       include_irmark=cfg["irmark"])
+    problems = hmrc_rti.check(message, kind, year)
+    body_xml = etree_to_text(built["body"])
+    if problems:
+        result["problems"] = problems
+        if send:
+            rti_log(db, client, request, kind=kind, year=year, day=day, status="rejected", mode=cfg["mode"],
+                    people=people, summary=result["summary"], problems=problems, body=body_xml)
+            db.commit()
+        return result
+    result["status"] = "checked"
+    if not send:
+        result["ok"] = True
+        result["xml"] = body_xml
+        return result
+    row = rti_log(db, client, request, kind=kind, year=year, day=day, status="sent", mode=cfg["mode"], people=people,
+                  summary=result["summary"], body=body_xml)
+    db.commit()
+    try:
+        answer = hmrc_rti.send(kind, message, endpoint=cfg["endpoint"], test=test)
+    except hmrc_rti.RtiError as e:
+        rti_log(db, client, request, kind=kind, year=year, day=day, status="failed", mode=cfg["mode"], people=people,
+                summary=result["summary"], problems=[str(e)], row=row)
+        db.commit()
+        result.update(status="failed", problems=[str(e)])
+        return result
+    status = "accepted" if answer["ok"] else ("sent" if answer["pending"] else "refused")
+    rti_log(db, client, request, kind=kind, year=year, day=day, status=status, mode=cfg["mode"], people=people,
+            summary=result["summary"], errors=answer["errors"], correlation=answer["correlation_id"], row=row)
+    log_audit(db, client.id, "hmrc_rti_" + status, "rti", row.id, kind,
+              f"{kind} {day or ''} {cfg['mode']}: {people} people", request)
+    db.commit()
+    result.update(ok=answer["ok"], status=status, sent=True, hmrc_errors=answer["errors"],
+                  correlation_id=answer["correlation_id"], submission_id=row.id)
+    return result
+
+
+def etree_to_text(root) -> str:
+    from lxml import etree as _etree
+    return _etree.tostring(root, encoding="unicode")
+
+
+def rti_fps_built(db, client, body: dict) -> dict:
+    late = str(body.get("late_reason") or "").strip().upper()[:1]
+    if late and late not in "ABCDFGH":
+        raise HTTPException(status_code=400, detail="A late-reporting reason is A, B, C, D, F, G or H")
+    data = rti_fps_payments(db, client, body.get("pay_date"), late)
+    employer = rti_employer_for_build(db, client)
+    names = [p.pop("_who") for p in data["payments"]]
+    if data["issues"]:
+        data["body"] = None
+    else:
+        try:
+            data["body"] = hmrc_rti.build_fps(employer, data["payments"], data["tax_year"],
+                                              final=bool(body.get("final")))
+        except hmrc_rti.RtiError as e:
+            data["issues"].append(str(e))
+            data["body"] = None
+    data["summary"] = f"{len(names)} paid on {data['pay_date']}"
+    return data
+
+
+@app.post("/api/hmrc/rti/fps/check")
+def rti_fps_check(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    return rti_run(db, client, request, "FPS", rti_fps_built(db, client, body or {}), send=False)
+
+
+@app.post("/api/hmrc/rti/fps/send")
+def rti_fps_send(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    body = body or {}
+    return rti_run(db, client, request, "FPS", rti_fps_built(db, client, body), send=True,
+                   confirm_resend=bool(body.get("confirm_resend")))
+
+
+def rti_eps_built(db, client, body: dict) -> dict:
+    today = datetime.now().date()
+    year = int(body.get("tax_year") or uk_paye.tax_year_of(today))
+    if year not in hmrc_rti.supported_years():
+        raise HTTPException(status_code=400, detail=f"HMRC's definitions for the {uk_paye.tax_year_label(year)} tax year are not installed yet")
+    employer = rti_employer_for_build(db, client)
+    a, b = _parse_date(body.get("no_payment_from")), _parse_date(body.get("no_payment_to"))
+    if bool(a) != bool(b):
+        raise HTTPException(status_code=400, detail="Give both the first and last day nobody was paid")
+    if a and b and b < a:
+        raise HTTPException(status_code=400, detail="The last day cannot be before the first")
+    allowance = body.get("employment_allowance")
+    allowance = None if allowance in (None, "") else bool(allowance)
+    try:
+        recoverable = {k: float(v) for k, v in (body.get("recoverable") or {}).items() if float(v or 0) > 0}
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Statutory pay to recover must be amounts")
+    month = int(body.get("recoverable_month") or 0) or None
+    if recoverable and not month:
+        raise HTTPException(status_code=400, detail="Say which tax month (1 to 12) the amounts to recover are up to")
+    if not (a or allowance is not None or recoverable or body.get("final")):
+        raise HTTPException(status_code=400, detail="Choose what to tell HMRC: a month with no payments, the Employment Allowance, or statutory pay to recover")
+    root = hmrc_rti.build_eps(employer, year, no_payment_from=a, no_payment_to=b, employment_allowance=allowance,
+                              recoverable=recoverable, recoverable_month=month, final=bool(body.get("final")))
+    bits = []
+    if a:
+        bits.append(f"no payments {a} to {b}")
+    if allowance is not None:
+        bits.append("Employment Allowance " + ("claimed" if allowance else "not claimed"))
+    if recoverable:
+        bits.append("statutory pay to recover")
+    return {"body": root, "issues": [], "tax_year": year, "pay_date": "", "people": 0, "summary": "; ".join(bits)}
+
+
+@app.post("/api/hmrc/rti/eps/check")
+def rti_eps_check(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    return rti_run(db, client, request, "EPS", rti_eps_built(db, client, body or {}), send=False)
+
+
+@app.post("/api/hmrc/rti/eps/send")
+def rti_eps_send(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    return rti_run(db, client, request, "EPS", rti_eps_built(db, client, body or {}), send=True)
+
+
+@app.get("/api/hmrc/rti/submissions/{sub_id}")
+def rti_submission(sub_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = db.query(models.DBRtiSubmission).filter(models.DBRtiSubmission.id == sub_id,
+                                                  models.DBRtiSubmission.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    return rti_submission_dict(row, full=True)
 
 
 # The frontend folder holds its own test suites. They were being served to
