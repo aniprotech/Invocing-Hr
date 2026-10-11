@@ -23586,6 +23586,14 @@ def list_client_gateways(request: Request, db: Session = Depends(get_db)):
             })
             for p in CLIENT_PROVIDERS
         ],
+        # Salt Edge runs on the platform's account, so a business has no keys to
+        # enter: it is shown here as a status only.
+        "platform_methods": [{
+            "provider": "saltedge", "label": "Pay from your bank (Salt Edge)",
+            "currencies": [c for c in ("GBP", "EUR") if saltedge.can_take(saltedge_cfg(), c)],
+            "collection_mode": collection_mode(db),
+            "offered": saltedge_ready(db, "GBP") or saltedge_ready(db, "EUR"),
+        }],
         # Said plainly so nobody wires their own keys expecting wallet credit.
         "note": "These collect money from your customers into your own account. "
                 "Topping up your aniprotech wallet is separate and always goes "

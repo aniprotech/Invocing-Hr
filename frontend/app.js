@@ -17939,8 +17939,20 @@ async function loadPaymentGateways() {
     try {
         var res = await fetch('/api/payment-gateways', { credentials: 'same-origin' });
         if (!res.ok) return;
-        var rows = (await res.json()).gateways || [];
-        host.innerHTML = rows.map(function (g) {
+        var payload = await res.json();
+        var rows = payload.gateways || [];
+        var platformCards = (payload.platform_methods || []).map(function (m) {
+            var why = m.offered
+                ? 'On for your invoices (' + (m.currencies || []).join(', ') + '). Your customers pay from their own bank and the money is settled to you by the platform.'
+                : !(m.currencies || []).length
+                    ? 'Not set up on the platform yet, so it is not offered on your invoices.'
+                    : 'The platform is set to let businesses collect into their own accounts, so this is not offered on your invoices.';
+            return '<div style="border:1px solid var(--border-color);border-radius:10px;padding:12px 14px;margin-bottom:10px;">' +
+                '<div style="font-weight:600;">' + esc(m.label) +
+                (m.offered ? ' <span class="status-pill status-paid">on</span>' : '') + '</div>' +
+                '<div class="bt-note" style="margin-top:4px;">' + esc(why) + ' No keys needed - the platform manages this.</div></div>';
+        }).join('');
+        host.innerHTML = platformCards + rows.map(function (g) {
             var hint = GATEWAY_HINTS[g.provider] || {};
             return '<details style="border:1px solid var(--border-color);border-radius:10px;' +
                 'padding:0 14px;margin-bottom:10px;">' +
