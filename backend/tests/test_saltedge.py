@@ -572,3 +572,52 @@ def test_the_bank_list_stops_at_the_page_limit(wire, monkeypatch):
     monkeypatch.setattr(se, "_send", send)
     assert se.list_vrp_banks(cfg(), pages=3) == []
     assert len(wire.sent) == 3
+
+
+# --- the operator's key check ---------------------------------------------
+
+@pytest.fixture
+def operator_client(client):
+    """A signed-in operator: the key check is theirs alone."""
+    import main
+    main.rate_limiter._hits.clear()
+    res = client.post("/api/superadmin/login", json={
+        "identifier": "hello@keyroutes.co", "password": "TestSuper123"})
+    assert res.status_code == 200, res.text
+    return client
+
+
+def test_the_key_check_is_operator_only(client):
+    assert client.get("/api/superadmin/saltedge-check").status_code == 401
+
+
+def test_the_key_check_says_so_when_no_keys_are_set(operator_client, monkeypatch):
+    monkeypatch.delenv("SALTEDGE_APP_ID", raising=False)
+    monkeypatch.delenv("SALTEDGE_SECRET", raising=False)
+    body = operator_client.get("/api/superadmin/saltedge-check").json()
+    assert body["ok"] is False and body["reason"] == "no_keys"
+
+
+def test_the_key_check_reports_what_salt_edge_answered(operator_client, monkeypatch):
+    monkeypatch.setenv("SALTEDGE_APP_ID", "app")
+    monkeypatch.setenv("SALTEDGE_SECRET", "secret")
+    monkeypatch.delenv("SALTEDGE_PRIVATE_KEY", raising=False)
+    monkeypatch.setenv("APP_BASE_URL", "http://example.test")
+    answers = iter([(200, '{"data": []}'),
+                    (401, '{"error": {"class": "ClientNotFound", "message": "no such client"}}')])
+    monkeypatch.setattr(se, "_send", lambda *a, **k: next(answers))
+    ok = operator_client.get("/api/superadmin/saltedge-check").json()
+    assert ok["ok"] is True
+    assert any("https" in n for n in ok["notes"])          # http address flagged
+    assert any("account for the money" in n for n in ok["notes"])
+    bad = operator_client.get("/api/superadmin/saltedge-check").json()
+    assert bad["ok"] is False and bad["reason"] == "refused"
+    assert "ClientNotFound" in bad["message"]
+
+
+def test_the_key_check_rejects_a_private_key_that_cannot_sign(operator_client, monkeypatch):
+    monkeypatch.setenv("SALTEDGE_APP_ID", "app")
+    monkeypatch.setenv("SALTEDGE_SECRET", "secret")
+    monkeypatch.setenv("SALTEDGE_PRIVATE_KEY", "not a key")
+    body = operator_client.get("/api/superadmin/saltedge-check").json()
+    assert body["ok"] is False and body["reason"] == "bad_private_key"

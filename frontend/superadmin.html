@@ -479,6 +479,7 @@
             <span style="font-size:0.78rem;color:#94a3b8;" id="gateway-status"></span>
             <button class="action-btn" onclick="checkGoCardlessKeys()"
                     style="margin-left:auto;">Test GoCardless</button>
+            <button class="action-btn" onclick="checkSaltEdgeKeys()">Test Salt Edge</button>
             <button class="action-btn" onclick="checkRazorpayKeys()">Test Razorpay</button>
         </div>
         <div id="razorpay-check" style="font-size:0.78rem;color:#94a3b8;margin-top:6px;"></div>
@@ -1041,6 +1042,24 @@
             }
         }
         window.checkGoCardlessKeys = checkGoCardlessKeys;
+
+        // Salt Edge: one read of the bank list proves the keys and the signature
+        // without moving money; anything else that would stop a payment is listed.
+        async function checkSaltEdgeKeys() {
+            var host = document.getElementById('razorpay-check');
+            host.style.color = '#94a3b8';
+            host.textContent = 'Asking Salt Edge...';
+            try {
+                var d = await fetchJson('/api/superadmin/saltedge-check');
+                host.style.color = d.ok ? ((d.notes || []).length ? '#fbbf24' : '#34d399') : '#f43f5e';
+                host.textContent = (d.message || (d.ok ? 'Connected.' : 'Could not connect.')) +
+                    ((d.notes || []).length ? ' \u2022 ' + d.notes.join(' \u2022 ') : '');
+            } catch (e) {
+                host.style.color = '#f43f5e';
+                host.textContent = 'Could not reach the server.';
+            }
+        }
+        window.checkSaltEdgeKeys = checkSaltEdgeKeys;
 
         // Whether a key pair works is a question Razorpay can answer directly,
         // with a call that moves no money. Finding out through a failed top-up
