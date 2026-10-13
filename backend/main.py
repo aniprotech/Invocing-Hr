@@ -16576,6 +16576,58 @@ def superadmin_gateways(request: Request):
     }
 
 
+@app.get("/api/superadmin/saltedge-check")
+def saltedge_check(request: Request, db: Session = Depends(get_db)):
+    """Ask Salt Edge whether these keys work, and say what is still wrong.
+
+    Reads one page of banks: it moves no money and creates no customer. Anything
+    that would break a payment before Salt Edge is even asked is reported too -
+    a key that will not sign, no https address for the callbacks, no account for
+    the money to land in.
+    """
+    require_superadmin(request)
+    cfg = saltedge_cfg()
+    if not saltedge.is_configured(cfg):
+        return {"ok": False, "reason": "no_keys",
+                "message": "SALTEDGE_APP_ID and SALTEDGE_SECRET are not both set.", "notes": []}
+
+    notes = []
+    base = (os.getenv("APP_BASE_URL", "") or "").strip()
+    if not base.startswith("https://"):
+        notes.append("APP_BASE_URL must be the https address you gave Salt Edge, or callbacks are refused.")
+    elif base.endswith("/"):
+        notes.append("APP_BASE_URL ends in a slash - it has to match what Salt Edge was given exactly.")
+    if not (saltedge.can_take(cfg, "GBP") or saltedge.can_take(cfg, "EUR")):
+        notes.append("No account for the money to land in: set SALTEDGE_CREDITOR_NAME with a sort code and account number (GBP) or an IBAN (EUR).")
+    if cfg["private_key"]:
+        try:
+            saltedge.sign(cfg["private_key"], "check")
+        except Exception:                    # noqa: BLE001
+            return {"ok": False, "reason": "bad_private_key", "notes": notes,
+                    "message": "SALTEDGE_PRIVATE_KEY cannot be used to sign. Paste the whole private.pem with its line breaks written as \\n."}
+    else:
+        notes.append("No SALTEDGE_PRIVATE_KEY: fine in Test, but a Live client must sign every request.")
+    if collection_mode(db) != "platform":
+        notes.append("Collection mode is not 'platform', so Salt Edge is not offered on invoices.")
+
+    try:
+        saltedge.call(cfg, "GET", "/providers", query={"country_code": "GB", "per_page": 1})
+    except saltedge.SaltEdgeError as exc:
+        if exc.status == 0:
+            return {"ok": False, "reason": "unreachable", "notes": notes,
+                    "message": f"Could not reach Salt Edge: {exc.message}"[:200]}
+        if exc.status in (401, 403):
+            hint = ("The signature was refused - check the public key on the dashboard matches SALTEDGE_PRIVATE_KEY."
+                    if cfg["private_key"] else
+                    "App-id or Secret refused. If the client is Live, requests must be signed (SALTEDGE_PRIVATE_KEY).")
+            return {"ok": False, "reason": "refused", "notes": notes,
+                    "message": f"Salt Edge said {exc.status} {exc.error_class}: {exc.message}. {hint}"[:400]}
+        return {"ok": False, "reason": "error", "notes": notes,
+                "message": f"Salt Edge said {exc.status} {exc.error_class}: {exc.message}"[:300]}
+    return {"ok": True, "notes": notes,
+            "message": "Salt Edge accepted the keys." + (" Still to fix: see below." if notes else "")}
+
+
 def _saltedge_gateway_status():
     """Salt Edge for the operator's gateways panel: what is set, what is still
     missing, and the three addresses to give Salt Edge."""
