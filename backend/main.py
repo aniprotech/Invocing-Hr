@@ -24249,7 +24249,7 @@ class Setting:
         if self.kind == "secret":
             # A password. Anything goes in; nothing comes back out - the list
             # endpoint masks it, and an empty value on save means "leave it".
-            return raw[:400]
+            return raw[:8000]
 
         if self.kind == "colour":
             # Anything else would be injected straight into a stylesheet.
@@ -24462,6 +24462,47 @@ PLATFORM_SETTINGS = [
     Setting("landing.notice", "Notice bar", "Landing", "text", "",
             help="Shown across the top of the front page. Leave empty for none - "
                  "it is the fastest way to say something to every visitor."),
+
+    # --- HMRC payroll filings -----------------------------------------------
+    # One set for the whole platform: HMRC recognises the software, not each
+    # employer. A business's own PAYE references and Gateway login stay on its
+    # Payroll screen. The key that protects those logins is deliberately not
+    # here (HMRC_ENCRYPTION_KEY) - it must not sit beside what it protects.
+    Setting("hmrc.vendor_id", "Vendor ID", "HMRC", "text", "", env="HMRC_VENDOR_ID",
+            help="Issued by HMRC's Software Developer Support Team once they recognise the software."),
+    Setting("hmrc.endpoint", "Gateway address", "HMRC", "text", "", env="HMRC_RTI_ENDPOINT",
+            help="Where filings are sent. HMRC gives you the test address first."),
+    Setting("hmrc.mode", "Mode", "HMRC", "choice", "test", env="HMRC_RTI_MODE",
+            choices=["test", "live"],
+            help="Test: HMRC checks and answers and records nothing. Stay on test until HMRC has recognised the software."),
+    Setting("hmrc.irmark", "Send the IRmark", "HMRC", "bool", "false", env="HMRC_RTI_IRMARK",
+            help="Turn on only after HMRC's test service has accepted our IRmark."),
+
+    # --- Salt Edge (pay an invoice from the payer's own bank) ---------------
+    # The platform's own account: the money lands in the creditor account
+    # below, so Salt Edge is offered only while collection mode is platform.
+    Setting("saltedge.app_id", "App ID", "Salt Edge", "text", "", env="SALTEDGE_APP_ID",
+            help="Salt Edge dashboard, API keys."),
+    Setting("saltedge.secret", "Secret", "Salt Edge", "secret", "", env="SALTEDGE_SECRET",
+            help="Salt Edge dashboard, API keys. Leave empty to keep the one saved."),
+    Setting("saltedge.private_key", "Private key", "Salt Edge", "secret", "", env="SALTEDGE_PRIVATE_KEY",
+            help="The whole private.pem. Required once your Salt Edge client is Live; the public half goes on "
+                 "their Keys & Secrets page. Leave empty to keep the one saved."),
+    Setting("saltedge.callback_public_key", "Callback public key", "Salt Edge", "longtext", "",
+            env="SALTEDGE_CALLBACK_PUBLIC_KEY",
+            help="Only if Salt Edge announces a new key version. Empty uses the built-in 6.0 key."),
+    Setting("saltedge.creditor_name", "Name on the receiving account", "Salt Edge", "text", "",
+            env="SALTEDGE_CREDITOR_NAME"),
+    Setting("saltedge.creditor_sort_code", "Sort code (GBP)", "Salt Edge", "text", "",
+            env="SALTEDGE_CREDITOR_SORT_CODE"),
+    Setting("saltedge.creditor_account_number", "Account number (GBP)", "Salt Edge", "text", "",
+            env="SALTEDGE_CREDITOR_ACCOUNT_NUMBER"),
+    Setting("saltedge.creditor_iban", "IBAN (EUR)", "Salt Edge", "text", "", env="SALTEDGE_CREDITOR_IBAN"),
+    Setting("saltedge.provider_code", "Send every payer to one bank", "Salt Edge", "text", "",
+            env="SALTEDGE_PROVIDER_CODE", help="A Salt Edge provider code. Empty lets payers search for theirs."),
+    Setting("saltedge.vrp_type", "Autodebit type", "Salt Edge", "choice", "commercial", env="SALTEDGE_VRP_TYPE",
+            choices=["commercial", "sweeping"],
+            help="Commercial: a business collecting from its customers. Sweeping is between a person's own accounts."),
 
     # --- AI ----------------------------------------------------------------
     Setting("ai.enabled", "AI features", "AI", "bool", "true",
@@ -25373,8 +25414,30 @@ SALTEDGE_CONSENT_DAYS = 3           # how long a payer has to approve at their b
 _saltedge_banks = {"key": "", "at": 0.0, "banks": []}
 
 
-def saltedge_cfg():
-    return saltedge.settings()
+SALTEDGE_SETTING_FOR = {
+    "SALTEDGE_APP_ID": "saltedge.app_id", "SALTEDGE_SECRET": "saltedge.secret",
+    "SALTEDGE_PRIVATE_KEY": "saltedge.private_key",
+    "SALTEDGE_CALLBACK_PUBLIC_KEY": "saltedge.callback_public_key",
+    "SALTEDGE_CREDITOR_NAME": "saltedge.creditor_name",
+    "SALTEDGE_CREDITOR_SORT_CODE": "saltedge.creditor_sort_code",
+    "SALTEDGE_CREDITOR_ACCOUNT_NUMBER": "saltedge.creditor_account_number",
+    "SALTEDGE_CREDITOR_IBAN": "saltedge.creditor_iban",
+    "SALTEDGE_PROVIDER_CODE": "saltedge.provider_code",
+    "SALTEDGE_VRP_TYPE": "saltedge.vrp_type",
+}
+
+
+def saltedge_cfg(db=None):
+    """Salt Edge's settings: what the operator saved on the settings screen,
+    else the environment variable that used to hold it."""
+    def build(session):
+        env = {name: platform_setting(session, key) for name, key in SALTEDGE_SETTING_FOR.items()}
+        env["SALTEDGE_API_BASE"] = os.getenv("SALTEDGE_API_BASE", "")
+        return saltedge.settings(env)
+    if db is not None:
+        return build(db)
+    with SessionLocal() as session:
+        return build(session)
 
 
 def _se_now():
@@ -35625,15 +35688,23 @@ RTI_FIELDS = ("office_no", "paye_ref", "ao_ref", "contact_name", "contact_email"
 RTI_PASSWORD_KEY = "hmrc.gateway_password"
 
 
-def rti_cfg() -> dict:
-    return {
-        "vendor_id": os.getenv("HMRC_VENDOR_ID", "").strip(),
-        "endpoint": os.getenv("HMRC_RTI_ENDPOINT", "").strip(),
-        "mode": "live" if os.getenv("HMRC_RTI_MODE", "test").strip().lower() == "live" else "test",
-        "irmark": os.getenv("HMRC_RTI_IRMARK", "").strip() == "1",
-        "product": os.getenv("HMRC_PRODUCT_NAME", "aniprotech").strip() or "aniprotech",
-        "key": os.getenv("HMRC_ENCRYPTION_KEY", "").strip(),
-    }
+def rti_cfg(db=None) -> dict:
+    """HMRC filing settings: saved on the operator's settings screen, else the
+    environment variable that used to hold them. The encryption key is only
+    ever an environment variable."""
+    def build(session):
+        return {
+            "vendor_id": platform_setting(session, "hmrc.vendor_id").strip(),
+            "endpoint": platform_setting(session, "hmrc.endpoint").strip(),
+            "mode": "live" if platform_setting(session, "hmrc.mode").strip().lower() == "live" else "test",
+            "irmark": platform_setting(session, "hmrc.irmark").strip().lower() in ("1", "true"),
+            "product": os.getenv("HMRC_PRODUCT_NAME", "aniprotech").strip() or "aniprotech",
+            "key": os.getenv("HMRC_ENCRYPTION_KEY", "").strip(),
+        }
+    if db is not None:
+        return build(db)
+    with SessionLocal() as session:
+        return build(session)
 
 
 def rti_employer(db, client_id) -> dict:
@@ -35689,9 +35760,9 @@ def rti_readiness(db, client_id) -> list:
          "detail": ("The password stored cannot be read - enter it again." if has_password and not password_ok and cfg["key"]
                     else "The ones you use for HMRC's PAYE for employers online service.")},
         {"key": "vendor", "owner": "platform", "ok": bool(cfg["vendor_id"]),
-         "label": "HMRC has recognised this software (Vendor ID)", "detail": "HMRC_VENDOR_ID is not set."},
+         "label": "HMRC has recognised this software (Vendor ID)", "detail": "Not set - add it under Platform settings > HMRC (or HMRC_VENDOR_ID)."},
         {"key": "endpoint", "owner": "platform", "ok": bool(cfg["endpoint"]),
-         "label": "The address of HMRC's Gateway", "detail": "HMRC_RTI_ENDPOINT is not set."},
+         "label": "The address of HMRC's Gateway", "detail": "Not set - add it under Platform settings > HMRC (or HMRC_RTI_ENDPOINT)."},
         {"key": "encryption", "owner": "platform", "ok": bool(cfg["key"]),
          "label": "A key to keep Gateway passwords safe", "detail": "HMRC_ENCRYPTION_KEY is not set."},
     ]
