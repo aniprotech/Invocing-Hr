@@ -1090,6 +1090,8 @@ MODULE_PATHS = (
     ("/api/invoices", "invoicing"),
     ("/api/quotes", "invoicing"),
     ("/api/bills", "invoicing"),
+    ("/api/sales/", "invoicing"),
+    ("/api/purchases/", "invoicing"),
     ("/api/recurring", "invoicing"),
     ("/api/items", "invoicing"),
     ("/api/inventory", "invoicing"),
@@ -24249,7 +24251,7 @@ class Setting:
         if self.kind == "secret":
             # A password. Anything goes in; nothing comes back out - the list
             # endpoint masks it, and an empty value on save means "leave it".
-            return raw[:400]
+            return raw[:8000]
 
         if self.kind == "colour":
             # Anything else would be injected straight into a stylesheet.
@@ -24462,6 +24464,47 @@ PLATFORM_SETTINGS = [
     Setting("landing.notice", "Notice bar", "Landing", "text", "",
             help="Shown across the top of the front page. Leave empty for none - "
                  "it is the fastest way to say something to every visitor."),
+
+    # --- HMRC payroll filings -----------------------------------------------
+    # One set for the whole platform: HMRC recognises the software, not each
+    # employer. A business's own PAYE references and Gateway login stay on its
+    # Payroll screen. The key that protects those logins is deliberately not
+    # here (HMRC_ENCRYPTION_KEY) - it must not sit beside what it protects.
+    Setting("hmrc.vendor_id", "Vendor ID", "HMRC", "text", "", env="HMRC_VENDOR_ID",
+            help="Issued by HMRC's Software Developer Support Team once they recognise the software."),
+    Setting("hmrc.endpoint", "Gateway address", "HMRC", "text", "", env="HMRC_RTI_ENDPOINT",
+            help="Where filings are sent. HMRC gives you the test address first."),
+    Setting("hmrc.mode", "Mode", "HMRC", "choice", "test", env="HMRC_RTI_MODE",
+            choices=["test", "live"],
+            help="Test: HMRC checks and answers and records nothing. Stay on test until HMRC has recognised the software."),
+    Setting("hmrc.irmark", "Send the IRmark", "HMRC", "bool", "false", env="HMRC_RTI_IRMARK",
+            help="Turn on only after HMRC's test service has accepted our IRmark."),
+
+    # --- Salt Edge (pay an invoice from the payer's own bank) ---------------
+    # The platform's own account: the money lands in the creditor account
+    # below, so Salt Edge is offered only while collection mode is platform.
+    Setting("saltedge.app_id", "App ID", "Salt Edge", "text", "", env="SALTEDGE_APP_ID",
+            help="Salt Edge dashboard, API keys."),
+    Setting("saltedge.secret", "Secret", "Salt Edge", "secret", "", env="SALTEDGE_SECRET",
+            help="Salt Edge dashboard, API keys. Leave empty to keep the one saved."),
+    Setting("saltedge.private_key", "Private key", "Salt Edge", "secret", "", env="SALTEDGE_PRIVATE_KEY",
+            help="The whole private.pem. Required once your Salt Edge client is Live; the public half goes on "
+                 "their Keys & Secrets page. Leave empty to keep the one saved."),
+    Setting("saltedge.callback_public_key", "Callback public key", "Salt Edge", "longtext", "",
+            env="SALTEDGE_CALLBACK_PUBLIC_KEY",
+            help="Only if Salt Edge announces a new key version. Empty uses the built-in 6.0 key."),
+    Setting("saltedge.creditor_name", "Name on the receiving account", "Salt Edge", "text", "",
+            env="SALTEDGE_CREDITOR_NAME"),
+    Setting("saltedge.creditor_sort_code", "Sort code (GBP)", "Salt Edge", "text", "",
+            env="SALTEDGE_CREDITOR_SORT_CODE"),
+    Setting("saltedge.creditor_account_number", "Account number (GBP)", "Salt Edge", "text", "",
+            env="SALTEDGE_CREDITOR_ACCOUNT_NUMBER"),
+    Setting("saltedge.creditor_iban", "IBAN (EUR)", "Salt Edge", "text", "", env="SALTEDGE_CREDITOR_IBAN"),
+    Setting("saltedge.provider_code", "Send every payer to one bank", "Salt Edge", "text", "",
+            env="SALTEDGE_PROVIDER_CODE", help="A Salt Edge provider code. Empty lets payers search for theirs."),
+    Setting("saltedge.vrp_type", "Autodebit type", "Salt Edge", "choice", "commercial", env="SALTEDGE_VRP_TYPE",
+            choices=["commercial", "sweeping"],
+            help="Commercial: a business collecting from its customers. Sweeping is between a person's own accounts."),
 
     # --- AI ----------------------------------------------------------------
     Setting("ai.enabled", "AI features", "AI", "bool", "true",
@@ -25373,8 +25416,30 @@ SALTEDGE_CONSENT_DAYS = 3           # how long a payer has to approve at their b
 _saltedge_banks = {"key": "", "at": 0.0, "banks": []}
 
 
-def saltedge_cfg():
-    return saltedge.settings()
+SALTEDGE_SETTING_FOR = {
+    "SALTEDGE_APP_ID": "saltedge.app_id", "SALTEDGE_SECRET": "saltedge.secret",
+    "SALTEDGE_PRIVATE_KEY": "saltedge.private_key",
+    "SALTEDGE_CALLBACK_PUBLIC_KEY": "saltedge.callback_public_key",
+    "SALTEDGE_CREDITOR_NAME": "saltedge.creditor_name",
+    "SALTEDGE_CREDITOR_SORT_CODE": "saltedge.creditor_sort_code",
+    "SALTEDGE_CREDITOR_ACCOUNT_NUMBER": "saltedge.creditor_account_number",
+    "SALTEDGE_CREDITOR_IBAN": "saltedge.creditor_iban",
+    "SALTEDGE_PROVIDER_CODE": "saltedge.provider_code",
+    "SALTEDGE_VRP_TYPE": "saltedge.vrp_type",
+}
+
+
+def saltedge_cfg(db=None):
+    """Salt Edge's settings: what the operator saved on the settings screen,
+    else the environment variable that used to hold it."""
+    def build(session):
+        env = {name: platform_setting(session, key) for name, key in SALTEDGE_SETTING_FOR.items()}
+        env["SALTEDGE_API_BASE"] = os.getenv("SALTEDGE_API_BASE", "")
+        return saltedge.settings(env)
+    if db is not None:
+        return build(db)
+    with SessionLocal() as session:
+        return build(session)
 
 
 def _se_now():
@@ -34280,6 +34345,127 @@ def invoice_list(request: Request, q: str = "", status: str = "all", customer: s
             "summary": summary, "currency": client.currency or ""}
 
 
+def _overview_buckets(rows, today):
+    """Draft / awaiting / overdue / done for a list of (state, amount, due_date)
+    where state is "draft", "open" or "done". Open money past its due date is
+    overdue; the rest of it is awaiting, split by when it falls due."""
+    out = {"draft": {"count": 0, "amount": 0.0}, "awaiting": {"count": 0, "amount": 0.0},
+           "overdue": {"count": 0, "amount": 0.0}, "done": {"count": 0, "amount": 0.0},
+           "due_this_week": 0.0, "due_next_week": 0.0}
+    for state, amount, due_date in rows:
+        amount = amount or 0.0
+        if state == "draft":
+            out["draft"]["count"] += 1
+            out["draft"]["amount"] = money(out["draft"]["amount"] + amount)
+        elif state == "done":
+            out["done"]["count"] += 1
+            out["done"]["amount"] = money(out["done"]["amount"] + amount)
+        elif state == "open" and amount > 0:
+            due = _parse_date(due_date)
+            if due and due < today:
+                out["overdue"]["count"] += 1
+                out["overdue"]["amount"] = money(out["overdue"]["amount"] + amount)
+                continue
+            out["awaiting"]["count"] += 1
+            out["awaiting"]["amount"] = money(out["awaiting"]["amount"] + amount)
+            if due:
+                days = (due - today).days
+                if days <= 6:
+                    out["due_this_week"] = money(out["due_this_week"] + amount)
+                elif days <= 13:
+                    out["due_next_week"] = money(out["due_next_week"] + amount)
+    return out
+
+
+@app.get("/api/sales/overview")
+def sales_overview(request: Request, db: Session = Depends(get_db)):
+    """The sales screen's summary: draft invoices, invoices awaiting payment,
+    overdue ones and finished sales, what falls due soon, and who owes most."""
+    client = get_client_user(request, db)
+    today = date.today()
+    inv = models.DBInvoice
+    rows = db.query(inv.status, inv.due, inv.paid, inv.due_date, inv.to_company, inv.to_contact) \
+        .filter(inv.client_id == client.id).all()
+    buckets, owing = [], {}
+    for r in rows:
+        if r.status in ("Void", "Credited"):
+            continue
+        if r.status == "Draft":
+            buckets.append(("draft", (r.due or 0.0) + (r.paid or 0.0), r.due_date))
+        elif r.status == "Paid":
+            buckets.append(("done", r.paid or 0.0, r.due_date))
+        else:
+            buckets.append(("open", r.due or 0.0, r.due_date))
+            if (r.due or 0) > 0:
+                who = (r.to_company or r.to_contact or "").strip() or "Unnamed"
+                owing[who] = money(owing.get(who, 0.0) + (r.due or 0.0))
+    out = _overview_buckets(buckets, today)
+    out["customers_owing_most"] = [{"name": n, "owed": a} for n, a in
+                                   sorted(owing.items(), key=lambda kv: -kv[1])[:5]]
+    out["currency"] = client.currency or ""
+    return out
+
+
+@app.get("/api/purchases/overview")
+def purchases_overview(request: Request, db: Session = Depends(get_db)):
+    """The same picture for what the business owes its suppliers."""
+    client = get_client_user(request, db)
+    today = date.today()
+    b = models.DBBill
+    rows = db.query(b.status, b.total, b.amount_paid, b.due_date, b.vendor_name) \
+        .filter(b.client_id == client.id).all()
+    buckets, owing = [], {}
+    for r in rows:
+        total = r.total or 0.0
+        if r.status == "Draft":
+            buckets.append(("draft", total, r.due_date))
+        elif r.status == "Paid":
+            buckets.append(("done", r.amount_paid or total, r.due_date))
+        else:
+            left = max(total - (r.amount_paid or 0.0), 0.0)
+            buckets.append(("open", left, r.due_date))
+            if left > 0:
+                who = (r.vendor_name or "").strip() or "Unnamed"
+                owing[who] = money(owing.get(who, 0.0) + left)
+    out = _overview_buckets(buckets, today)
+    out["suppliers_owed_most"] = [{"name": n, "owed": a} for n, a in
+                                  sorted(owing.items(), key=lambda kv: -kv[1])[:5]]
+    out["currency"] = base_currency(client)
+    return out
+
+
+@app.get("/api/purchases/suppliers")
+def purchases_suppliers(request: Request, db: Session = Depends(get_db)):
+    """Everyone the business has been billed by, worked out from its bills:
+    how many, how much, what is still owed, and the last one. Names are matched
+    without regard to case or stray spaces, so "Paper Co" and "paper co " are one
+    supplier. Most owed first."""
+    client = get_client_user(request, db)
+    today = date.today()
+    b = models.DBBill
+    rows = db.query(b.vendor_name, b.vendor_email, b.status, b.total, b.amount_paid, b.due_date, b.issue_date) \
+        .filter(b.client_id == client.id).order_by(b.id.asc()).all()
+    out = {}
+    for r in rows:
+        shown = " ".join((r.vendor_name or "").split()) or "Unnamed"
+        s = out.setdefault(shown.lower(), {"name": shown, "email": "", "bills": 0, "billed": 0.0, "owed": 0.0,
+                                           "overdue": 0, "last_bill": ""})
+        s["email"] = (r.vendor_email or "").strip() or s["email"]
+        total = r.total or 0.0
+        s["bills"] += 1
+        s["billed"] = money(s["billed"] + total)
+        s["last_bill"] = max(s["last_bill"], r.issue_date or "")
+        if r.status not in ("Draft", "Paid"):
+            left = max(total - (r.amount_paid or 0.0), 0.0)
+            if left > 0:
+                s["owed"] = money(s["owed"] + left)
+                due = _parse_date(r.due_date)
+                if due and due < today:
+                    s["overdue"] += 1
+    suppliers = sorted(out.values(), key=lambda x: (-x["owed"], x["name"].lower()))
+    return {"suppliers": suppliers, "currency": base_currency(client)}
+
+
 @app.get("/api/invoice-list.csv")
 def invoice_list_csv(request: Request, q: str = "", status: str = "all", customer: str = "", start: str = "", end: str = "",
                      sort: str = "number", dir: str = "desc", db: Session = Depends(get_db)):
@@ -35625,15 +35811,23 @@ RTI_FIELDS = ("office_no", "paye_ref", "ao_ref", "contact_name", "contact_email"
 RTI_PASSWORD_KEY = "hmrc.gateway_password"
 
 
-def rti_cfg() -> dict:
-    return {
-        "vendor_id": os.getenv("HMRC_VENDOR_ID", "").strip(),
-        "endpoint": os.getenv("HMRC_RTI_ENDPOINT", "").strip(),
-        "mode": "live" if os.getenv("HMRC_RTI_MODE", "test").strip().lower() == "live" else "test",
-        "irmark": os.getenv("HMRC_RTI_IRMARK", "").strip() == "1",
-        "product": os.getenv("HMRC_PRODUCT_NAME", "aniprotech").strip() or "aniprotech",
-        "key": os.getenv("HMRC_ENCRYPTION_KEY", "").strip(),
-    }
+def rti_cfg(db=None) -> dict:
+    """HMRC filing settings: saved on the operator's settings screen, else the
+    environment variable that used to hold them. The encryption key is only
+    ever an environment variable."""
+    def build(session):
+        return {
+            "vendor_id": platform_setting(session, "hmrc.vendor_id").strip(),
+            "endpoint": platform_setting(session, "hmrc.endpoint").strip(),
+            "mode": "live" if platform_setting(session, "hmrc.mode").strip().lower() == "live" else "test",
+            "irmark": platform_setting(session, "hmrc.irmark").strip().lower() in ("1", "true"),
+            "product": os.getenv("HMRC_PRODUCT_NAME", "aniprotech").strip() or "aniprotech",
+            "key": os.getenv("HMRC_ENCRYPTION_KEY", "").strip(),
+        }
+    if db is not None:
+        return build(db)
+    with SessionLocal() as session:
+        return build(session)
 
 
 def rti_employer(db, client_id) -> dict:
@@ -35689,9 +35883,9 @@ def rti_readiness(db, client_id) -> list:
          "detail": ("The password stored cannot be read - enter it again." if has_password and not password_ok and cfg["key"]
                     else "The ones you use for HMRC's PAYE for employers online service.")},
         {"key": "vendor", "owner": "platform", "ok": bool(cfg["vendor_id"]),
-         "label": "HMRC has recognised this software (Vendor ID)", "detail": "HMRC_VENDOR_ID is not set."},
+         "label": "HMRC has recognised this software (Vendor ID)", "detail": "Not set - add it under Platform settings > HMRC (or HMRC_VENDOR_ID)."},
         {"key": "endpoint", "owner": "platform", "ok": bool(cfg["endpoint"]),
-         "label": "The address of HMRC's Gateway", "detail": "HMRC_RTI_ENDPOINT is not set."},
+         "label": "The address of HMRC's Gateway", "detail": "Not set - add it under Platform settings > HMRC (or HMRC_RTI_ENDPOINT)."},
         {"key": "encryption", "owner": "platform", "ok": bool(cfg["key"]),
          "label": "A key to keep Gateway passwords safe", "detail": "HMRC_ENCRYPTION_KEY is not set."},
     ]

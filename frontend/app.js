@@ -309,6 +309,10 @@ window.localDate = localDate;
 var NAV_FOR_VIEW = {
     'dashboard-view': 'nav-dashboard',
     'hr-dashboard-view': 'nav-hr-dashboard',
+    'sales-overview-view': 'nav-sales-overview',
+    'purchases-overview-view': 'nav-purchases-overview',
+    'suppliers-view': 'nav-suppliers',
+    'payment-options-view': 'nav-payment-options',
     'invoices-view': 'nav-invoices',
     'create-invoice-view': 'nav-invoices',
     'view-invoice-view': 'nav-invoices',
@@ -369,6 +373,10 @@ var NAV_FOR_VIEW = {
 var ROUTE_SLUGS = {
     'dashboard-view': 'dashboard',
     'hr-dashboard-view': 'hr',
+    'sales-overview-view': 'sales',
+    'purchases-overview-view': 'purchases',
+    'suppliers-view': 'suppliers',
+    'payment-options-view': 'payment-options',
     'invoices-view': 'invoices',
     'create-invoice-view': 'invoices/new',
     'quotes-view': 'quotes',
@@ -573,6 +581,10 @@ function showView(viewId) {
     // show the state instead.
     if (typeof syncNavGroupState === 'function') syncNavGroupState();
     if (typeof closeNavGroups === 'function') closeNavGroups();
+    if (viewId === 'sales-overview-view' && typeof loadSalesOverview === 'function') loadSalesOverview();
+    if (viewId === 'purchases-overview-view' && typeof loadPurchasesOverview === 'function') loadPurchasesOverview();
+    if (viewId === 'payment-options-view' && typeof loadPaymentOptions === 'function') loadPaymentOptions();
+    if (viewId === 'suppliers-view' && typeof loadSuppliers === 'function') loadSuppliers();
     if (viewId === 'invoices-view' && typeof fetchInvoices === 'function') fetchInvoices();
     if (viewId === 'quotes-view' && typeof fetchQuotes === 'function') fetchQuotes();
     if (viewId === 'credit-notes-view' && typeof fetchCreditNotes === 'function') fetchCreditNotes();
@@ -11377,7 +11389,9 @@ async function loadBills() {
         var res = await fetch('/api/bills', { credentials: 'same-origin' });
         if (!res.ok) { showToast('Failed to load bills', 'error'); return; }
         allBills = await res.json();
-        renderBills(allBills);
+        // The chosen tab survives the reload, so what is shown matches what
+        // the tab says (a dashboard tile opens Bills already filtered).
+        renderBills(billsMatching(currentBillFilter));
     } catch(e) { showToast('Failed to load bills', 'error'); }
 }
 window.loadBills = loadBills;
@@ -11412,15 +11426,18 @@ function renderBills(bills) {
     });
 }
 
+function billsMatching(status) {
+    return status === '' ? allBills : allBills.filter(function(b) {
+        if (status === 'Unpaid') return b.status !== 'Paid' && b.status !== 'Draft';
+        return (b.status || '').toLowerCase() === status.toLowerCase();
+    });
+}
+
 function filterBills(status, btn) {
     currentBillFilter = status;
     document.querySelectorAll('#bills-view .invoices-tabs .tab').forEach(function(t) { t.classList.remove('active'); });
     if (btn) btn.classList.add('active');
-    var filtered = status === '' ? allBills : allBills.filter(function(b) {
-        if (status === 'Unpaid') return b.status !== 'Paid' && b.status !== 'Draft';
-        return (b.status || '').toLowerCase() === status.toLowerCase();
-    });
-    renderBills(filtered);
+    renderBills(billsMatching(status));
 }
 window.filterBills = filterBills;
 
@@ -17921,6 +17938,187 @@ async function saveMonthlyStatements(box) {
     } catch (e) { showToast(e.message, 'error'); box.checked = !box.checked; }
 }
 window.saveMonthlyStatements = saveMonthlyStatements;
+
+// --- Sales and Purchases: their own dashboards, payment options, settings -----
+// An accountant looking after sales wants draft, awaiting payment, overdue and
+// done in one place, and the same for what is owed to suppliers. The figures
+// are counted on the server (/api/sales/overview, /api/purchases/overview).
+
+function overviewTile(label, count, amount, tone, onclick) {
+    return '<button type="button" class="stat-card" onclick="' + onclick + '">' +
+        '<span class="stat-label">' + esc(label) + (count !== null ? ' (' + count + ')' : '') + '</span>' +
+        '<span class="stat-value"' + (tone ? ' style="color:' + tone + ';"' : '') + '>' + formatCurrency(amount) + '</span></button>';
+}
+
+function overviewRows(rows, empty) {
+    if (!rows.length) return '<div style="color:var(--text-secondary);">' + esc(empty) + '</div>';
+    return rows.map(function (r) {
+        return '<div style="display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-top:1px solid var(--border-color);">' +
+            '<span>' + esc(r.name) + '</span><strong>' + formatCurrency(r.owed) + '</strong></div>';
+    }).join('');
+}
+
+function comingBlock(thisWeek, nextWeek, labels) {
+    return '<div style="display:flex;gap:32px;flex-wrap:wrap;">' +
+        '<div><div style="font-size:1.5rem;font-weight:700;">' + formatCurrency(thisWeek) + '</div>' +
+        '<div style="font-size:0.8rem;color:var(--text-secondary);">' + esc(labels[0]) + '</div></div>' +
+        '<div><div style="font-size:1.5rem;font-weight:700;">' + formatCurrency(nextWeek) + '</div>' +
+        '<div style="font-size:0.8rem;color:var(--text-secondary);">' + esc(labels[1]) + '</div></div></div>';
+}
+
+// Open the list with the matching tab lit, so what is on screen says what it is
+// filtered to.
+function lightTab(selector, status) {
+    var tabs = document.querySelectorAll(selector);
+    Array.prototype.forEach.call(tabs, function (t) {
+        t.classList.toggle('active', (t.getAttribute('onclick') || '').indexOf("'" + status + "'") !== -1);
+    });
+}
+function openInvoicesFiltered(status) {
+    // Set before opening, so the list is fetched once and fetched right.
+    _invList.status = status;
+    _invList.selected = {};
+    currentFilter = status;
+    showView('invoices-view');
+    lightTab('#invoices-view .invoices-tabs .tab', status);
+}
+function openBillsFiltered(status) {
+    var wanted = { Draft: 'Draft', Unpaid: 'Unpaid', Paid: 'Paid' }[status] || '';
+    currentBillFilter = wanted;
+    showView('bills-view');
+    lightTab('#bills-view .invoices-tabs .tab', wanted);
+}
+window.openInvoicesFiltered = openInvoicesFiltered;
+window.openBillsFiltered = openBillsFiltered;
+
+async function loadSalesOverview() {
+    var tiles = document.getElementById('sales-overview-tiles');
+    if (!tiles) return;
+    try {
+        var o = await fetchJson('/api/sales/overview');
+        var go = function (status) { return "openInvoicesFiltered('" + status + "')"; };
+        tiles.innerHTML =
+            overviewTile('Draft', o.draft.count, o.draft.amount, '', go('draft')) +
+            overviewTile('Awaiting payment', o.awaiting.count, o.awaiting.amount, '', go('unpaid')) +
+            overviewTile('Overdue', o.overdue.count, o.overdue.amount, o.overdue.count ? 'var(--danger-color)' : '', go('overdue')) +
+            overviewTile('Completed', o.done.count, o.done.amount, 'var(--success-color)', go('paid'));
+        document.getElementById('sales-overview-coming').innerHTML = comingBlock(o.due_this_week, o.due_next_week, ['Due this week', 'Due next week']);
+        document.getElementById('sales-overview-owing').innerHTML = overviewRows(o.customers_owing_most || [], 'Nobody owes you anything.');
+    } catch (e) {
+        tiles.innerHTML = '<div style="color:var(--text-secondary);">' + esc(e.message || 'Could not load the sales summary.') + '</div>';
+    }
+}
+window.loadSalesOverview = loadSalesOverview;
+
+async function loadPurchasesOverview() {
+    var tiles = document.getElementById('purchases-overview-tiles');
+    if (!tiles) return;
+    try {
+        var o = await fetchJson('/api/purchases/overview');
+        var go = function (status) { return "openBillsFiltered('" + status + "')"; };
+        tiles.innerHTML =
+            overviewTile('Draft', o.draft.count, o.draft.amount, '', go('Draft')) +
+            overviewTile('Awaiting payment', o.awaiting.count, o.awaiting.amount, '', go('Unpaid')) +
+            overviewTile('Overdue', o.overdue.count, o.overdue.amount, o.overdue.count ? 'var(--danger-color)' : '', go('Unpaid')) +
+            overviewTile('Paid', o.done.count, o.done.amount, 'var(--success-color)', go('Paid'));
+        document.getElementById('purchases-overview-coming').innerHTML = comingBlock(o.due_this_week, o.due_next_week, ['Due this week', 'Due next week']);
+        document.getElementById('purchases-overview-owing').innerHTML = overviewRows(o.suppliers_owed_most || [], 'You do not owe any supplier anything.');
+    } catch (e) {
+        tiles.innerHTML = '<div style="color:var(--text-secondary);">' + esc(e.message || 'Could not load the purchases summary.') + '</div>';
+    }
+}
+window.loadPurchasesOverview = loadPurchasesOverview;
+
+// The suppliers directory: worked out from the bills on the server, searched here.
+var _suppliers = [];
+
+async function loadSuppliers() {
+    var body = document.getElementById('suppliers-table-body');
+    if (!body) return;
+    try {
+        var d = await fetchJson('/api/purchases/suppliers');
+        _suppliers = d.suppliers || [];
+        renderSuppliers();
+    } catch (e) {
+        _suppliers = [];
+        body.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-secondary);">' + esc(e.message || 'Could not load your suppliers.') + '</td></tr>';
+    }
+}
+window.loadSuppliers = loadSuppliers;
+
+function renderSuppliers() {
+    var body = document.getElementById('suppliers-table-body');
+    if (!body) return;
+    var box = document.getElementById('suppliers-search');
+    var q = ((box && box.value) || '').trim().toLowerCase();
+    var rows = _suppliers.filter(function (s) { return !q || s.name.toLowerCase().indexOf(q) !== -1; });
+    var count = document.getElementById('suppliers-count');
+    if (count) count.textContent = rows.length + ' supplier' + (rows.length === 1 ? '' : 's');
+    if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-secondary);">' +
+            (_suppliers.length ? 'No supplier matches that.' : 'No suppliers yet. Enter a bill and its supplier appears here.') + '</td></tr>';
+        return;
+    }
+    body.innerHTML = rows.map(function (s, i) {
+        return '<tr><td><strong>' + esc(s.name) + '</strong>' + (s.email ? '<div style="font-size:0.78rem;color:var(--text-secondary);">' + esc(s.email) + '</div>' : '') + '</td>' +
+            '<td class="text-right">' + s.bills + '</td>' +
+            '<td class="text-right">' + formatCurrency(s.billed) + '</td>' +
+            '<td class="text-right" style="' + (s.overdue ? 'color:var(--danger-color);font-weight:600;' : '') + '">' + formatCurrency(s.owed) + (s.overdue ? ' <span title="Overdue bills">(' + s.overdue + ' overdue)</span>' : '') + '</td>' +
+            '<td>' + esc(s.last_bill || '-') + '</td>' +
+            '<td class="text-right"><button class="btn btn-outline btn-sm" data-supplier-bills="' + i + '">Bills</button></td></tr>';
+    }).join('');
+    body.querySelectorAll('[data-supplier-bills]').forEach(function (b) {
+        b.addEventListener('click', function () { openSupplierBills(rows[+b.getAttribute('data-supplier-bills')].name); });
+    });
+}
+window.renderSuppliers = renderSuppliers;
+
+// Their bills: the bills list, searched for the supplier.
+async function openSupplierBills(name) {
+    currentBillFilter = '';
+    showView('bills-view');
+    lightTab('#bills-view .invoices-tabs .tab', '');
+    await loadBills();
+    var box = document.getElementById('bill-search');
+    if (box) { box.value = name; searchBills(); }
+}
+window.openSupplierBills = openSupplierBills;
+
+// What customers can pay with, in one list: the business's own gateways, and
+// the bank payment the platform offers when it is the one collecting.
+async function loadPaymentOptions() {
+    var host = document.getElementById('payment-options-list');
+    if (!host) return;
+    try {
+        var d = await fetchJson('/api/payment-gateways');
+        var on = (d.gateways || []).filter(function (g) { return g.is_active; }).map(function (g) { return g.label; });
+        (d.platform_methods || []).forEach(function (m) { if (m.offered) on.push(m.label + ' (' + (m.currencies || []).join(', ') + ')'); });
+        host.innerHTML = on.length
+            ? on.map(function (l) { return '<div style="padding:8px 0;border-top:1px solid var(--border-color);">' + esc(l) + '</div>'; }).join('')
+            : '<div style="color:var(--text-secondary);">No online payment method is switched on yet, so invoices can only be paid by transfer.</div>';
+    } catch (e) {
+        host.innerHTML = '<div style="color:var(--text-secondary);">' + esc(e.message || 'Could not load your payment options.') + '</div>';
+    }
+}
+window.loadPaymentOptions = loadPaymentOptions;
+
+// The settings that already exist for each side, opened on the right section
+// instead of leaving somebody to find it in the one long list.
+function openSettingsSection(section, event) {
+    if (event && event.preventDefault) event.preventDefault();
+    _settingsSection = section;
+    showView('settings-view');
+}
+function openSalesSettings(event) { openSettingsSection('payments', event); }
+function openPurchasesSettings(event) { openSettingsSection('tax-rates', event); }
+function openSalesReports(event) {
+    if (event && event.preventDefault) event.preventDefault();
+    showView('reports-view');
+    if (typeof loadAgedReceivables === 'function') loadAgedReceivables();
+}
+window.openSalesSettings = openSalesSettings;
+window.openPurchasesSettings = openPurchasesSettings;
+window.openSalesReports = openSalesReports;
 
 // --- Getting paid ------------------------------------------------------------
 // The business's own keys, collecting into the business's own account. The

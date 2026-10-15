@@ -1570,6 +1570,7 @@ body::after {
     padding: 6px; box-shadow: var(--shadow-lg); z-index: var(--layer-menu);
 }
 .nav-group.open > .nav-group-menu { display: flex; }
+.nav-menu-divider { height: 1px; margin: 4px 6px; background: var(--border-color); }
 .nav-group-menu .nav-item { width: 100%; white-space: nowrap; }
 
 /* A mega menu: columns with a heading each, an icon and a line per item.

@@ -179,8 +179,10 @@ for (const page of ['app.html']) {
         const topLevel = Array.from(nav.children).filter(el =>
             visible(el) &&
             (el.classList.contains('nav-group') || el.classList.contains('nav-item')));
-        check('the header shows at most seven top-level entries',
-            topLevel.length <= 7, `${topLevel.length} entries`);
+        // Eight since Purchases became a menu of its own beside Sales: an
+        // accountant asked for the two to be reachable separately.
+        check('the header shows at most eight top-level entries',
+            topLevel.length <= 8, `${topLevel.length} entries`);
         check('grouping actually moved items into menus', inMenus.length >= 2,
             `${inMenus.length} items in menus`);
 
