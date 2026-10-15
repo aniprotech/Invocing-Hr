@@ -34434,6 +34434,38 @@ def purchases_overview(request: Request, db: Session = Depends(get_db)):
     return out
 
 
+@app.get("/api/purchases/suppliers")
+def purchases_suppliers(request: Request, db: Session = Depends(get_db)):
+    """Everyone the business has been billed by, worked out from its bills:
+    how many, how much, what is still owed, and the last one. Names are matched
+    without regard to case or stray spaces, so "Paper Co" and "paper co " are one
+    supplier. Most owed first."""
+    client = get_client_user(request, db)
+    today = date.today()
+    b = models.DBBill
+    rows = db.query(b.vendor_name, b.vendor_email, b.status, b.total, b.amount_paid, b.due_date, b.issue_date) \
+        .filter(b.client_id == client.id).order_by(b.id.asc()).all()
+    out = {}
+    for r in rows:
+        shown = " ".join((r.vendor_name or "").split()) or "Unnamed"
+        s = out.setdefault(shown.lower(), {"name": shown, "email": "", "bills": 0, "billed": 0.0, "owed": 0.0,
+                                           "overdue": 0, "last_bill": ""})
+        s["email"] = (r.vendor_email or "").strip() or s["email"]
+        total = r.total or 0.0
+        s["bills"] += 1
+        s["billed"] = money(s["billed"] + total)
+        s["last_bill"] = max(s["last_bill"], r.issue_date or "")
+        if r.status not in ("Draft", "Paid"):
+            left = max(total - (r.amount_paid or 0.0), 0.0)
+            if left > 0:
+                s["owed"] = money(s["owed"] + left)
+                due = _parse_date(r.due_date)
+                if due and due < today:
+                    s["overdue"] += 1
+    suppliers = sorted(out.values(), key=lambda x: (-x["owed"], x["name"].lower()))
+    return {"suppliers": suppliers, "currency": base_currency(client)}
+
+
 @app.get("/api/invoice-list.csv")
 def invoice_list_csv(request: Request, q: str = "", status: str = "all", customer: str = "", start: str = "", end: str = "",
                      sort: str = "number", dir: str = "desc", db: Session = Depends(get_db)):

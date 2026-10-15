@@ -31,6 +31,16 @@ const BUYING = { draft: { count: 0, amount: 0 }, awaiting: { count: 2, amount: 6
     done: { count: 4, amount: 900 }, due_this_week: 40, due_next_week: 0, currency: 'GBP',
     suppliers_owed_most: [{ name: 'Paper Co', owed: 640 }] };
 
+const BILLS = [
+    { id: 1, number: 'B-1', vendor_name: 'Paper Co', total: 100, amount_paid: 0, status: 'Unpaid', due_date: '2026-01-01', issue_date: '2025-12-01' },
+    { id: 2, number: 'B-2', vendor_name: 'Tea Ltd', total: 50, amount_paid: 50, status: 'Paid', due_date: '2026-01-01', issue_date: '2025-12-01' },
+    { id: 3, number: 'B-3', vendor_name: 'Tea Ltd', total: 20, amount_paid: 0, status: 'Draft', due_date: '2026-02-01', issue_date: '2026-01-01' },
+];
+const SUPPLIERS = [
+    { name: 'Paper Co', email: 'ap@paper.example', bills: 1, billed: 100, owed: 100, overdue: 1, last_bill: '2025-12-01' },
+    { name: '<i>Evil</i> Ltd', email: '', bills: 2, billed: 70, owed: 0, overdue: 0, last_bill: '2026-01-01' },
+];
+
 function boot(opts) {
     opts = opts || {};
     const html = fs.readFileSync(path.join(ROOT, 'app.html'), 'utf8').replace(/<script[^>]*src=[^>]*><\/script>/g, '');
@@ -52,6 +62,8 @@ function boot(opts) {
         if (p === '/api/client/me') return reply(200, { id: 1, modules: ['invoicing', 'hr'] });
         if (p === '/api/sales/overview') return opts.fails ? reply(500, { detail: 'Server is down' }) : reply(200, SALES);
         if (p === '/api/purchases/overview') return opts.fails ? reply(500, { detail: 'Server is down' }) : reply(200, BUYING);
+        if (p === '/api/bills') return reply(200, BILLS);
+        if (p === '/api/purchases/suppliers') return opts.fails ? reply(500, { detail: 'Server is down' }) : reply(200, { suppliers: SUPPLIERS });
         if (p === '/api/payment-gateways') return reply(200, { gateways: opts.gateways || [], platform_methods: opts.platform || [] });
         return reply(200, p.endsWith('s') ? [] : {});
     };
@@ -72,7 +84,7 @@ function boot(opts) {
             'nav-contacts', 'nav-sales-reports', 'nav-sales-settings']) {
             check(`${id} is in the Sales menu`, inGroup('Sales', id));
         }
-        for (const id of ['nav-purchases-overview', 'nav-bills', 'nav-purchases-settings']) {
+        for (const id of ['nav-purchases-overview', 'nav-bills', 'nav-suppliers', 'nav-purchases-settings']) {
             check(`${id} is in the Purchases menu`, inGroup('Purchases', id));
         }
         check('Bills moved out of Money', !inGroup('Money', 'nav-bills'));
@@ -86,7 +98,7 @@ function boot(opts) {
             ['nav-sales-overview', 'nav-payment-options', 'nav-purchases-overview', 'nav-sales-settings', 'nav-purchases-settings']
                 .every(id => doc.getElementById(id).getAttribute('data-portal') === 'invoicing'));
         check('the three new screens exist',
-            ['sales-overview-view', 'purchases-overview-view', 'payment-options-view'].every(id => !!doc.getElementById(id)));
+            ['sales-overview-view', 'purchases-overview-view', 'payment-options-view', 'suppliers-view'].every(id => !!doc.getElementById(id)));
     }
 
     // --- addresses and highlight -------------------------------------------------------
@@ -95,7 +107,8 @@ function boot(opts) {
         await wait(60);
         check('the new screens have addresses and light up their entries',
             w.ROUTE_SLUGS['sales-overview-view'] === 'sales' && w.ROUTE_SLUGS['purchases-overview-view'] === 'purchases'
-            && w.ROUTE_SLUGS['payment-options-view'] === 'payment-options'
+            && w.ROUTE_SLUGS['payment-options-view'] === 'payment-options' && w.ROUTE_SLUGS['suppliers-view'] === 'suppliers'
+            && w.NAV_FOR_VIEW['suppliers-view'] === 'nav-suppliers'
             && w.NAV_FOR_VIEW['sales-overview-view'] === 'nav-sales-overview'
             && w.NAV_FOR_VIEW['purchases-overview-view'] === 'nav-purchases-overview'
             && w.NAV_FOR_VIEW['payment-options-view'] === 'nav-payment-options');
@@ -138,8 +151,47 @@ function boot(opts) {
             sent.some(s => s.url === '/api/purchases/overview') && /Awaiting payment \(2\)/.test(tiles) && /640\.00/.test(tiles), tiles);
         check('suppliers owed most are listed', /Paper Co/.test(w.document.getElementById('purchases-overview-owing').textContent));
         w.openBillsFiltered('Unpaid');
+        await wait(60);
         const active = w.document.querySelector('#bills-view .invoices-tabs .tab.active');
         check('a tile opens bills on the matching tab', active && /Unpaid/.test(active.textContent), active && active.textContent);
+        const shown = w.document.getElementById('bills-table-body').textContent;
+        check('and the table agrees with the tab, after the bills have loaded',
+            /B-1/.test(shown) && !/B-2/.test(shown) && !/B-3/.test(shown), shown);
+    }
+
+    // --- the suppliers directory ----------------------------------------------------
+    {
+        const { w } = boot();
+        await wait(60);
+        w.showView('suppliers-view');
+        await wait(60);
+        const body = w.document.getElementById('suppliers-table-body');
+        check('suppliers lists what the server worked out', /Paper Co/.test(body.textContent) && /100\.00/.test(body.textContent), body.textContent);
+        check('a supplier name can never become markup', body.querySelector('i') === null && /<i>Evil<\/i> Ltd/.test(body.textContent));
+        check('overdue is said', /1 overdue/.test(body.textContent));
+        const box = w.document.getElementById('suppliers-search');
+        box.value = 'paper'; w.renderSuppliers();
+        check('the search narrows the list', /Paper Co/.test(body.textContent) && !/Evil/.test(body.textContent) &&
+            /1 supplier\b/.test(w.document.getElementById('suppliers-count').textContent));
+        box.value = 'zzz'; w.renderSuppliers();
+        check('and says when nothing matches', /No supplier matches/.test(body.textContent));
+        box.value = '';
+        await w.openSupplierBills('Tea Ltd');
+        await wait(30);
+        check('a supplier\'s Bills button opens the bills list searched for them',
+            w.document.getElementById('bill-search').value === 'Tea Ltd'
+            && /B-2/.test(w.document.getElementById('bills-table-body').textContent)
+            && !/B-1/.test(w.document.getElementById('bills-table-body').textContent));
+        const doc = w.document;
+        check('both dashboards carry quick links',
+            doc.querySelectorAll('#sales-quick-links button').length >= 3 && doc.querySelectorAll('#purchases-quick-links button').length >= 2);
+    }
+    {
+        const { w } = boot({ fails: true });
+        await wait(60);
+        w.showView('suppliers-view');
+        await wait(60);
+        check('a failed suppliers load says so', /Server is down/.test(w.document.getElementById('suppliers-table-body').textContent));
     }
 
     // --- failure is said ------------------------------------------------------------

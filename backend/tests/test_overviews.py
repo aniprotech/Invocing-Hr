@@ -70,3 +70,21 @@ def test_overviews_need_a_signed_in_business_and_do_not_cross(client, account):
     client.cookies.clear()
     assert client.get("/api/sales/overview").status_code == 401
     assert client.get("/api/purchases/overview").status_code == 401
+
+
+def test_suppliers_are_worked_out_from_bills_and_matched_loosely(tenant):
+    bill(tenant, "S-1", "Paper Co", 100, -5)                       # overdue
+    bill(tenant, "S-2", "paper  co ", 60, 3)                        # same supplier, other spelling
+    bill(tenant, "S-3", "Tea Ltd", 25, 9, status="Draft")           # a draft is not owed
+    bill(tenant, "S-4", "Tea Ltd", 75, -20, status="Paid", paid=75)
+    got = tenant.get("/api/purchases/suppliers").json()
+    names = [s["name"] for s in got["suppliers"]]
+    assert names == ["Paper Co", "Tea Ltd"], "one Paper Co, most owed first"
+    paper, tea = got["suppliers"]
+    assert (paper["bills"], paper["billed"], paper["owed"], paper["overdue"]) == (2, 160.0, 160.0, 1)
+    assert (tea["bills"], tea["billed"], tea["owed"]) == (2, 100.0, 0.0)
+
+
+def test_suppliers_need_a_signed_in_business(client):
+    client.cookies.clear()
+    assert client.get("/api/purchases/suppliers").status_code == 401

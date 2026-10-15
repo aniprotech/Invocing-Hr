@@ -311,6 +311,7 @@ var NAV_FOR_VIEW = {
     'hr-dashboard-view': 'nav-hr-dashboard',
     'sales-overview-view': 'nav-sales-overview',
     'purchases-overview-view': 'nav-purchases-overview',
+    'suppliers-view': 'nav-suppliers',
     'payment-options-view': 'nav-payment-options',
     'invoices-view': 'nav-invoices',
     'create-invoice-view': 'nav-invoices',
@@ -374,6 +375,7 @@ var ROUTE_SLUGS = {
     'hr-dashboard-view': 'hr',
     'sales-overview-view': 'sales',
     'purchases-overview-view': 'purchases',
+    'suppliers-view': 'suppliers',
     'payment-options-view': 'payment-options',
     'invoices-view': 'invoices',
     'create-invoice-view': 'invoices/new',
@@ -582,6 +584,7 @@ function showView(viewId) {
     if (viewId === 'sales-overview-view' && typeof loadSalesOverview === 'function') loadSalesOverview();
     if (viewId === 'purchases-overview-view' && typeof loadPurchasesOverview === 'function') loadPurchasesOverview();
     if (viewId === 'payment-options-view' && typeof loadPaymentOptions === 'function') loadPaymentOptions();
+    if (viewId === 'suppliers-view' && typeof loadSuppliers === 'function') loadSuppliers();
     if (viewId === 'invoices-view' && typeof fetchInvoices === 'function') fetchInvoices();
     if (viewId === 'quotes-view' && typeof fetchQuotes === 'function') fetchQuotes();
     if (viewId === 'credit-notes-view' && typeof fetchCreditNotes === 'function') fetchCreditNotes();
@@ -11386,7 +11389,9 @@ async function loadBills() {
         var res = await fetch('/api/bills', { credentials: 'same-origin' });
         if (!res.ok) { showToast('Failed to load bills', 'error'); return; }
         allBills = await res.json();
-        renderBills(allBills);
+        // The chosen tab survives the reload, so what is shown matches what
+        // the tab says (a dashboard tile opens Bills already filtered).
+        renderBills(billsMatching(currentBillFilter));
     } catch(e) { showToast('Failed to load bills', 'error'); }
 }
 window.loadBills = loadBills;
@@ -11421,15 +11426,18 @@ function renderBills(bills) {
     });
 }
 
+function billsMatching(status) {
+    return status === '' ? allBills : allBills.filter(function(b) {
+        if (status === 'Unpaid') return b.status !== 'Paid' && b.status !== 'Draft';
+        return (b.status || '').toLowerCase() === status.toLowerCase();
+    });
+}
+
 function filterBills(status, btn) {
     currentBillFilter = status;
     document.querySelectorAll('#bills-view .invoices-tabs .tab').forEach(function(t) { t.classList.remove('active'); });
     if (btn) btn.classList.add('active');
-    var filtered = status === '' ? allBills : allBills.filter(function(b) {
-        if (status === 'Unpaid') return b.status !== 'Paid' && b.status !== 'Draft';
-        return (b.status || '').toLowerCase() === status.toLowerCase();
-    });
-    renderBills(filtered);
+    renderBills(billsMatching(status));
 }
 window.filterBills = filterBills;
 
@@ -17960,20 +17968,25 @@ function comingBlock(thisWeek, nextWeek, labels) {
 
 // Open the list with the matching tab lit, so what is on screen says what it is
 // filtered to.
+function lightTab(selector, status) {
+    var tabs = document.querySelectorAll(selector);
+    Array.prototype.forEach.call(tabs, function (t) {
+        t.classList.toggle('active', (t.getAttribute('onclick') || '').indexOf("'" + status + "'") !== -1);
+    });
+}
 function openInvoicesFiltered(status) {
+    // Set before opening, so the list is fetched once and fetched right.
+    _invList.status = status;
+    _invList.selected = {};
+    currentFilter = status;
     showView('invoices-view');
-    var tab = Array.prototype.filter.call(document.querySelectorAll('#invoices-view .invoices-tabs .tab'), function (t) {
-        return (t.getAttribute('onclick') || '').indexOf("'" + status + "'") !== -1;
-    })[0];
-    filterInvoices(status, tab);
+    lightTab('#invoices-view .invoices-tabs .tab', status);
 }
 function openBillsFiltered(status) {
+    var wanted = { Draft: 'Draft', Unpaid: 'Unpaid', Paid: 'Paid' }[status] || '';
+    currentBillFilter = wanted;
     showView('bills-view');
-    var wanted = { Draft: 'Draft', Unpaid: 'Unpaid', Paid: 'Paid' }[status];
-    var tab = Array.prototype.filter.call(document.querySelectorAll('#bills-view .invoices-tabs .tab'), function (t) {
-        return (t.getAttribute('onclick') || '').indexOf("'" + wanted + "'") !== -1;
-    })[0];
-    filterBills(wanted, tab);
+    lightTab('#bills-view .invoices-tabs .tab', wanted);
 }
 window.openInvoicesFiltered = openInvoicesFiltered;
 window.openBillsFiltered = openBillsFiltered;
@@ -18015,6 +18028,61 @@ async function loadPurchasesOverview() {
     }
 }
 window.loadPurchasesOverview = loadPurchasesOverview;
+
+// The suppliers directory: worked out from the bills on the server, searched here.
+var _suppliers = [];
+
+async function loadSuppliers() {
+    var body = document.getElementById('suppliers-table-body');
+    if (!body) return;
+    try {
+        var d = await fetchJson('/api/purchases/suppliers');
+        _suppliers = d.suppliers || [];
+        renderSuppliers();
+    } catch (e) {
+        _suppliers = [];
+        body.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-secondary);">' + esc(e.message || 'Could not load your suppliers.') + '</td></tr>';
+    }
+}
+window.loadSuppliers = loadSuppliers;
+
+function renderSuppliers() {
+    var body = document.getElementById('suppliers-table-body');
+    if (!body) return;
+    var box = document.getElementById('suppliers-search');
+    var q = ((box && box.value) || '').trim().toLowerCase();
+    var rows = _suppliers.filter(function (s) { return !q || s.name.toLowerCase().indexOf(q) !== -1; });
+    var count = document.getElementById('suppliers-count');
+    if (count) count.textContent = rows.length + ' supplier' + (rows.length === 1 ? '' : 's');
+    if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-secondary);">' +
+            (_suppliers.length ? 'No supplier matches that.' : 'No suppliers yet. Enter a bill and its supplier appears here.') + '</td></tr>';
+        return;
+    }
+    body.innerHTML = rows.map(function (s, i) {
+        return '<tr><td><strong>' + esc(s.name) + '</strong>' + (s.email ? '<div style="font-size:0.78rem;color:var(--text-secondary);">' + esc(s.email) + '</div>' : '') + '</td>' +
+            '<td class="text-right">' + s.bills + '</td>' +
+            '<td class="text-right">' + formatCurrency(s.billed) + '</td>' +
+            '<td class="text-right" style="' + (s.overdue ? 'color:var(--danger-color);font-weight:600;' : '') + '">' + formatCurrency(s.owed) + (s.overdue ? ' <span title="Overdue bills">(' + s.overdue + ' overdue)</span>' : '') + '</td>' +
+            '<td>' + esc(s.last_bill || '-') + '</td>' +
+            '<td class="text-right"><button class="btn btn-outline btn-sm" data-supplier-bills="' + i + '">Bills</button></td></tr>';
+    }).join('');
+    body.querySelectorAll('[data-supplier-bills]').forEach(function (b) {
+        b.addEventListener('click', function () { openSupplierBills(rows[+b.getAttribute('data-supplier-bills')].name); });
+    });
+}
+window.renderSuppliers = renderSuppliers;
+
+// Their bills: the bills list, searched for the supplier.
+async function openSupplierBills(name) {
+    currentBillFilter = '';
+    showView('bills-view');
+    lightTab('#bills-view .invoices-tabs .tab', '');
+    await loadBills();
+    var box = document.getElementById('bill-search');
+    if (box) { box.value = name; searchBills(); }
+}
+window.openSupplierBills = openSupplierBills;
 
 // What customers can pay with, in one list: the business's own gateways, and
 // the bank payment the platform offers when it is the one collecting.
