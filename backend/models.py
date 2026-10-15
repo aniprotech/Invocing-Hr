@@ -1463,6 +1463,37 @@ class DBBillLineItem(Base):
     bill = relationship("DBBill", back_populates="line_items")
 
 
+class DBRecurringBill(Base):
+    """A standing instruction to enter the same supplier bill on a schedule:
+    rent, software, a retainer. Holds the figures itself, so editing it never
+    rewrites bills already entered from it."""
+    __tablename__ = "recurring_bills"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    name = Column(String, default="")
+    vendor_name = Column(String, default="")
+    vendor_email = Column(String, default="")
+    category = Column(String, default="general")
+    reference = Column(String, default="")
+    notes = Column(String, default="")
+    amount = Column(Float, default=0.0)
+    tax_amount = Column(Float, default=0.0)
+    # weekly | monthly | quarterly | yearly
+    frequency = Column(String, default="monthly")
+    # Days after the bill date that it falls due.
+    payment_terms_days = Column(Integer, default=30)
+    next_run = Column(String, default="", index=True)
+    end_date = Column(String, default="")
+    is_active = Column(Boolean, default=True, index=True)
+    # Enter each one as Awaiting payment (approved) instead of leaving a draft.
+    auto_approve = Column(Boolean, default=False)
+    last_run = Column(String, default="")
+    last_bill_number = Column(String, default="")
+    bills_created = Column(Integer, default=0)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
 # ===========================================================================
 # WALLET & BILLING
 # Balances are held in integer minor units (pence, cents, paise). A wallet has

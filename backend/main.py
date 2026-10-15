@@ -6674,6 +6674,196 @@ def job_recurring_invoices(db, now):
     return f"{issued} invoice(s) raised" + (f", {sent} sent" if sent else "")
 
 
+# --- Recurring bills ----------------------------------------------------------
+# The supplier side of the above: a bill that comes round - rent, software, a
+# retainer - entered on its date without anybody retyping it. Raised as a
+# draft to be looked at, or approved straight away if the business says so.
+
+
+class RecurringBillIn(BaseModel):
+    name: Optional[str] = ""
+    vendor_name: str
+    vendor_email: Optional[str] = ""
+    category: Optional[str] = "general"
+    reference: Optional[str] = ""
+    notes: Optional[str] = ""
+    amount: float
+    tax_amount: Optional[float] = 0.0
+    frequency: Optional[str] = "monthly"
+    payment_terms_days: Optional[int] = 30
+    next_run: str
+    end_date: Optional[str] = ""
+    is_active: Optional[bool] = True
+    auto_approve: Optional[bool] = False
+
+
+def recurring_bill_to_dict(t):
+    total = money((t.amount or 0.0) + (t.tax_amount or 0.0))
+    return {
+        "id": t.id, "name": t.name or "", "vendor_name": t.vendor_name or "",
+        "vendor_email": t.vendor_email or "", "category": t.category or "general",
+        "reference": t.reference or "", "notes": t.notes or "",
+        "amount": t.amount or 0.0, "tax_amount": t.tax_amount or 0.0, "total": total,
+        "frequency": t.frequency, "payment_terms_days": t.payment_terms_days if t.payment_terms_days is not None else 30,
+        "next_run": t.next_run or "", "end_date": t.end_date or "",
+        "is_active": bool(t.is_active), "auto_approve": bool(t.auto_approve),
+        "last_run": t.last_run or "", "last_bill_number": t.last_bill_number or "",
+        "bills_created": t.bills_created or 0,
+    }
+
+
+def validate_recurring_bill(body):
+    if not (body.vendor_name or "").strip():
+        raise HTTPException(status_code=400, detail="Supplier name is required")
+    if not (body.amount and body.amount > 0):
+        raise HTTPException(status_code=400, detail="The amount must be more than nothing")
+    if (body.tax_amount or 0) < 0:
+        raise HTTPException(status_code=400, detail="Tax cannot be negative")
+    return validate_recurring(body)     # frequency, dates and terms are the same rules
+
+
+def recurring_bill_row(db, client, rec_id):
+    t = db.query(models.DBRecurringBill).filter(
+        models.DBRecurringBill.id == rec_id, models.DBRecurringBill.client_id == client.id).first()
+    if not t:
+        raise HTTPException(status_code=404, detail="Recurring bill not found")
+    return t
+
+
+def apply_recurring_bill(t, body, terms):
+    t.name = (body.name or "").strip()
+    t.vendor_name = body.vendor_name.strip()
+    t.vendor_email = (body.vendor_email or "").strip()
+    t.category = body.category or "general"
+    t.reference = (body.reference or "").strip()
+    t.notes = (body.notes or "").strip()
+    t.amount = money(body.amount)
+    t.tax_amount = money(body.tax_amount or 0.0)
+    t.frequency = body.frequency
+    t.payment_terms_days = terms
+    t.next_run = body.next_run
+    t.end_date = body.end_date or ""
+    t.is_active = bool(body.is_active)
+    t.auto_approve = bool(body.auto_approve)
+
+
+@app.get("/api/recurring-bills")
+def list_recurring_bills(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    rows = db.query(models.DBRecurringBill).filter(
+        models.DBRecurringBill.client_id == client.id).order_by(models.DBRecurringBill.id.desc()).all()
+    return [recurring_bill_to_dict(t) for t in rows]
+
+
+@app.post("/api/recurring-bills")
+def create_recurring_bill(body: RecurringBillIn, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    terms = validate_recurring_bill(body)
+    t = models.DBRecurringBill(client_id=client.id)
+    apply_recurring_bill(t, body, terms)
+    db.add(t)
+    db.flush()
+    log_audit(db, client.id, "recurring_bill_created", "recurring_bill", t.id, t.name or t.vendor_name, t.frequency, request)
+    db.commit()
+    db.refresh(t)
+    return recurring_bill_to_dict(t)
+
+
+@app.put("/api/recurring-bills/{rec_id}")
+def update_recurring_bill(rec_id: int, body: RecurringBillIn, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    t = recurring_bill_row(db, client, rec_id)
+    terms = validate_recurring_bill(body)
+    apply_recurring_bill(t, body, terms)
+    log_audit(db, client.id, "recurring_bill_updated", "recurring_bill", t.id, t.name or t.vendor_name, t.frequency, request)
+    db.commit()
+    db.refresh(t)
+    return recurring_bill_to_dict(t)
+
+
+@app.post("/api/recurring-bills/{rec_id}/{action}")
+def pause_or_resume_recurring_bill(rec_id: int, action: str, request: Request, db: Session = Depends(get_db)):
+    """Pause stops new bills without losing the schedule; resume carries on
+    from the next date it was due."""
+    client = get_client_user(request, db)
+    if action not in ("pause", "resume"):
+        raise HTTPException(status_code=404, detail="No such action")
+    t = recurring_bill_row(db, client, rec_id)
+    if action == "resume":
+        end = _parse_date(t.end_date)
+        nxt = _parse_date(t.next_run)
+        if end and nxt and nxt > end:
+            raise HTTPException(status_code=400, detail="This one has reached its end date. Change the end date to carry on.")
+    t.is_active = action == "resume"
+    log_audit(db, client.id, f"recurring_bill_{action}d", "recurring_bill", t.id, t.name or t.vendor_name, "", request)
+    db.commit()
+    return recurring_bill_to_dict(t)
+
+
+@app.delete("/api/recurring-bills/{rec_id}")
+def delete_recurring_bill(rec_id: int, request: Request, db: Session = Depends(get_db)):
+    """Stops future bills. The ones already entered are real records and are
+    left exactly where they are."""
+    client = get_client_user(request, db)
+    t = recurring_bill_row(db, client, rec_id)
+    log_audit(db, client.id, "recurring_bill_deleted", "recurring_bill", t.id, t.name or t.vendor_name, "", request)
+    db.delete(t)
+    db.commit()
+    return {"message": "Recurring bill stopped"}
+
+
+def issue_recurring_bill(db, t, on_date):
+    """Enter one bill from a template and move the schedule on."""
+    number = next_sequence_number(db, models.DBBill, t.client_id, "BILL-")
+    amount, tax = money(t.amount or 0.0), money(t.tax_amount or 0.0)
+    bill = models.DBBill(
+        client_id=t.client_id, number=number, vendor_name=t.vendor_name or "", vendor_email=t.vendor_email or "",
+        issue_date=on_date.strftime("%Y-%m-%d"),
+        due_date=(on_date + timedelta(days=t.payment_terms_days if t.payment_terms_days is not None else 30)).strftime("%Y-%m-%d"),
+        amount=amount, tax_amount=tax, total=money(amount + tax), amount_paid=0.0,
+        status="Unpaid" if t.auto_approve else "Draft", category=t.category or "general",
+        reference=t.reference or "", notes=t.notes or "")
+    db.add(bill)
+    db.flush()
+    t.last_run = on_date.strftime("%Y-%m-%d")
+    t.last_bill_number = number
+    t.bills_created = (t.bills_created or 0) + 1
+    nxt = advance_date(on_date, t.frequency)
+    t.next_run = nxt.strftime("%Y-%m-%d")
+    end = _parse_date(t.end_date)
+    if end and nxt > end:
+        t.is_active = False             # reached its end date: stops rather than lingers
+    return bill
+
+
+@scheduled_job("recurring_bills")
+def job_recurring_bills(db, now):
+    """Enter whatever is due today, and catch up on any period missed while the
+    app was down, so a rent bill is never silently lost."""
+    today = now.date()
+    entered = 0
+    templates = db.query(models.DBRecurringBill).filter(
+        models.DBRecurringBill.is_active == True,          # noqa: E712
+        models.DBRecurringBill.next_run != "",
+        models.DBRecurringBill.next_run <= today.strftime("%Y-%m-%d"),
+    ).all()
+    for t in templates:
+        guard = 0
+        while t.is_active and guard < 60:
+            due_on = _parse_date(t.next_run)
+            if not due_on or due_on > today:
+                break
+            end = _parse_date(t.end_date)
+            if end and due_on > end:
+                t.is_active = False
+                break
+            issue_recurring_bill(db, t, due_on)
+            entered += 1
+            guard += 1
+    db.commit()
+    return f"{entered} bill(s) entered"
+
+
 def reminder_stage_for(days_overdue):
     """The highest rung reached, so a gap in ticks does not skip a chase."""
     reached = [d for d in REMINDER_LADDER if days_overdue >= d]
