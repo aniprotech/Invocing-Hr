@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=207">
-    <link rel="stylesheet" href="mobile.css?v=207">
+    <link rel="stylesheet" href="styles.css?v=209">
+    <link rel="stylesheet" href="mobile.css?v=209">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,11 +57,11 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=207">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=207">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=207">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=207">
-    <script src="/dialogs.js?v=207"></script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=209">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=209">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=209">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=209">
+    <script src="/dialogs.js?v=209"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -137,7 +137,9 @@
                             <a href="#/bill-payments" class="nav-item" id="nav-bill-payments" data-portal="invoicing">Payments</a>
                             <a href="#/supplier-credit-notes" class="nav-item" id="nav-supplier-credit-notes" data-portal="invoicing">Supplier credit notes</a>
                             <a href="#/purchase-orders" class="nav-item" id="nav-purchase-orders" data-portal="invoicing">Purchase orders</a>
+                            <a href="#/business-expenses" class="nav-item" id="nav-business-expenses" data-portal="invoicing">Business expenses</a>
                             <a href="#/suppliers" class="nav-item" id="nav-suppliers" data-portal="invoicing">Suppliers directory</a>
+                            <a href="#/purchase-reports" class="nav-item" id="nav-purchase-reports" data-portal="invoicing">Purchase reports</a>
                             <div class="nav-menu-divider" role="separator"></div>
                             <a href="#/settings" class="nav-item" id="nav-purchases-settings" data-portal="invoicing" onclick="openPurchasesSettings(event)">Purchases settings</a>
                         </div>
@@ -528,7 +530,10 @@
                         <div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:10px;">Quick links</div>
                         <div style="display:flex;gap:10px;flex-wrap:wrap;">
                             <button class="btn btn-outline" onclick="showView('bills-view');showAddBillModal()">Enter a bill</button>
+                            <button class="btn btn-outline" onclick="location.hash='#/purchase-orders'">Purchase orders</button>
+                            <button class="btn btn-outline" onclick="location.hash='#/business-expenses'">Business expenses</button>
                             <button class="btn btn-outline" onclick="location.hash='#/recurring-bills'">Recurring bills</button>
+                            <button class="btn btn-outline" onclick="location.hash='#/purchase-reports'">Reports</button>
                             <button class="btn btn-outline" onclick="location.hash='#/suppliers'">Suppliers</button>
                             <button class="btn btn-outline" onclick="openPurchasesSettings()">Purchases settings</button>
                         </div>
@@ -715,6 +720,73 @@
                         <div class="modal-body" id="po-detail-body"></div>
                         <div class="modal-footer" id="po-detail-actions"></div>
                     </div>
+                </div>
+
+                <!-- ========== BUSINESS EXPENSES ========== -->
+                <!-- Money the business has already spent that did not come as a
+                     supplier bill: a card payment, petty cash. Not the staff
+                     claims, which are under People. -->
+                <div id="business-expenses-view" class="view-section dashboard" style="display:none;">
+                    <div class="invoices-header-area">
+                        <div><h1>Business expenses</h1><p class="subtitle">What the business has spent, without a supplier bill</p></div>
+                        <div class="invoices-actions">
+                            <a class="btn btn-outline" id="be-csv" href="/api/business-expenses.csv" download="business-expenses.csv">Download CSV</a>
+                            <button class="btn btn-primary" onclick="newBusinessExpense()">+ New expense</button>
+                        </div>
+                    </div>
+                    <div class="widget">
+                        <div class="table-actions" style="gap:8px;flex-wrap:wrap;">
+                            <span id="be-summary" style="font-size:0.85rem;color:var(--text-secondary);"></span>
+                            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                                <input type="text" id="be-search" placeholder="Search who, what or reference..." class="search-input" oninput="loadBusinessExpenses()">
+                                <input type="date" id="be-from" class="form-control" style="width:auto;" onchange="loadBusinessExpenses()" aria-label="From">
+                                <input type="date" id="be-to" class="form-control" style="width:auto;" onchange="loadBusinessExpenses()" aria-label="To">
+                                <select id="be-category" class="form-control" style="width:auto;" onchange="loadBusinessExpenses()" aria-label="Category">
+                                    <option value="">Any category</option><option value="general">General</option><option value="office">Office Supplies</option><option value="software">Software/SaaS</option>
+                                    <option value="utilities">Utilities</option><option value="rent">Rent</option><option value="marketing">Marketing</option><option value="travel">Travel</option><option value="professional">Professional Services</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div id="be-categories" style="display:flex;gap:8px;flex-wrap:wrap;padding:0 16px 8px;font-size:0.8rem;"></div>
+                        <div class="table-responsive">
+                            <table class="data-table">
+                                <thead><tr><th>Date</th><th>Paid to</th><th>Description</th><th>Category</th><th>How</th><th>Paid from</th><th class="text-right">Total</th><th class="text-right"></th></tr></thead>
+                                <tbody id="be-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ========== PURCHASE REPORTS ========== -->
+                <!-- Who you owe and for how long, and where the money went. Spend
+                     is bills (by their date), business expenses and the credit
+                     notes suppliers gave; a draft is not spend yet. -->
+                <div id="purchase-reports-view" class="view-section dashboard" style="display:none;">
+                    <div class="invoices-header-area">
+                        <div><h1>Purchase reports</h1><p class="subtitle">What you owe, and where the money went</p></div>
+                        <div class="invoices-actions">
+                            <a class="btn btn-outline" id="pr-csv" href="#" download>Download CSV</a>
+                        </div>
+                    </div>
+                    <div class="invoices-tabs" id="pr-tabs">
+                        <button class="tab active" data-pr-tab="ageing" onclick="showPurchaseReport('ageing')">Aged payables</button>
+                        <button class="tab" data-pr-tab="supplier" onclick="showPurchaseReport('supplier')">Spend by supplier</button>
+                        <button class="tab" data-pr-tab="category" onclick="showPurchaseReport('category')">Spend by category</button>
+                        <button class="tab" data-pr-tab="month" onclick="showPurchaseReport('month')">Spend by month</button>
+                    </div>
+                    <div class="widget" style="padding:14px 18px;margin-bottom:16px;">
+                        <div id="pr-asof-box" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                            <label for="pr-asof" style="font-size:0.82rem;color:var(--text-secondary);">As of</label>
+                            <input type="date" id="pr-asof" class="form-control" style="width:auto;" onchange="loadPurchaseReport()">
+                        </div>
+                        <div id="pr-range-box" style="display:none;gap:10px;align-items:center;flex-wrap:wrap;">
+                            <label for="pr-from" style="font-size:0.82rem;color:var(--text-secondary);">From</label>
+                            <input type="date" id="pr-from" class="form-control" style="width:auto;" onchange="loadPurchaseReport()">
+                            <label for="pr-to" style="font-size:0.82rem;color:var(--text-secondary);">To</label>
+                            <input type="date" id="pr-to" class="form-control" style="width:auto;" onchange="loadPurchaseReport()">
+                        </div>
+                    </div>
+                    <div id="pr-content"></div>
                 </div>
 
                 <!-- ========== RECURRING BILLS ========== -->
@@ -5704,8 +5776,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="feed.js?v=207"></script>
-    <script src="app.js?v=207"></script>
+    <script src="feed.js?v=209"></script>
+    <script src="app.js?v=209"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
@@ -5933,7 +6005,7 @@
             </div>
         </div>
     </div>
-    <script src="/install-hint.js?v=207"></script>
-    <script src="/pwa.js?v=207"></script>
+    <script src="/install-hint.js?v=209"></script>
+    <script src="/pwa.js?v=209"></script>
 </body>
 </html>

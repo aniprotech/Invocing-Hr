@@ -316,6 +316,8 @@ var NAV_FOR_VIEW = {
     'bill-payments-view': 'nav-bill-payments',
     'supplier-credit-notes-view': 'nav-supplier-credit-notes',
     'purchase-orders-view': 'nav-purchase-orders',
+    'business-expenses-view': 'nav-business-expenses',
+    'purchase-reports-view': 'nav-purchase-reports',
     'payment-options-view': 'nav-payment-options',
     'invoices-view': 'nav-invoices',
     'create-invoice-view': 'nav-invoices',
@@ -384,6 +386,8 @@ var ROUTE_SLUGS = {
     'bill-payments-view': 'bill-payments',
     'supplier-credit-notes-view': 'supplier-credit-notes',
     'purchase-orders-view': 'purchase-orders',
+    'business-expenses-view': 'business-expenses',
+    'purchase-reports-view': 'purchase-reports',
     'payment-options-view': 'payment-options',
     'invoices-view': 'invoices',
     'create-invoice-view': 'invoices/new',
@@ -597,6 +601,8 @@ function showView(viewId) {
     if (viewId === 'bill-payments-view' && typeof loadBillPayments === 'function') loadBillPayments();
     if (viewId === 'supplier-credit-notes-view' && typeof loadSupplierCreditNotes === 'function') loadSupplierCreditNotes();
     if (viewId === 'purchase-orders-view' && typeof loadPurchaseOrders === 'function') loadPurchaseOrders();
+    if (viewId === 'business-expenses-view' && typeof loadBusinessExpenses === 'function') loadBusinessExpenses();
+    if (viewId === 'purchase-reports-view' && typeof loadPurchaseReport === 'function') loadPurchaseReport();
     if (viewId === 'invoices-view' && typeof fetchInvoices === 'function') fetchInvoices();
     if (viewId === 'quotes-view' && typeof fetchQuotes === 'function') fetchQuotes();
     if (viewId === 'credit-notes-view' && typeof fetchCreditNotes === 'function') fetchCreditNotes();
@@ -18597,6 +18603,199 @@ async function purchaseOrderAction(id, act) {
     }
 }
 window.purchaseOrderAction = purchaseOrderAction;
+
+// --- Business expenses ------------------------------------------------------------------
+// Money already spent that did not come as a supplier bill: a card payment,
+// petty cash. Not staff claims (People > Expenses), which are paid back to staff.
+
+var BE_CATEGORY = { general: 'General', office: 'Office Supplies', software: 'Software/SaaS', utilities: 'Utilities', rent: 'Rent',
+    marketing: 'Marketing', travel: 'Travel', professional: 'Professional Services' };
+var BE_METHOD = { card: 'Card', cash: 'Cash', bank_transfer: 'Bank transfer', cheque: 'Cheque', direct_debit: 'Direct debit', other: 'Other' };
+var _beRows = [];
+var _beTimer = null;
+
+function beFilters() {
+    var q = new URLSearchParams();
+    [['q', 'be-search'], ['start', 'be-from'], ['end', 'be-to'], ['category', 'be-category']].forEach(function (f) {
+        var el = document.getElementById(f[1]);
+        if (el && el.value.trim()) q.set(f[0], el.value.trim());
+    });
+    return q.toString();
+}
+
+function loadBusinessExpenses() {
+    clearTimeout(_beTimer);
+    _beTimer = setTimeout(doLoadBusinessExpenses, 150);
+}
+window.loadBusinessExpenses = loadBusinessExpenses;
+
+async function doLoadBusinessExpenses() {
+    var body = document.getElementById('be-body');
+    if (!body) return;
+    var qs = beFilters();
+    var csv = document.getElementById('be-csv');
+    if (csv) csv.setAttribute('href', '/api/business-expenses.csv' + (qs ? '?' + qs : ''));
+    try {
+        var d = await fetchJson('/api/business-expenses' + (qs ? '?' + qs : ''));
+        _beRows = d.expenses;
+        document.getElementById('be-summary').textContent = d.count + ' expense' + (d.count === 1 ? '' : 's') + ' \u00b7 ' + formatCurrency(d.total) + ' in all';
+        document.getElementById('be-categories').innerHTML = Object.keys(d.by_category || {}).map(function (c) {
+            return '<span class="status-pill status-draft">' + esc(BE_CATEGORY[c] || c) + ' ' + formatCurrency(d.by_category[c]) + '</span>';
+        }).join('');
+        if (!d.expenses.length) {
+            body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-secondary);">' +
+                (qs ? 'No expense matches that.' : 'No expenses yet. Record what the business spends without a supplier bill.') + '</td></tr>';
+            return;
+        }
+        body.innerHTML = d.expenses.map(function (e, i) {
+            return '<tr><td>' + esc(e.spent_on) + '</td><td>' + esc(e.payee || '-') + '</td><td>' + esc(e.description || '-') + '</td>' +
+                '<td>' + esc(BE_CATEGORY[e.category] || e.category) + '</td><td>' + esc(BE_METHOD[e.method] || e.method) + '</td><td>' + esc(e.account || '-') + '</td>' +
+                '<td class="text-right"><strong>' + formatCurrency(e.total) + '</strong></td>' +
+                '<td class="text-right"><button class="btn btn-outline btn-sm" data-be-edit="' + i + '" style="margin-right:4px;">Edit</button>' +
+                '<button class="btn btn-outline btn-sm" data-be-delete="' + i + '" style="color:var(--danger-color);border-color:var(--danger-color);">Delete</button></td></tr>';
+        }).join('');
+        body.querySelectorAll('[data-be-edit]').forEach(function (b) { b.addEventListener('click', function () { editBusinessExpense(_beRows[+b.getAttribute('data-be-edit')]); }); });
+        body.querySelectorAll('[data-be-delete]').forEach(function (b) { b.addEventListener('click', function () { deleteBusinessExpense(_beRows[+b.getAttribute('data-be-delete')]); }); });
+    } catch (e) {
+        body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-secondary);">' + esc(e.message || 'Could not load your expenses.') + '</td></tr>';
+    }
+}
+
+async function businessExpenseForm(e) {
+    var accounts = [];
+    try { accounts = ((await fetchJson('/api/accounts')).accounts || []).filter(function (a) { return a.active; }); } catch (x) { accounts = []; }
+    var opts = function (map) { return Object.keys(map).map(function (k) { return { value: k, label: map[k] }; }); };
+    return uiForm([
+        { name: 'spent_on', label: 'Date', type: 'date', value: e ? e.spent_on : localDate() },
+        { name: 'payee', label: 'Paid to', type: 'text', value: e ? e.payee : '' },
+        { name: 'description', label: 'What for', type: 'text', value: e ? e.description : '' },
+        { name: 'category', label: 'Category', type: 'select', value: e ? e.category : 'general', options: opts(BE_CATEGORY) },
+        { name: 'amount', label: 'Amount', type: 'number', value: e ? String(e.amount) : '', required: true },
+        { name: 'tax_amount', label: 'Tax', type: 'number', value: e ? String(e.tax_amount) : '0' },
+        { name: 'method', label: 'How it was paid', type: 'select', value: e ? e.method : 'card', options: opts(BE_METHOD) },
+        { name: 'account_id', label: 'Paid from', type: 'select', value: e && e.account_id ? String(e.account_id) : '',
+          options: [{ value: '', label: 'Not said' }].concat(accounts.map(function (a) { return { value: String(a.id), label: a.name }; })) },
+        { name: 'reference', label: 'Reference or receipt number', type: 'text', value: e ? e.reference : '' }
+    ], { title: e ? 'Edit expense' : 'New expense', confirmText: e ? 'Save' : 'Record' });
+}
+
+async function saveBusinessExpense(out, id) {
+    if (!out) return;
+    var amount = parseFloat(out.amount);
+    if (!(amount > 0)) { showToast('The amount must be more than nothing', 'error'); return; }
+    if (!(out.payee || '').trim() && !(out.description || '').trim()) { showToast('Say who it was paid to or what it was for', 'error'); return; }
+    try {
+        await fetchJson(id ? '/api/business-expenses/' + id : '/api/business-expenses', { method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ spent_on: out.spent_on || '', payee: (out.payee || '').trim(), description: (out.description || '').trim(), category: out.category,
+                amount: amount, tax_amount: parseFloat(out.tax_amount) || 0, method: out.method, account_id: out.account_id ? Number(out.account_id) : null,
+                reference: (out.reference || '').trim() }) });
+        showToast(id ? 'Expense saved' : 'Expense recorded', 'success');
+        loadBusinessExpenses();
+    } catch (e) { showToast(e.message || 'Could not save that', 'error'); }
+}
+
+async function newBusinessExpense() { await saveBusinessExpense(await businessExpenseForm(null), null); }
+async function editBusinessExpense(e) { if (e) await saveBusinessExpense(await businessExpenseForm(e), e.id); }
+window.newBusinessExpense = newBusinessExpense;
+window.editBusinessExpense = editBusinessExpense;
+
+async function deleteBusinessExpense(e) {
+    if (!e) return;
+    if (!await uiConfirm('Delete the ' + formatCurrency(e.total) + ' expense' + (e.payee ? ' to ' + e.payee : '') + '?', { title: 'Delete expense', confirmText: 'Delete' })) return;
+    try {
+        await fetchJson('/api/business-expenses/' + e.id, { method: 'DELETE' });
+        showToast('Expense deleted', 'success');
+        loadBusinessExpenses();
+    } catch (x) { showToast(x.message || 'Could not delete that', 'error'); }
+}
+window.deleteBusinessExpense = deleteBusinessExpense;
+
+// --- Purchase reports -----------------------------------------------------------------
+// Aged payables (who you owe, and for how long) and where the money went, by
+// supplier, category and month. Counted on the server.
+
+var _prTab = 'ageing';
+var PR_TITLES = { supplier: 'Supplier', category: 'Category', month: 'Month' };
+
+function showPurchaseReport(tab) {
+    _prTab = tab;
+    document.querySelectorAll('#pr-tabs .tab').forEach(function (t) { t.classList.toggle('active', t.getAttribute('data-pr-tab') === tab); });
+    document.getElementById('pr-asof-box').style.display = tab === 'ageing' ? 'flex' : 'none';
+    document.getElementById('pr-range-box').style.display = tab === 'ageing' ? 'none' : 'flex';
+    loadPurchaseReport();
+}
+window.showPurchaseReport = showPurchaseReport;
+
+function prQuery() {
+    var q = new URLSearchParams();
+    var get = function (id) { return ((document.getElementById(id) || {}).value || '').trim(); };
+    if (_prTab === 'ageing') { if (get('pr-asof')) q.set('as_of', get('pr-asof')); }
+    else { if (get('pr-from')) q.set('start', get('pr-from')); if (get('pr-to')) q.set('end', get('pr-to')); }
+    return q;
+}
+
+var _prTimer = null;
+function loadPurchaseReport() {
+    clearTimeout(_prTimer);
+    _prTimer = setTimeout(doLoadPurchaseReport, 120);
+}
+window.loadPurchaseReport = loadPurchaseReport;
+
+function prTable(head, rows, rightFrom) {
+    return '<div class="widget"><div class="table-responsive"><table class="data-table"><thead><tr>' + head.map(function (h, i) {
+        return '<th' + (i >= rightFrom ? ' class="text-right"' : '') + '>' + esc(h) + '</th>';
+    }).join('') + '</tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+}
+
+async function doLoadPurchaseReport() {
+    var host = document.getElementById('pr-content');
+    if (!host) return;
+    var tab = _prTab;
+    var q = prQuery();
+    var csv = document.getElementById('pr-csv');
+    try {
+        if (tab === 'ageing') {
+            if (csv) csv.setAttribute('href', '/api/purchases/reports/ageing.csv' + (q.toString() ? '?' + q : ''));
+            var a = await fetchJson('/api/purchases/reports/ageing' + (q.toString() ? '?' + q : ''));
+            var cells = AGED_BUCKETS.map(function (pair) {
+                var v = (a.buckets || {})[pair[0]] || 0;
+                var colour = pair[0] === 'current' ? 'var(--text-primary)' : (v > 0 ? 'var(--danger-color)' : 'var(--text-secondary)');
+                return '<div style="text-align:center;padding:18px 8px;"><div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:6px;">' + esc(pair[1]) +
+                    '</div><div style="font-size:1.25rem;font-weight:700;color:' + colour + ';">' + formatCurrency(v) + '</div></div>';
+            }).join('');
+            var suppliers = a.suppliers.length ? a.suppliers.map(function (r) {
+                return '<tr><td><strong>' + esc(r.name) + '</strong></td><td class="text-right">' + r.bills + '</td>' + AGED_BUCKETS.map(function (p) {
+                    return '<td class="text-right">' + (r[p[0]] ? formatCurrency(r[p[0]]) : '-') + '</td>'; }).join('') +
+                    '<td class="text-right"><strong>' + formatCurrency(r.total) + '</strong></td></tr>';
+            }).join('') : '<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--text-secondary);">You do not owe any supplier anything.</td></tr>';
+            var bills = a.bills.length ? a.bills.map(function (b) {
+                return '<tr><td><strong>' + esc(b.number) + '</strong></td><td>' + esc(b.supplier) + '</td><td>' + esc(b.due_date || '-') + '</td><td class="text-right">' +
+                    (b.days_overdue ? '<span style="color:var(--danger-color);">' + b.days_overdue + ' days</span>' : 'Not yet due') + '</td><td class="text-right">' + formatCurrency(b.outstanding) + '</td></tr>';
+            }).join('') : '';
+            host.innerHTML = '<div class="widget" style="margin-bottom:16px;"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));">' + cells + '</div>' +
+                '<div style="text-align:center;padding:14px 0 4px;border-top:1px solid var(--border-color);"><span style="font-size:0.82rem;color:var(--text-secondary);">Total owed</span> <strong style="font-size:1.1rem;margin-left:8px;">' +
+                formatCurrency(a.total_outstanding) + '</strong></div></div>' +
+                prTable(['Supplier', 'Bills'].concat(AGED_BUCKETS.map(function (p) { return p[1]; })).concat(['Total']), suppliers, 1) +
+                (bills ? '<div style="height:16px;"></div>' + prTable(['Bill', 'Supplier', 'Due', 'How late', 'Owed'], bills, 3) : '');
+            return;
+        }
+        if (csv) { var cq = new URLSearchParams(q); cq.set('view', tab); csv.setAttribute('href', '/api/purchases/reports/spend.csv?' + cq); }
+        var d = await fetchJson('/api/purchases/reports/spend' + (q.toString() ? '?' + q : ''));
+        var tile = function (label, value, tone) { return '<div class="stat-card" style="cursor:default;"><span class="stat-label">' + esc(label) + '</span><span class="stat-value"' + (tone ? ' style="color:' + tone + ';"' : '') + '>' + formatCurrency(value) + '</span></div>'; };
+        var rows = d['by_' + tab];
+        var body = rows.length ? rows.map(function (r) {
+            return '<tr><td><strong>' + esc(tab === 'category' ? (BE_CATEGORY[r.name] || r.name) : r.name) + '</strong></td><td class="text-right">' + formatCurrency(r.bills) + '</td><td class="text-right">' +
+                formatCurrency(r.expenses) + '</td>' + (tab === 'category' ? '' : '<td class="text-right">' + (r.credits ? formatCurrency(r.credits) : '-') + '</td>') +
+                '<td class="text-right"><strong>' + formatCurrency(r.net) + '</strong></td></tr>';
+        }).join('') : '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text-secondary);">Nothing was spent between these dates.</td></tr>';
+        host.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin-bottom:16px;">' +
+            tile('Bills', d.summary.bills) + tile('Business expenses', d.summary.expenses) + tile('Credit notes', d.summary.credits, 'var(--success-color)') + tile('Net spend', d.summary.net) + '</div>' +
+            '<div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:8px;">' + esc(d.start) + ' to ' + esc(d.end) + '. Drafts are not counted as spend yet.</div>' +
+            prTable([PR_TITLES[tab], 'Bills', 'Expenses'].concat(tab === 'category' ? [] : ['Credits']).concat([tab === 'category' ? 'Total' : 'Net']), body, 1);
+    } catch (e) {
+        host.innerHTML = '<div class="widget" style="padding:24px;color:var(--text-secondary);">' + esc(e.message || 'Could not load the report.') + '</div>';
+    }
+}
 
 // --- Recurring bills -----------------------------------------------------------
 // Bills that come round - rent, software, a retainer - entered on their date by

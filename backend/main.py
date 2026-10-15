@@ -1092,6 +1092,10 @@ MODULE_PATHS = (
     ("/api/bills", "invoicing"),
     ("/api/sales/", "invoicing"),
     ("/api/purchases/", "invoicing"),
+    ("/api/bill-payments", "invoicing"),
+    ("/api/supplier-credit-notes", "invoicing"),
+    ("/api/purchase-orders", "invoicing"),
+    ("/api/business-expenses", "invoicing"),
     ("/api/recurring", "invoicing"),
     ("/api/items", "invoicing"),
     ("/api/inventory", "invoicing"),
@@ -5490,6 +5494,152 @@ def delete_purchase_order(po_id: int, request: Request, db: Session = Depends(ge
     db.delete(po)
     db.commit()
     return {"message": "Draft deleted"}
+
+
+# --- Business expenses ------------------------------------------------------------
+# Money already spent that did not arrive as a supplier bill: a card payment,
+# petty cash. Not staff expense claims - those are reimbursed under People.
+
+BIZ_EXPENSE_CATEGORIES = ("general", "office", "software", "utilities", "rent", "marketing", "travel", "professional")
+BIZ_EXPENSE_METHODS = ("card", "cash", "bank_transfer", "cheque", "direct_debit", "other")
+
+
+class BusinessExpenseIn(BaseModel):
+    spent_on: Optional[str] = ""
+    payee: Optional[str] = ""
+    description: Optional[str] = ""
+    category: Optional[str] = "general"
+    amount: float
+    tax_amount: Optional[float] = 0.0
+    method: Optional[str] = "card"
+    account_id: Optional[int] = None
+    reference: Optional[str] = ""
+
+
+def biz_expense_to_dict(e, names=None):
+    return {"id": e.id, "spent_on": e.spent_on or "", "payee": e.payee or "", "description": e.description or "",
+            "category": e.category or "general", "amount": e.amount or 0.0, "tax_amount": e.tax_amount or 0.0,
+            "total": e.total or 0.0, "method": e.method or "", "account_id": e.account_id,
+            "account": (names or {}).get(e.account_id, ""), "reference": e.reference or ""}
+
+
+def validate_biz_expense(body):
+    if not ((body.payee or "").strip() or (body.description or "").strip()):
+        raise HTTPException(status_code=400, detail="Say who it was paid to or what it was for")
+    if not (body.amount and body.amount > 0):
+        raise HTTPException(status_code=400, detail="The amount must be more than nothing")
+    if (body.tax_amount or 0) < 0:
+        raise HTTPException(status_code=400, detail="Tax cannot be negative")
+    if body.spent_on and not _parse_date(body.spent_on):
+        raise HTTPException(status_code=400, detail="The date must be in YYYY-MM-DD format")
+    if (body.category or "general") not in BIZ_EXPENSE_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Pick a category from the list")
+    if (body.method or "card") not in BIZ_EXPENSE_METHODS:
+        raise HTTPException(status_code=400, detail="Pick how it was paid from the list")
+
+
+def apply_biz_expense(db, client, e, body):
+    e.spent_on = body.spent_on or date.today().isoformat()
+    e.payee = (body.payee or "").strip()[:200]
+    e.description = (body.description or "").strip()[:300]
+    e.category = body.category or "general"
+    e.amount = money(body.amount)
+    e.tax_amount = money(body.tax_amount or 0.0)
+    e.total = money(e.amount + e.tax_amount)
+    e.method = body.method or "card"
+    e.account_id = resolve_account(db, client.id, body.account_id) if body.account_id else None
+    e.reference = (body.reference or "").strip()[:120]
+
+
+def biz_expenses_query(db, client, q="", start="", end="", category=""):
+    qy = db.query(models.DBBusinessExpense).filter(models.DBBusinessExpense.client_id == client.id)
+    for label, v in (("Start", start), ("End", end)):
+        if v and not _parse_date(v):
+            raise HTTPException(status_code=400, detail=f"{label} date must be in YYYY-MM-DD format")
+    if start:
+        qy = qy.filter(models.DBBusinessExpense.spent_on >= start)
+    if end:
+        qy = qy.filter(models.DBBusinessExpense.spent_on <= end)
+    if category:
+        if category not in BIZ_EXPENSE_CATEGORIES:
+            raise HTTPException(status_code=400, detail="Unknown category")
+        qy = qy.filter(models.DBBusinessExpense.category == category)
+    if q.strip():
+        like = f"%{q.strip().lower()}%"
+        qy = qy.filter(func.lower(models.DBBusinessExpense.payee).like(like) | func.lower(models.DBBusinessExpense.description).like(like)
+                       | func.lower(models.DBBusinessExpense.reference).like(like))
+    return qy.order_by(models.DBBusinessExpense.spent_on.desc(), models.DBBusinessExpense.id.desc())
+
+
+def biz_account_names(db, client):
+    return {a.id: a.name for a in db.query(models.DBMoneyAccount).filter(models.DBMoneyAccount.client_id == client.id).all()}
+
+
+@app.get("/api/business-expenses")
+def list_business_expenses(request: Request, q: str = "", start: str = "", end: str = "", category: str = "",
+                           db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    names = biz_account_names(db, client)
+    rows = biz_expenses_query(db, client, q, start, end, category).limit(1000).all()
+    by_cat = {}
+    for e in rows:
+        by_cat[e.category or "general"] = money(by_cat.get(e.category or "general", 0.0) + (e.total or 0.0))
+    return {"expenses": [biz_expense_to_dict(e, names) for e in rows], "count": len(rows),
+            "total": money(sum(e.total or 0.0 for e in rows)), "by_category": by_cat,
+            "categories": list(BIZ_EXPENSE_CATEGORIES), "methods": list(BIZ_EXPENSE_METHODS), "currency": base_currency(client)}
+
+
+@app.get("/api/business-expenses.csv")
+def business_expenses_csv(request: Request, q: str = "", start: str = "", end: str = "", category: str = "",
+                          db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    names = biz_account_names(db, client)
+    rows = [biz_expense_to_dict(e, names) for e in biz_expenses_query(db, client, q, start, end, category).all()]
+    return _csv_response("business-expenses.csv", ["Date", "Paid to", "Description", "Category", "Amount", "Tax", "Total", "Method", "Paid from", "Reference"],
+                         [[r["spent_on"], r["payee"], r["description"], r["category"], f"{r['amount']:.2f}", f"{r['tax_amount']:.2f}",
+                           f"{r['total']:.2f}", r["method"], r["account"], r["reference"]] for r in rows])
+
+
+@app.post("/api/business-expenses")
+def create_business_expense(body: BusinessExpenseIn, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    validate_biz_expense(body)
+    e = models.DBBusinessExpense(client_id=client.id)
+    apply_biz_expense(db, client, e, body)
+    db.add(e)
+    db.flush()
+    log_audit(db, client.id, "business_expense_created", "business_expense", e.id, e.payee or e.description, f"{e.total:.2f}", request)
+    db.commit()
+    return biz_expense_to_dict(e, biz_account_names(db, client))
+
+
+def biz_expense_for(db, client, expense_id):
+    e = db.query(models.DBBusinessExpense).filter(models.DBBusinessExpense.id == expense_id,
+                                                  models.DBBusinessExpense.client_id == client.id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    return e
+
+
+@app.put("/api/business-expenses/{expense_id}")
+def update_business_expense(expense_id: int, body: BusinessExpenseIn, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    e = biz_expense_for(db, client, expense_id)
+    validate_biz_expense(body)
+    apply_biz_expense(db, client, e, body)
+    log_audit(db, client.id, "business_expense_updated", "business_expense", e.id, e.payee or e.description, f"{e.total:.2f}", request)
+    db.commit()
+    return biz_expense_to_dict(e, biz_account_names(db, client))
+
+
+@app.delete("/api/business-expenses/{expense_id}")
+def delete_business_expense(expense_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    e = biz_expense_for(db, client, expense_id)
+    log_audit(db, client.id, "business_expense_deleted", "business_expense", e.id, e.payee or e.description, f"{e.total:.2f}", request)
+    db.delete(e)
+    db.commit()
+    return {"message": "Expense deleted"}
 
 
 @app.get("/api/next-bill-number")
@@ -32659,6 +32809,167 @@ def ageing_csv(request: Request, as_of: str = "", detail: int = 0, db: Session =
     return _csv_response(f"ageing-{as_of}.csv",
                          ["customer", "email", "currency", "invoices", "current", "1_30", "31_60", "61_90", "over_90", "total", "oldest_days"],
                          [[r["contact"], r["email"], r["currency"], r["invoices"], r["current"], r["1_30"], r["31_60"], r["61_90"], r["over_90"], r["total"], r["oldest_days"]] for r in rows])
+
+
+# --- Purchase reports -------------------------------------------------------------
+# The supplier side of the ageing and spend reports: what is owed to suppliers
+# and for how long, and where the money went.
+
+def payables_by_supplier(db, client, as_of):
+    """What was owed on each bill at the end of a day, bucketed by how late it
+    was then. A bill's own payments are counted by their date; anything the
+    running total shows that has no payment record behind it (paid before
+    payments were kept) is taken as paid."""
+    day = _parse_date(as_of) or date.today()
+    bills = [b for b in db.query(models.DBBill).filter(models.DBBill.client_id == client.id,
+                                                      models.DBBill.status != "Draft").all()
+             if (b.issue_date or "")[:10] <= as_of]
+    pays = {}
+    if bills:
+        for p in db.query(models.DBBillPayment).filter(models.DBBillPayment.bill_id.in_([b.id for b in bills])).all():
+            pays.setdefault(p.bill_id, []).append(p)
+    suppliers, per_bill = {}, []
+    for b in bills:
+        mine = pays.get(b.id, [])
+        by_day = sum((p.amount or 0.0) for p in mine if (p.paid_on or "")[:10] <= as_of)
+        legacy = max((b.amount_paid or 0.0) - sum((p.amount or 0.0) for p in mine), 0.0)
+        owed = money(max(bill_total(b) - by_day - legacy, 0.0))
+        if owed <= 0.005:
+            continue
+        due = _parse_date(b.due_date)
+        late = (day - due).days if due else 0
+        bucket = _age_bucket(late)
+        name = " ".join((b.vendor_name or "").split()) or "Unnamed"
+        row = suppliers.setdefault(name.lower(), {"name": name, "bills": 0, "total": 0.0, "oldest_days": 0,
+                                                  **{k: 0.0 for k in AGE_BUCKETS}})
+        row["bills"] += 1
+        row[bucket] = money(row[bucket] + owed)
+        row["total"] = money(row["total"] + owed)
+        row["oldest_days"] = max(row["oldest_days"], late)
+        per_bill.append({"id": b.id, "number": b.number, "supplier": name, "issue_date": b.issue_date or "",
+                         "due_date": b.due_date or "", "days_overdue": max(late, 0), "bucket": bucket, "outstanding": owed})
+    rows = sorted(suppliers.values(), key=lambda r: (-r["total"], r["name"].lower()))
+    per_bill.sort(key=lambda r: (-r["days_overdue"], r["number"] or ""))
+    return rows, per_bill
+
+
+@app.get("/api/purchases/reports/ageing")
+def payables_ageing_report(request: Request, as_of: str = "", db: Session = Depends(get_db)):
+    """Who you owe, and for how long, as of a day."""
+    client = get_client_user(request, db)
+    as_of = _clean_ymd(as_of, "as_of") or date.today().isoformat()
+    rows, per_bill = payables_by_supplier(db, client, as_of)
+    buckets = {k: money(sum(r[k] for r in rows)) for k in AGE_BUCKETS}
+    return {"as_of": as_of, "currency": base_currency(client), "buckets": buckets,
+            "total_outstanding": money(sum(buckets.values())), "suppliers": rows, "bills": per_bill}
+
+
+@app.get("/api/purchases/reports/ageing.csv")
+def payables_ageing_csv(request: Request, as_of: str = "", detail: int = 0, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    as_of = _clean_ymd(as_of, "as_of") or date.today().isoformat()
+    rows, per_bill = payables_by_supplier(db, client, as_of)
+    if detail:
+        return _csv_response(f"payables-bills-{as_of}.csv", ["bill", "supplier", "issued", "due", "days_overdue", "bucket", "outstanding"],
+                             [[r["number"], r["supplier"], r["issue_date"], r["due_date"], r["days_overdue"], r["bucket"], r["outstanding"]] for r in per_bill])
+    return _csv_response(f"payables-{as_of}.csv", ["supplier", "bills", "current", "1_30", "31_60", "61_90", "over_90", "total", "oldest_days"],
+                         [[r["name"], r["bills"], r["current"], r["1_30"], r["31_60"], r["61_90"], r["over_90"], r["total"], r["oldest_days"]] for r in rows])
+
+
+def spend_report_data(db, client, start, end):
+    """Where the money went between two days: bills by their date (drafts are
+    not spend yet), business expenses by the day they were spent, and the
+    credit notes suppliers gave. Net is bills and expenses less credits."""
+    sup, cat, mon = {}, {}, {}
+
+    def bucket(table, key, name):
+        return table.setdefault(key, {"name": name, "bills": 0.0, "expenses": 0.0, "credits": 0.0, "count": 0})
+
+    def add(table, key, name, field, amount, count=True):
+        row = bucket(table, key, name)
+        row[field] = money(row[field] + amount)
+        if count and field != "credits":
+            row["count"] += 1
+
+    def clean(name):
+        n = " ".join((name or "").split()) or "Unnamed"
+        return n.lower(), n
+
+    for b in db.query(models.DBBill).filter(models.DBBill.client_id == client.id, models.DBBill.status != "Draft").all():
+        on = (b.issue_date or "")[:10]
+        if not on or on < start or on > end:
+            continue
+        k, n = clean(b.vendor_name)
+        add(sup, k, n, "bills", bill_total(b))
+        add(cat, b.category or "general", b.category or "general", "bills", bill_total(b))
+        add(mon, on[:7], on[:7], "bills", bill_total(b))
+    for e in db.query(models.DBBusinessExpense).filter(models.DBBusinessExpense.client_id == client.id,
+                                                       models.DBBusinessExpense.spent_on >= start,
+                                                       models.DBBusinessExpense.spent_on <= end).all():
+        k, n = clean(e.payee or e.description)
+        add(sup, k, n, "expenses", e.total or 0.0)
+        add(cat, e.category or "general", e.category or "general", "expenses", e.total or 0.0)
+        add(mon, (e.spent_on or "")[:7], (e.spent_on or "")[:7], "expenses", e.total or 0.0)
+    for c in db.query(models.DBSupplierCreditNote).filter(models.DBSupplierCreditNote.client_id == client.id,
+                                                          models.DBSupplierCreditNote.status != "Void",
+                                                          models.DBSupplierCreditNote.issue_date >= start,
+                                                          models.DBSupplierCreditNote.issue_date <= end).all():
+        k, n = clean(c.vendor_name)
+        add(sup, k, n, "credits", c.total or 0.0)
+        add(mon, (c.issue_date or "")[:7], (c.issue_date or "")[:7], "credits", c.total or 0.0)
+
+    def finish(table, order):
+        rows = list(table.values())
+        for r in rows:
+            r["net"] = money(r["bills"] + r["expenses"] - r["credits"])
+        rows.sort(key=order)
+        return rows
+
+    by_supplier = finish(sup, lambda r: (-r["net"], r["name"].lower()))
+    by_category = finish(cat, lambda r: (-r["net"], r["name"].lower()))
+    for r in by_category:
+        r.pop("credits", None)                        # a credit note has no category
+    by_month = finish(mon, lambda r: r["name"])
+    bills_total = money(sum(r["bills"] for r in by_supplier))
+    expenses_total = money(sum(r["expenses"] for r in by_supplier))
+    credits_total = money(sum(r["credits"] for r in by_supplier))
+    return {"start": start, "end": end,
+            "summary": {"bills": bills_total, "expenses": expenses_total, "credits": credits_total,
+                        "net": money(bills_total + expenses_total - credits_total)},
+            "by_supplier": by_supplier, "by_category": by_category, "by_month": by_month}
+
+
+def spend_range(start, end):
+    end = _clean_ymd(end, "end") or date.today().isoformat()
+    start = _clean_ymd(start, "start") or date.today().replace(month=1, day=1).isoformat()
+    if start > end:
+        raise HTTPException(status_code=400, detail="The start date cannot be after the end date")
+    return start, end
+
+
+@app.get("/api/purchases/reports/spend")
+def spend_report(request: Request, start: str = "", end: str = "", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    start, end = spend_range(start, end)
+    out = spend_report_data(db, client, start, end)
+    out["currency"] = base_currency(client)
+    return out
+
+
+@app.get("/api/purchases/reports/spend.csv")
+def spend_report_csv(request: Request, start: str = "", end: str = "", view: str = "supplier", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    if view not in ("supplier", "category", "month"):
+        raise HTTPException(status_code=400, detail="View must be one of: supplier, category, month")
+    start, end = spend_range(start, end)
+    data = spend_report_data(db, client, start, end)
+    rows = data["by_" + view]
+    if view == "category":
+        return _csv_response(f"spend-by-category-{start}-{end}.csv", ["category", "bills", "expenses", "total"],
+                             [[r["name"], r["bills"], r["expenses"], r["net"]] for r in rows])
+    label = "month" if view == "month" else "supplier"
+    return _csv_response(f"spend-by-{label}-{start}-{end}.csv", [label, "bills", "expenses", "credits", "net"],
+                         [[r["name"], r["bills"], r["expenses"], r["credits"], r["net"]] for r in rows])
 
 
 # --- statements ---------------------------------------------------------------------

@@ -1570,6 +1570,27 @@ class DBPurchaseOrderLine(Base):
     order = relationship("DBPurchaseOrder", back_populates="lines")
 
 
+class DBBusinessExpense(Base):
+    """Money the business has already spent that did not come as a supplier
+    bill: a card payment, petty cash, a receipt. Not a staff claim - those
+    are reimbursed through People - this is the business's own spending."""
+    __tablename__ = "business_expenses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    spent_on = Column(String, default="", index=True)
+    payee = Column(String, default="", index=True)
+    description = Column(String, default="")
+    category = Column(String, default="general", index=True)
+    amount = Column(Float, default=0.0)
+    tax_amount = Column(Float, default=0.0)
+    total = Column(Float, default=0.0)
+    method = Column(String, default="card")
+    account_id = Column(Integer, ForeignKey("money_accounts.id"), nullable=True, index=True)
+    reference = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
 class DBRecurringBill(Base):
     """A standing instruction to enter the same supplier bill on a schedule:
     rent, software, a retainer. Holds the figures itself, so editing it never
