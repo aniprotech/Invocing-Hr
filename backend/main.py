@@ -4873,6 +4873,9 @@ def delete_bill(bill_id: int, request: Request, db: Session = Depends(get_db)):
     for note in db.query(models.DBSupplierCreditNote).filter(models.DBSupplierCreditNote.client_id == client.id,
                                                              models.DBSupplierCreditNote.bill_id == bill.id).all():
         note.bill_id = None                     # the note stays; it just no longer points at a bill that is gone
+    for po in db.query(models.DBPurchaseOrder).filter(models.DBPurchaseOrder.client_id == client.id,
+                                                      models.DBPurchaseOrder.bill_id == bill.id).all():
+        po.status, po.bill_id, po.bill_number, po.billed_on = "Approved", None, "", ""   # back to be billed again
     log_audit(db, client.id, "bill_deleted", "bill", bill.id, bill.number, "", request)
     db.delete(bill)
     db.commit()
@@ -5273,6 +5276,220 @@ def void_supplier_credit_note(note_id: int, request: Request, body: dict = None,
     log_audit(db, client.id, "supplier_credit_note_voided", "supplier_credit_note", note.id, note.number, note.void_reason, request)
     db.commit()
     return credit_to_dict(note, [])
+
+
+# --- Purchase orders ------------------------------------------------------------
+
+class POLineIn(BaseModel):
+    description: str
+    qty: float = 1.0
+    price: float = 0.0
+    tax_rate: Optional[float] = 0.0
+
+
+class PurchaseOrderIn(BaseModel):
+    vendor_name: str
+    vendor_email: Optional[str] = ""
+    issue_date: Optional[str] = ""
+    delivery_date: Optional[str] = ""
+    reference: Optional[str] = ""
+    notes: Optional[str] = ""
+    lines: List[POLineIn]
+
+
+PO_MAX_LINES = 100
+
+
+def po_totals(lines):
+    subtotal = tax = 0.0
+    for ln in lines:
+        net = money((ln.qty or 0.0) * (ln.price or 0.0))
+        subtotal = money(subtotal + net)
+        tax = money(tax + money(net * (ln.tax_rate or 0.0) / 100.0))
+    return subtotal, tax, money(subtotal + tax)
+
+
+def po_to_dict(po, with_lines=False):
+    out = {"id": po.id, "number": po.number, "vendor_name": po.vendor_name or "", "vendor_email": po.vendor_email or "",
+           "issue_date": po.issue_date or "", "delivery_date": po.delivery_date or "", "reference": po.reference or "",
+           "notes": po.notes or "", "subtotal": po.subtotal or 0.0, "tax_total": po.tax_total or 0.0, "total": po.total or 0.0,
+           "status": po.status, "approved_on": po.approved_on or "", "bill_id": po.bill_id, "bill_number": po.bill_number or "",
+           "billed_on": po.billed_on or "", "voided_on": po.voided_on or "", "void_reason": po.void_reason or ""}
+    if with_lines:
+        out["lines"] = [{"description": ln.description or "", "qty": ln.qty, "price": ln.price, "tax_rate": ln.tax_rate or 0.0,
+                         "net": money((ln.qty or 0.0) * (ln.price or 0.0))} for ln in po.lines]
+    return out
+
+
+def validate_po(body):
+    if not (body.vendor_name or "").strip():
+        raise HTTPException(status_code=400, detail="Supplier name is required")
+    for label, v in (("issue date", body.issue_date), ("delivery date", body.delivery_date)):
+        if v and not _parse_date(v):
+            raise HTTPException(status_code=400, detail=f"The {label} must be in YYYY-MM-DD format")
+    if body.issue_date and body.delivery_date and _parse_date(body.delivery_date) < _parse_date(body.issue_date):
+        raise HTTPException(status_code=400, detail="The delivery date cannot be before the order date")
+    if not body.lines:
+        raise HTTPException(status_code=400, detail="Add at least one line")
+    if len(body.lines) > PO_MAX_LINES:
+        raise HTTPException(status_code=400, detail=f"At most {PO_MAX_LINES} lines")
+    for i, ln in enumerate(body.lines, 1):
+        if not (ln.description or "").strip():
+            raise HTTPException(status_code=400, detail=f"Line {i} needs a description")
+        if not (ln.qty and ln.qty > 0):
+            raise HTTPException(status_code=400, detail=f"Line {i}: the quantity must be more than nothing")
+        if (ln.price or 0) < 0:
+            raise HTTPException(status_code=400, detail=f"Line {i}: the price cannot be negative")
+        if not (0 <= (ln.tax_rate or 0) <= 100):
+            raise HTTPException(status_code=400, detail=f"Line {i}: the tax rate must be between 0 and 100")
+
+
+def apply_po(po, body):
+    po.vendor_name = body.vendor_name.strip()[:200]
+    po.vendor_email = (body.vendor_email or "").strip()[:200]
+    po.issue_date = body.issue_date or po.issue_date or date.today().isoformat()
+    po.delivery_date = body.delivery_date or ""
+    po.reference = (body.reference or "").strip()[:120]
+    po.notes = (body.notes or "").strip()[:1000]
+    po.lines = [models.DBPurchaseOrderLine(description=ln.description.strip()[:300], qty=ln.qty,
+                                           price=money(ln.price or 0.0), tax_rate=ln.tax_rate or 0.0) for ln in body.lines]
+    po.subtotal, po.tax_total, po.total = po_totals(body.lines)
+
+
+def po_row(db, client, po_id):
+    po = db.query(models.DBPurchaseOrder).filter(models.DBPurchaseOrder.id == po_id,
+                                                 models.DBPurchaseOrder.client_id == client.id).first()
+    if not po:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+    return po
+
+
+@app.get("/api/purchase-orders")
+def list_purchase_orders(request: Request, status: str = "all", q: str = "", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    status = (status or "all").lower()
+    if status not in ("all", "draft", "approved", "billed", "void"):
+        raise HTTPException(status_code=400, detail="Status must be one of: all, draft, approved, billed, void")
+    qy = db.query(models.DBPurchaseOrder).filter(models.DBPurchaseOrder.client_id == client.id)
+    if status != "all":
+        qy = qy.filter(models.DBPurchaseOrder.status == status.title())
+    if q.strip():
+        like = f"%{q.strip().lower()}%"
+        qy = qy.filter(func.lower(models.DBPurchaseOrder.vendor_name).like(like) | func.lower(models.DBPurchaseOrder.number).like(like)
+                       | func.lower(models.DBPurchaseOrder.reference).like(like))
+    rows = qy.order_by(models.DBPurchaseOrder.id.desc()).all()
+    awaiting = money(sum(p.total or 0.0 for p in rows if p.status == "Approved"))
+    return {"orders": [po_to_dict(p) for p in rows], "count": len(rows), "approved_total": awaiting,
+            "currency": base_currency(client)}
+
+
+@app.get("/api/purchase-orders/{po_id}")
+def get_purchase_order(po_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    return po_to_dict(po_row(db, client, po_id), True)
+
+
+@app.post("/api/purchase-orders")
+def create_purchase_order(body: PurchaseOrderIn, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    validate_po(body)
+    po = models.DBPurchaseOrder(client_id=client.id,
+                                number=next_sequence_number(db, models.DBPurchaseOrder, client.id, "PO-"))
+    apply_po(po, body)
+    db.add(po)
+    db.flush()
+    log_audit(db, client.id, "purchase_order_created", "purchase_order", po.id, po.number, f"{po.vendor_name}, {po.total:.2f}", request)
+    db.commit()
+    return po_to_dict(po, True)
+
+
+@app.put("/api/purchase-orders/{po_id}")
+def update_purchase_order(po_id: int, body: PurchaseOrderIn, request: Request, db: Session = Depends(get_db)):
+    """Only while it is a draft: once approved it has been agreed, and changing
+    it quietly would leave the supplier with a different order."""
+    client = get_client_user(request, db)
+    po = po_row(db, client, po_id)
+    if po.status != "Draft":
+        raise HTTPException(status_code=400, detail=f"A {po.status.lower()} order cannot be edited. Only a draft can.")
+    validate_po(body)
+    apply_po(po, body)
+    log_audit(db, client.id, "purchase_order_updated", "purchase_order", po.id, po.number, "", request)
+    db.commit()
+    return po_to_dict(po, True)
+
+
+@app.post("/api/purchase-orders/{po_id}/approve")
+def approve_purchase_order(po_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    po = po_row(db, client, po_id)
+    if po.status != "Draft":
+        raise HTTPException(status_code=400, detail=f"This order is already {po.status.lower()}")
+    po.status, po.approved_on = "Approved", date.today().isoformat()
+    log_audit(db, client.id, "purchase_order_approved", "purchase_order", po.id, po.number, "", request)
+    db.commit()
+    return po_to_dict(po, True)
+
+
+@app.post("/api/purchase-orders/{po_id}/bill")
+def bill_purchase_order(po_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Make the supplier's bill from the order, as a draft to check against what
+    arrived. An order is billed once."""
+    client = get_client_user(request, db)
+    po = po_row(db, client, po_id)
+    if po.status == "Billed":
+        raise HTTPException(status_code=400, detail=f"Already billed as {po.bill_number}")
+    if po.status != "Approved":
+        raise HTTPException(status_code=400, detail="Approve the order before making a bill from it")
+    try:
+        days = int((body or {}).get("due_days", 30))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Payment terms must be a whole number of days")
+    if not 0 <= days <= 365:
+        raise HTTPException(status_code=400, detail="Payment terms must be between 0 and 365 days")
+    today = date.today()
+    bill = models.DBBill(
+        client_id=client.id, number=next_sequence_number(db, models.DBBill, client.id, "BILL-"),
+        vendor_name=po.vendor_name, vendor_email=po.vendor_email or "", issue_date=today.isoformat(),
+        due_date=(today + timedelta(days=days)).isoformat(), amount=po.subtotal or 0.0, tax_amount=po.tax_total or 0.0,
+        total=po.total or 0.0, amount_paid=0.0, status="Draft", category="general", reference=po.number,
+        notes=f"From purchase order {po.number}")
+    db.add(bill)
+    db.flush()
+    for ln in po.lines:
+        db.add(models.DBBillLineItem(bill_id=bill.id, description=ln.description, qty=ln.qty, price=ln.price,
+                                     tax_rate=f"{ln.tax_rate or 0:g}%"))
+    po.status, po.bill_id, po.bill_number, po.billed_on = "Billed", bill.id, bill.number, today.isoformat()
+    log_audit(db, client.id, "purchase_order_billed", "purchase_order", po.id, po.number, f"Bill {bill.number}", request)
+    db.commit()
+    return {"order": po_to_dict(po, True), "bill_id": bill.id, "bill_number": bill.number}
+
+
+@app.post("/api/purchase-orders/{po_id}/void")
+def void_purchase_order(po_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    po = po_row(db, client, po_id)
+    if po.status == "Void":
+        raise HTTPException(status_code=400, detail="Already voided")
+    if po.status == "Billed":
+        raise HTTPException(status_code=400, detail=f"This order has been billed as {po.bill_number}. Deal with the bill instead.")
+    po.status, po.voided_on = "Void", date.today().isoformat()
+    po.void_reason = str((body or {}).get("reason") or "").strip()[:300]
+    log_audit(db, client.id, "purchase_order_voided", "purchase_order", po.id, po.number, po.void_reason, request)
+    db.commit()
+    return po_to_dict(po, True)
+
+
+@app.delete("/api/purchase-orders/{po_id}")
+def delete_purchase_order(po_id: int, request: Request, db: Session = Depends(get_db)):
+    """A draft that was never sent can go. Anything further along stays on record - void it."""
+    client = get_client_user(request, db)
+    po = po_row(db, client, po_id)
+    if po.status != "Draft":
+        raise HTTPException(status_code=400, detail=f"A {po.status.lower()} order stays on record. Void it instead.")
+    log_audit(db, client.id, "purchase_order_deleted", "purchase_order", po.id, po.number, "", request)
+    db.delete(po)
+    db.commit()
+    return {"message": "Draft deleted"}
 
 
 @app.get("/api/next-bill-number")

@@ -1522,6 +1522,54 @@ class DBSupplierCreditNote(Base):
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
+class DBPurchaseOrder(Base):
+    """An order placed with a supplier. Draft while it is being written,
+    Approved once it is ready to go, Billed once a bill has been made from it
+    (the bill's number is kept), or Void. Its figures are worked out from its
+    lines when it is saved."""
+    __tablename__ = "purchase_orders"
+    __table_args__ = (
+        UniqueConstraint('client_id', 'number', name='uq_client_po_number'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    number = Column(String, index=True)
+    vendor_name = Column(String, default="", index=True)
+    vendor_email = Column(String, default="")
+    issue_date = Column(String, default="")
+    delivery_date = Column(String, default="")
+    reference = Column(String, default="")
+    notes = Column(String, default="")
+    subtotal = Column(Float, default=0.0)
+    tax_total = Column(Float, default=0.0)
+    total = Column(Float, default=0.0)
+    status = Column(String, default="Draft", index=True)     # Draft | Approved | Billed | Void
+    approved_on = Column(String, default="")
+    bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True)
+    bill_number = Column(String, default="")
+    billed_on = Column(String, default="")
+    voided_on = Column(String, default="")
+    void_reason = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    lines = relationship("DBPurchaseOrderLine", back_populates="order", cascade="all, delete-orphan",
+                         order_by="DBPurchaseOrderLine.id")
+
+
+class DBPurchaseOrderLine(Base):
+    __tablename__ = "purchase_order_lines"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(Integer, ForeignKey("purchase_orders.id"), nullable=False, index=True)
+    description = Column(String, default="")
+    qty = Column(Float, default=1.0)
+    price = Column(Float, default=0.0)
+    tax_rate = Column(Float, default=0.0)            # a percentage, 20 for 20%
+
+    order = relationship("DBPurchaseOrder", back_populates="lines")
+
+
 class DBRecurringBill(Base):
     """A standing instruction to enter the same supplier bill on a schedule:
     rent, software, a retainer. Holds the figures itself, so editing it never
