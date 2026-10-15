@@ -1483,6 +1483,45 @@ class DBBillPayment(Base):
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
+class DBSupplierCreditNote(Base):
+    """A credit note a supplier has given the business: it corrects a bill, or
+    is money the supplier owes back. What it credits can be taken off the bill
+    it belongs to, set against other bills from them, or paid back in cash -
+    and the note keeps count, so what is left of it is always known.
+
+    A credit set against a bill is a payment on that bill (method
+    "credit_note", this note's number as the reference); allocated counts
+    those."""
+    __tablename__ = "supplier_credit_notes"
+    __table_args__ = (
+        UniqueConstraint('client_id', 'number', name='uq_client_supplier_credit_number'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    number = Column(String, index=True)               # ours: SCN-0001
+    supplier_ref = Column(String, default="")         # theirs, as printed on the note
+    vendor_name = Column(String, default="", index=True)
+    vendor_email = Column(String, default="")
+    issue_date = Column(String, default="")
+    reason = Column(String, default="")
+    amount = Column(Float, default=0.0)
+    tax_amount = Column(Float, default=0.0)
+    total = Column(Float, default=0.0)
+    bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True, index=True)
+    bill_number = Column(String, default="")
+    status = Column(String, default="Open", index=True)    # Open | Applied | Void
+    allocated = Column(Float, default=0.0)            # set against bills
+    refunded = Column(Float, default=0.0)             # paid back to the business
+    refunded_on = Column(String, default="")
+    refund_method = Column(String, default="")
+    refund_reference = Column(String, default="")
+    refund_account_id = Column(Integer, ForeignKey("money_accounts.id"), nullable=True)
+    voided_on = Column(String, default="")
+    void_reason = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
 class DBRecurringBill(Base):
     """A standing instruction to enter the same supplier bill on a schedule:
     rent, software, a retainer. Holds the figures itself, so editing it never

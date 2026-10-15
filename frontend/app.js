@@ -314,6 +314,7 @@ var NAV_FOR_VIEW = {
     'suppliers-view': 'nav-suppliers',
     'recurring-bills-view': 'nav-recurring-bills',
     'bill-payments-view': 'nav-bill-payments',
+    'supplier-credit-notes-view': 'nav-supplier-credit-notes',
     'payment-options-view': 'nav-payment-options',
     'invoices-view': 'nav-invoices',
     'create-invoice-view': 'nav-invoices',
@@ -380,6 +381,7 @@ var ROUTE_SLUGS = {
     'suppliers-view': 'suppliers',
     'recurring-bills-view': 'recurring-bills',
     'bill-payments-view': 'bill-payments',
+    'supplier-credit-notes-view': 'supplier-credit-notes',
     'payment-options-view': 'payment-options',
     'invoices-view': 'invoices',
     'create-invoice-view': 'invoices/new',
@@ -591,6 +593,7 @@ function showView(viewId) {
     if (viewId === 'suppliers-view' && typeof loadSuppliers === 'function') loadSuppliers();
     if (viewId === 'recurring-bills-view' && typeof loadRecurringBills === 'function') loadRecurringBills();
     if (viewId === 'bill-payments-view' && typeof loadBillPayments === 'function') loadBillPayments();
+    if (viewId === 'supplier-credit-notes-view' && typeof loadSupplierCreditNotes === 'function') loadSupplierCreditNotes();
     if (viewId === 'invoices-view' && typeof fetchInvoices === 'function') fetchInvoices();
     if (viewId === 'quotes-view' && typeof fetchQuotes === 'function') fetchQuotes();
     if (viewId === 'credit-notes-view' && typeof fetchCreditNotes === 'function') fetchCreditNotes();
@@ -18151,6 +18154,210 @@ async function doLoadBillPayments() {
         body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-secondary);">' + esc(e.message || 'Could not load your payments.') + '</td></tr>';
     }
 }
+
+// --- Supplier credit notes -------------------------------------------------------
+// Credit a supplier has given you. Taken off the bill it corrects, set against
+// other bills from them, or paid back; the note keeps count of what is left.
+
+var _scnStatus = 'all';
+var SCN_STATE = { Open: ['Open', 'status-awaiting-payment'], Applied: ['Used up', 'status-paid'], Void: ['Void', 'status-void'] };
+var _scnTimer = null;
+
+function filterSupplierCreditNotes(status, btn) {
+    _scnStatus = status;
+    document.querySelectorAll('#scn-tabs .tab').forEach(function (t) { t.classList.toggle('active', t === btn); });
+    loadSupplierCreditNotes();
+}
+window.filterSupplierCreditNotes = filterSupplierCreditNotes;
+
+function loadSupplierCreditNotes() {
+    clearTimeout(_scnTimer);
+    _scnTimer = setTimeout(doLoadSupplierCreditNotes, 120);
+}
+window.loadSupplierCreditNotes = loadSupplierCreditNotes;
+
+async function doLoadSupplierCreditNotes() {
+    var body = document.getElementById('scn-body');
+    if (!body) return;
+    var q = ((document.getElementById('scn-search') || {}).value || '').trim();
+    var qs = '?status=' + encodeURIComponent(_scnStatus) + (q ? '&q=' + encodeURIComponent(q) : '');
+    try {
+        var d = await fetchJson('/api/supplier-credit-notes' + qs);
+        document.getElementById('scn-summary').textContent = d.count + ' credit note' + (d.count === 1 ? '' : 's') +
+            (d.open_total > 0 ? ' \u00b7 ' + formatCurrency(d.open_total) + ' still to use' : '');
+        if (!d.credit_notes.length) {
+            body.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text-secondary);">' +
+                (q || _scnStatus !== 'all' ? 'No credit note matches that.' : 'No credit notes yet. When a supplier credits you, record it here.') + '</td></tr>';
+            return;
+        }
+        body.innerHTML = d.credit_notes.map(function (n) {
+            var st = SCN_STATE[n.status] || [n.status, 'status-draft'];
+            return '<tr><td><strong>' + esc(n.number) + '</strong></td><td>' + esc(n.vendor_name) + '</td><td>' + esc(n.supplier_ref || '-') + '</td>' +
+                '<td>' + esc(n.issue_date || '-') + '</td><td>' + esc(n.bill_number || '-') + '</td>' +
+                '<td class="text-right">' + formatCurrency(n.total) + '</td>' +
+                '<td class="text-right"><strong>' + formatCurrency(n.remaining) + '</strong></td>' +
+                '<td><span class="status-pill ' + st[1] + '">' + st[0] + '</span></td>' +
+                '<td class="text-right"><button class="btn btn-outline btn-sm" data-scn-open="' + n.id + '">View</button></td></tr>';
+        }).join('');
+        body.querySelectorAll('[data-scn-open]').forEach(function (b) {
+            b.addEventListener('click', function () { openSupplierCreditNote(+b.getAttribute('data-scn-open')); });
+        });
+    } catch (e) {
+        body.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text-secondary);">' + esc(e.message || 'Could not load your credit notes.') + '</td></tr>';
+    }
+}
+
+// Bills that still owe something, the ones from the same supplier first.
+async function openBillOptions(supplier) {
+    var bills = [];
+    try { bills = await fetchJson('/api/bills'); } catch (e) { bills = []; }
+    var owing = bills.map(function (b) { b.__left = Math.max((b.total || 0) - (b.amount_paid || 0), 0); return b; })
+        .filter(function (b) { return b.__left > 0.005 && b.status !== 'Paid' && b.status !== 'Draft'; });   // a draft is not waiting to be paid yet
+    var mine = (supplier || '').trim().toLowerCase();
+    owing.sort(function (a, b) {
+        var am = (a.vendor_name || '').trim().toLowerCase() === mine ? 0 : 1, bm = (b.vendor_name || '').trim().toLowerCase() === mine ? 0 : 1;
+        return am - bm;
+    });
+    return owing.map(function (b) {
+        return { value: String(b.id), label: b.number + ' \u00b7 ' + (b.vendor_name || '') + ' \u00b7 ' + formatCurrency(b.__left) + ' owed' };
+    });
+}
+
+async function newSupplierCreditNote() {
+    var bills = await openBillOptions('');
+    var out = await uiForm([
+        { name: 'bill_id', label: 'Against a bill', type: 'select', value: '', options: [{ value: '', label: 'None - not tied to one bill' }].concat(bills) },
+        { name: 'vendor_name', label: 'Supplier', type: 'text', hint: 'Leave empty to use the bill\'s supplier' },
+        { name: 'amount', label: 'Amount', type: 'number', required: true },
+        { name: 'tax_amount', label: 'Tax', type: 'number', value: '0' },
+        { name: 'supplier_ref', label: 'Their credit note number', type: 'text' },
+        { name: 'issue_date', label: 'Date', type: 'date', value: localDate() },
+        { name: 'reason', label: 'Reason', type: 'text' },
+        { name: 'apply_to_bill', label: 'If it is against a bill', type: 'select', value: 'yes',
+          options: [{ value: 'yes', label: 'Take it off that bill now' }, { value: 'no', label: 'Keep it to set against bills later' }] }
+    ], { title: 'New supplier credit note', confirmText: 'Record' });
+    if (!out) return;
+    var amount = parseFloat(out.amount);
+    if (!(amount > 0)) { showToast('The amount must be more than nothing', 'error'); return; }
+    try {
+        var n = await fetchJson('/api/supplier-credit-notes', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bill_id: out.bill_id ? Number(out.bill_id) : null, vendor_name: (out.vendor_name || '').trim(),
+                amount: amount, tax_amount: parseFloat(out.tax_amount) || 0, supplier_ref: (out.supplier_ref || '').trim(),
+                issue_date: out.issue_date || '', reason: (out.reason || '').trim(), apply_to_bill: out.apply_to_bill !== 'no' }) });
+        showToast('Credit note ' + n.number + ' recorded', 'success');
+        loadSupplierCreditNotes();
+    } catch (e) { showToast(e.message || 'Could not record that', 'error'); }
+}
+window.newSupplierCreditNote = newSupplierCreditNote;
+
+var _scnOpen = null;
+
+async function openSupplierCreditNote(id) {
+    var n;
+    try { n = await fetchJson('/api/supplier-credit-notes/' + id); }
+    catch (e) { showToast(e.message || 'Could not open that credit note', 'error'); return; }
+    _scnOpen = n;
+    var st = SCN_STATE[n.status] || [n.status, 'status-draft'];
+    document.getElementById('scn-detail-title').textContent = n.number + ' \u00b7 ' + n.vendor_name;
+    var line = function (label, value) { return '<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-top:1px solid var(--border-color);"><span style="color:var(--text-secondary);">' + esc(label) + '</span><span>' + value + '</span></div>'; };
+    document.getElementById('scn-detail-body').innerHTML =
+        '<div style="margin-bottom:10px;"><span class="status-pill ' + st[1] + '">' + st[0] + '</span></div>' +
+        line('Their number', esc(n.supplier_ref || '-')) + line('Date', esc(n.issue_date || '-')) + line('Reason', esc(n.reason || '-')) +
+        line('Against bill', esc(n.bill_number || '-')) +
+        line('Total', '<strong>' + formatCurrency(n.total) + '</strong>') +
+        line('Set against bills', formatCurrency(n.allocated)) +
+        line('Paid back to you', formatCurrency(n.refunded) + (n.refunded_on ? ' on ' + esc(n.refunded_on) : '')) +
+        line('Left to use', '<strong>' + formatCurrency(n.remaining) + '</strong>') +
+        (n.status === 'Void' ? line('Voided', esc(n.voided_on) + (n.void_reason ? ' \u00b7 ' + esc(n.void_reason) : '')) : '') +
+        ((n.allocations || []).length ? '<div style="font-size:0.78rem;color:var(--text-secondary);margin:12px 0 4px;">Taken off these bills</div>' + n.allocations.map(function (a) {
+            return '<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--border-color);">' +
+                '<span>' + esc(a.bill_number) + ' &middot; ' + esc(a.date) + '</span><span><strong>' + formatCurrency(a.amount) + '</strong> ' +
+                '<button class="btn btn-outline btn-sm" data-scn-unallocate="' + a.payment_id + '">Take off</button></span></div>';
+        }).join('') : '');
+    var actions = [];
+    if (n.status !== 'Void' && n.remaining > 0.005) {
+        actions.push('<button class="btn btn-primary" data-scn-act="allocate">Set against a bill</button>');
+        actions.push('<button class="btn btn-outline" data-scn-act="refund">Record a refund</button>');
+    }
+    if (n.status !== 'Void' && !(n.allocated > 0.005) && !(n.refunded > 0.005)) {
+        actions.push('<button class="btn btn-outline" data-scn-act="void" style="color:var(--danger-color);border-color:var(--danger-color);">Void</button>');
+    }
+    actions.push('<button class="btn btn-outline" onclick="closeSupplierCreditNote()">Close</button>');
+    document.getElementById('scn-detail-actions').innerHTML = actions.join('');
+    document.querySelectorAll('#scn-detail-actions [data-scn-act]').forEach(function (b) {
+        b.addEventListener('click', function () {
+            var act = b.getAttribute('data-scn-act');
+            if (act === 'allocate') allocateSupplierCredit(n.id);
+            else if (act === 'refund') refundSupplierCredit(n.id);
+            else voidSupplierCredit(n.id);
+        });
+    });
+    document.querySelectorAll('#scn-detail-body [data-scn-unallocate]').forEach(function (b) {
+        b.addEventListener('click', function () { unallocateSupplierCredit(n.id, +b.getAttribute('data-scn-unallocate')); });
+    });
+    document.getElementById('scn-detail-modal').style.display = 'flex';
+}
+window.openSupplierCreditNote = openSupplierCreditNote;
+
+function closeSupplierCreditNote() { document.getElementById('scn-detail-modal').style.display = 'none'; }
+window.closeSupplierCreditNote = closeSupplierCreditNote;
+
+// Each action says what it did, and the detail is opened again so it shows the new figures.
+async function scnAction(id, path, method, payload, done) {
+    try {
+        await fetchJson('/api/supplier-credit-notes/' + id + path, { method: method, headers: { 'Content-Type': 'application/json' },
+            body: payload ? JSON.stringify(payload) : undefined });
+        showToast(done, 'success');
+        loadSupplierCreditNotes();
+        await openSupplierCreditNote(id);
+    } catch (e) { showToast(e.message || 'Could not do that', 'error'); }
+}
+
+async function allocateSupplierCredit(id) {
+    var n = _scnOpen;
+    var bills = await openBillOptions(n && n.vendor_name);
+    if (!bills.length) { showToast('No bill is waiting to be paid', 'error'); return; }
+    var out = await uiForm([
+        { name: 'bill_id', label: 'Bill', type: 'select', value: bills[0].value, options: bills },
+        { name: 'amount', label: 'Amount to set against it', type: 'number', value: n ? String(n.remaining) : '', required: true }
+    ], { title: 'Set against a bill', confirmText: 'Set against it', message: n ? formatCurrency(n.remaining) + ' of this credit note is left.' : '' });
+    if (!out) return;
+    var amount = parseFloat(out.amount);
+    if (!(amount > 0)) { showToast('The amount must be more than nothing', 'error'); return; }
+    await scnAction(id, '/allocate', 'POST', { bill_id: Number(out.bill_id), amount: amount }, 'Credit set against the bill');
+}
+window.allocateSupplierCredit = allocateSupplierCredit;
+
+async function unallocateSupplierCredit(id, paymentId) {
+    if (!await uiConfirm('Take this credit back off the bill? The bill will owe it again.', { title: 'Take off', confirmText: 'Take off' })) return;
+    await scnAction(id, '/allocations/' + paymentId, 'DELETE', null, 'Credit taken off the bill');
+}
+window.unallocateSupplierCredit = unallocateSupplierCredit;
+
+async function refundSupplierCredit(id) {
+    var n = _scnOpen;
+    var out = await uiForm([
+        { name: 'amount', label: 'Amount paid back to you', type: 'number', value: n ? String(n.remaining) : '', required: true },
+        { name: 'date', label: 'Date', type: 'date', value: localDate() },
+        { name: 'method', label: 'How', type: 'select', value: 'bank_transfer', options: [
+            { value: 'bank_transfer', label: 'Bank transfer' }, { value: 'card', label: 'Card' }, { value: 'cash', label: 'Cash' },
+            { value: 'cheque', label: 'Cheque' }, { value: 'other', label: 'Other' }] },
+        { name: 'reference', label: 'Reference', type: 'text' }
+    ], { title: 'Record a refund', confirmText: 'Record', message: 'For money the supplier has already paid back to you.' });
+    if (!out) return;
+    var amount = parseFloat(out.amount);
+    if (!(amount > 0)) { showToast('The amount must be more than nothing', 'error'); return; }
+    await scnAction(id, '/refund', 'POST', { amount: amount, date: out.date || '', method: out.method, reference: (out.reference || '').trim() }, 'Refund recorded');
+}
+window.refundSupplierCredit = refundSupplierCredit;
+
+async function voidSupplierCredit(id) {
+    var out = await uiForm([{ name: 'reason', label: 'Why', type: 'text' }],
+        { title: 'Void this credit note', confirmText: 'Void it', danger: true, message: 'It stays on record, marked void, and cannot be used.' });
+    if (!out) return;
+    await scnAction(id, '/void', 'POST', { reason: (out.reason || '').trim() }, 'Credit note voided');
+}
+window.voidSupplierCredit = voidSupplierCredit;
 
 // --- Recurring bills -----------------------------------------------------------
 // Bills that come round - rent, software, a retainer - entered on their date by

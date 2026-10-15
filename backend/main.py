@@ -4859,6 +4859,20 @@ def delete_bill(bill_id: int, request: Request, db: Session = Depends(get_db)):
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
     db.query(models.DBBillLineItem).filter(models.DBBillLineItem.bill_id == bill.id).delete()
+    # Its payments go with it - and a credit note that had been set against it
+    # gets that credit back, rather than losing track of it.
+    for pay in db.query(models.DBBillPayment).filter(models.DBBillPayment.bill_id == bill.id).all():
+        if pay.method == "credit_note":
+            note = db.query(models.DBSupplierCreditNote).filter(
+                models.DBSupplierCreditNote.client_id == client.id,
+                models.DBSupplierCreditNote.number == (pay.reference or "")).first()
+            if note:
+                note.allocated = money(max((note.allocated or 0.0) - (pay.amount or 0.0), 0.0))
+                refresh_credit_status(note)
+        db.delete(pay)
+    for note in db.query(models.DBSupplierCreditNote).filter(models.DBSupplierCreditNote.client_id == client.id,
+                                                             models.DBSupplierCreditNote.bill_id == bill.id).all():
+        note.bill_id = None                     # the note stays; it just no longer points at a bill that is gone
     log_audit(db, client.id, "bill_deleted", "bill", bill.id, bill.number, "", request)
     db.delete(bill)
     db.commit()
@@ -4936,6 +4950,8 @@ def mark_bill_paid(bill_id: int, request: Request, body: dict = None, db: Sessio
     client = get_client_user(request, db)
     bill = bill_for(db, client, bill_id)
     body = body or {}
+    if body.get("method") == "credit_note":
+        raise HTTPException(status_code=400, detail="A credit note is set against a bill from the credit note")
     if bill_outstanding(bill) > 0:
         record_bill_payment(db, client, bill, bill_outstanding(bill), body.get("paid_on") or "",
                             body.get("method") or "bank_transfer", body.get("reference") or "",
@@ -4962,6 +4978,8 @@ def add_bill_payment(bill_id: int, body: BillPaymentIn, request: Request, db: Se
     """Record a payment, part or all. Status moves to Partially Paid, then Paid."""
     client = get_client_user(request, db)
     bill = bill_for(db, client, bill_id)
+    if body.method == "credit_note":
+        raise HTTPException(status_code=400, detail="A credit note is set against a bill from the credit note")
     p = record_bill_payment(db, client, bill, body.amount, body.paid_on or "", body.method or "bank_transfer",
                             body.reference or "", body.note or "", body.account_id, request)
     db.commit()
@@ -5030,6 +5048,231 @@ def bill_payments_csv(request: Request, q: str = "", start: str = "", end: str =
     return _csv_response("supplier-payments.csv", ["Date", "Supplier", "Bill", "Amount", "Method", "Reference", "Paid from", "Note"],
                          [[r["paid_on"], r["supplier"], r["bill_number"], f"{r['amount']:.2f}", r["method"], r["reference"], r["account"], r["note"]]
                           for r in rows])
+
+
+# --- Supplier credit notes ------------------------------------------------------
+
+class SupplierCreditIn(BaseModel):
+    vendor_name: Optional[str] = ""
+    vendor_email: Optional[str] = ""
+    supplier_ref: Optional[str] = ""
+    issue_date: Optional[str] = ""
+    reason: Optional[str] = ""
+    amount: float
+    tax_amount: Optional[float] = 0.0
+    bill_id: Optional[int] = None
+    apply_to_bill: Optional[bool] = True
+
+
+def credit_remaining(note):
+    return money(max((note.total or 0.0) - (note.allocated or 0.0) - (note.refunded or 0.0), 0.0))
+
+
+def refresh_credit_status(note):
+    """Open while any of it is left to use; Applied once all of it has been."""
+    if note.status == "Void":
+        return
+    note.status = "Open" if credit_remaining(note) > 0.005 else "Applied"
+
+
+def credit_to_dict(note, allocations=None):
+    out = {"id": note.id, "number": note.number, "supplier_ref": note.supplier_ref or "", "vendor_name": note.vendor_name or "",
+           "vendor_email": note.vendor_email or "", "issue_date": note.issue_date or "", "reason": note.reason or "",
+           "amount": note.amount or 0.0, "tax_amount": note.tax_amount or 0.0, "total": note.total or 0.0,
+           "bill_id": note.bill_id, "bill_number": note.bill_number or "", "status": note.status,
+           "allocated": note.allocated or 0.0, "refunded": note.refunded or 0.0, "remaining": credit_remaining(note),
+           "refunded_on": note.refunded_on or "", "refund_method": note.refund_method or "",
+           "refund_reference": note.refund_reference or "", "voided_on": note.voided_on or "", "void_reason": note.void_reason or ""}
+    if allocations is not None:
+        out["allocations"] = allocations
+    return out
+
+
+def credit_for(db, client, note_id):
+    note = db.query(models.DBSupplierCreditNote).filter(models.DBSupplierCreditNote.id == note_id,
+                                                        models.DBSupplierCreditNote.client_id == client.id).first()
+    if not note:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+    return note
+
+
+def credit_allocations(db, client, note):
+    rows = db.query(models.DBBillPayment, models.DBBill).join(models.DBBill, models.DBBill.id == models.DBBillPayment.bill_id) \
+        .filter(models.DBBillPayment.client_id == client.id, models.DBBillPayment.method == "credit_note",
+                models.DBBillPayment.reference == note.number).order_by(models.DBBillPayment.id.asc()).all()
+    return [{"payment_id": p.id, "bill_id": b.id, "bill_number": b.number, "amount": p.amount or 0.0, "date": p.paid_on or ""}
+            for p, b in rows]
+
+
+def allocate_credit(db, client, note, bill, amount, request=None):
+    amount = money(amount)
+    if note.status == "Void":
+        raise HTTPException(status_code=400, detail="This credit note has been voided")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="The amount must be more than nothing")
+    if amount > credit_remaining(note) + 0.005:
+        raise HTTPException(status_code=400, detail=f"Only {credit_remaining(note):.2f} of this credit note is left")
+    pay = record_bill_payment(db, client, bill, amount, date.today().isoformat(), "credit_note", note.number,
+                              f"Credit note {note.supplier_ref or note.number}", None, request)
+    note.allocated = money((note.allocated or 0.0) + amount)
+    refresh_credit_status(note)
+    return pay
+
+
+@app.get("/api/supplier-credit-notes")
+def list_supplier_credit_notes(request: Request, status: str = "all", q: str = "", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    qy = db.query(models.DBSupplierCreditNote).filter(models.DBSupplierCreditNote.client_id == client.id)
+    status = (status or "all").lower()
+    if status not in ("all", "open", "applied", "void"):
+        raise HTTPException(status_code=400, detail="Status must be one of: all, open, applied, void")
+    if status != "all":
+        qy = qy.filter(models.DBSupplierCreditNote.status == status.title())
+    if q.strip():
+        like = f"%{q.strip().lower()}%"
+        qy = qy.filter(func.lower(models.DBSupplierCreditNote.vendor_name).like(like)
+                       | func.lower(models.DBSupplierCreditNote.number).like(like)
+                       | func.lower(models.DBSupplierCreditNote.supplier_ref).like(like))
+    rows = qy.order_by(models.DBSupplierCreditNote.id.desc()).all()
+    open_total = money(sum(credit_remaining(n) for n in rows if n.status == "Open"))
+    return {"credit_notes": [credit_to_dict(n) for n in rows], "count": len(rows), "open_total": open_total,
+            "currency": base_currency(client)}
+
+
+@app.get("/api/supplier-credit-notes/{note_id}")
+def get_supplier_credit_note(note_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    note = credit_for(db, client, note_id)
+    return credit_to_dict(note, credit_allocations(db, client, note))
+
+
+@app.post("/api/supplier-credit-notes")
+def create_supplier_credit_note(body: SupplierCreditIn, request: Request, db: Session = Depends(get_db)):
+    """Record a credit note from a supplier. Against a bill, it comes straight
+    off what that bill owes (unless told not to); anything beyond that stays on
+    the note to set against another bill or be paid back."""
+    client = get_client_user(request, db)
+    amount, tax = money(body.amount), money(body.tax_amount or 0.0)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="The amount must be more than nothing")
+    if tax < 0:
+        raise HTTPException(status_code=400, detail="Tax cannot be negative")
+    if body.issue_date and not _parse_date(body.issue_date):
+        raise HTTPException(status_code=400, detail="The date must be in YYYY-MM-DD format")
+    bill = bill_for(db, client, body.bill_id) if body.bill_id else None
+    vendor = (body.vendor_name or (bill.vendor_name if bill else "") or "").strip()
+    if not vendor:
+        raise HTTPException(status_code=400, detail="Supplier name is required")
+    note = models.DBSupplierCreditNote(
+        client_id=client.id, number=next_sequence_number(db, models.DBSupplierCreditNote, client.id, "SCN-"),
+        supplier_ref=(body.supplier_ref or "").strip()[:60], vendor_name=vendor[:200],
+        vendor_email=((body.vendor_email or (bill.vendor_email if bill else "") or "")).strip()[:200],
+        issue_date=body.issue_date or date.today().isoformat(), reason=(body.reason or "").strip()[:300],
+        amount=amount, tax_amount=tax, total=money(amount + tax),
+        bill_id=bill.id if bill else None, bill_number=bill.number if bill else "")
+    db.add(note)
+    db.flush()
+    if bill and body.apply_to_bill is not False and bill_outstanding(bill) > 0:
+        allocate_credit(db, client, note, bill, min(note.total, bill_outstanding(bill)), request)
+    log_audit(db, client.id, "supplier_credit_note_created", "supplier_credit_note", note.id, note.number,
+              f"{vendor}, total {note.total:.2f}", request)
+    db.commit()
+    return credit_to_dict(note, credit_allocations(db, client, note))
+
+
+@app.post("/api/supplier-credit-notes/{note_id}/allocate")
+def allocate_supplier_credit_note(note_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Set some of the credit against a bill."""
+    client = get_client_user(request, db)
+    note = credit_for(db, client, note_id)
+    body = body or {}
+    try:
+        bill_id = int(body.get("bill_id"))
+        amount = float(body.get("amount"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Choose a bill and an amount")
+    bill = bill_for(db, client, bill_id)
+    allocate_credit(db, client, note, bill, amount, request)
+    log_audit(db, client.id, "supplier_credit_note_allocated", "supplier_credit_note", note.id, note.number,
+              f"{money(amount):.2f} against {bill.number}", request)
+    db.commit()
+    return credit_to_dict(note, credit_allocations(db, client, note))
+
+
+@app.delete("/api/supplier-credit-notes/{note_id}/allocations/{payment_id}")
+def remove_supplier_credit_allocation(note_id: int, payment_id: int, request: Request, db: Session = Depends(get_db)):
+    """Take the credit back off a bill: the bill owes it again and the note has it to use."""
+    client = get_client_user(request, db)
+    note = credit_for(db, client, note_id)
+    pay = db.query(models.DBBillPayment).filter(models.DBBillPayment.id == payment_id,
+                                                models.DBBillPayment.client_id == client.id,
+                                                models.DBBillPayment.method == "credit_note",
+                                                models.DBBillPayment.reference == note.number).first()
+    if not pay:
+        raise HTTPException(status_code=404, detail="That credit is not set against a bill")
+    bill = db.query(models.DBBill).filter(models.DBBill.id == pay.bill_id).first()
+    if bill:
+        bill.amount_paid = money(max((bill.amount_paid or 0.0) - (pay.amount or 0.0), 0.0))
+        bill.status = "Partially Paid" if (bill.amount_paid or 0) > 0.005 else "Unpaid"
+    note.allocated = money(max((note.allocated or 0.0) - (pay.amount or 0.0), 0.0))
+    refresh_credit_status(note)
+    log_audit(db, client.id, "supplier_credit_note_unallocated", "supplier_credit_note", note.id, note.number,
+              f"{pay.amount:.2f} off {bill.number if bill else ''}", request)
+    db.delete(pay)
+    db.commit()
+    return credit_to_dict(note, credit_allocations(db, client, note))
+
+
+@app.post("/api/supplier-credit-notes/{note_id}/refund")
+def refund_supplier_credit_note(note_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """The supplier has paid the money back instead."""
+    client = get_client_user(request, db)
+    note = credit_for(db, client, note_id)
+    body = body or {}
+    if note.status == "Void":
+        raise HTTPException(status_code=400, detail="This credit note has been voided")
+    try:
+        amount = money(float(body.get("amount")))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Enter the amount that was paid back")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="The amount must be more than nothing")
+    if amount > credit_remaining(note) + 0.005:
+        raise HTTPException(status_code=400, detail=f"Only {credit_remaining(note):.2f} of this credit note is left")
+    on = str(body.get("date") or "") or date.today().isoformat()
+    if not _parse_date(on):
+        raise HTTPException(status_code=400, detail="The date must be in YYYY-MM-DD format")
+    method = str(body.get("method") or "bank_transfer")
+    if method not in BILL_PAYMENT_METHODS or method == "credit_note":
+        raise HTTPException(status_code=400, detail="Pick how it was paid back from the list")
+    note.refunded = money((note.refunded or 0.0) + amount)
+    note.refunded_on, note.refund_method = on, method
+    note.refund_reference = str(body.get("reference") or "").strip()[:120]
+    note.refund_account_id = resolve_account(db, client.id, body.get("account_id"))
+    refresh_credit_status(note)
+    log_audit(db, client.id, "supplier_credit_note_refunded", "supplier_credit_note", note.id, note.number, f"{amount:.2f}", request)
+    db.commit()
+    return credit_to_dict(note, credit_allocations(db, client, note))
+
+
+@app.post("/api/supplier-credit-notes/{note_id}/void")
+def void_supplier_credit_note(note_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Cancel a credit note entered by mistake. Only while none of it is used:
+    take it off the bills first."""
+    client = get_client_user(request, db)
+    note = credit_for(db, client, note_id)
+    if note.status == "Void":
+        raise HTTPException(status_code=400, detail="Already voided")
+    if (note.allocated or 0) > 0.005:
+        raise HTTPException(status_code=400, detail="Part of this credit is set against a bill. Take it off the bill first.")
+    if (note.refunded or 0) > 0.005:
+        raise HTTPException(status_code=400, detail="Part of this credit has been paid back, so it stays on record")
+    note.status = "Void"
+    note.voided_on = date.today().isoformat()
+    note.void_reason = str((body or {}).get("reason") or "").strip()[:300]
+    log_audit(db, client.id, "supplier_credit_note_voided", "supplier_credit_note", note.id, note.number, note.void_reason, request)
+    db.commit()
+    return credit_to_dict(note, [])
 
 
 @app.get("/api/next-bill-number")
