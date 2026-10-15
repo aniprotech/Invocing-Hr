@@ -8,8 +8,8 @@
     <meta name="theme-color" content="#0b0f19">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=201">
-    <link rel="stylesheet" href="mobile.css?v=201">
+    <link rel="stylesheet" href="styles.css?v=202">
+    <link rel="stylesheet" href="mobile.css?v=202">
     <!-- The operator's theme, applied before the page paints.
 
          Blocking on purpose: these are the product's own colours, and
@@ -57,11 +57,11 @@
         }
     })();
     </script>
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=201">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=201">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=201">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=201">
-    <script src="/dialogs.js?v=201"></script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=202">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=202">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=202">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=202">
+    <script src="/dialogs.js?v=202"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -114,13 +114,27 @@
                     <div class="nav-group" data-nav-group="Sales">
                         <button type="button" class="nav-item nav-group-toggle" aria-expanded="false">Sales</button>
                         <div class="nav-group-menu">
-                            <a href="#/invoices" class="nav-item" id="nav-invoices" data-portal="invoicing">Invoices</a>
-                            <a href="#/quotes" class="nav-item" id="nav-quotes" data-portal="invoicing">Quotes</a>
+                            <a href="#/sales" class="nav-item" id="nav-sales-overview" data-portal="invoicing">Sales dashboard</a>
+                            <a href="#/invoices" class="nav-item" id="nav-invoices" data-portal="invoicing">Sales invoices</a>
+                            <a href="#/quotes" class="nav-item" id="nav-quotes" data-portal="invoicing">Quotations</a>
                             <a href="#/credit-notes" class="nav-item" id="nav-credit-notes" data-portal="invoicing">Credit notes</a>
+                            <a href="#/payment-options" class="nav-item" id="nav-payment-options" data-portal="invoicing">Payment options</a>
+                            <a href="#/contacts" class="nav-item" id="nav-contacts" data-portal="invoicing">Customers directory</a>
                             <a href="#/pipeline" class="nav-item" id="nav-pipeline" data-portal="invoicing">Pipeline</a>
                             <a href="#/recurring" class="nav-item" id="nav-recurring" data-portal="invoicing">Recurring</a>
                             <a href="#/inventory" class="nav-item" id="nav-inventory" data-portal="invoicing">Inventory</a>
-                            <a href="#/contacts" class="nav-item" id="nav-contacts" data-portal="invoicing">Contacts</a>
+                            <a href="#/reports" class="nav-item" id="nav-sales-reports" data-portal="invoicing" onclick="openSalesReports(event)">Sales reports</a>
+                            <div class="nav-menu-divider" role="separator"></div>
+                            <a href="#/settings" class="nav-item" id="nav-sales-settings" data-portal="invoicing" onclick="openSalesSettings(event)">Sales settings</a>
+                        </div>
+                    </div>
+                    <div class="nav-group" data-nav-group="Purchases">
+                        <button type="button" class="nav-item nav-group-toggle" aria-expanded="false">Purchases</button>
+                        <div class="nav-group-menu">
+                            <a href="#/purchases" class="nav-item" id="nav-purchases-overview" data-portal="invoicing">Purchases dashboard</a>
+                            <a href="#/bills" class="nav-item" id="nav-bills" data-portal="invoicing">Bills</a>
+                            <div class="nav-menu-divider" role="separator"></div>
+                            <a href="#/settings" class="nav-item" id="nav-purchases-settings" data-portal="invoicing" onclick="openPurchasesSettings(event)">Purchases settings</a>
                         </div>
                     </div>
                     <div class="nav-group" data-nav-group="Money">
@@ -128,7 +142,6 @@
                         <div class="nav-group-menu">
                             <a href="#/bank" class="nav-item" id="nav-bank" data-portal="invoicing">Bank</a>
                             <a href="#/chasing" class="nav-item" id="nav-chasing" data-portal="invoicing">Chasing</a>
-                            <a href="#/bills" class="nav-item" id="nav-bills" data-portal="invoicing">Bills</a>
                             <a href="#/insights" class="nav-item" id="nav-insights" data-portal="invoicing">Insights</a>
                             <a href="#/reports" class="nav-item" id="nav-reports" data-portal="invoicing">Reports</a>
                             <a href="#/wallet" class="nav-item" id="nav-wallet" data-portal="shared">Wallet</a>
@@ -462,6 +475,78 @@
                     </div>
                 </div>
                 <!-- ========== INVOICES LIST ========== -->
+                <!-- ========== SALES DASHBOARD ========== -->
+                <!-- What an accountant opens Sales for: draft invoices, what is
+                     awaiting payment, what is overdue, what is done, and who
+                     owes most - counted on the server, in one place. -->
+                <div id="sales-overview-view" class="view-section dashboard" style="display:none;">
+                    <div class="invoices-header-area">
+                        <div><h1>Sales dashboard</h1><p class="subtitle">Draft, awaiting payment, overdue and completed sales</p></div>
+                        <div class="invoices-actions">
+                            <button class="btn btn-outline" onclick="location.hash='#/payment-options'">Payment options</button>
+                            <button class="btn btn-primary" onclick="showView('create-invoice-view')">+ New invoice</button>
+                        </div>
+                    </div>
+                    <div id="sales-overview-tiles" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;"></div>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;margin-top:20px;">
+                        <div class="widget" style="padding:20px;">
+                            <div class="widget-header"><h3>Money coming in</h3></div>
+                            <div class="widget-content" id="sales-overview-coming"></div>
+                        </div>
+                        <div class="widget" style="padding:20px;">
+                            <div class="widget-header"><h3>Customers owing the most</h3></div>
+                            <div class="widget-content" id="sales-overview-owing"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ========== PURCHASES DASHBOARD ========== -->
+                <div id="purchases-overview-view" class="view-section dashboard" style="display:none;">
+                    <div class="invoices-header-area">
+                        <div><h1>Purchases dashboard</h1><p class="subtitle">What you owe your suppliers, and when it falls due</p></div>
+                        <div class="invoices-actions">
+                            <button class="btn btn-outline" onclick="location.hash='#/bills'">All bills</button>
+                            <button class="btn btn-primary" onclick="showView('bills-view');showAddBillModal()">+ New bill</button>
+                        </div>
+                    </div>
+                    <div id="purchases-overview-tiles" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;"></div>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;margin-top:20px;">
+                        <div class="widget" style="padding:20px;">
+                            <div class="widget-header"><h3>Money going out</h3></div>
+                            <div class="widget-content" id="purchases-overview-coming"></div>
+                        </div>
+                        <div class="widget" style="padding:20px;">
+                            <div class="widget-header"><h3>Suppliers you owe the most</h3></div>
+                            <div class="widget-content" id="purchases-overview-owing"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ========== PAYMENT OPTIONS ========== -->
+                <!-- How customers can pay: what is switched on for invoices
+                     right now, and where to change it. Every invoice already
+                     has its own payment link; this says so. -->
+                <div id="payment-options-view" class="view-section dashboard" style="display:none;">
+                    <div class="invoices-header-area">
+                        <div><h1>Payment options</h1><p class="subtitle">The ways your customers can pay an invoice</p></div>
+                        <div class="invoices-actions">
+                            <button class="btn btn-primary" onclick="openSalesSettings()">Set up payment methods</button>
+                        </div>
+                    </div>
+                    <div class="widget" style="padding:20px;margin-bottom:20px;">
+                        <div class="widget-header"><h3>Switched on for your invoices</h3></div>
+                        <div class="widget-content" id="payment-options-list"></div>
+                    </div>
+                    <div class="widget" style="padding:20px;">
+                        <div class="widget-header"><h3>Payment links</h3></div>
+                        <div class="widget-content">
+                            <p style="margin:0 0 8px;">Every invoice you send carries a payment link and a Pay button, and the invoice marks itself paid when the money arrives. To send a link yourself, open an invoice and copy its link.</p>
+                            <p class="bt-note" style="margin:0;">Payment links that are not tied to an invoice are not available yet.</p>
+                            <div style="margin-top:12px;"><button class="btn btn-outline" onclick="location.hash='#/invoices'">Open invoices</button></div>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="invoices-view" class="view-section dashboard" style="display:none;">
                     <div id="delivery-failures" class="delivery-failures" style="display:none;">
                         <span id="delivery-failures-text"></span>
@@ -5341,8 +5426,8 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="feed.js?v=201"></script>
-    <script src="app.js?v=201"></script>
+    <script src="feed.js?v=202"></script>
+    <script src="app.js?v=202"></script>
 
     <!-- AI Core Orb -->
     <div class="ai-core" onclick="toggleAIChat()" role="button" tabindex="0" aria-label="Open the assistant" title="Ask the assistant" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAIChat();}">
@@ -5570,7 +5655,7 @@
             </div>
         </div>
     </div>
-    <script src="/install-hint.js?v=201"></script>
-    <script src="/pwa.js?v=201"></script>
+    <script src="/install-hint.js?v=202"></script>
+    <script src="/pwa.js?v=202"></script>
 </body>
 </html>

@@ -1090,6 +1090,8 @@ MODULE_PATHS = (
     ("/api/invoices", "invoicing"),
     ("/api/quotes", "invoicing"),
     ("/api/bills", "invoicing"),
+    ("/api/sales/", "invoicing"),
+    ("/api/purchases/", "invoicing"),
     ("/api/recurring", "invoicing"),
     ("/api/items", "invoicing"),
     ("/api/inventory", "invoicing"),
@@ -34341,6 +34343,95 @@ def invoice_list(request: Request, q: str = "", status: str = "all", customer: s
     rows = invoice_list_order(query, sort, dir).offset(offset).limit(limit).all()
     return {"items": [_invoice_row(inv, client, today) for inv in rows], "total": summary["count"], "offset": offset, "limit": limit,
             "summary": summary, "currency": client.currency or ""}
+
+
+def _overview_buckets(rows, today):
+    """Draft / awaiting / overdue / done for a list of (state, amount, due_date)
+    where state is "draft", "open" or "done". Open money past its due date is
+    overdue; the rest of it is awaiting, split by when it falls due."""
+    out = {"draft": {"count": 0, "amount": 0.0}, "awaiting": {"count": 0, "amount": 0.0},
+           "overdue": {"count": 0, "amount": 0.0}, "done": {"count": 0, "amount": 0.0},
+           "due_this_week": 0.0, "due_next_week": 0.0}
+    for state, amount, due_date in rows:
+        amount = amount or 0.0
+        if state == "draft":
+            out["draft"]["count"] += 1
+            out["draft"]["amount"] = money(out["draft"]["amount"] + amount)
+        elif state == "done":
+            out["done"]["count"] += 1
+            out["done"]["amount"] = money(out["done"]["amount"] + amount)
+        elif state == "open" and amount > 0:
+            due = _parse_date(due_date)
+            if due and due < today:
+                out["overdue"]["count"] += 1
+                out["overdue"]["amount"] = money(out["overdue"]["amount"] + amount)
+                continue
+            out["awaiting"]["count"] += 1
+            out["awaiting"]["amount"] = money(out["awaiting"]["amount"] + amount)
+            if due:
+                days = (due - today).days
+                if days <= 6:
+                    out["due_this_week"] = money(out["due_this_week"] + amount)
+                elif days <= 13:
+                    out["due_next_week"] = money(out["due_next_week"] + amount)
+    return out
+
+
+@app.get("/api/sales/overview")
+def sales_overview(request: Request, db: Session = Depends(get_db)):
+    """The sales screen's summary: draft invoices, invoices awaiting payment,
+    overdue ones and finished sales, what falls due soon, and who owes most."""
+    client = get_client_user(request, db)
+    today = date.today()
+    inv = models.DBInvoice
+    rows = db.query(inv.status, inv.due, inv.paid, inv.due_date, inv.to_company, inv.to_contact) \
+        .filter(inv.client_id == client.id).all()
+    buckets, owing = [], {}
+    for r in rows:
+        if r.status in ("Void", "Credited"):
+            continue
+        if r.status == "Draft":
+            buckets.append(("draft", (r.due or 0.0) + (r.paid or 0.0), r.due_date))
+        elif r.status == "Paid":
+            buckets.append(("done", r.paid or 0.0, r.due_date))
+        else:
+            buckets.append(("open", r.due or 0.0, r.due_date))
+            if (r.due or 0) > 0:
+                who = (r.to_company or r.to_contact or "").strip() or "Unnamed"
+                owing[who] = money(owing.get(who, 0.0) + (r.due or 0.0))
+    out = _overview_buckets(buckets, today)
+    out["customers_owing_most"] = [{"name": n, "owed": a} for n, a in
+                                   sorted(owing.items(), key=lambda kv: -kv[1])[:5]]
+    out["currency"] = client.currency or ""
+    return out
+
+
+@app.get("/api/purchases/overview")
+def purchases_overview(request: Request, db: Session = Depends(get_db)):
+    """The same picture for what the business owes its suppliers."""
+    client = get_client_user(request, db)
+    today = date.today()
+    b = models.DBBill
+    rows = db.query(b.status, b.total, b.amount_paid, b.due_date, b.vendor_name) \
+        .filter(b.client_id == client.id).all()
+    buckets, owing = [], {}
+    for r in rows:
+        total = r.total or 0.0
+        if r.status == "Draft":
+            buckets.append(("draft", total, r.due_date))
+        elif r.status == "Paid":
+            buckets.append(("done", r.amount_paid or total, r.due_date))
+        else:
+            left = max(total - (r.amount_paid or 0.0), 0.0)
+            buckets.append(("open", left, r.due_date))
+            if left > 0:
+                who = (r.vendor_name or "").strip() or "Unnamed"
+                owing[who] = money(owing.get(who, 0.0) + left)
+    out = _overview_buckets(buckets, today)
+    out["suppliers_owed_most"] = [{"name": n, "owed": a} for n, a in
+                                  sorted(owing.items(), key=lambda kv: -kv[1])[:5]]
+    out["currency"] = base_currency(client)
+    return out
 
 
 @app.get("/api/invoice-list.csv")
