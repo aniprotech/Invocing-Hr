@@ -1463,6 +1463,26 @@ class DBBillLineItem(Base):
     bill = relationship("DBBill", back_populates="line_items")
 
 
+class DBBillPayment(Base):
+    """One payment made against a supplier bill. Bills keep a running
+    amount_paid; this table is the ledger that explains how it got there. A
+    credit note set against a bill is a payment too (method "credit_note",
+    the note's number as its reference), so the bill's history is in one place."""
+    __tablename__ = "bill_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    bill_id = Column(Integer, ForeignKey("bills.id"), nullable=False, index=True)
+    amount = Column(Float, default=0.0)
+    paid_on = Column(String, default="", index=True)
+    method = Column(String, default="bank_transfer")
+    reference = Column(String, default="")
+    note = Column(String, default="")
+    # Which of the business's own accounts it was paid from. Null when unsaid.
+    account_id = Column(Integer, ForeignKey("money_accounts.id"), nullable=True, index=True)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
 class DBRecurringBill(Base):
     """A standing instruction to enter the same supplier bill on a schedule:
     rent, software, a retainer. Holds the figures itself, so editing it never

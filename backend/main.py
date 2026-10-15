@@ -4865,17 +4865,171 @@ def delete_bill(bill_id: int, request: Request, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-@app.post("/api/bills/{bill_id}/pay")
-def mark_bill_paid(bill_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
-    client = get_client_user(request, db)
+BILL_PAYMENT_METHODS = ("bank_transfer", "card", "cash", "cheque", "direct_debit", "other", "credit_note")
+
+
+class BillPaymentIn(BaseModel):
+    amount: float
+    paid_on: Optional[str] = ""
+    method: Optional[str] = "bank_transfer"
+    reference: Optional[str] = ""
+    note: Optional[str] = ""
+    account_id: Optional[int] = None
+
+
+def bill_total(bill):
+    return money(bill.total or bill.amount or 0.0)
+
+
+def bill_outstanding(bill):
+    return money(max(bill_total(bill) - (bill.amount_paid or 0.0), 0.0))
+
+
+def bill_payment_to_dict(p, bill=None, accounts=None):
+    return {"id": p.id, "bill_id": p.bill_id, "bill_number": bill.number if bill else "",
+            "supplier": bill.vendor_name if bill else "", "amount": p.amount or 0.0, "paid_on": p.paid_on or "",
+            "method": p.method or "", "reference": p.reference or "", "note": p.note or "",
+            "account_id": p.account_id, "account": (accounts or {}).get(p.account_id, "")}
+
+
+def record_bill_payment(db, client, bill, amount, paid_on="", method="bank_transfer", reference="", note="",
+                        account_id=None, request=None):
+    """Put a payment on a bill and move its status with it. The one place a
+    bill's amount_paid changes, so the ledger and the running total agree."""
+    amount = money(amount)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="The payment must be more than nothing")
+    outstanding = bill_outstanding(bill)
+    if outstanding <= 0:
+        raise HTTPException(status_code=400, detail="This bill has nothing left to pay")
+    if amount > outstanding + 0.005:
+        raise HTTPException(status_code=400, detail=f"A payment of {amount:.2f} is more than the {outstanding:.2f} still owed")
+    if paid_on and not _parse_date(paid_on):
+        raise HTTPException(status_code=400, detail="The payment date must be in YYYY-MM-DD format")
+    if method not in BILL_PAYMENT_METHODS:
+        raise HTTPException(status_code=400, detail="Pick how it was paid from the list")
+    payment = models.DBBillPayment(
+        client_id=client.id, bill_id=bill.id, amount=amount,
+        paid_on=paid_on or date.today().isoformat(), method=method,
+        reference=(reference or "").strip()[:120], note=(note or "").strip()[:300],
+        account_id=resolve_account(db, client.id, account_id) if method != "credit_note" else None)
+    db.add(payment)
+    bill.amount_paid = money((bill.amount_paid or 0.0) + amount)
+    bill.status = "Paid" if bill_outstanding(bill) <= 0.005 else "Partially Paid"
+    log_audit(db, client.id, "bill_payment_recorded", "bill", bill.id, bill.number,
+              f"Amount: {amount:.2f}, method: {method}", request)
+    db.flush()
+    return payment
+
+
+def bill_for(db, client, bill_id):
     bill = db.query(models.DBBill).filter(models.DBBill.id == bill_id, models.DBBill.client_id == client.id).first()
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
-    bill.amount_paid = bill.total or bill.amount or 0.0
-    bill.status = "Paid"
-    log_audit(db, client.id, "bill_paid", "bill", bill.id, bill.number, f"Amount: {bill.amount_paid}", request)
+    return bill
+
+
+@app.post("/api/bills/{bill_id}/pay")
+def mark_bill_paid(bill_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Pay what is left in one go. Records a real payment for it, so the
+    Payments list and the bill's history say so."""
+    client = get_client_user(request, db)
+    bill = bill_for(db, client, bill_id)
+    body = body or {}
+    if bill_outstanding(bill) > 0:
+        record_bill_payment(db, client, bill, bill_outstanding(bill), body.get("paid_on") or "",
+                            body.get("method") or "bank_transfer", body.get("reference") or "",
+                            body.get("note") or "", body.get("account_id"), request)
+    else:
+        bill.status = "Paid"
     db.commit()
     return {"ok": True, "status": "Paid"}
+
+
+@app.get("/api/bills/{bill_id}/payments")
+def list_bill_payments(bill_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    bill = bill_for(db, client, bill_id)
+    rows = db.query(models.DBBillPayment).filter(models.DBBillPayment.bill_id == bill.id) \
+        .order_by(models.DBBillPayment.paid_on.desc(), models.DBBillPayment.id.desc()).all()
+    names = {a.id: a.name for a in db.query(models.DBMoneyAccount).filter(models.DBMoneyAccount.client_id == client.id).all()}
+    return {"total": bill_total(bill), "paid": money(bill.amount_paid or 0.0), "outstanding": bill_outstanding(bill),
+            "payments": [bill_payment_to_dict(p, bill, names) for p in rows]}
+
+
+@app.post("/api/bills/{bill_id}/payments")
+def add_bill_payment(bill_id: int, body: BillPaymentIn, request: Request, db: Session = Depends(get_db)):
+    """Record a payment, part or all. Status moves to Partially Paid, then Paid."""
+    client = get_client_user(request, db)
+    bill = bill_for(db, client, bill_id)
+    p = record_bill_payment(db, client, bill, body.amount, body.paid_on or "", body.method or "bank_transfer",
+                            body.reference or "", body.note or "", body.account_id, request)
+    db.commit()
+    return {"message": "Payment recorded", "payment_id": p.id, "status": bill.status,
+            "paid": money(bill.amount_paid or 0.0), "outstanding": bill_outstanding(bill)}
+
+
+@app.delete("/api/bills/{bill_id}/payments/{payment_id}")
+def delete_bill_payment(bill_id: int, payment_id: int, request: Request, db: Session = Depends(get_db)):
+    """Reverse a payment entered by mistake."""
+    client = get_client_user(request, db)
+    bill = bill_for(db, client, bill_id)
+    p = db.query(models.DBBillPayment).filter(models.DBBillPayment.id == payment_id,
+                                              models.DBBillPayment.bill_id == bill.id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    if p.method == "credit_note":
+        raise HTTPException(status_code=400, detail="This is a credit note set against the bill. Take it off from the credit note.")
+    bill.amount_paid = money(max((bill.amount_paid or 0.0) - (p.amount or 0.0), 0.0))
+    bill.status = "Partially Paid" if (bill.amount_paid or 0) > 0.005 else "Unpaid"
+    log_audit(db, client.id, "bill_payment_removed", "bill", bill.id, bill.number, f"Amount: {p.amount:.2f}", request)
+    db.delete(p)
+    db.commit()
+    return {"message": "Payment removed", "status": bill.status, "outstanding": bill_outstanding(bill)}
+
+
+def bill_payments_query(db, client, q="", start="", end="", method=""):
+    qy = db.query(models.DBBillPayment, models.DBBill).join(models.DBBill, models.DBBill.id == models.DBBillPayment.bill_id) \
+        .filter(models.DBBillPayment.client_id == client.id)
+    if start:
+        qy = qy.filter(models.DBBillPayment.paid_on >= start)
+    if end:
+        qy = qy.filter(models.DBBillPayment.paid_on <= end)
+    if method:
+        qy = qy.filter(models.DBBillPayment.method == method)
+    if q.strip():
+        like = f"%{q.strip().lower()}%"
+        qy = qy.filter(func.lower(models.DBBill.vendor_name).like(like) | func.lower(models.DBBill.number).like(like)
+                       | func.lower(models.DBBillPayment.reference).like(like))
+    return qy.order_by(models.DBBillPayment.paid_on.desc(), models.DBBillPayment.id.desc())
+
+
+@app.get("/api/bill-payments")
+def bill_payments(request: Request, q: str = "", start: str = "", end: str = "", method: str = "",
+                  db: Session = Depends(get_db)):
+    """Every payment made to suppliers: who, when, how much, from which account."""
+    client = get_client_user(request, db)
+    for label, v in (("start", start), ("end", end)):
+        if v and not _parse_date(v):
+            raise HTTPException(status_code=400, detail=f"{label.title()} date must be in YYYY-MM-DD format")
+    if method and method not in BILL_PAYMENT_METHODS:
+        raise HTTPException(status_code=400, detail="Unknown payment method")
+    names = {a.id: a.name for a in db.query(models.DBMoneyAccount).filter(models.DBMoneyAccount.client_id == client.id).all()}
+    rows = bill_payments_query(db, client, q, start, end, method).limit(1000).all()
+    out = [bill_payment_to_dict(p, b, names) for p, b in rows]
+    return {"payments": out, "count": len(out), "total": money(sum(x["amount"] for x in out)),
+            "currency": base_currency(client)}
+
+
+@app.get("/api/bill-payments.csv")
+def bill_payments_csv(request: Request, q: str = "", start: str = "", end: str = "", method: str = "",
+                      db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    names = {a.id: a.name for a in db.query(models.DBMoneyAccount).filter(models.DBMoneyAccount.client_id == client.id).all()}
+    rows = [bill_payment_to_dict(p, b, names) for p, b in bill_payments_query(db, client, q, start, end, method).all()]
+    return _csv_response("supplier-payments.csv", ["Date", "Supplier", "Bill", "Amount", "Method", "Reference", "Paid from", "Note"],
+                         [[r["paid_on"], r["supplier"], r["bill_number"], f"{r['amount']:.2f}", r["method"], r["reference"], r["account"], r["note"]]
+                          for r in rows])
 
 
 @app.get("/api/next-bill-number")

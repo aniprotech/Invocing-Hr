@@ -313,6 +313,7 @@ var NAV_FOR_VIEW = {
     'purchases-overview-view': 'nav-purchases-overview',
     'suppliers-view': 'nav-suppliers',
     'recurring-bills-view': 'nav-recurring-bills',
+    'bill-payments-view': 'nav-bill-payments',
     'payment-options-view': 'nav-payment-options',
     'invoices-view': 'nav-invoices',
     'create-invoice-view': 'nav-invoices',
@@ -378,6 +379,7 @@ var ROUTE_SLUGS = {
     'purchases-overview-view': 'purchases',
     'suppliers-view': 'suppliers',
     'recurring-bills-view': 'recurring-bills',
+    'bill-payments-view': 'bill-payments',
     'payment-options-view': 'payment-options',
     'invoices-view': 'invoices',
     'create-invoice-view': 'invoices/new',
@@ -588,6 +590,7 @@ function showView(viewId) {
     if (viewId === 'payment-options-view' && typeof loadPaymentOptions === 'function') loadPaymentOptions();
     if (viewId === 'suppliers-view' && typeof loadSuppliers === 'function') loadSuppliers();
     if (viewId === 'recurring-bills-view' && typeof loadRecurringBills === 'function') loadRecurringBills();
+    if (viewId === 'bill-payments-view' && typeof loadBillPayments === 'function') loadBillPayments();
     if (viewId === 'invoices-view' && typeof fetchInvoices === 'function') fetchInvoices();
     if (viewId === 'quotes-view' && typeof fetchQuotes === 'function') fetchQuotes();
     if (viewId === 'credit-notes-view' && typeof fetchCreditNotes === 'function') fetchCreditNotes();
@@ -11539,9 +11542,10 @@ async function saveBill() {
         tax_amount: parseFloat(document.getElementById('bill-tax').value) || 0,
         total: parseFloat(document.getElementById('bill-total').value) || 0,
         reference: document.getElementById('bill-reference').value.trim(),
-        notes: document.getElementById('bill-notes').value.trim(),
-        status: 'Draft'
+        notes: document.getElementById('bill-notes').value.trim()
     };
+    // A new bill starts as a draft; editing one must not put a paid bill back.
+    if (!editId) payload.status = 'Draft';
     if (!payload.number || !payload.vendor_name) { showToast('Bill number and vendor name required', 'error'); return; }
     try {
         var url = editId ? '/api/bills/' + editId : '/api/bills';
@@ -11582,14 +11586,9 @@ async function editBill(id) {
 }
 window.editBill = editBill;
 
-async function markBillPaid(id) {
-    if (!await uiConfirm('Mark this bill as paid?')) return;
-    try {
-        var res = await fetch('/api/bills/' + id + '/pay', { method: 'POST', credentials: 'same-origin' });
-        if (res.ok) { showToast('Bill marked as paid', 'success'); loadBills(); }
-        else showToast('Failed to mark paid', 'error');
-    } catch(e) { showToast('Failed to mark paid', 'error'); }
-}
+// The Pay button opens the payment form (part or all, how, from where) instead
+// of marking the whole bill paid in one click.
+async function markBillPaid(id) { return openBillPaymentModal(id); }
 window.markBillPaid = markBillPaid;
 
 async function deleteBill(id, number) {
@@ -18031,6 +18030,127 @@ async function loadPurchasesOverview() {
     }
 }
 window.loadPurchasesOverview = loadPurchasesOverview;
+
+// --- Paying bills and the Payments list ----------------------------------------
+// A payment is a record, part or all of a bill, with how and from where. The
+// bill's running total and status follow from the records on the server.
+
+var BP_METHOD = { bank_transfer: 'Bank transfer', card: 'Card', cash: 'Cash', cheque: 'Cheque', direct_debit: 'Direct debit',
+    credit_note: 'Credit note', other: 'Other' };
+
+async function openBillPaymentModal(id) {
+    var bill = (allBills || []).filter(function (b) { return b.id === id; })[0] || {};
+    var d;
+    try { d = await fetchJson('/api/bills/' + id + '/payments'); }
+    catch (e) { showToast(e.message || 'Could not load that bill', 'error'); return; }
+    var set = function (field, value) { document.getElementById(field).value = value; };
+    document.getElementById('bill-payment-title').textContent = 'Pay ' + (bill.number || 'bill') + (bill.vendor_name ? ' \u00b7 ' + bill.vendor_name : '');
+    set('bp-bill', id);
+    set('bp-amount', d.outstanding > 0 ? d.outstanding.toFixed(2) : '');
+    set('bp-date', localDate());
+    set('bp-method', 'bank_transfer');
+    set('bp-reference', '');
+    document.getElementById('bp-summary').innerHTML =
+        'Total <strong>' + formatCurrency(d.total) + '</strong> &middot; paid <strong>' + formatCurrency(d.paid) +
+        '</strong> &middot; still owed <strong>' + formatCurrency(d.outstanding) + '</strong>';
+    document.getElementById('bp-save').disabled = !(d.outstanding > 0);
+    document.getElementById('bp-history').innerHTML = d.payments.length
+        ? '<div style="font-size:0.78rem;color:var(--text-secondary);margin:10px 0 4px;">Payments so far</div>' + d.payments.map(function (p) {
+            return '<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--border-color);">' +
+                '<span>' + esc(p.paid_on) + ' &middot; ' + esc(BP_METHOD[p.method] || p.method) + (p.reference ? ' &middot; ' + esc(p.reference) : '') + '</span>' +
+                '<span><strong>' + formatCurrency(p.amount) + '</strong> ' +
+                (p.method === 'credit_note' ? '' : '<button class="btn btn-outline btn-sm" data-bp-remove="' + p.id + '">Remove</button>') + '</span></div>';
+        }).join('') : '';
+    document.querySelectorAll('#bp-history [data-bp-remove]').forEach(function (b) {
+        b.addEventListener('click', function () { removeBillPayment(id, +b.getAttribute('data-bp-remove'), true); });
+    });
+    // Where it was paid from: the business's open accounts, or untracked.
+    var sel = document.getElementById('bp-account');
+    var accounts = [];
+    try { accounts = ((await fetchJson('/api/accounts')).accounts || []).filter(function (a) { return a.active; }); } catch (e) { accounts = []; }
+    sel.innerHTML = '<option value="">Not said</option>' + accounts.map(function (a) {
+        return '<option value="' + esc(String(a.id)) + '">' + esc(a.name) + '</option>';
+    }).join('');
+    var dflt = accounts.filter(function (a) { return a.is_default; })[0];
+    if (dflt) sel.value = String(dflt.id);
+    document.getElementById('bill-payment-modal').style.display = 'flex';
+}
+window.openBillPaymentModal = openBillPaymentModal;
+
+function closeBillPaymentModal() { document.getElementById('bill-payment-modal').style.display = 'none'; }
+window.closeBillPaymentModal = closeBillPaymentModal;
+
+async function saveBillPayment() {
+    var val = function (f) { return document.getElementById(f).value; };
+    var id = val('bp-bill');
+    var amount = parseFloat(val('bp-amount'));
+    if (!(amount > 0)) { showToast('The payment must be more than nothing', 'error'); return; }
+    try {
+        var r = await fetchJson('/api/bills/' + id + '/payments', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ amount: amount, paid_on: val('bp-date'), method: val('bp-method'), reference: val('bp-reference').trim(),
+                account_id: Number(val('bp-account')) || null }) });
+        showToast(r.status === 'Paid' ? 'Bill paid' : 'Payment recorded', 'success');
+        closeBillPaymentModal();
+        loadBills();
+        if (document.getElementById('bill-payments-view').classList.contains('active')) loadBillPayments();
+    } catch (e) { showToast(e.message || 'Could not record that payment', 'error'); }
+}
+window.saveBillPayment = saveBillPayment;
+
+async function removeBillPayment(billId, paymentId, fromModal) {
+    if (!await uiConfirm('Remove this payment? The bill goes back to owing it.', { title: 'Remove payment', confirmText: 'Remove' })) return;
+    try {
+        await fetchJson('/api/bills/' + billId + '/payments/' + paymentId, { method: 'DELETE' });
+        showToast('Payment removed', 'success');
+        if (fromModal) { closeBillPaymentModal(); loadBills(); } else { loadBillPayments(); }
+    } catch (e) { showToast(e.message || 'Could not remove that payment', 'error'); }
+}
+window.removeBillPayment = removeBillPayment;
+
+function billPaymentFilters() {
+    var q = new URLSearchParams();
+    [['q', 'bill-payments-search'], ['start', 'bill-payments-from'], ['end', 'bill-payments-to'], ['method', 'bill-payments-method']].forEach(function (f) {
+        var el = document.getElementById(f[1]);
+        if (el && el.value.trim()) q.set(f[0], el.value.trim());
+    });
+    return q.toString();
+}
+
+var _billPaymentsTimer = null;
+function loadBillPayments() {
+    clearTimeout(_billPaymentsTimer);
+    _billPaymentsTimer = setTimeout(doLoadBillPayments, 150);
+}
+window.loadBillPayments = loadBillPayments;
+
+async function doLoadBillPayments() {
+    var body = document.getElementById('bill-payments-body');
+    if (!body) return;
+    var qs = billPaymentFilters();
+    var csv = document.getElementById('bill-payments-csv');
+    if (csv) csv.setAttribute('href', '/api/bill-payments.csv' + (qs ? '?' + qs : ''));
+    try {
+        var d = await fetchJson('/api/bill-payments' + (qs ? '?' + qs : ''));
+        document.getElementById('bill-payments-summary').textContent = d.count + ' payment' + (d.count === 1 ? '' : 's') + ' \u00b7 ' + formatCurrency(d.total) + ' paid';
+        if (!d.payments.length) {
+            body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-secondary);">' +
+                (qs ? 'No payment matches that.' : 'No payments yet. Pay a bill and it is listed here.') + '</td></tr>';
+            return;
+        }
+        body.innerHTML = d.payments.map(function (p) {
+            return '<tr><td>' + esc(p.paid_on) + '</td><td>' + esc(p.supplier || '-') + '</td><td>' + esc(p.bill_number || '-') + '</td>' +
+                '<td class="text-right"><strong>' + formatCurrency(p.amount) + '</strong></td>' +
+                '<td>' + esc(BP_METHOD[p.method] || p.method) + '</td><td>' + esc(p.reference || '-') + '</td><td>' + esc(p.account || '-') + '</td>' +
+                '<td class="text-right">' + (p.method === 'credit_note' ? '' : '<button class="btn btn-outline btn-sm" data-bp-del="' + p.bill_id + ':' + p.id + '">Remove</button>') + '</td></tr>';
+        }).join('');
+        body.querySelectorAll('[data-bp-del]').forEach(function (b) {
+            b.addEventListener('click', function () { var ids = b.getAttribute('data-bp-del').split(':'); removeBillPayment(+ids[0], +ids[1], false); });
+        });
+    } catch (e) {
+        body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-secondary);">' + esc(e.message || 'Could not load your payments.') + '</td></tr>';
+    }
+}
 
 // --- Recurring bills -----------------------------------------------------------
 // Bills that come round - rent, software, a retainer - entered on their date by
