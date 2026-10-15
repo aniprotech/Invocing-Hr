@@ -36,6 +36,14 @@ const BILLS = [
     { id: 2, number: 'B-2', vendor_name: 'Tea Ltd', total: 50, amount_paid: 50, status: 'Paid', due_date: '2026-01-01', issue_date: '2025-12-01' },
     { id: 3, number: 'B-3', vendor_name: 'Tea Ltd', total: 20, amount_paid: 0, status: 'Draft', due_date: '2026-02-01', issue_date: '2026-01-01' },
 ];
+const RECURRING = [
+    { id: 5, name: 'Office rent', vendor_name: 'Landlord Ltd', vendor_email: '', category: 'rent', reference: '', notes: '', amount: 1000, tax_amount: 200, total: 1200,
+      frequency: 'monthly', payment_terms_days: 30, next_run: '2026-12-01', end_date: '', is_active: true, auto_approve: true, bills_created: 3 },
+    { id: 6, name: '<b>Old</b> retainer', vendor_name: 'Cray', vendor_email: '', category: 'general', reference: '', notes: '', amount: 50, tax_amount: 0, total: 50,
+      frequency: 'weekly', payment_terms_days: 7, next_run: '2026-01-10', end_date: '2026-01-05', is_active: false, auto_approve: false, bills_created: 9 },
+    { id: 7, name: 'Paused one', vendor_name: 'Tea Ltd', vendor_email: '', category: 'general', reference: '', notes: '', amount: 20, tax_amount: 0, total: 20,
+      frequency: 'quarterly', payment_terms_days: 30, next_run: '2027-01-01', end_date: '', is_active: false, auto_approve: false, bills_created: 1 },
+];
 const SUPPLIERS = [
     { name: 'Paper Co', email: 'ap@paper.example', bills: 1, billed: 100, owed: 100, overdue: 1, last_bill: '2025-12-01' },
     { name: '<i>Evil</i> Ltd', email: '', bills: 2, billed: 70, owed: 0, overdue: 0, last_bill: '2026-01-01' },
@@ -63,6 +71,8 @@ function boot(opts) {
         if (p === '/api/sales/overview') return opts.fails ? reply(500, { detail: 'Server is down' }) : reply(200, SALES);
         if (p === '/api/purchases/overview') return opts.fails ? reply(500, { detail: 'Server is down' }) : reply(200, BUYING);
         if (p === '/api/bills') return reply(200, BILLS);
+        if (p === '/api/recurring-bills' && (!init || !init.method || init.method === 'GET')) return opts.fails ? reply(500, { detail: 'Server is down' }) : reply(200, RECURRING);
+        if (/^\/api\/recurring-bills/.test(p)) { sent[sent.length - 1].body = init && init.body; sent[sent.length - 1].method = init && init.method; return reply(opts.saveFails ? 400 : 200, opts.saveFails ? { detail: opts.saveFails } : {}); }
         if (p === '/api/purchases/suppliers') return opts.fails ? reply(500, { detail: 'Server is down' }) : reply(200, { suppliers: SUPPLIERS });
         if (p === '/api/payment-gateways') return reply(200, { gateways: opts.gateways || [], platform_methods: opts.platform || [] });
         return reply(200, p.endsWith('s') ? [] : {});
@@ -70,8 +80,13 @@ function boot(opts) {
     if (!w.requestAnimationFrame) w.requestAnimationFrame = (cb) => setTimeout(cb, 0);
     w.eval(fs.readFileSync(path.join(ROOT, 'dialogs.js'), 'utf8'));
     w.eval(fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8'));
+    // Questions are answered by the test, and what the page said is recorded.
+    const confirms = [];
+    w.uiConfirm = (m) => { confirms.push(m); return Promise.resolve(opts.confirm !== false); };
+    const toasts = [];
+    w.showToast = (m, k) => toasts.push({ m, k });
     w.document.dispatchEvent(new w.Event('DOMContentLoaded', { bubbles: true }));
-    return { w, sent };
+    return { w, sent, confirms, toasts };
 }
 
 (async () => {
@@ -84,7 +99,7 @@ function boot(opts) {
             'nav-contacts', 'nav-sales-reports', 'nav-sales-settings']) {
             check(`${id} is in the Sales menu`, inGroup('Sales', id));
         }
-        for (const id of ['nav-purchases-overview', 'nav-bills', 'nav-suppliers', 'nav-purchases-settings']) {
+        for (const id of ['nav-purchases-overview', 'nav-bills', 'nav-recurring-bills', 'nav-suppliers', 'nav-purchases-settings']) {
             check(`${id} is in the Purchases menu`, inGroup('Purchases', id));
         }
         check('Bills moved out of Money', !inGroup('Money', 'nav-bills'));
@@ -98,7 +113,7 @@ function boot(opts) {
             ['nav-sales-overview', 'nav-payment-options', 'nav-purchases-overview', 'nav-sales-settings', 'nav-purchases-settings']
                 .every(id => doc.getElementById(id).getAttribute('data-portal') === 'invoicing'));
         check('the three new screens exist',
-            ['sales-overview-view', 'purchases-overview-view', 'payment-options-view', 'suppliers-view'].every(id => !!doc.getElementById(id)));
+            ['sales-overview-view', 'purchases-overview-view', 'payment-options-view', 'suppliers-view', 'recurring-bills-view', 'recurring-bill-modal'].every(id => !!doc.getElementById(id)));
     }
 
     // --- addresses and highlight -------------------------------------------------------
@@ -109,6 +124,7 @@ function boot(opts) {
             w.ROUTE_SLUGS['sales-overview-view'] === 'sales' && w.ROUTE_SLUGS['purchases-overview-view'] === 'purchases'
             && w.ROUTE_SLUGS['payment-options-view'] === 'payment-options' && w.ROUTE_SLUGS['suppliers-view'] === 'suppliers'
             && w.NAV_FOR_VIEW['suppliers-view'] === 'nav-suppliers'
+            && w.ROUTE_SLUGS['recurring-bills-view'] === 'recurring-bills' && w.NAV_FOR_VIEW['recurring-bills-view'] === 'nav-recurring-bills'
             && w.NAV_FOR_VIEW['sales-overview-view'] === 'nav-sales-overview'
             && w.NAV_FOR_VIEW['purchases-overview-view'] === 'nav-purchases-overview'
             && w.NAV_FOR_VIEW['payment-options-view'] === 'nav-payment-options');
@@ -192,6 +208,103 @@ function boot(opts) {
         w.showView('suppliers-view');
         await wait(60);
         check('a failed suppliers load says so', /Server is down/.test(w.document.getElementById('suppliers-table-body').textContent));
+    }
+
+    // --- recurring bills ----------------------------------------------------------
+    {
+        const { w, sent, confirms, toasts } = boot();
+        await wait(60);
+        w.showView('recurring-bills-view');
+        await wait(60);
+        const body = () => w.document.getElementById('recurring-bills-body');
+        const rowOf = text => [...body().querySelectorAll('tr')].find(tr => tr.textContent.includes(text));
+        check('recurring bills asks the server and lists every template', sent.some(s => s.url === '/api/recurring-bills')
+            && body().querySelectorAll('tr').length === 3 && /3 items/.test(w.document.getElementById('recurring-bills-count').textContent));
+        const rent = rowOf('Office rent');
+        check('a row shows supplier, schedule, next date, total and how many were entered',
+            /Landlord Ltd/.test(rent.textContent) && /Month/.test(rent.textContent) && /2026-12-01/.test(rent.textContent)
+            && /1,200\.00/.test(rent.textContent) && rent.querySelectorAll('td')[5].textContent === '3', rent.textContent);
+        check('an active one says Active and that it approves itself, and can be paused',
+            /Active/.test(rent.textContent) && /Approves itself/.test(rent.textContent) && /Pause/.test(rent.textContent));
+        check('one past its end date says Ended and offers no Resume', /Ended/.test(rowOf('retainer').textContent) && !/Resume/.test(rowOf('retainer').textContent));
+        check('a paused one says Paused and can be resumed', /Paused/.test(rowOf('Paused one').textContent) && /Resume/.test(rowOf('Paused one').textContent));
+        check('a name can never become markup', body().querySelector('b') === null && /<b>Old<\/b> retainer/.test(body().textContent));
+
+        // pause / resume
+        rowOf('Office rent').querySelector('[data-rb-toggle]').click();
+        await wait(40);
+        check('Pause posts to the pause address', sent.some(s => s.url === '/api/recurring-bills/5/pause' && s.method === 'POST'));
+        rowOf('Paused one').querySelector('[data-rb-toggle]').click();
+        await wait(40);
+        check('Resume posts to the resume address', sent.some(s => s.url === '/api/recurring-bills/7/resume' && s.method === 'POST'));
+
+        // delete asks first, and says what is kept
+        rowOf('Paused one').querySelector('[data-rb-delete]').click();
+        await wait(40);
+        check('Delete asks first and says entered bills stay', confirms.length === 1 && /already entered/.test(confirms[0]));
+        check('and then deletes', sent.some(s => s.url === '/api/recurring-bills/7' && s.method === 'DELETE'));
+
+        // create
+        w.openRecurringBillModal();
+        const doc = w.document;
+        check('the form opens empty with sensible defaults',
+            doc.getElementById('recurring-bill-modal').style.display === 'flex' && doc.getElementById('rb-id').value === ''
+            && doc.getElementById('rb-frequency').value === 'monthly' && doc.getElementById('rb-terms').value === '30'
+            && /^\d{4}-\d\d-\d\d$/.test(doc.getElementById('rb-next').value));
+        doc.getElementById('rb-amount').value = '100'; w.calcRecurringBillTotal();
+        check('the total follows the amount and tax', doc.getElementById('rb-total').value === '100.00');
+        doc.getElementById('rb-tax').value = '20'; w.calcRecurringBillTotal();
+        check('and the tax', doc.getElementById('rb-total').value === '120.00');
+        const before = sent.length;
+        await w.saveRecurringBill();
+        check('a supplier is required, and nothing is sent without one',
+            toasts.some(t => /Supplier name/.test(t.m)) && sent.length === before);
+        doc.getElementById('rb-vendor').value = 'Landlord Ltd';
+        doc.getElementById('rb-amount').value = '0';
+        await w.saveRecurringBill();
+        check('an amount is required too', toasts.some(t => /more than nothing/.test(t.m)) && sent.length === before);
+        doc.getElementById('rb-amount').value = '1000'; doc.getElementById('rb-tax').value = '200';
+        doc.getElementById('rb-approve').checked = true;
+        await w.saveRecurringBill();
+        const post = sent.filter(s => s.url === '/api/recurring-bills' && s.method === 'POST').pop();
+        const sentBody = post && JSON.parse(post.body);
+        check('Save posts exactly what was typed',
+            sentBody && sentBody.vendor_name === 'Landlord Ltd' && sentBody.amount === 1000 && sentBody.tax_amount === 200
+            && sentBody.frequency === 'monthly' && sentBody.payment_terms_days === 30 && sentBody.auto_approve === true && sentBody.is_active === true,
+            post && post.body);
+        check('and closes the form', doc.getElementById('recurring-bill-modal').style.display === 'none');
+
+        // edit
+        w.openRecurringBillModal(5);
+        check('Edit fills the form from the template',
+            doc.getElementById('rb-id').value === '5' && doc.getElementById('rb-vendor').value === 'Landlord Ltd'
+            && doc.getElementById('rb-total').value === '1200.00' && doc.getElementById('rb-approve').checked === true
+            && /Edit/.test(doc.getElementById('recurring-bill-title').textContent));
+        await w.saveRecurringBill();
+        const put = sent.filter(s => s.url === '/api/recurring-bills/5' && s.method === 'PUT').pop();
+        check('Save on an edit puts to that template', !!put);
+        w.openRecurringBillModal(7);
+        await w.saveRecurringBill();
+        const put7 = sent.filter(s => s.url === '/api/recurring-bills/7' && s.method === 'PUT').pop();
+        check('saving an edit never reactivates one that was paused', put7 && JSON.parse(put7.body).is_active === false);
+    }
+    {
+        const { w, toasts } = boot({ saveFails: 'Frequency must be one of: weekly' });
+        await wait(60);
+        w.showView('recurring-bills-view');
+        await wait(60);
+        w.openRecurringBillModal();
+        w.document.getElementById('rb-vendor').value = 'X'; w.document.getElementById('rb-amount').value = '5';
+        await w.saveRecurringBill();
+        check('a refusal from the server is shown, and the form stays open',
+            toasts.some(t => /Frequency must be/.test(t.m)) && w.document.getElementById('recurring-bill-modal').style.display === 'flex');
+    }
+    {
+        const { w } = boot({ fails: true });
+        await wait(60);
+        w.showView('recurring-bills-view');
+        await wait(60);
+        check('a failed load says so', /Server is down/.test(w.document.getElementById('recurring-bills-body').textContent));
     }
 
     // --- failure is said ------------------------------------------------------------

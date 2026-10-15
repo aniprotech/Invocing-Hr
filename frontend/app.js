@@ -312,6 +312,7 @@ var NAV_FOR_VIEW = {
     'sales-overview-view': 'nav-sales-overview',
     'purchases-overview-view': 'nav-purchases-overview',
     'suppliers-view': 'nav-suppliers',
+    'recurring-bills-view': 'nav-recurring-bills',
     'payment-options-view': 'nav-payment-options',
     'invoices-view': 'nav-invoices',
     'create-invoice-view': 'nav-invoices',
@@ -376,6 +377,7 @@ var ROUTE_SLUGS = {
     'sales-overview-view': 'sales',
     'purchases-overview-view': 'purchases',
     'suppliers-view': 'suppliers',
+    'recurring-bills-view': 'recurring-bills',
     'payment-options-view': 'payment-options',
     'invoices-view': 'invoices',
     'create-invoice-view': 'invoices/new',
@@ -585,6 +587,7 @@ function showView(viewId) {
     if (viewId === 'purchases-overview-view' && typeof loadPurchasesOverview === 'function') loadPurchasesOverview();
     if (viewId === 'payment-options-view' && typeof loadPaymentOptions === 'function') loadPaymentOptions();
     if (viewId === 'suppliers-view' && typeof loadSuppliers === 'function') loadSuppliers();
+    if (viewId === 'recurring-bills-view' && typeof loadRecurringBills === 'function') loadRecurringBills();
     if (viewId === 'invoices-view' && typeof fetchInvoices === 'function') fetchInvoices();
     if (viewId === 'quotes-view' && typeof fetchQuotes === 'function') fetchQuotes();
     if (viewId === 'credit-notes-view' && typeof fetchCreditNotes === 'function') fetchCreditNotes();
@@ -18028,6 +18031,164 @@ async function loadPurchasesOverview() {
     }
 }
 window.loadPurchasesOverview = loadPurchasesOverview;
+
+// --- Recurring bills -----------------------------------------------------------
+// Bills that come round - rent, software, a retainer - entered on their date by
+// the server. Each is raised as a draft to check, or approved straight away.
+
+var _recurringBills = [];
+var RB_EVERY = { weekly: 'Week', monthly: 'Month', quarterly: '3 months', yearly: 'Year' };
+
+async function loadRecurringBills() {
+    var body = document.getElementById('recurring-bills-body');
+    if (!body) return;
+    try {
+        _recurringBills = await fetchJson('/api/recurring-bills');
+        renderRecurringBills();
+    } catch (e) {
+        _recurringBills = [];
+        body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-secondary);">' + esc(e.message || 'Could not load your recurring bills.') + '</td></tr>';
+    }
+}
+window.loadRecurringBills = loadRecurringBills;
+
+function recurringBillState(r) {
+    if (r.is_active) return ['Active', 'status-paid'];
+    var end = r.end_date && r.next_run && r.next_run > r.end_date;
+    return end ? ['Ended', 'status-void'] : ['Paused', 'status-draft'];
+}
+
+function renderRecurringBills() {
+    var body = document.getElementById('recurring-bills-body');
+    if (!body) return;
+    var count = document.getElementById('recurring-bills-count');
+    if (count) count.textContent = _recurringBills.length + (_recurringBills.length === 1 ? ' item' : ' items');
+    if (!_recurringBills.length) {
+        body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text-secondary);">No recurring bills yet. Set up the rent or a subscription and it is entered for you each time.</td></tr>';
+        return;
+    }
+    body.innerHTML = _recurringBills.map(function (r) {
+        var st = recurringBillState(r);
+        return '<tr>' +
+            '<td><strong>' + esc(r.name || '-') + '</strong></td>' +
+            '<td>' + esc(r.vendor_name || '-') + '</td>' +
+            '<td>' + esc(RB_EVERY[r.frequency] || r.frequency) + '</td>' +
+            '<td>' + esc(r.next_run || '-') + '</td>' +
+            '<td class="text-right"><strong>' + formatCurrency(r.total) + '</strong></td>' +
+            '<td class="text-right">' + (r.bills_created || 0) + '</td>' +
+            '<td><span class="status-pill ' + st[1] + '">' + st[0] + '</span>' +
+                (r.auto_approve ? ' <span class="status-pill status-sent" title="Each bill is approved as it is entered">Approves itself</span>' : '') + '</td>' +
+            '<td class="text-right">' +
+                '<button class="btn btn-outline btn-sm" data-rb-edit="' + r.id + '" style="margin-right:4px;">Edit</button>' +
+                (st[0] === 'Ended' ? '' : '<button class="btn btn-outline btn-sm" data-rb-toggle="' + r.id + '" style="margin-right:4px;">' + (r.is_active ? 'Pause' : 'Resume') + '</button>') +
+                '<button class="btn btn-outline btn-sm" data-rb-delete="' + r.id + '" style="color:var(--danger-color);border-color:var(--danger-color);">Delete</button>' +
+            '</td></tr>';
+    }).join('');
+    body.querySelectorAll('[data-rb-edit]').forEach(function (b) { b.addEventListener('click', function () { openRecurringBillModal(+b.getAttribute('data-rb-edit')); }); });
+    body.querySelectorAll('[data-rb-toggle]').forEach(function (b) { b.addEventListener('click', function () { toggleRecurringBill(+b.getAttribute('data-rb-toggle')); }); });
+    body.querySelectorAll('[data-rb-delete]').forEach(function (b) { b.addEventListener('click', function () { deleteRecurringBill(+b.getAttribute('data-rb-delete')); }); });
+}
+
+function renderRecurringBillTaxRates() {
+    var sel = document.getElementById('rb-tax-rate');
+    if (!sel) return;
+    var opts = '<option value="">Enter it myself</option>';
+    (typeof _taxRates !== 'undefined' ? _taxRates : []).forEach(function (t) {
+        opts += '<option value="' + esc(t.percent) + '">' + esc(t.label) + '</option>';
+    });
+    sel.innerHTML = opts;
+}
+
+function calcRecurringBillTotal() {
+    var amount = parseFloat(document.getElementById('rb-amount').value) || 0;
+    var tax = parseFloat(document.getElementById('rb-tax').value) || 0;
+    document.getElementById('rb-total').value = (amount + tax).toFixed(2);
+}
+window.calcRecurringBillTotal = calcRecurringBillTotal;
+
+function applyRecurringBillTaxRate() {
+    var rate = parseFloat(document.getElementById('rb-tax-rate').value);
+    if (isNaN(rate)) return;                        // "Enter it myself"
+    var amount = parseFloat(document.getElementById('rb-amount').value) || 0;
+    document.getElementById('rb-tax').value = (amount * rate / 100).toFixed(2);
+    calcRecurringBillTotal();
+}
+window.applyRecurringBillTaxRate = applyRecurringBillTaxRate;
+
+function openRecurringBillModal(id) {
+    var r = id ? _recurringBills.filter(function (x) { return x.id === id; })[0] : null;
+    var set = function (field, value) { document.getElementById(field).value = value; };
+    renderRecurringBillTaxRates();
+    document.getElementById('recurring-bill-title').textContent = r ? 'Edit recurring bill' : 'New recurring bill';
+    set('rb-id', r ? r.id : '');
+    set('rb-name', r ? r.name : '');
+    set('rb-vendor', r ? r.vendor_name : '');
+    set('rb-email', r ? r.vendor_email : '');
+    set('rb-category', r ? r.category : 'general');
+    set('rb-amount', r ? r.amount : '0');
+    set('rb-tax', r ? r.tax_amount : '0');
+    set('rb-frequency', r ? r.frequency : 'monthly');
+    set('rb-next', r ? r.next_run : localDate());
+    set('rb-terms', r ? r.payment_terms_days : '30');
+    set('rb-end', r ? r.end_date : '');
+    set('rb-reference', r ? r.reference : '');
+    set('rb-notes', r ? r.notes : '');
+    document.getElementById('rb-approve').checked = !!(r && r.auto_approve);
+    calcRecurringBillTotal();
+    document.getElementById('recurring-bill-modal').style.display = 'flex';
+}
+window.openRecurringBillModal = openRecurringBillModal;
+
+function closeRecurringBillModal() { document.getElementById('recurring-bill-modal').style.display = 'none'; }
+window.closeRecurringBillModal = closeRecurringBillModal;
+
+async function saveRecurringBill() {
+    var val = function (id) { return document.getElementById(id).value; };
+    var id = val('rb-id');
+    var payload = {
+        name: val('rb-name').trim(), vendor_name: val('rb-vendor').trim(), vendor_email: val('rb-email').trim(),
+        category: val('rb-category'), amount: parseFloat(val('rb-amount')) || 0, tax_amount: parseFloat(val('rb-tax')) || 0,
+        frequency: val('rb-frequency'), next_run: val('rb-next'), end_date: val('rb-end'),
+        payment_terms_days: parseInt(val('rb-terms'), 10), reference: val('rb-reference').trim(), notes: val('rb-notes').trim(),
+        auto_approve: document.getElementById('rb-approve').checked,
+        // An edit never reactivates something paused or ended behind the form's back.
+        is_active: id ? (_recurringBills.filter(function (x) { return x.id === +id; })[0] || {}).is_active !== false : true
+    };
+    if (isNaN(payload.payment_terms_days)) payload.payment_terms_days = 30;
+    if (!payload.vendor_name) { showToast('Supplier name is required', 'error'); return; }
+    if (!(payload.amount > 0)) { showToast('The amount must be more than nothing', 'error'); return; }
+    if (!payload.next_run) { showToast('Choose the date of the first bill', 'error'); return; }
+    try {
+        await fetchJson(id ? '/api/recurring-bills/' + id : '/api/recurring-bills', {
+            method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        showToast(id ? 'Recurring bill updated' : 'Recurring bill set up', 'success');
+        closeRecurringBillModal();
+        loadRecurringBills();
+    } catch (e) { showToast(e.message || 'Could not save that', 'error'); }
+}
+window.saveRecurringBill = saveRecurringBill;
+
+async function toggleRecurringBill(id) {
+    var r = _recurringBills.filter(function (x) { return x.id === id; })[0];
+    if (!r) return;
+    try {
+        await fetchJson('/api/recurring-bills/' + id + '/' + (r.is_active ? 'pause' : 'resume'), { method: 'POST' });
+        loadRecurringBills();
+    } catch (e) { showToast(e.message || 'Could not change that', 'error'); }
+}
+window.toggleRecurringBill = toggleRecurringBill;
+
+async function deleteRecurringBill(id) {
+    var r = _recurringBills.filter(function (x) { return x.id === id; })[0];
+    if (!r) return;
+    if (!await uiConfirm('Delete "' + (r.name || r.vendor_name) + '"? Bills already entered from it stay where they are.', { title: 'Delete recurring bill', confirmText: 'Delete' })) return;
+    try {
+        await fetchJson('/api/recurring-bills/' + id, { method: 'DELETE' });
+        showToast('Recurring bill deleted', 'success');
+        loadRecurringBills();
+    } catch (e) { showToast(e.message || 'Could not delete that', 'error'); }
+}
+window.deleteRecurringBill = deleteRecurringBill;
 
 // The suppliers directory: worked out from the bills on the server, searched here.
 var _suppliers = [];
