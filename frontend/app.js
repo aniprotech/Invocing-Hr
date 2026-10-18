@@ -313,6 +313,11 @@ var NAV_FOR_VIEW = {
     'purchases-overview-view': 'nav-purchases-overview',
     'suppliers-view': 'nav-suppliers',
     'recurring-bills-view': 'nav-recurring-bills',
+    'bill-payments-view': 'nav-bill-payments',
+    'supplier-credit-notes-view': 'nav-supplier-credit-notes',
+    'purchase-orders-view': 'nav-purchase-orders',
+    'business-expenses-view': 'nav-business-expenses',
+    'purchase-reports-view': 'nav-purchase-reports',
     'payment-options-view': 'nav-payment-options',
     'invoices-view': 'nav-invoices',
     'create-invoice-view': 'nav-invoices',
@@ -378,6 +383,11 @@ var ROUTE_SLUGS = {
     'purchases-overview-view': 'purchases',
     'suppliers-view': 'suppliers',
     'recurring-bills-view': 'recurring-bills',
+    'bill-payments-view': 'bill-payments',
+    'supplier-credit-notes-view': 'supplier-credit-notes',
+    'purchase-orders-view': 'purchase-orders',
+    'business-expenses-view': 'business-expenses',
+    'purchase-reports-view': 'purchase-reports',
     'payment-options-view': 'payment-options',
     'invoices-view': 'invoices',
     'create-invoice-view': 'invoices/new',
@@ -588,6 +598,11 @@ function showView(viewId) {
     if (viewId === 'payment-options-view' && typeof loadPaymentOptions === 'function') loadPaymentOptions();
     if (viewId === 'suppliers-view' && typeof loadSuppliers === 'function') loadSuppliers();
     if (viewId === 'recurring-bills-view' && typeof loadRecurringBills === 'function') loadRecurringBills();
+    if (viewId === 'bill-payments-view' && typeof loadBillPayments === 'function') loadBillPayments();
+    if (viewId === 'supplier-credit-notes-view' && typeof loadSupplierCreditNotes === 'function') loadSupplierCreditNotes();
+    if (viewId === 'purchase-orders-view' && typeof loadPurchaseOrders === 'function') loadPurchaseOrders();
+    if (viewId === 'business-expenses-view' && typeof loadBusinessExpenses === 'function') loadBusinessExpenses();
+    if (viewId === 'purchase-reports-view' && typeof loadPurchaseReport === 'function') loadPurchaseReport();
     if (viewId === 'invoices-view' && typeof fetchInvoices === 'function') fetchInvoices();
     if (viewId === 'quotes-view' && typeof fetchQuotes === 'function') fetchQuotes();
     if (viewId === 'credit-notes-view' && typeof fetchCreditNotes === 'function') fetchCreditNotes();
@@ -11539,9 +11554,10 @@ async function saveBill() {
         tax_amount: parseFloat(document.getElementById('bill-tax').value) || 0,
         total: parseFloat(document.getElementById('bill-total').value) || 0,
         reference: document.getElementById('bill-reference').value.trim(),
-        notes: document.getElementById('bill-notes').value.trim(),
-        status: 'Draft'
+        notes: document.getElementById('bill-notes').value.trim()
     };
+    // A new bill starts as a draft; editing one must not put a paid bill back.
+    if (!editId) payload.status = 'Draft';
     if (!payload.number || !payload.vendor_name) { showToast('Bill number and vendor name required', 'error'); return; }
     try {
         var url = editId ? '/api/bills/' + editId : '/api/bills';
@@ -11582,14 +11598,9 @@ async function editBill(id) {
 }
 window.editBill = editBill;
 
-async function markBillPaid(id) {
-    if (!await uiConfirm('Mark this bill as paid?')) return;
-    try {
-        var res = await fetch('/api/bills/' + id + '/pay', { method: 'POST', credentials: 'same-origin' });
-        if (res.ok) { showToast('Bill marked as paid', 'success'); loadBills(); }
-        else showToast('Failed to mark paid', 'error');
-    } catch(e) { showToast('Failed to mark paid', 'error'); }
-}
+// The Pay button opens the payment form (part or all, how, from where) instead
+// of marking the whole bill paid in one click.
+async function markBillPaid(id) { return openBillPaymentModal(id); }
 window.markBillPaid = markBillPaid;
 
 async function deleteBill(id, number) {
@@ -18031,6 +18042,760 @@ async function loadPurchasesOverview() {
     }
 }
 window.loadPurchasesOverview = loadPurchasesOverview;
+
+// --- Paying bills and the Payments list ----------------------------------------
+// A payment is a record, part or all of a bill, with how and from where. The
+// bill's running total and status follow from the records on the server.
+
+var BP_METHOD = { bank_transfer: 'Bank transfer', card: 'Card', cash: 'Cash', cheque: 'Cheque', direct_debit: 'Direct debit',
+    credit_note: 'Credit note', other: 'Other' };
+
+async function openBillPaymentModal(id) {
+    var bill = (allBills || []).filter(function (b) { return b.id === id; })[0] || {};
+    var d;
+    try { d = await fetchJson('/api/bills/' + id + '/payments'); }
+    catch (e) { showToast(e.message || 'Could not load that bill', 'error'); return; }
+    var set = function (field, value) { document.getElementById(field).value = value; };
+    document.getElementById('bill-payment-title').textContent = 'Pay ' + (bill.number || 'bill') + (bill.vendor_name ? ' \u00b7 ' + bill.vendor_name : '');
+    set('bp-bill', id);
+    set('bp-amount', d.outstanding > 0 ? d.outstanding.toFixed(2) : '');
+    set('bp-date', localDate());
+    set('bp-method', 'bank_transfer');
+    set('bp-reference', '');
+    document.getElementById('bp-summary').innerHTML =
+        'Total <strong>' + formatCurrency(d.total) + '</strong> &middot; paid <strong>' + formatCurrency(d.paid) +
+        '</strong> &middot; still owed <strong>' + formatCurrency(d.outstanding) + '</strong>';
+    document.getElementById('bp-save').disabled = !(d.outstanding > 0);
+    document.getElementById('bp-history').innerHTML = d.payments.length
+        ? '<div style="font-size:0.78rem;color:var(--text-secondary);margin:10px 0 4px;">Payments so far</div>' + d.payments.map(function (p) {
+            return '<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--border-color);">' +
+                '<span>' + esc(p.paid_on) + ' &middot; ' + esc(BP_METHOD[p.method] || p.method) + (p.reference ? ' &middot; ' + esc(p.reference) : '') + '</span>' +
+                '<span><strong>' + formatCurrency(p.amount) + '</strong> ' +
+                (p.method === 'credit_note' ? '' : '<button class="btn btn-outline btn-sm" data-bp-remove="' + p.id + '">Remove</button>') + '</span></div>';
+        }).join('') : '';
+    document.querySelectorAll('#bp-history [data-bp-remove]').forEach(function (b) {
+        b.addEventListener('click', function () { removeBillPayment(id, +b.getAttribute('data-bp-remove'), true); });
+    });
+    // Where it was paid from: the business's open accounts, or untracked.
+    var sel = document.getElementById('bp-account');
+    var accounts = [];
+    try { accounts = ((await fetchJson('/api/accounts')).accounts || []).filter(function (a) { return a.active; }); } catch (e) { accounts = []; }
+    sel.innerHTML = '<option value="">Not said</option>' + accounts.map(function (a) {
+        return '<option value="' + esc(String(a.id)) + '">' + esc(a.name) + '</option>';
+    }).join('');
+    var dflt = accounts.filter(function (a) { return a.is_default; })[0];
+    if (dflt) sel.value = String(dflt.id);
+    document.getElementById('bill-payment-modal').style.display = 'flex';
+}
+window.openBillPaymentModal = openBillPaymentModal;
+
+function closeBillPaymentModal() { document.getElementById('bill-payment-modal').style.display = 'none'; }
+window.closeBillPaymentModal = closeBillPaymentModal;
+
+async function saveBillPayment() {
+    var val = function (f) { return document.getElementById(f).value; };
+    var id = val('bp-bill');
+    var amount = parseFloat(val('bp-amount'));
+    if (!(amount > 0)) { showToast('The payment must be more than nothing', 'error'); return; }
+    try {
+        var r = await fetchJson('/api/bills/' + id + '/payments', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ amount: amount, paid_on: val('bp-date'), method: val('bp-method'), reference: val('bp-reference').trim(),
+                account_id: Number(val('bp-account')) || null }) });
+        showToast(r.status === 'Paid' ? 'Bill paid' : 'Payment recorded', 'success');
+        closeBillPaymentModal();
+        loadBills();
+        if (document.getElementById('bill-payments-view').classList.contains('active')) loadBillPayments();
+    } catch (e) { showToast(e.message || 'Could not record that payment', 'error'); }
+}
+window.saveBillPayment = saveBillPayment;
+
+async function removeBillPayment(billId, paymentId, fromModal) {
+    if (!await uiConfirm('Remove this payment? The bill goes back to owing it.', { title: 'Remove payment', confirmText: 'Remove' })) return;
+    try {
+        await fetchJson('/api/bills/' + billId + '/payments/' + paymentId, { method: 'DELETE' });
+        showToast('Payment removed', 'success');
+        if (fromModal) { closeBillPaymentModal(); loadBills(); } else { loadBillPayments(); }
+    } catch (e) { showToast(e.message || 'Could not remove that payment', 'error'); }
+}
+window.removeBillPayment = removeBillPayment;
+
+function billPaymentFilters() {
+    var q = new URLSearchParams();
+    [['q', 'bill-payments-search'], ['start', 'bill-payments-from'], ['end', 'bill-payments-to'], ['method', 'bill-payments-method']].forEach(function (f) {
+        var el = document.getElementById(f[1]);
+        if (el && el.value.trim()) q.set(f[0], el.value.trim());
+    });
+    return q.toString();
+}
+
+var _billPaymentsTimer = null;
+function loadBillPayments() {
+    clearTimeout(_billPaymentsTimer);
+    _billPaymentsTimer = setTimeout(doLoadBillPayments, 150);
+}
+window.loadBillPayments = loadBillPayments;
+
+async function doLoadBillPayments() {
+    var body = document.getElementById('bill-payments-body');
+    if (!body) return;
+    var qs = billPaymentFilters();
+    var csv = document.getElementById('bill-payments-csv');
+    if (csv) csv.setAttribute('href', '/api/bill-payments.csv' + (qs ? '?' + qs : ''));
+    try {
+        var d = await fetchJson('/api/bill-payments' + (qs ? '?' + qs : ''));
+        document.getElementById('bill-payments-summary').textContent = d.count + ' payment' + (d.count === 1 ? '' : 's') + ' \u00b7 ' + formatCurrency(d.total) + ' paid';
+        if (!d.payments.length) {
+            body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-secondary);">' +
+                (qs ? 'No payment matches that.' : 'No payments yet. Pay a bill and it is listed here.') + '</td></tr>';
+            return;
+        }
+        body.innerHTML = d.payments.map(function (p) {
+            return '<tr><td>' + esc(p.paid_on) + '</td><td>' + esc(p.supplier || '-') + '</td><td>' + esc(p.bill_number || '-') + '</td>' +
+                '<td class="text-right"><strong>' + formatCurrency(p.amount) + '</strong></td>' +
+                '<td>' + esc(BP_METHOD[p.method] || p.method) + '</td><td>' + esc(p.reference || '-') + '</td><td>' + esc(p.account || '-') + '</td>' +
+                '<td class="text-right">' + (p.method === 'credit_note' ? '' : '<button class="btn btn-outline btn-sm" data-bp-del="' + p.bill_id + ':' + p.id + '">Remove</button>') + '</td></tr>';
+        }).join('');
+        body.querySelectorAll('[data-bp-del]').forEach(function (b) {
+            b.addEventListener('click', function () { var ids = b.getAttribute('data-bp-del').split(':'); removeBillPayment(+ids[0], +ids[1], false); });
+        });
+    } catch (e) {
+        body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-secondary);">' + esc(e.message || 'Could not load your payments.') + '</td></tr>';
+    }
+}
+
+// --- Supplier credit notes -------------------------------------------------------
+// Credit a supplier has given you. Taken off the bill it corrects, set against
+// other bills from them, or paid back; the note keeps count of what is left.
+
+var _scnStatus = 'all';
+var SCN_STATE = { Open: ['Open', 'status-awaiting-payment'], Applied: ['Used up', 'status-paid'], Void: ['Void', 'status-void'] };
+var _scnTimer = null;
+
+function filterSupplierCreditNotes(status, btn) {
+    _scnStatus = status;
+    document.querySelectorAll('#scn-tabs .tab').forEach(function (t) { t.classList.toggle('active', t === btn); });
+    loadSupplierCreditNotes();
+}
+window.filterSupplierCreditNotes = filterSupplierCreditNotes;
+
+function loadSupplierCreditNotes() {
+    clearTimeout(_scnTimer);
+    _scnTimer = setTimeout(doLoadSupplierCreditNotes, 120);
+}
+window.loadSupplierCreditNotes = loadSupplierCreditNotes;
+
+async function doLoadSupplierCreditNotes() {
+    var body = document.getElementById('scn-body');
+    if (!body) return;
+    var q = ((document.getElementById('scn-search') || {}).value || '').trim();
+    var qs = '?status=' + encodeURIComponent(_scnStatus) + (q ? '&q=' + encodeURIComponent(q) : '');
+    try {
+        var d = await fetchJson('/api/supplier-credit-notes' + qs);
+        document.getElementById('scn-summary').textContent = d.count + ' credit note' + (d.count === 1 ? '' : 's') +
+            (d.open_total > 0 ? ' \u00b7 ' + formatCurrency(d.open_total) + ' still to use' : '');
+        if (!d.credit_notes.length) {
+            body.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text-secondary);">' +
+                (q || _scnStatus !== 'all' ? 'No credit note matches that.' : 'No credit notes yet. When a supplier credits you, record it here.') + '</td></tr>';
+            return;
+        }
+        body.innerHTML = d.credit_notes.map(function (n) {
+            var st = SCN_STATE[n.status] || [n.status, 'status-draft'];
+            return '<tr><td><strong>' + esc(n.number) + '</strong></td><td>' + esc(n.vendor_name) + '</td><td>' + esc(n.supplier_ref || '-') + '</td>' +
+                '<td>' + esc(n.issue_date || '-') + '</td><td>' + esc(n.bill_number || '-') + '</td>' +
+                '<td class="text-right">' + formatCurrency(n.total) + '</td>' +
+                '<td class="text-right"><strong>' + formatCurrency(n.remaining) + '</strong></td>' +
+                '<td><span class="status-pill ' + st[1] + '">' + st[0] + '</span></td>' +
+                '<td class="text-right"><button class="btn btn-outline btn-sm" data-scn-open="' + n.id + '">View</button></td></tr>';
+        }).join('');
+        body.querySelectorAll('[data-scn-open]').forEach(function (b) {
+            b.addEventListener('click', function () { openSupplierCreditNote(+b.getAttribute('data-scn-open')); });
+        });
+    } catch (e) {
+        body.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text-secondary);">' + esc(e.message || 'Could not load your credit notes.') + '</td></tr>';
+    }
+}
+
+// Bills that still owe something, the ones from the same supplier first.
+async function openBillOptions(supplier) {
+    var bills = [];
+    try { bills = await fetchJson('/api/bills'); } catch (e) { bills = []; }
+    var owing = bills.map(function (b) { b.__left = Math.max((b.total || 0) - (b.amount_paid || 0), 0); return b; })
+        .filter(function (b) { return b.__left > 0.005 && b.status !== 'Paid' && b.status !== 'Draft'; });   // a draft is not waiting to be paid yet
+    var mine = (supplier || '').trim().toLowerCase();
+    owing.sort(function (a, b) {
+        var am = (a.vendor_name || '').trim().toLowerCase() === mine ? 0 : 1, bm = (b.vendor_name || '').trim().toLowerCase() === mine ? 0 : 1;
+        return am - bm;
+    });
+    return owing.map(function (b) {
+        return { value: String(b.id), label: b.number + ' \u00b7 ' + (b.vendor_name || '') + ' \u00b7 ' + formatCurrency(b.__left) + ' owed' };
+    });
+}
+
+async function newSupplierCreditNote() {
+    var bills = await openBillOptions('');
+    var out = await uiForm([
+        { name: 'bill_id', label: 'Against a bill', type: 'select', value: '', options: [{ value: '', label: 'None - not tied to one bill' }].concat(bills) },
+        { name: 'vendor_name', label: 'Supplier', type: 'text', hint: 'Leave empty to use the bill\'s supplier' },
+        { name: 'amount', label: 'Amount', type: 'number', required: true },
+        { name: 'tax_amount', label: 'Tax', type: 'number', value: '0' },
+        { name: 'supplier_ref', label: 'Their credit note number', type: 'text' },
+        { name: 'issue_date', label: 'Date', type: 'date', value: localDate() },
+        { name: 'reason', label: 'Reason', type: 'text' },
+        { name: 'apply_to_bill', label: 'If it is against a bill', type: 'select', value: 'yes',
+          options: [{ value: 'yes', label: 'Take it off that bill now' }, { value: 'no', label: 'Keep it to set against bills later' }] }
+    ], { title: 'New supplier credit note', confirmText: 'Record' });
+    if (!out) return;
+    var amount = parseFloat(out.amount);
+    if (!(amount > 0)) { showToast('The amount must be more than nothing', 'error'); return; }
+    try {
+        var n = await fetchJson('/api/supplier-credit-notes', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bill_id: out.bill_id ? Number(out.bill_id) : null, vendor_name: (out.vendor_name || '').trim(),
+                amount: amount, tax_amount: parseFloat(out.tax_amount) || 0, supplier_ref: (out.supplier_ref || '').trim(),
+                issue_date: out.issue_date || '', reason: (out.reason || '').trim(), apply_to_bill: out.apply_to_bill !== 'no' }) });
+        showToast('Credit note ' + n.number + ' recorded', 'success');
+        loadSupplierCreditNotes();
+    } catch (e) { showToast(e.message || 'Could not record that', 'error'); }
+}
+window.newSupplierCreditNote = newSupplierCreditNote;
+
+var _scnOpen = null;
+
+async function openSupplierCreditNote(id) {
+    var n;
+    try { n = await fetchJson('/api/supplier-credit-notes/' + id); }
+    catch (e) { showToast(e.message || 'Could not open that credit note', 'error'); return; }
+    _scnOpen = n;
+    var st = SCN_STATE[n.status] || [n.status, 'status-draft'];
+    document.getElementById('scn-detail-title').textContent = n.number + ' \u00b7 ' + n.vendor_name;
+    var line = function (label, value) { return '<div style="display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-top:1px solid var(--border-color);"><span style="color:var(--text-secondary);">' + esc(label) + '</span><span>' + value + '</span></div>'; };
+    document.getElementById('scn-detail-body').innerHTML =
+        '<div style="margin-bottom:10px;"><span class="status-pill ' + st[1] + '">' + st[0] + '</span></div>' +
+        line('Their number', esc(n.supplier_ref || '-')) + line('Date', esc(n.issue_date || '-')) + line('Reason', esc(n.reason || '-')) +
+        line('Against bill', esc(n.bill_number || '-')) +
+        line('Total', '<strong>' + formatCurrency(n.total) + '</strong>') +
+        line('Set against bills', formatCurrency(n.allocated)) +
+        line('Paid back to you', formatCurrency(n.refunded) + (n.refunded_on ? ' on ' + esc(n.refunded_on) : '')) +
+        line('Left to use', '<strong>' + formatCurrency(n.remaining) + '</strong>') +
+        (n.status === 'Void' ? line('Voided', esc(n.voided_on) + (n.void_reason ? ' \u00b7 ' + esc(n.void_reason) : '')) : '') +
+        ((n.allocations || []).length ? '<div style="font-size:0.78rem;color:var(--text-secondary);margin:12px 0 4px;">Taken off these bills</div>' + n.allocations.map(function (a) {
+            return '<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--border-color);">' +
+                '<span>' + esc(a.bill_number) + ' &middot; ' + esc(a.date) + '</span><span><strong>' + formatCurrency(a.amount) + '</strong> ' +
+                '<button class="btn btn-outline btn-sm" data-scn-unallocate="' + a.payment_id + '">Take off</button></span></div>';
+        }).join('') : '');
+    var actions = [];
+    if (n.status !== 'Void' && n.remaining > 0.005) {
+        actions.push('<button class="btn btn-primary" data-scn-act="allocate">Set against a bill</button>');
+        actions.push('<button class="btn btn-outline" data-scn-act="refund">Record a refund</button>');
+    }
+    if (n.status !== 'Void' && !(n.allocated > 0.005) && !(n.refunded > 0.005)) {
+        actions.push('<button class="btn btn-outline" data-scn-act="void" style="color:var(--danger-color);border-color:var(--danger-color);">Void</button>');
+    }
+    actions.push('<button class="btn btn-outline" onclick="closeSupplierCreditNote()">Close</button>');
+    document.getElementById('scn-detail-actions').innerHTML = actions.join('');
+    document.querySelectorAll('#scn-detail-actions [data-scn-act]').forEach(function (b) {
+        b.addEventListener('click', function () {
+            var act = b.getAttribute('data-scn-act');
+            if (act === 'allocate') allocateSupplierCredit(n.id);
+            else if (act === 'refund') refundSupplierCredit(n.id);
+            else voidSupplierCredit(n.id);
+        });
+    });
+    document.querySelectorAll('#scn-detail-body [data-scn-unallocate]').forEach(function (b) {
+        b.addEventListener('click', function () { unallocateSupplierCredit(n.id, +b.getAttribute('data-scn-unallocate')); });
+    });
+    document.getElementById('scn-detail-modal').style.display = 'flex';
+}
+window.openSupplierCreditNote = openSupplierCreditNote;
+
+function closeSupplierCreditNote() { document.getElementById('scn-detail-modal').style.display = 'none'; }
+window.closeSupplierCreditNote = closeSupplierCreditNote;
+
+// Each action says what it did, and the detail is opened again so it shows the new figures.
+async function scnAction(id, path, method, payload, done) {
+    try {
+        await fetchJson('/api/supplier-credit-notes/' + id + path, { method: method, headers: { 'Content-Type': 'application/json' },
+            body: payload ? JSON.stringify(payload) : undefined });
+        showToast(done, 'success');
+        loadSupplierCreditNotes();
+        await openSupplierCreditNote(id);
+    } catch (e) { showToast(e.message || 'Could not do that', 'error'); }
+}
+
+async function allocateSupplierCredit(id) {
+    var n = _scnOpen;
+    var bills = await openBillOptions(n && n.vendor_name);
+    if (!bills.length) { showToast('No bill is waiting to be paid', 'error'); return; }
+    var out = await uiForm([
+        { name: 'bill_id', label: 'Bill', type: 'select', value: bills[0].value, options: bills },
+        { name: 'amount', label: 'Amount to set against it', type: 'number', value: n ? String(n.remaining) : '', required: true }
+    ], { title: 'Set against a bill', confirmText: 'Set against it', message: n ? formatCurrency(n.remaining) + ' of this credit note is left.' : '' });
+    if (!out) return;
+    var amount = parseFloat(out.amount);
+    if (!(amount > 0)) { showToast('The amount must be more than nothing', 'error'); return; }
+    await scnAction(id, '/allocate', 'POST', { bill_id: Number(out.bill_id), amount: amount }, 'Credit set against the bill');
+}
+window.allocateSupplierCredit = allocateSupplierCredit;
+
+async function unallocateSupplierCredit(id, paymentId) {
+    if (!await uiConfirm('Take this credit back off the bill? The bill will owe it again.', { title: 'Take off', confirmText: 'Take off' })) return;
+    await scnAction(id, '/allocations/' + paymentId, 'DELETE', null, 'Credit taken off the bill');
+}
+window.unallocateSupplierCredit = unallocateSupplierCredit;
+
+async function refundSupplierCredit(id) {
+    var n = _scnOpen;
+    var out = await uiForm([
+        { name: 'amount', label: 'Amount paid back to you', type: 'number', value: n ? String(n.remaining) : '', required: true },
+        { name: 'date', label: 'Date', type: 'date', value: localDate() },
+        { name: 'method', label: 'How', type: 'select', value: 'bank_transfer', options: [
+            { value: 'bank_transfer', label: 'Bank transfer' }, { value: 'card', label: 'Card' }, { value: 'cash', label: 'Cash' },
+            { value: 'cheque', label: 'Cheque' }, { value: 'other', label: 'Other' }] },
+        { name: 'reference', label: 'Reference', type: 'text' }
+    ], { title: 'Record a refund', confirmText: 'Record', message: 'For money the supplier has already paid back to you.' });
+    if (!out) return;
+    var amount = parseFloat(out.amount);
+    if (!(amount > 0)) { showToast('The amount must be more than nothing', 'error'); return; }
+    await scnAction(id, '/refund', 'POST', { amount: amount, date: out.date || '', method: out.method, reference: (out.reference || '').trim() }, 'Refund recorded');
+}
+window.refundSupplierCredit = refundSupplierCredit;
+
+async function voidSupplierCredit(id) {
+    var out = await uiForm([{ name: 'reason', label: 'Why', type: 'text' }],
+        { title: 'Void this credit note', confirmText: 'Void it', danger: true, message: 'It stays on record, marked void, and cannot be used.' });
+    if (!out) return;
+    await scnAction(id, '/void', 'POST', { reason: (out.reason || '').trim() }, 'Credit note voided');
+}
+window.voidSupplierCredit = voidSupplierCredit;
+
+// --- Purchase orders -----------------------------------------------------------------
+// An order placed with a supplier. A draft can be edited; once approved it is
+// agreed and can be turned into the supplier's bill, once.
+
+var _poStatus = 'all';
+var _poTimer = null;
+var PO_STATE = { Draft: ['Draft', 'status-draft'], Approved: ['Approved', 'status-sent'], Billed: ['Billed', 'status-paid'], Void: ['Void', 'status-void'] };
+
+function filterPurchaseOrders(status, btn) {
+    _poStatus = status;
+    document.querySelectorAll('#po-tabs .tab').forEach(function (t) { t.classList.toggle('active', t === btn); });
+    loadPurchaseOrders();
+}
+window.filterPurchaseOrders = filterPurchaseOrders;
+
+function loadPurchaseOrders() {
+    clearTimeout(_poTimer);
+    _poTimer = setTimeout(doLoadPurchaseOrders, 120);
+}
+window.loadPurchaseOrders = loadPurchaseOrders;
+
+async function doLoadPurchaseOrders() {
+    var body = document.getElementById('po-body');
+    if (!body) return;
+    var q = ((document.getElementById('po-search') || {}).value || '').trim();
+    try {
+        var d = await fetchJson('/api/purchase-orders?status=' + encodeURIComponent(_poStatus) + (q ? '&q=' + encodeURIComponent(q) : ''));
+        document.getElementById('po-summary').textContent = d.count + ' order' + (d.count === 1 ? '' : 's') +
+            (d.approved_total > 0 ? ' \u00b7 ' + formatCurrency(d.approved_total) + ' approved and not yet billed' : '');
+        if (!d.orders.length) {
+            body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-secondary);">' +
+                (q || _poStatus !== 'all' ? 'No purchase order matches that.' : 'No purchase orders yet. Write one when you order from a supplier.') + '</td></tr>';
+            return;
+        }
+        body.innerHTML = d.orders.map(function (o) {
+            var st = PO_STATE[o.status] || [o.status, 'status-draft'];
+            return '<tr><td><strong>' + esc(o.number) + '</strong></td><td>' + esc(o.vendor_name) + '</td><td>' + esc(o.issue_date || '-') + '</td>' +
+                '<td>' + esc(o.delivery_date || '-') + '</td><td>' + esc(o.reference || '-') + '</td>' +
+                '<td class="text-right"><strong>' + formatCurrency(o.total) + '</strong></td>' +
+                '<td><span class="status-pill ' + st[1] + '">' + st[0] + '</span></td>' +
+                '<td class="text-right"><button class="btn btn-outline btn-sm" data-po-open="' + o.id + '">View</button></td></tr>';
+        }).join('');
+        body.querySelectorAll('[data-po-open]').forEach(function (b) { b.addEventListener('click', function () { openPurchaseOrder(+b.getAttribute('data-po-open')); }); });
+    } catch (e) {
+        body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-secondary);">' + esc(e.message || 'Could not load your purchase orders.') + '</td></tr>';
+    }
+}
+
+// --- the editor ---
+function poRateOptions(selected) {
+    var rates = (typeof _taxRates !== 'undefined' && _taxRates) ? _taxRates : [];
+    var seen = {}, html = '';
+    html += '<option value="0"' + (+selected === 0 ? ' selected' : '') + '>No tax</option>';
+    seen['0'] = true;
+    rates.forEach(function (t) {
+        var v = String(+t.percent);
+        if (seen[v]) return;
+        seen[v] = true;
+        html += '<option value="' + esc(v) + '"' + (+selected === +t.percent ? ' selected' : '') + '>' + esc(t.label) + '</option>';
+    });
+    if (!seen[String(+selected)]) html += '<option value="' + esc(String(+selected)) + '" selected>' + esc(String(+selected)) + '%</option>';
+    return html;
+}
+
+function addPurchaseOrderLine(line) {
+    line = line || { description: '', qty: 1, price: 0, tax_rate: 0 };
+    var host = document.getElementById('po-lines');
+    var row = document.createElement('div');
+    row.className = 'po-line';
+    row.style.cssText = 'display:grid;grid-template-columns:minmax(120px,3fr) 70px 90px minmax(90px,1.2fr) 80px 28px;gap:8px;align-items:center;margin-bottom:6px;';
+    row.innerHTML = '<input type="text" class="form-control po-desc" placeholder="Description" value="' + esc(line.description) + '">' +
+        '<input type="number" class="form-control po-qty" step="any" min="0" value="' + esc(String(line.qty)) + '" aria-label="Quantity">' +
+        '<input type="number" class="form-control po-price" step="0.01" min="0" value="' + esc(String(line.price)) + '" aria-label="Price">' +
+        '<select class="form-control po-rate" aria-label="Tax rate">' + poRateOptions(line.tax_rate) + '</select>' +
+        '<span class="po-net" style="text-align:right;"></span>' +
+        '<button type="button" class="btn btn-outline btn-sm po-remove" title="Remove this line" aria-label="Remove this line">&times;</button>';
+    host.appendChild(row);
+    ['input', 'change'].forEach(function (ev) { row.addEventListener(ev, recalcPurchaseOrder); });
+    row.querySelector('.po-remove').addEventListener('click', function () {
+        if (host.querySelectorAll('.po-line').length > 1) { row.remove(); recalcPurchaseOrder(); }
+    });
+    recalcPurchaseOrder();
+}
+window.addPurchaseOrderLine = addPurchaseOrderLine;
+
+function readPurchaseOrderLines() {
+    return Array.prototype.map.call(document.querySelectorAll('#po-lines .po-line'), function (row) {
+        return { description: row.querySelector('.po-desc').value.trim(), qty: parseFloat(row.querySelector('.po-qty').value) || 0,
+            price: parseFloat(row.querySelector('.po-price').value) || 0, tax_rate: parseFloat(row.querySelector('.po-rate').value) || 0 };
+    });
+}
+
+function recalcPurchaseOrder() {
+    var sub = 0, tax = 0;
+    var rows = document.querySelectorAll('#po-lines .po-line');
+    readPurchaseOrderLines().forEach(function (ln, i) {
+        var net = Math.round(ln.qty * ln.price * 100) / 100;
+        sub += net;
+        tax += Math.round(net * ln.tax_rate) / 100;
+        rows[i].querySelector('.po-net').textContent = formatCurrency(net);
+    });
+    var totals = document.getElementById('po-totals');
+    if (totals) totals.innerHTML = 'Subtotal ' + formatCurrency(sub) + ' &middot; Tax ' + formatCurrency(tax) + ' &middot; <strong>Total ' + formatCurrency(sub + tax) + '</strong>';
+}
+
+function openPurchaseOrderEditor(po) {
+    var set = function (id, v) { document.getElementById(id).value = v; };
+    document.getElementById('po-modal-title').textContent = po ? 'Edit ' + po.number : 'New purchase order';
+    set('po-id', po ? po.id : '');
+    set('po-vendor', po ? po.vendor_name : '');
+    set('po-email', po ? po.vendor_email : '');
+    set('po-date', po ? po.issue_date : localDate());
+    set('po-delivery', po ? po.delivery_date : '');
+    set('po-reference', po ? po.reference : '');
+    set('po-notes', po ? po.notes : '');
+    document.getElementById('po-lines').innerHTML = '';
+    (po && po.lines && po.lines.length ? po.lines : [null]).forEach(function (ln) { addPurchaseOrderLine(ln || undefined); });
+    document.getElementById('po-modal').style.display = 'flex';
+}
+function newPurchaseOrder() { openPurchaseOrderEditor(null); }
+window.newPurchaseOrder = newPurchaseOrder;
+
+function closePurchaseOrderEditor() { document.getElementById('po-modal').style.display = 'none'; }
+window.closePurchaseOrderEditor = closePurchaseOrderEditor;
+
+async function savePurchaseOrder() {
+    var val = function (id) { return document.getElementById(id).value; };
+    var id = val('po-id');
+    var lines = readPurchaseOrderLines();
+    if (!val('po-vendor').trim()) { showToast('Supplier name is required', 'error'); return; }
+    for (var i = 0; i < lines.length; i++) {
+        if (!lines[i].description) { showToast('Line ' + (i + 1) + ' needs a description', 'error'); return; }
+        if (!(lines[i].qty > 0)) { showToast('Line ' + (i + 1) + ': the quantity must be more than nothing', 'error'); return; }
+    }
+    try {
+        var po = await fetchJson(id ? '/api/purchase-orders/' + id : '/api/purchase-orders', {
+            method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ vendor_name: val('po-vendor').trim(), vendor_email: val('po-email').trim(), issue_date: val('po-date'),
+                delivery_date: val('po-delivery'), reference: val('po-reference').trim(), notes: val('po-notes').trim(), lines: lines }) });
+        showToast((id ? 'Saved ' : 'Created ') + po.number, 'success');
+        closePurchaseOrderEditor();
+        loadPurchaseOrders();
+    } catch (e) { showToast(e.message || 'Could not save that', 'error'); }
+}
+window.savePurchaseOrder = savePurchaseOrder;
+
+// --- the detail ---
+var _poOpen = null;
+
+async function openPurchaseOrder(id) {
+    var po;
+    try { po = await fetchJson('/api/purchase-orders/' + id); }
+    catch (e) { showToast(e.message || 'Could not open that order', 'error'); return; }
+    _poOpen = po;
+    var st = PO_STATE[po.status] || [po.status, 'status-draft'];
+    document.getElementById('po-detail-title').textContent = po.number + ' \u00b7 ' + po.vendor_name;
+    var line = function (label, value) { return '<div style="display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-top:1px solid var(--border-color);"><span style="color:var(--text-secondary);">' + esc(label) + '</span><span>' + value + '</span></div>'; };
+    document.getElementById('po-detail-body').innerHTML =
+        '<div style="margin-bottom:10px;"><span class="status-pill ' + st[1] + '">' + st[0] + '</span></div>' +
+        line('Order date', esc(po.issue_date || '-')) + line('Delivery date', esc(po.delivery_date || '-')) + line('Reference', esc(po.reference || '-')) +
+        (po.vendor_email ? line('Supplier email', esc(po.vendor_email)) : '') +
+        (po.bill_number ? line('Bill', esc(po.bill_number) + ' <a href="#" data-po-bill="' + esc(po.bill_number) + '">Open</a>') : '') +
+        (po.status === 'Void' ? line('Voided', esc(po.voided_on) + (po.void_reason ? ' \u00b7 ' + esc(po.void_reason) : '')) : '') +
+        '<table class="data-table" style="margin-top:12px;"><thead><tr><th>Description</th><th class="text-right">Qty</th><th class="text-right">Price</th><th class="text-right">Tax</th><th class="text-right">Amount</th></tr></thead><tbody>' +
+        po.lines.map(function (ln) {
+            return '<tr><td>' + esc(ln.description) + '</td><td class="text-right">' + esc(String(ln.qty)) + '</td><td class="text-right">' + formatCurrency(ln.price) +
+                '</td><td class="text-right">' + esc(String(ln.tax_rate)) + '%</td><td class="text-right">' + formatCurrency(ln.net) + '</td></tr>';
+        }).join('') + '</tbody></table>' +
+        '<div style="text-align:right;margin-top:8px;">Subtotal ' + formatCurrency(po.subtotal) + ' &middot; Tax ' + formatCurrency(po.tax_total) +
+        ' &middot; <strong>Total ' + formatCurrency(po.total) + '</strong></div>' +
+        (po.notes ? '<p class="bt-note" style="margin-top:10px;">' + esc(po.notes) + '</p>' : '');
+    var actions = [];
+    if (po.status === 'Draft') {
+        actions.push('<button class="btn btn-primary" data-po-act="approve">Approve</button>');
+        actions.push('<button class="btn btn-outline" data-po-act="edit">Edit</button>');
+        actions.push('<button class="btn btn-outline" data-po-act="delete" style="color:var(--danger-color);border-color:var(--danger-color);">Delete</button>');
+    }
+    if (po.status === 'Approved') {
+        actions.push('<button class="btn btn-primary" data-po-act="bill">Create bill</button>');
+        actions.push('<button class="btn btn-outline" data-po-act="void" style="color:var(--danger-color);border-color:var(--danger-color);">Void</button>');
+    }
+    actions.push('<button class="btn btn-outline" onclick="closePurchaseOrder()">Close</button>');
+    document.getElementById('po-detail-actions').innerHTML = actions.join('');
+    document.querySelectorAll('#po-detail-actions [data-po-act]').forEach(function (b) {
+        b.addEventListener('click', function () { purchaseOrderAction(po.id, b.getAttribute('data-po-act')); });
+    });
+    document.querySelectorAll('#po-detail-body [data-po-bill]').forEach(function (a) {
+        a.addEventListener('click', function (e) {
+            e.preventDefault();
+            closePurchaseOrder();
+            showView('bills-view');
+            loadBills().then(function () { var box = document.getElementById('bill-search'); if (box) { box.value = a.getAttribute('data-po-bill'); searchBills(); } });
+        });
+    });
+    document.getElementById('po-detail-modal').style.display = 'flex';
+}
+window.openPurchaseOrder = openPurchaseOrder;
+
+function closePurchaseOrder() { document.getElementById('po-detail-modal').style.display = 'none'; }
+window.closePurchaseOrder = closePurchaseOrder;
+
+async function poCall(id, path, method, payload, done, reopen) {
+    try {
+        var r = await fetchJson('/api/purchase-orders/' + id + path, { method: method, headers: { 'Content-Type': 'application/json' },
+            body: payload ? JSON.stringify(payload) : undefined });
+        showToast(typeof done === 'function' ? done(r) : done, 'success');
+        loadPurchaseOrders();
+        if (reopen) await openPurchaseOrder(id); else closePurchaseOrder();
+    } catch (e) { showToast(e.message || 'Could not do that', 'error'); }
+}
+
+async function purchaseOrderAction(id, act) {
+    var po = _poOpen;
+    if (act === 'edit') { closePurchaseOrder(); openPurchaseOrderEditor(po); return; }
+    if (act === 'approve') { await poCall(id, '/approve', 'POST', null, 'Purchase order approved', true); return; }
+    if (act === 'delete') {
+        if (!await uiConfirm('Delete the draft ' + po.number + '?', { title: 'Delete draft', confirmText: 'Delete' })) return;
+        await poCall(id, '', 'DELETE', null, 'Draft deleted', false);
+        return;
+    }
+    if (act === 'bill') {
+        var out = await uiForm([{ name: 'due_days', label: 'Bill falls due after (days)', type: 'number', value: '30' }],
+            { title: 'Create the bill', confirmText: 'Create bill', message: 'A draft bill is made from this order, for you to check against what arrived.' });
+        if (!out) return;
+        var days = parseInt(out.due_days, 10);
+        await poCall(id, '/bill', 'POST', { due_days: isNaN(days) ? 30 : days }, function (r) { return 'Bill ' + r.bill_number + ' created'; }, true);
+        return;
+    }
+    if (act === 'void') {
+        var v = await uiForm([{ name: 'reason', label: 'Why', type: 'text' }], { title: 'Void this order', confirmText: 'Void it', danger: true });
+        if (!v) return;
+        await poCall(id, '/void', 'POST', { reason: (v.reason || '').trim() }, 'Purchase order voided', true);
+    }
+}
+window.purchaseOrderAction = purchaseOrderAction;
+
+// --- Business expenses ------------------------------------------------------------------
+// Money already spent that did not come as a supplier bill: a card payment,
+// petty cash. Not staff claims (People > Expenses), which are paid back to staff.
+
+var BE_CATEGORY = { general: 'General', office: 'Office Supplies', software: 'Software/SaaS', utilities: 'Utilities', rent: 'Rent',
+    marketing: 'Marketing', travel: 'Travel', professional: 'Professional Services' };
+var BE_METHOD = { card: 'Card', cash: 'Cash', bank_transfer: 'Bank transfer', cheque: 'Cheque', direct_debit: 'Direct debit', other: 'Other' };
+var _beRows = [];
+var _beTimer = null;
+
+function beFilters() {
+    var q = new URLSearchParams();
+    [['q', 'be-search'], ['start', 'be-from'], ['end', 'be-to'], ['category', 'be-category']].forEach(function (f) {
+        var el = document.getElementById(f[1]);
+        if (el && el.value.trim()) q.set(f[0], el.value.trim());
+    });
+    return q.toString();
+}
+
+function loadBusinessExpenses() {
+    clearTimeout(_beTimer);
+    _beTimer = setTimeout(doLoadBusinessExpenses, 150);
+}
+window.loadBusinessExpenses = loadBusinessExpenses;
+
+async function doLoadBusinessExpenses() {
+    var body = document.getElementById('be-body');
+    if (!body) return;
+    var qs = beFilters();
+    var csv = document.getElementById('be-csv');
+    if (csv) csv.setAttribute('href', '/api/business-expenses.csv' + (qs ? '?' + qs : ''));
+    try {
+        var d = await fetchJson('/api/business-expenses' + (qs ? '?' + qs : ''));
+        _beRows = d.expenses;
+        document.getElementById('be-summary').textContent = d.count + ' expense' + (d.count === 1 ? '' : 's') + ' \u00b7 ' + formatCurrency(d.total) + ' in all';
+        document.getElementById('be-categories').innerHTML = Object.keys(d.by_category || {}).map(function (c) {
+            return '<span class="status-pill status-draft">' + esc(BE_CATEGORY[c] || c) + ' ' + formatCurrency(d.by_category[c]) + '</span>';
+        }).join('');
+        if (!d.expenses.length) {
+            body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-secondary);">' +
+                (qs ? 'No expense matches that.' : 'No expenses yet. Record what the business spends without a supplier bill.') + '</td></tr>';
+            return;
+        }
+        body.innerHTML = d.expenses.map(function (e, i) {
+            return '<tr><td>' + esc(e.spent_on) + '</td><td>' + esc(e.payee || '-') + '</td><td>' + esc(e.description || '-') + '</td>' +
+                '<td>' + esc(BE_CATEGORY[e.category] || e.category) + '</td><td>' + esc(BE_METHOD[e.method] || e.method) + '</td><td>' + esc(e.account || '-') + '</td>' +
+                '<td class="text-right"><strong>' + formatCurrency(e.total) + '</strong></td>' +
+                '<td class="text-right"><button class="btn btn-outline btn-sm" data-be-edit="' + i + '" style="margin-right:4px;">Edit</button>' +
+                '<button class="btn btn-outline btn-sm" data-be-delete="' + i + '" style="color:var(--danger-color);border-color:var(--danger-color);">Delete</button></td></tr>';
+        }).join('');
+        body.querySelectorAll('[data-be-edit]').forEach(function (b) { b.addEventListener('click', function () { editBusinessExpense(_beRows[+b.getAttribute('data-be-edit')]); }); });
+        body.querySelectorAll('[data-be-delete]').forEach(function (b) { b.addEventListener('click', function () { deleteBusinessExpense(_beRows[+b.getAttribute('data-be-delete')]); }); });
+    } catch (e) {
+        body.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-secondary);">' + esc(e.message || 'Could not load your expenses.') + '</td></tr>';
+    }
+}
+
+async function businessExpenseForm(e) {
+    var accounts = [];
+    try { accounts = ((await fetchJson('/api/accounts')).accounts || []).filter(function (a) { return a.active; }); } catch (x) { accounts = []; }
+    var opts = function (map) { return Object.keys(map).map(function (k) { return { value: k, label: map[k] }; }); };
+    return uiForm([
+        { name: 'spent_on', label: 'Date', type: 'date', value: e ? e.spent_on : localDate() },
+        { name: 'payee', label: 'Paid to', type: 'text', value: e ? e.payee : '' },
+        { name: 'description', label: 'What for', type: 'text', value: e ? e.description : '' },
+        { name: 'category', label: 'Category', type: 'select', value: e ? e.category : 'general', options: opts(BE_CATEGORY) },
+        { name: 'amount', label: 'Amount', type: 'number', value: e ? String(e.amount) : '', required: true },
+        { name: 'tax_amount', label: 'Tax', type: 'number', value: e ? String(e.tax_amount) : '0' },
+        { name: 'method', label: 'How it was paid', type: 'select', value: e ? e.method : 'card', options: opts(BE_METHOD) },
+        { name: 'account_id', label: 'Paid from', type: 'select', value: e && e.account_id ? String(e.account_id) : '',
+          options: [{ value: '', label: 'Not said' }].concat(accounts.map(function (a) { return { value: String(a.id), label: a.name }; })) },
+        { name: 'reference', label: 'Reference or receipt number', type: 'text', value: e ? e.reference : '' }
+    ], { title: e ? 'Edit expense' : 'New expense', confirmText: e ? 'Save' : 'Record' });
+}
+
+async function saveBusinessExpense(out, id) {
+    if (!out) return;
+    var amount = parseFloat(out.amount);
+    if (!(amount > 0)) { showToast('The amount must be more than nothing', 'error'); return; }
+    if (!(out.payee || '').trim() && !(out.description || '').trim()) { showToast('Say who it was paid to or what it was for', 'error'); return; }
+    try {
+        await fetchJson(id ? '/api/business-expenses/' + id : '/api/business-expenses', { method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ spent_on: out.spent_on || '', payee: (out.payee || '').trim(), description: (out.description || '').trim(), category: out.category,
+                amount: amount, tax_amount: parseFloat(out.tax_amount) || 0, method: out.method, account_id: out.account_id ? Number(out.account_id) : null,
+                reference: (out.reference || '').trim() }) });
+        showToast(id ? 'Expense saved' : 'Expense recorded', 'success');
+        loadBusinessExpenses();
+    } catch (e) { showToast(e.message || 'Could not save that', 'error'); }
+}
+
+async function newBusinessExpense() { await saveBusinessExpense(await businessExpenseForm(null), null); }
+async function editBusinessExpense(e) { if (e) await saveBusinessExpense(await businessExpenseForm(e), e.id); }
+window.newBusinessExpense = newBusinessExpense;
+window.editBusinessExpense = editBusinessExpense;
+
+async function deleteBusinessExpense(e) {
+    if (!e) return;
+    if (!await uiConfirm('Delete the ' + formatCurrency(e.total) + ' expense' + (e.payee ? ' to ' + e.payee : '') + '?', { title: 'Delete expense', confirmText: 'Delete' })) return;
+    try {
+        await fetchJson('/api/business-expenses/' + e.id, { method: 'DELETE' });
+        showToast('Expense deleted', 'success');
+        loadBusinessExpenses();
+    } catch (x) { showToast(x.message || 'Could not delete that', 'error'); }
+}
+window.deleteBusinessExpense = deleteBusinessExpense;
+
+// --- Purchase reports -----------------------------------------------------------------
+// Aged payables (who you owe, and for how long) and where the money went, by
+// supplier, category and month. Counted on the server.
+
+var _prTab = 'ageing';
+var PR_TITLES = { supplier: 'Supplier', category: 'Category', month: 'Month' };
+
+function showPurchaseReport(tab) {
+    _prTab = tab;
+    document.querySelectorAll('#pr-tabs .tab').forEach(function (t) { t.classList.toggle('active', t.getAttribute('data-pr-tab') === tab); });
+    document.getElementById('pr-asof-box').style.display = tab === 'ageing' ? 'flex' : 'none';
+    document.getElementById('pr-range-box').style.display = tab === 'ageing' ? 'none' : 'flex';
+    loadPurchaseReport();
+}
+window.showPurchaseReport = showPurchaseReport;
+
+function prQuery() {
+    var q = new URLSearchParams();
+    var get = function (id) { return ((document.getElementById(id) || {}).value || '').trim(); };
+    if (_prTab === 'ageing') { if (get('pr-asof')) q.set('as_of', get('pr-asof')); }
+    else { if (get('pr-from')) q.set('start', get('pr-from')); if (get('pr-to')) q.set('end', get('pr-to')); }
+    return q;
+}
+
+var _prTimer = null;
+function loadPurchaseReport() {
+    clearTimeout(_prTimer);
+    _prTimer = setTimeout(doLoadPurchaseReport, 120);
+}
+window.loadPurchaseReport = loadPurchaseReport;
+
+function prTable(head, rows, rightFrom) {
+    return '<div class="widget"><div class="table-responsive"><table class="data-table"><thead><tr>' + head.map(function (h, i) {
+        return '<th' + (i >= rightFrom ? ' class="text-right"' : '') + '>' + esc(h) + '</th>';
+    }).join('') + '</tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+}
+
+async function doLoadPurchaseReport() {
+    var host = document.getElementById('pr-content');
+    if (!host) return;
+    var tab = _prTab;
+    var q = prQuery();
+    var csv = document.getElementById('pr-csv');
+    try {
+        if (tab === 'ageing') {
+            if (csv) csv.setAttribute('href', '/api/purchases/reports/ageing.csv' + (q.toString() ? '?' + q : ''));
+            var a = await fetchJson('/api/purchases/reports/ageing' + (q.toString() ? '?' + q : ''));
+            var cells = AGED_BUCKETS.map(function (pair) {
+                var v = (a.buckets || {})[pair[0]] || 0;
+                var colour = pair[0] === 'current' ? 'var(--text-primary)' : (v > 0 ? 'var(--danger-color)' : 'var(--text-secondary)');
+                return '<div style="text-align:center;padding:18px 8px;"><div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:6px;">' + esc(pair[1]) +
+                    '</div><div style="font-size:1.25rem;font-weight:700;color:' + colour + ';">' + formatCurrency(v) + '</div></div>';
+            }).join('');
+            var suppliers = a.suppliers.length ? a.suppliers.map(function (r) {
+                return '<tr><td><strong>' + esc(r.name) + '</strong></td><td class="text-right">' + r.bills + '</td>' + AGED_BUCKETS.map(function (p) {
+                    return '<td class="text-right">' + (r[p[0]] ? formatCurrency(r[p[0]]) : '-') + '</td>'; }).join('') +
+                    '<td class="text-right"><strong>' + formatCurrency(r.total) + '</strong></td></tr>';
+            }).join('') : '<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--text-secondary);">You do not owe any supplier anything.</td></tr>';
+            var bills = a.bills.length ? a.bills.map(function (b) {
+                return '<tr><td><strong>' + esc(b.number) + '</strong></td><td>' + esc(b.supplier) + '</td><td>' + esc(b.due_date || '-') + '</td><td class="text-right">' +
+                    (b.days_overdue ? '<span style="color:var(--danger-color);">' + b.days_overdue + ' days</span>' : 'Not yet due') + '</td><td class="text-right">' + formatCurrency(b.outstanding) + '</td></tr>';
+            }).join('') : '';
+            host.innerHTML = '<div class="widget" style="margin-bottom:16px;"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));">' + cells + '</div>' +
+                '<div style="text-align:center;padding:14px 0 4px;border-top:1px solid var(--border-color);"><span style="font-size:0.82rem;color:var(--text-secondary);">Total owed</span> <strong style="font-size:1.1rem;margin-left:8px;">' +
+                formatCurrency(a.total_outstanding) + '</strong></div></div>' +
+                prTable(['Supplier', 'Bills'].concat(AGED_BUCKETS.map(function (p) { return p[1]; })).concat(['Total']), suppliers, 1) +
+                (bills ? '<div style="height:16px;"></div>' + prTable(['Bill', 'Supplier', 'Due', 'How late', 'Owed'], bills, 3) : '');
+            return;
+        }
+        if (csv) { var cq = new URLSearchParams(q); cq.set('view', tab); csv.setAttribute('href', '/api/purchases/reports/spend.csv?' + cq); }
+        var d = await fetchJson('/api/purchases/reports/spend' + (q.toString() ? '?' + q : ''));
+        var tile = function (label, value, tone) { return '<div class="stat-card" style="cursor:default;"><span class="stat-label">' + esc(label) + '</span><span class="stat-value"' + (tone ? ' style="color:' + tone + ';"' : '') + '>' + formatCurrency(value) + '</span></div>'; };
+        var rows = d['by_' + tab];
+        var body = rows.length ? rows.map(function (r) {
+            return '<tr><td><strong>' + esc(tab === 'category' ? (BE_CATEGORY[r.name] || r.name) : r.name) + '</strong></td><td class="text-right">' + formatCurrency(r.bills) + '</td><td class="text-right">' +
+                formatCurrency(r.expenses) + '</td>' + (tab === 'category' ? '' : '<td class="text-right">' + (r.credits ? formatCurrency(r.credits) : '-') + '</td>') +
+                '<td class="text-right"><strong>' + formatCurrency(r.net) + '</strong></td></tr>';
+        }).join('') : '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text-secondary);">Nothing was spent between these dates.</td></tr>';
+        host.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin-bottom:16px;">' +
+            tile('Bills', d.summary.bills) + tile('Business expenses', d.summary.expenses) + tile('Credit notes', d.summary.credits, 'var(--success-color)') + tile('Net spend', d.summary.net) + '</div>' +
+            '<div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:8px;">' + esc(d.start) + ' to ' + esc(d.end) + '. Drafts are not counted as spend yet.</div>' +
+            prTable([PR_TITLES[tab], 'Bills', 'Expenses'].concat(tab === 'category' ? [] : ['Credits']).concat([tab === 'category' ? 'Total' : 'Net']), body, 1);
+    } catch (e) {
+        host.innerHTML = '<div class="widget" style="padding:24px;color:var(--text-secondary);">' + esc(e.message || 'Could not load the report.') + '</div>';
+    }
+}
 
 // --- Recurring bills -----------------------------------------------------------
 // Bills that come round - rent, software, a retainer - entered on their date by
