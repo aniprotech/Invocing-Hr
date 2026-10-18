@@ -1926,6 +1926,19 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 71: {sys.exc_info()[1]}")
 
+            # 72. Payment links: an invoice made to be paid from a link, and the
+            # day the link stops working.
+            try:
+                for ddl in (
+                    "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS payment_link VARCHAR DEFAULT ''",
+                    "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS payment_link_expires VARCHAR DEFAULT ''",
+                    "CREATE INDEX IF NOT EXISTS ix_invoices_payment_link ON invoices (payment_link)",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 72: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

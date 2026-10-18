@@ -319,6 +319,7 @@ var NAV_FOR_VIEW = {
     'business-expenses-view': 'nav-business-expenses',
     'purchase-reports-view': 'nav-purchase-reports',
     'payment-options-view': 'nav-payment-options',
+    'payment-links-view': 'nav-payment-links',
     'invoices-view': 'nav-invoices',
     'create-invoice-view': 'nav-invoices',
     'view-invoice-view': 'nav-invoices',
@@ -389,6 +390,7 @@ var ROUTE_SLUGS = {
     'business-expenses-view': 'business-expenses',
     'purchase-reports-view': 'purchase-reports',
     'payment-options-view': 'payment-options',
+    'payment-links-view': 'payment-links',
     'invoices-view': 'invoices',
     'create-invoice-view': 'invoices/new',
     'quotes-view': 'quotes',
@@ -596,6 +598,7 @@ function showView(viewId) {
     if (viewId === 'sales-overview-view' && typeof loadSalesOverview === 'function') loadSalesOverview();
     if (viewId === 'purchases-overview-view' && typeof loadPurchasesOverview === 'function') loadPurchasesOverview();
     if (viewId === 'payment-options-view' && typeof loadPaymentOptions === 'function') loadPaymentOptions();
+    if (viewId === 'payment-links-view' && typeof loadPaymentLinks === 'function') loadPaymentLinks();
     if (viewId === 'suppliers-view' && typeof loadSuppliers === 'function') loadSuppliers();
     if (viewId === 'recurring-bills-view' && typeof loadRecurringBills === 'function') loadRecurringBills();
     if (viewId === 'bill-payments-view' && typeof loadBillPayments === 'function') loadBillPayments();
@@ -18042,6 +18045,144 @@ async function loadPurchasesOverview() {
     }
 }
 window.loadPurchasesOverview = loadPurchasesOverview;
+
+// --- Payment links -----------------------------------------------------------------------
+// Get paid without raising an invoice by hand: an amount, what it is for, and a
+// link to send. Behind each is a real one-line invoice, so every way of paying
+// works and it counts as sales. It is never chased and stops working on its day.
+
+var PL_STATE = { open: ['Open', 'status-awaiting-payment'], paid: ['Paid', 'status-paid'], expired: ['Expired', 'status-void'], cancelled: ['Cancelled', 'status-void'] };
+var _plStatus = 'all';
+var _plRows = [];
+var _plTimer = null;
+
+function paymentLinkUrl(trackingId) {
+    return window.location.origin + '/invoice.html?id=' + encodeURIComponent(trackingId);
+}
+window.paymentLinkUrl = paymentLinkUrl;
+
+function filterPaymentLinks(status, btn) {
+    _plStatus = status;
+    document.querySelectorAll('#pl-tabs .tab').forEach(function (t) { t.classList.toggle('active', t === btn); });
+    loadPaymentLinks();
+}
+window.filterPaymentLinks = filterPaymentLinks;
+
+function loadPaymentLinks() {
+    clearTimeout(_plTimer);
+    _plTimer = setTimeout(doLoadPaymentLinks, 120);
+}
+window.loadPaymentLinks = loadPaymentLinks;
+
+async function doLoadPaymentLinks() {
+    var body = document.getElementById('pl-body');
+    if (!body) return;
+    var q = ((document.getElementById('pl-search') || {}).value || '').trim();
+    try {
+        var d = await fetchJson('/api/payment-links?status=' + encodeURIComponent(_plStatus) + (q ? '&q=' + encodeURIComponent(q) : ''));
+        _plRows = d.links;
+        document.getElementById('pl-summary').textContent = d.count + ' link' + (d.count === 1 ? '' : 's') +
+            (d.open_total > 0 ? ' \u00b7 ' + formatCurrency(d.open_total) + ' waiting to be paid' : '') +
+            (d.paid_total > 0 ? ' \u00b7 ' + formatCurrency(d.paid_total) + ' paid' : '');
+        if (!d.links.length) {
+            body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--text-secondary);">' +
+                (q || _plStatus !== 'all' ? 'No payment link matches that.' : 'No payment links yet. Make one, send it, and get paid online.') + '</td></tr>';
+            return;
+        }
+        body.innerHTML = d.links.map(function (l, i) {
+            var st = PL_STATE[l.state] || [l.state, 'status-draft'];
+            var open = l.state === 'open';
+            return '<tr><td>' + esc(l.created) + '</td>' +
+                '<td><strong>' + esc(l.description || '-') + '</strong><div style="font-size:0.78rem;color:var(--text-secondary);">' +
+                    esc(l.customer || l.email || '') + (l.reference ? ' &middot; ' + esc(l.reference) : '') + ' &middot; ' + esc(l.number) + '</div></td>' +
+                '<td class="text-right"><strong>' + formatCurrency(l.amount, l.currency) + '</strong>' + (l.paid > 0 && l.state === 'open' ? '<div style="font-size:0.75rem;color:var(--text-secondary);">' + formatCurrency(l.paid, l.currency) + ' paid</div>' : '') + '</td>' +
+                '<td><span class="status-pill ' + st[1] + '">' + st[0] + '</span></td>' +
+                '<td>' + esc(l.expires_on || '-') + '</td><td class="text-right">' + (l.opens || 0) + '</td>' +
+                '<td class="text-right">' +
+                    (open ? '<button class="btn btn-outline btn-sm" data-pl-copy="' + i + '" style="margin-right:4px;">Copy link</button>' +
+                            '<button class="btn btn-outline btn-sm" data-pl-send="' + i + '" style="margin-right:4px;">Email</button>' +
+                            (l.paid > 0 ? '' : '<button class="btn btn-outline btn-sm" data-pl-cancel="' + i + '" style="color:var(--danger-color);border-color:var(--danger-color);">Cancel</button>')
+                          : '<button class="btn btn-outline btn-sm" onclick="location.hash=\'#/invoices/' + encodeURIComponent(l.number) + '\'">Invoice</button>') +
+                '</td></tr>';
+        }).join('');
+        body.querySelectorAll('[data-pl-copy]').forEach(function (b) { b.addEventListener('click', function () { copyPaymentLink(_plRows[+b.getAttribute('data-pl-copy')]); }); });
+        body.querySelectorAll('[data-pl-send]').forEach(function (b) { b.addEventListener('click', function () { emailPaymentLink(_plRows[+b.getAttribute('data-pl-send')]); }); });
+        body.querySelectorAll('[data-pl-cancel]').forEach(function (b) { b.addEventListener('click', function () { cancelPaymentLink(_plRows[+b.getAttribute('data-pl-cancel')]); }); });
+    } catch (e) {
+        body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--text-secondary);">' + esc(e.message || 'Could not load your payment links.') + '</td></tr>';
+    }
+}
+
+async function copyPaymentLink(l) {
+    if (!l) return;
+    var url = paymentLinkUrl(l.tracking_id);
+    try {
+        await navigator.clipboard.writeText(url);
+        showToast('Link copied - send it to your customer', 'success');
+    } catch (e) {
+        // Clipboard is blocked on insecure origins and in some browsers, so
+        // show the link rather than failing silently.
+        window.prompt('Copy this link for your customer:', url);
+    }
+}
+window.copyPaymentLink = copyPaymentLink;
+
+async function newPaymentLink() {
+    var out = await uiForm([
+        { name: 'amount', label: 'Amount', type: 'number', required: true },
+        { name: 'description', label: 'What it is for', type: 'text', required: true, placeholder: 'Deposit for the kitchen' },
+        { name: 'customer_name', label: 'Customer (optional)', type: 'text' },
+        { name: 'email', label: 'Customer email (optional)', type: 'text' },
+        { name: 'reference', label: 'Your reference (optional)', type: 'text' },
+        { name: 'expires_in_days', label: 'The link works for', type: 'select', value: '30', options: [
+            { value: '7', label: '7 days' }, { value: '14', label: '14 days' }, { value: '30', label: '30 days' },
+            { value: '60', label: '60 days' }, { value: '90', label: '90 days' }, { value: '365', label: 'A year' }] },
+        { name: 'send', label: 'Email it to them now', type: 'select', value: 'no', options: [
+            { value: 'no', label: 'No, I will send it myself' }, { value: 'yes', label: 'Yes, if I gave an email address' }] }
+    ], { title: 'New payment link', confirmText: 'Make the link' });
+    if (!out) return;
+    var amount = parseFloat(out.amount);
+    if (!(amount > 0)) { showToast('The amount must be more than nothing', 'error'); return; }
+    if (!(out.description || '').trim()) { showToast('Say what the payment is for', 'error'); return; }
+    var link;
+    try {
+        link = await fetchJson('/api/payment-links', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ amount: amount, description: out.description.trim(), customer_name: (out.customer_name || '').trim(),
+                email: (out.email || '').trim(), reference: (out.reference || '').trim(), expires_in_days: parseInt(out.expires_in_days, 10) || 30,
+                send: out.send === 'yes' && !!(out.email || '').trim() }) });
+    } catch (e) { showToast(e.message || 'Could not make that link', 'error'); return; }
+    loadPaymentLinks();
+    if (link.sent_now) showToast('Link made and emailed to ' + link.email, 'success');
+    else { await copyPaymentLink(link); }
+    if (link.send_error) showToast('The link was made but not emailed: ' + link.send_error, 'error');
+    if (link.warning) showToast(link.warning, 'info');
+}
+window.newPaymentLink = newPaymentLink;
+
+async function emailPaymentLink(l) {
+    if (!l) return;
+    var out = await uiForm([{ name: 'email', label: 'Send the link to', type: 'text', value: l.email || '', required: true }],
+        { title: 'Email the link', confirmText: 'Send', message: l.description + ' \u00b7 ' + formatCurrency(l.due, l.currency) });
+    if (!out || !(out.email || '').trim()) return;
+    try {
+        var r = await fetchJson('/api/payment-links/' + encodeURIComponent(l.number) + '/send', { method: 'POST',
+            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: out.email.trim() }) });
+        showToast(r.message || 'Link sent', 'success');
+        loadPaymentLinks();
+    } catch (e) { showToast(e.message || 'Could not send that', 'error'); }
+}
+window.emailPaymentLink = emailPaymentLink;
+
+async function cancelPaymentLink(l) {
+    if (!l) return;
+    if (!await uiConfirm('Cancel the link for "' + l.description + '"? It stops working straight away.', { title: 'Cancel payment link', confirmText: 'Cancel the link' })) return;
+    try {
+        await fetchJson('/api/payment-links/' + encodeURIComponent(l.number) + '/cancel', { method: 'POST' });
+        showToast('Payment link cancelled', 'success');
+        loadPaymentLinks();
+    } catch (e) { showToast(e.message || 'Could not cancel that', 'error'); }
+}
+window.cancelPaymentLink = cancelPaymentLink;
 
 // --- Paying bills and the Payments list ----------------------------------------
 // A payment is a record, part or all of a bill, with how and from where. The
