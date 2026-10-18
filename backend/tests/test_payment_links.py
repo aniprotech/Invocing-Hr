@@ -140,6 +140,7 @@ def test_an_expired_link_stops_working_on_its_day_even_before_the_job_runs(tenan
     gone = public(tenant, lk["tracking_id"])
     assert gone.status_code == 404 and "expired" in gone.json()["detail"]
     assert tenant.get(f"/api/public/invoices/{lk['tracking_id']}/pay/methods").status_code == 404
+    assert tenant.get(f"/api/public/invoices/{lk['tracking_id']}/pdf").status_code == 404, "nor does the document come from it"
     assert tenant.get("/api/payment-links").json()["links"][0]["state"] == "expired"
     assert tenant.get("/api/payment-links").json()["open_total"] == 0.0
 

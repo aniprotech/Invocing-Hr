@@ -4693,8 +4693,8 @@ def public_invoice_pdf(tracking_id: str, db: Session = Depends(get_db)):
     """The document itself, for the person it was sent to. The same rule as
     the page: a draft or a void invoice is not available from a link."""
     inv = db.query(models.DBInvoice).filter(models.DBInvoice.tracking_id == tracking_id).first()
-    if not inv or inv.status in ("Draft", "Void"):
-        raise HTTPException(status_code=404, detail="That invoice is not available")
+    if not inv or inv.status in ("Draft", "Void") or link_is_expired(inv):
+        raise HTTPException(status_code=404, detail=link_unavailable_detail(inv))
     client = db.query(models.DBClient).filter(models.DBClient.id == inv.client_id).first()
     if not client:
         raise HTTPException(status_code=404, detail="That invoice is not available")
