@@ -60,7 +60,7 @@ function boot(opts) {
         const { w, doc } = boot();
         w.renderOffboarding(CHECK());
         const t = text(doc.getElementById('offb-checklist'));
-        check('the checklist says what is not yet paid and the last payslip', /1 payslip\(s\) not yet paid/.test(t) && /2453\.64/.test(t) && /Last payslip PS-3, paid on 2026-05-29/.test(t), t);
+        check('the checklist says what is not yet paid and the last payslip', /1 payslip\(s\) not yet paid/.test(t) && /2,?453\.64/.test(t) && /Last payslip PS-3, paid on 2026-05-29/.test(t), t);
         check('  and that the final payslip should cover their last day and leave owed', /final payslip should include pay up to their last day and any leave owed/.test(t));
         check('  that their pension ends and the provider must be told, the provider named as text', /In the workplace pension with NEST <b>x<\/b>/.test(t) && /Tell the provider/.test(t) && !doc.querySelector('#offb-checklist b'));
         check('  and that their P45 is ready', /P45 ready to give them/.test(t) && !!doc.getElementById('offb-p45'));
