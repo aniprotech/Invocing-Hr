@@ -8092,6 +8092,7 @@ async function viewPayslip(psId) {
         document.getElementById('ps-detail-title').textContent = 'Payslip ' + ps.number;
         document.getElementById('ps-detail-status').textContent = ps.status;
         document.getElementById('ps-detail-status').className = 'status-pill status-' + (ps.status || '').toLowerCase();
+        if (typeof syncPayslipPaidButton === 'function') syncPayslipPaidButton(ps.status);
         document.getElementById('ps-detail-number').textContent = ps.number;
         document.getElementById('ps-detail-emp-name').textContent = ps.employee ? ps.employee.full_name : '-';
         document.getElementById('ps-detail-period').textContent = ps.period_start + ' to ' + ps.period_end;
@@ -8327,16 +8328,7 @@ async function sendPayslipEmail() {
 }
 window.sendPayslipEmail = sendPayslipEmail;
 
-async function markPayslipPaid() {
-    if (!currentPayslipId) return;
-    if (!await uiConfirm('Mark payslip as paid?')) return;
-    try {
-        var res = await fetch('/api/payslips/' + currentPayslipId + '/mark-paid', { method: 'POST' });
-        if (res.ok) { showToast('Marked as paid', 'success'); viewPayslip(currentPayslipId); }
-        else { var data = await res.json(); showToast('Failed: ' + (data.detail || 'Error'), 'error'); }
-    } catch (e) { showToast('Failed: ' + e, 'error'); }
-}
-window.markPayslipPaid = markPayslipPaid;
+// markPayslipPaid lives with the payroll money functions below.
 
 async function deletePayslip() {
     if (!currentPayslipId) return;
@@ -8783,6 +8775,7 @@ async function loadExpensesView() {
         if (!res.ok) throw new Error('Failed');
         var data = await res.json();
         var cur = data.currency;
+        _hrExpenseRows = data.claims || [];
 
         function tile(label, value, tone) {
             return '<div style="flex:1;min-width:150px;background:var(--surface-color);border:1px solid var(--border-color);' +
@@ -8818,6 +8811,7 @@ async function loadExpensesView() {
                       '<button class="btn btn-sm btn-outline" onclick="decideExpenseHr(' + c.id + ', \'reject\')">Decline</button>'
                     : '') +
                 (c.can_mark_paid ? '<button class="btn btn-sm btn-primary" onclick="markExpensePaid(' + c.id + ')">Mark paid</button>' : '') +
+                (c.status === 'paid' ? '<button class="btn btn-sm btn-outline" onclick="markExpenseUnpaid(' + c.id + ')">Mark unpaid</button>' : '') +
             '</div>';
         }).join('') + '</div>';
     } catch (e) {
@@ -8845,18 +8839,7 @@ async function decideExpenseHr(id, action) {
 }
 window.decideExpenseHr = decideExpenseHr;
 
-async function markExpensePaid(id) {
-    if (!await uiConfirm('Mark this as paid? It tells them the money has been sent.',
-        { title: 'Mark as paid', confirmText: 'Paid' })) return;
-    try {
-        var res = await fetch('/api/expenses/' + id + '/paid', { method: 'POST' });
-        var d = await res.json().catch(function () { return {}; });
-        if (!res.ok) { showToast(d.detail || 'That did not go through.', 'error'); return; }
-        showToast('Marked as paid.', 'success');
-        loadExpensesView();
-    } catch (e) { showToast('That did not go through.', 'error'); }
-}
-window.markExpensePaid = markExpensePaid;
+// markExpensePaid lives with the payroll money functions below.
 
 // --- The company feed ------------------------------------------------------
 // Rendered by feed.js, which the staff portal shares. Mounted once and
@@ -9319,7 +9302,7 @@ showView = function(viewId) {
     if (viewId === 'workflows-view' && typeof loadWorkflows === 'function') loadWorkflows();
     if (viewId === 'departments-view') fetchDepartments();
     if (viewId === 'onboarding-hub-view') { loadOnboardingHub(); loadDocumentQueue(); loadExpiringDocuments(); loadOnboardingPipeline(); loadProbations(); }
-    if (viewId === 'payroll-view') { fetchPayslips(currentPsFilter); loadPayrollAnomalies(); renderPayrollRegime(); loadPensionPanel(); loadHmrcPanel(); }
+    if (viewId === 'payroll-view') { fetchPayslips(currentPsFilter); loadPayrollAnomalies(); renderPayrollRegime(); loadPensionPanel(); loadHmrcPanel(); loadPayrollOwed(); }
     if (viewId === 'attendance-view') { loadAttendanceStats(); loadAttendanceButtons(); loadAttendance(); loadLiveAttendance(); loadAttendanceSettings(); switchAttTab('live'); }
     if (viewId === 'orgchart-view') loadOrgChart();
     if (viewId === 'feed-view') loadFeedView();
@@ -12227,6 +12210,181 @@ async function checkInvoiceCredit() {
 }
 window.checkInvoiceCredit = checkInvoiceCredit;
 
+var _hrExpenseRows = [];
+
+// --- Payroll and staff money ------------------------------------------------------------
+// Paying a payslip, repaying an expense claim, and paying HMRC or the pension
+// provider each say the day, the account, and - if there is one - the bank line
+// it went out on. A bank line is only offered when it is for exactly the amount.
+async function bankLineOptions(amount) {
+    var lines = [];
+    try { lines = (await fetchJson('/api/bank/lines?status=out')).lines || []; } catch (e) { lines = []; }
+    var match = lines.filter(function (l) { return Math.abs(Math.abs(Number(l.amount) || 0) - amount) < 0.005; });
+    return [{ value: '', label: match.length ? 'No bank line - just record it' : 'No bank line of that amount yet - just record it' }].concat(match.map(function (l) {
+        return { value: l.id, label: (l.date || '') + '  ' + (l.description || '') + '  ' + formatCurrency(Math.abs(l.amount)) };
+    }));
+}
+window.bankLineOptions = bankLineOptions;
+
+async function askHowPaid(title, amount, confirmText, extra) {
+    var accounts = await billAccountOptions();
+    var lines = await bankLineOptions(amount);
+    var fields = (extra || []).concat([
+        { name: 'paid_on', label: 'Paid on', type: 'date', value: localDate(new Date()), required: true },
+        { name: 'bank_line_id', label: 'Bank line it went out on', type: 'select', options: lines, value: '', hint: 'Choosing one codes that line too, so it is not counted twice.' },
+        { name: 'account_id', label: 'From account (if no bank line)', type: 'select', options: accounts, value: '' }
+    ]);
+    var f = await uiForm(fields, { title: title, confirmText: confirmText || 'Record it' });
+    if (!f) return null;
+    f.bank_line_id = f.bank_line_id ? Number(f.bank_line_id) : null;
+    f.account_id = f.account_id ? Number(f.account_id) : null;
+    return f;
+}
+
+async function markPayslipPaid() {
+    if (!currentPayslipId) return;
+    var status = ((document.getElementById('ps-detail-status') || {}).textContent || '').trim();
+    if (status === 'Paid') {
+        if (!await uiConfirm('Mark this payslip as not paid? Use this only if it was marked paid by mistake.', { title: 'Mark unpaid', confirmText: 'Mark unpaid' })) return;
+        try { await fetchJson('/api/payslips/' + currentPayslipId + '/unmark-paid', { method: 'POST' }); showToast('Payslip reopened', 'success'); viewPayslip(currentPayslipId); }
+        catch (e) { showToast(e.message, 'error'); }
+        return;
+    }
+    var ps;
+    try { ps = await fetchJson('/api/payslips/' + currentPayslipId); } catch (e) { showToast(e.message, 'error'); return; }
+    var f = await askHowPaid('Payslip ' + ps.number + ' paid', Number(ps.net_pay) || 0, 'Mark paid');
+    if (!f) return;
+    try {
+        await fetchJson('/api/payslips/' + currentPayslipId + '/mark-paid', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(f) });
+        showToast('Marked as paid', 'success');
+        viewPayslip(currentPayslipId);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.markPayslipPaid = markPayslipPaid;
+
+function syncPayslipPaidButton(status) {
+    var b = document.getElementById('ps-paid-btn');
+    if (b) b.textContent = status === 'Paid' ? 'Mark unpaid' : 'Mark paid';
+}
+window.syncPayslipPaidButton = syncPayslipPaidButton;
+
+async function markExpensePaid(id) {
+    var claim = (_hrExpenseRows || []).find(function (c) { return c.id === id; }) || {};
+    var f = await askHowPaid('Repay this claim', Number(claim.amount) || 0, 'Paid');
+    if (!f) return;
+    try {
+        await fetchJson('/api/expenses/' + id + '/paid', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(f) });
+        showToast('Marked as paid.', 'success');
+        loadExpensesView();
+    } catch (e) { showToast(e.message || 'That did not go through.', 'error'); }
+}
+window.markExpensePaid = markExpensePaid;
+
+async function markExpenseUnpaid(id) {
+    if (!await uiConfirm('Mark this claim as not paid? It will show as owed to them again.', { title: 'Mark unpaid', confirmText: 'Mark unpaid' })) return;
+    try { await fetchJson('/api/expenses/' + id + '/unpaid', { method: 'POST' }); showToast('Claim owed again.', 'success'); loadExpensesView(); }
+    catch (e) { showToast(e.message, 'error'); }
+}
+window.markExpenseUnpaid = markExpenseUnpaid;
+
+// What the payslips took for HMRC and the pension, month by month.
+var OWED_STATE = { paid: ['Paid', 'var(--success-color)'], overdue: ['Overdue', 'var(--danger-text)'], due_soon: ['Due soon', 'var(--warning-color)'], upcoming: ['Not due yet', 'var(--text-secondary)'] };
+var _payrollOwed = null;
+
+async function loadPayrollOwed(year) {
+    var panel = document.getElementById('payroll-owed-panel');
+    if (!panel) return;
+    await loadPayrollSettings();
+    if (!isUkPayroll()) { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    var host = document.getElementById('payroll-owed-content');
+    try { _payrollOwed = await fetchJson('/api/payroll/liabilities' + (year ? '?tax_year=' + year : '')); }
+    catch (e) { host.innerHTML = '<div style="color:var(--text-secondary);">' + esc(e.message) + '</div>'; return; }
+    var d = _payrollOwed;
+    if (!d || !Array.isArray(d.months)) { host.innerHTML = '<div style="color:var(--text-secondary);">Not available right now.</div>'; return; }
+    d.totals = d.totals || { paye_left: 0, pension_left: 0, overdue: 0 }; d.remittances = d.remittances || [];
+    var label = document.getElementById('payroll-owed-year');
+    if (label) label.textContent = d.label;
+    var months = (d.months || []).filter(function (m) { return m.paye.status !== 'nothing' || m.pension.status !== 'nothing'; });
+    var cell = function (block, kind, m) {
+        if (block.status === 'nothing') return '<td class="text-right" style="color:var(--text-secondary);">-</td>';
+        var st = OWED_STATE[block.status] || ['', ''];
+        return '<td class="text-right"><div><strong>' + formatCurrency(block.left > 0 ? block.left : 0) + '</strong> <span style="font-size:0.74rem;color:var(--text-secondary);">of ' + formatCurrency(block.total) + '</span></div>' +
+            '<div style="font-size:0.74rem;color:' + st[1] + ';font-weight:600;">' + esc(st[0]) + '</div>' +
+            (block.left > 0.005 ? '<button type="button" class="btn btn-outline btn-sm" style="margin-top:4px;" data-owed-pay="' + kind + '" data-month="' + m.month + '" data-left="' + block.left + '">Record payment</button>' : '') + '</td>';
+    };
+    var rows = months.map(function (m) {
+        return '<tr><td>Month ' + m.month + '<div style="font-size:0.74rem;color:var(--text-secondary);">' + esc(m.from) + ' to ' + esc(m.to) + '</div></td>' +
+            '<td>' + esc(m.due) + '</td>' + cell(m.paye, 'hmrc', m) + cell(m.pension, 'pension', m) + '</tr>';
+    }).join('');
+    var paid = (d.remittances || []).map(function (r) {
+        return '<tr><td>' + esc(r.paid_on) + '</td><td>' + (r.kind === 'hmrc' ? 'HMRC' : 'Pension') + ', month ' + r.tax_month + '</td><td>' + esc(r.reference || '') + (r.from_bank ? ' <span style="font-size:0.7rem;color:var(--text-secondary);">(bank line)</span>' : '') + '</td>' +
+            '<td class="text-right">' + formatCurrency(r.amount) + '</td><td class="text-right">' + (r.from_bank ? '' : '<button type="button" class="btn btn-outline btn-sm" data-owed-remove="' + r.id + '">Remove</button>') + '</td></tr>';
+    }).join('');
+    host.innerHTML = '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:12px;font-size:0.88rem;">' +
+            '<div><span style="color:var(--text-secondary);">Owed to HMRC</span><br><strong' + (d.totals.paye_left ? '' : '') + '>' + formatCurrency(d.totals.paye_left) + '</strong></div>' +
+            '<div><span style="color:var(--text-secondary);">Owed to the pension</span><br><strong>' + formatCurrency(d.totals.pension_left) + '</strong></div>' +
+            (d.totals.overdue ? '<div style="color:var(--danger-text);font-weight:600;align-self:flex-end;">' + d.totals.overdue + ' payment' + (d.totals.overdue === 1 ? ' is' : 's are') + ' overdue</div>' : '') + '</div>' +
+        (rows ? '<div class="table-responsive"><table class="data-table inv-table" style="min-width:620px;"><thead><tr><th>Tax month</th><th>Due</th><th class="text-right">HMRC (PAYE, NI, loans)</th><th class="text-right">Pension</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+              : '<div style="color:var(--text-secondary);font-size:0.88rem;">Nothing has been taken from pay this tax year yet.</div>') +
+        (paid ? '<div style="font-weight:600;font-size:0.88rem;margin:14px 0 6px;">Payments made</div><div class="table-responsive"><table class="data-table" style="min-width:520px;font-size:0.85rem;"><thead><tr><th>Paid</th><th>For</th><th>Reference</th><th class="text-right">Amount</th><th></th></tr></thead><tbody>' + paid + '</tbody></table></div>' : '') +
+        '<div style="font-size:0.78rem;color:var(--text-secondary);margin-top:10px;">' + esc(d.note || '') + '</div>';
+    host.querySelectorAll('[data-owed-pay]').forEach(function (b) {
+        b.addEventListener('click', function () { payPayrollOwed(b.getAttribute('data-owed-pay'), Number(b.getAttribute('data-month')), Number(b.getAttribute('data-left'))); });
+    });
+    host.querySelectorAll('[data-owed-remove]').forEach(function (b) {
+        b.addEventListener('click', async function () {
+            if (!await uiConfirm('Remove this payment? What it paid will show as owed again.', { title: 'Remove payment', confirmText: 'Remove', danger: true })) return;
+            try { await fetchJson('/api/payroll/remittances/' + b.getAttribute('data-owed-remove'), { method: 'DELETE' }); showToast('Payment removed', 'success'); loadPayrollOwed(d.tax_year); }
+            catch (e) { showToast(e.message, 'error'); }
+        });
+    });
+}
+window.loadPayrollOwed = loadPayrollOwed;
+
+async function payPayrollOwed(kind, month, left) {
+    var d = _payrollOwed || {};
+    var f = await askHowPaid((kind === 'hmrc' ? 'Payment to HMRC' : 'Payment to the pension provider') + ', tax month ' + month, left, 'Record payment',
+        [{ name: 'amount', label: 'Amount paid', type: 'number', value: left, required: true },
+         { name: 'reference', label: 'Reference', type: 'text', placeholder: kind === 'hmrc' ? 'Your Accounts Office reference' : 'Provider reference' }]);
+    if (!f) return;
+    try {
+        await fetchJson('/api/payroll/remittances', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ kind: kind, tax_year: d.tax_year, tax_month: month, amount: parseFloat(f.amount) || 0, paid_on: f.paid_on, reference: f.reference || '',
+                                   bank_line_id: f.bank_line_id, account_id: f.account_id }) });
+        showToast('Payment recorded', 'success');
+        loadPayrollOwed(d.tax_year);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.payPayrollOwed = payPayrollOwed;
+
+// A payroll run's net pay usually leaves in one transfer: mark every unpaid
+// payslip of one pay day paid at once, against that one bank line.
+async function payPayrollRun() {
+    var slips = [];
+    try { slips = (await fetchJson('/api/payslips')).filter(function (p) { return p.status !== 'Paid' && p.status !== 'Void'; }); }
+    catch (e) { showToast(e.message, 'error'); return; }
+    if (!slips.length) { showToast('Every payslip is already paid', 'info'); return; }
+    var days = {};
+    slips.forEach(function (p) { var k = p.pay_date || '(no pay date)'; (days[k] = days[k] || []).push(p); });
+    var keys = Object.keys(days).sort().reverse();
+    var first = await uiForm([{ name: 'day', label: 'Which pay day', type: 'select', value: keys[0],
+        options: keys.map(function (k) { var t = days[k].reduce(function (s, p) { return s + (Number(p.net_pay) || 0); }, 0); return { value: k, label: k + ' - ' + days[k].length + ' payslip' + (days[k].length === 1 ? '' : 's') + ', ' + formatCurrency(t) + ' net' }; }) }],
+        { title: 'Record net pay paid', confirmText: 'Next' });
+    if (!first) return;
+    var chosen = days[first.day] || [];
+    var total = Math.round(chosen.reduce(function (s, p) { return s + (Number(p.net_pay) || 0); }, 0) * 100) / 100;
+    var f = await askHowPaid('Net pay for ' + first.day + ': ' + formatCurrency(total), total, 'Mark all paid');
+    if (!f) return;
+    try {
+        var r = await fetchJson('/api/payroll/pay', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(Object.assign({ payslip_ids: chosen.map(function (p) { return p.id; }) }, f)) });
+        showToast(r.paid + ' payslip' + (r.paid === 1 ? '' : 's') + ' marked paid', 'success');
+        if (typeof fetchPayslips === 'function') fetchPayslips(currentPsFilter);
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.payPayrollRun = payPayrollRun;
+
 // ============================================================
 // CONTACTS MODULE
 // ============================================================
@@ -12643,7 +12801,8 @@ async function loadProfitLoss() {
         if (body) {
             body.innerHTML = otherCurrencyNote(data, function (b) { return b.total_revenue; }) + '<div class="grid-3 mb-24">' +
                 '<div style="text-align:center;padding:20px;"><div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:8px;">Total Revenue</div><div style="font-size:1.5rem;font-weight:700;color:var(--success-color);">' + formatCurrency(data.total_revenue) + '</div></div>' +
-                '<div style="text-align:center;padding:20px;"><div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:8px;">Total Expenses</div><div style="font-size:1.5rem;font-weight:700;color:var(--danger-color);">' + formatCurrency(data.total_expenses) + '</div></div>' +
+                '<div style="text-align:center;padding:20px;"><div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:8px;">Total Expenses</div><div style="font-size:1.5rem;font-weight:700;color:var(--danger-color);">' + formatCurrency(data.total_expenses) + '</div>' +
+                (data.expense_parts && (data.expense_parts.payroll || data.expense_parts.staff_expenses) ? '<div id="pl-expense-parts" style="font-size:0.76rem;color:var(--text-secondary);margin-top:6px;">Bills ' + formatCurrency(data.expense_parts.bills) + ' &middot; Payroll ' + formatCurrency(data.expense_parts.payroll) + ' &middot; Staff expenses ' + formatCurrency(data.expense_parts.staff_expenses) + '</div>' : '') + '</div>' +
                 '<div style="text-align:center;padding:20px;"><div style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:8px;">Net Profit</div><div style="font-size:1.5rem;font-weight:700;color:' + (data.net_profit >= 0 ? 'var(--success-color)' : 'var(--danger-color)') + ';">' + formatCurrency(data.net_profit) + '</div></div>' +
                 '</div>';
         }
@@ -12684,7 +12843,9 @@ async function loadBalanceSheet() {
                 '<div>' +
                     '<h3 style="font-size:0.85rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;margin-bottom:16px;">Liabilities</h3>' +
                     '<div style="display:flex;flex-direction:column;gap:12px;">' +
-                        '<div style="display:flex;justify-content:space-between;padding:12px;background:rgba(255, 255, 255, 0.03);border-radius:8px;"><span style="color:var(--text-secondary);">Accounts Payable</span><span style="font-weight:600;">' + formatCurrency(data.liabilities.accounts_payable) + '</span></div>' +
+                        [['accounts_payable', 'Owed to suppliers'], ['wages_owed', 'Wages not yet paid'], ['paye_owed', 'Owed to HMRC from payroll'], ['pension_owed', 'Owed to the pension provider'], ['expense_claims_owed', 'Expense claims to repay']]
+                            .filter(function (p) { return p[0] === 'accounts_payable' || (data.liabilities[p[0]] || 0) !== 0; })
+                            .map(function (p) { return '<div style="display:flex;justify-content:space-between;padding:12px;background:rgba(255, 255, 255, 0.03);border-radius:8px;"><span style="color:var(--text-secondary);">' + p[1] + '</span><span style="font-weight:600;">' + formatCurrency(data.liabilities[p[0]] || 0) + '</span></div>'; }).join('') +
                     '</div>' +
                     '<div style="display:flex;justify-content:space-between;padding:16px;margin-top:12px;border-top:2px solid var(--border-color);font-weight:700;"><span>Total Liabilities</span><span style="color:var(--warning-color);">' + formatCurrency(data.total_liabilities) + '</span></div>' +
                 '</div>' +

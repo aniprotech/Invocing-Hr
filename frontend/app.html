@@ -3277,6 +3277,7 @@
                         </div>
                         <div class="invoices-actions">
                             <button class="btn btn-outline" onclick="batchGeneratePayslips()">Batch Generate All Active</button>
+                            <button class="btn btn-outline" onclick="payPayrollRun()">Record net pay paid</button>
                             <button class="btn btn-primary" onclick="showGeneratePayslipModalForNew()">+ Generate Payslip</button>
                         </div>
                     </div>
@@ -3291,6 +3292,13 @@
                             </div>
                         </div>
                         <div class="widget-content" id="pension-content"></div>
+                    </div>
+                    <!-- What the payslips took for HMRC and the pension, and what has been paid over. UK payroll only. -->
+                    <div class="glass-widget" id="payroll-owed-panel" style="display:none;margin-bottom:24px;">
+                        <div class="widget-header">
+                            <h3>What you owe HMRC and the pension <span id="payroll-owed-year" style="font-weight:400;color:var(--text-secondary);font-size:0.85rem;"></span></h3>
+                        </div>
+                        <div class="widget-content" id="payroll-owed-content"></div>
                     </div>
                     <!-- HMRC payroll filings: shown on UK payroll only. -->
                     <div class="glass-widget" id="hmrc-panel" style="display:none;margin-bottom:24px;">

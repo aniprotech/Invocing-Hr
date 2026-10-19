@@ -5277,20 +5277,22 @@ def _bill_cash_out(bill, pays):
     return out
 
 
-def _currencies_for_report(groups, bg, cg, base):
-    return sorted((set(groups) | set(bg) | set(cg)) - {base})
+def _currencies_for_report(groups, bg, cg, base, people=None):
+    return sorted((set(groups) | set(bg) | set(cg) | set(people or {})) - {base})
 
 
 @app.get("/api/reports/profit-loss")
 def profit_loss_report(request: Request, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
     base, bg, cg, _pays = _purchase_report_data(db, client)
+    people = people_report_data(db, client)
     invoices = db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id).all()
     groups = invoices_by_currency(invoices, base)
 
-    def figures(inv_list, bill_list, credit_list):
+    def figures(inv_list, bill_list, credit_list, staff):
         monthly_revenue = {}
         monthly_expenses = {}
+        parts = {"bills": 0.0, "payroll": 0.0, "staff_expenses": 0.0}
         for inv in inv_list:
             m = inv.issue_date[:7] if inv.issue_date and len(inv.issue_date) >= 7 else "Unknown"
             monthly_revenue[m] = monthly_revenue.get(m, 0) + (inv.paid or 0)
@@ -5301,10 +5303,19 @@ def profit_loss_report(request: Request, db: Session = Depends(get_db)):
         for c in credit_list:
             m = (c.issue_date or "")[:7] or "Unknown"
             monthly_expenses[m] = monthly_expenses.get(m, 0) - (c.amount or 0)
+        parts["bills"] = sum(monthly_expenses.values())
+        # Staff cost what they are paid, plus the employer's NI and pension, in
+        # the month they are paid; an approved expense claim in the month it
+        # was spent.
+        for key, part in (("payroll", "payroll"), ("claims", "staff_expenses")):
+            for m, amount in staff[key].items():
+                monthly_expenses[m] = monthly_expenses.get(m, 0) + amount
+                parts[part] += amount
         all_months = sorted(set(list(monthly_revenue.keys()) + list(monthly_expenses.keys())))
         total_revenue = money(sum(monthly_revenue.values()))
         total_expenses = money(sum(monthly_expenses.values()))
         return {
+            "expense_parts": {k: money(v) for k, v in parts.items()},
             "months": all_months,
             "revenue": [money(monthly_revenue.get(m, 0)) for m in all_months],
             "expenses": [money(monthly_expenses.get(m, 0)) for m in all_months],
@@ -5314,11 +5325,11 @@ def profit_loss_report(request: Request, db: Session = Depends(get_db)):
             "net_profit": money(total_revenue - total_expenses),
         }
 
-    report = figures(groups.get(base, []), bg.get(base, []), cg.get(base, []))
+    report = figures(groups.get(base, []), bg.get(base, []), cg.get(base, []), people.get(base, _empty_people()))
     report["currency"] = base
     report["other_currencies"] = [
-        dict(figures(groups.get(code, []), bg.get(code, []), cg.get(code, [])), currency=code)
-        for code in _currencies_for_report(groups, bg, cg, base)
+        dict(figures(groups.get(code, []), bg.get(code, []), cg.get(code, []), people.get(code, _empty_people())), currency=code)
+        for code in _currencies_for_report(groups, bg, cg, base, people)
     ]
     return report
 
@@ -5327,10 +5338,11 @@ def profit_loss_report(request: Request, db: Session = Depends(get_db)):
 def balance_sheet_report(request: Request, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
     base, bg, cg, pays = _purchase_report_data(db, client)
+    people = people_report_data(db, client)
     invoices = db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id).all()
     groups = invoices_by_currency(invoices, base)
 
-    def figures(inv_list, bill_list, credit_list):
+    def figures(inv_list, bill_list, credit_list, staff):
         collected = money(sum(inv.paid or 0 for inv in inv_list))
         outstanding = money(sum(inv.due or 0 for inv in inv_list if inv.status != "Paid"))
         bills_paid = money(sum(a for b in bill_list for _m, a in _bill_cash_out(b, pays.get(b.id, []))))
@@ -5338,20 +5350,25 @@ def balance_sheet_report(request: Request, db: Session = Depends(get_db)):
         # yet been set against anything.
         unused = money(sum(max(0.0, (c.amount or 0) - (c.applied or 0)) for c in credit_list))
         bills_unpaid = money(sum((b.total or 0) - (b.amount_paid or 0) for b in bill_list) - unused)
+        owed = staff["owed"]
+        staff_paid = money(sum(staff["cash_out"].values()))
+        liabilities = {"accounts_payable": bills_unpaid, "wages_owed": owed["wages"], "paye_owed": owed["hmrc"],
+                       "pension_owed": owed["pension"], "expense_claims_owed": owed["claims"]}
+        total_liabilities = money(sum(liabilities.values()))
         return {
             "assets": {"cash_collected": collected, "accounts_receivable": outstanding},
-            "liabilities": {"accounts_payable": bills_unpaid},
-            "equity": {"retained_earnings": money(collected - bills_paid)},
+            "liabilities": liabilities,
+            "equity": {"retained_earnings": money(collected - bills_paid - staff_paid)},
             "total_assets": money(collected + outstanding),
-            "total_liabilities": bills_unpaid,
-            "total_equity": money(collected - bills_paid),
+            "total_liabilities": total_liabilities,
+            "total_equity": money(collected - bills_paid - staff_paid),
         }
 
-    report = figures(groups.get(base, []), bg.get(base, []), cg.get(base, []))
+    report = figures(groups.get(base, []), bg.get(base, []), cg.get(base, []), people.get(base, _empty_people()))
     report["currency"] = base
     report["other_currencies"] = [
-        dict(figures(groups.get(code, []), bg.get(code, []), cg.get(code, [])), currency=code)
-        for code in _currencies_for_report(groups, bg, cg, base)
+        dict(figures(groups.get(code, []), bg.get(code, []), cg.get(code, []), people.get(code, _empty_people())), currency=code)
+        for code in _currencies_for_report(groups, bg, cg, base, people)
     ]
     return report
 
@@ -5360,12 +5377,17 @@ def balance_sheet_report(request: Request, db: Session = Depends(get_db)):
 def cash_summary_report(request: Request, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
     base, bg, cg, pays = _purchase_report_data(db, client)
+    people = people_report_data(db, client)
     invoices = db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id).all()
     groups = invoices_by_currency(invoices, base)
 
-    def figures(inv_list, bill_list):
+    def figures(inv_list, bill_list, staff):
         monthly_in = {}
         monthly_out = {}
+        # Net pay, payments to HMRC and the pension provider, and expense
+        # claims repaid, in the month the money left.
+        for m, amount in staff["cash_out"].items():
+            monthly_out[m] = monthly_out.get(m, 0) + amount
         for inv in inv_list:
             m = inv.issue_date[:7] if inv.issue_date and len(inv.issue_date) >= 7 else "Unknown"
             monthly_in[m] = monthly_in.get(m, 0) + (inv.paid or 0)
@@ -5382,11 +5404,11 @@ def cash_summary_report(request: Request, db: Session = Depends(get_db)):
             "net_cash": [money(monthly_in.get(m, 0) - monthly_out.get(m, 0)) for m in all_months],
         }
 
-    report = figures(groups.get(base, []), bg.get(base, []))
+    report = figures(groups.get(base, []), bg.get(base, []), people.get(base, _empty_people()))
     report["currency"] = base
     report["other_currencies"] = [
-        dict(figures(groups.get(code, []), bg.get(code, [])), currency=code)
-        for code in _currencies_for_report(groups, bg, cg, base)
+        dict(figures(groups.get(code, []), bg.get(code, []), people.get(code, _empty_people())), currency=code)
+        for code in _currencies_for_report(groups, bg, cg, base, people)
     ]
     return report
 
@@ -12179,17 +12201,103 @@ def update_payslip(ps_id: int, request: Request, body: dict = None, db: Session 
         "gross_pay": ps.gross_pay, "total_deductions": ps.total_deductions, "net_pay": ps.net_pay,
     }
 
+# ---------------------------------------------------------------------------
+# PAYROLL AND STAFF MONEY IN THE BOOKS
+# ---------------------------------------------------------------------------
+# Payroll used to stop at the payslip: nothing reached the profit and loss, the
+# cash, or the balance sheet, and what had been taken from pay for HMRC and the
+# pension was owed to nobody. Now paying a payslip, repaying an expense claim
+# and paying HMRC or the pension provider each record the day, the account and
+# - if there is one - the bank line it went out on, and the reports read them.
+# Taking a bank line's coding back undoes whichever of these it paid.
+
+PAYROLL_REMIT_KINDS = {"hmrc": "PAYE, National Insurance and student loans to HMRC", "pension": "Pension contributions to the provider"}
+
+
+def payment_bank_line(db, client, bank_line_id, amount, what):
+    """The money-out bank line a payment went out on: this business's, not yet
+    coded, and for exactly the amount. None when none was named."""
+    if bank_line_id in (None, "", 0, "0"):
+        return None
+    try:
+        lid = int(bank_line_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Pick a bank line from the list")
+    line = db.query(models.DBBankLine).filter(models.DBBankLine.id == lid, models.DBBankLine.client_id == client.id).first()
+    if not line:
+        raise HTTPException(status_code=400, detail="That bank line is not one of yours")
+    if (line.amount or 0) >= 0:
+        raise HTTPException(status_code=400, detail="That bank line is money in, not money out")
+    if line.status != "out":
+        raise HTTPException(status_code=400, detail="That bank line has already been coded or matched")
+    if abs(abs(line.amount or 0) - money(amount)) > 0.005:
+        raise HTTPException(status_code=400, detail=f"The bank line is {abs(line.amount or 0):.2f}; {what} come to {money(amount):.2f}")
+    return line
+
+
+def _paid_day(paid_on, line):
+    return _clean_ymd(paid_on, "Paid on") or ((line.date or "")[:10] if line is not None else "") or date.today().isoformat()
+
+
+# --- payslips ----------------------------------------------------------------------------
+
+def pay_payslips(db, client, slips, paid_on="", account_id=None, bank_line_id=None, request=None):
+    """Mark payslips paid, together, from one account or one bank line."""
+    if not slips:
+        raise HTTPException(status_code=400, detail="Choose the payslips that were paid")
+    for ps in slips:
+        if ps.status == "Void":
+            raise HTTPException(status_code=400, detail=f"Payslip {ps.number} is void")
+        if ps.status == "Paid":
+            raise HTTPException(status_code=400, detail=f"Payslip {ps.number} is already paid")
+    total = money(sum(ps.net_pay or 0 for ps in slips))
+    line = payment_bank_line(db, client, bank_line_id, total, "the payslips' net pay")
+    day = _paid_day(paid_on, line)
+    acct = line.account_id if line is not None else resolve_account(db, client.id, account_id)
+    for ps in slips:
+        ps.status = "Paid"
+        ps.pay_date = ps.pay_date or day
+        ps.paid_on, ps.paid_account_id = day, acct
+        ps.bank_line_id = line.id if line is not None else None
+    if line is not None:
+        code_bank_line(db, client, line, "wages", request=request)
+    return total
+
+
 @app.post("/api/payslips/{ps_id}/mark-paid")
-def mark_payslip_paid(ps_id: int, request: Request, db: Session = Depends(get_db)):
+def mark_payslip_paid(ps_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
     ps = db.query(models.DBPayslip).filter(models.DBPayslip.id == ps_id, models.DBPayslip.client_id == client.id).first()
     if not ps:
         raise HTTPException(status_code=404, detail="Payslip not found")
-    ps.status = "Paid"
-    ps.pay_date = ps.pay_date or datetime.now().strftime("%Y-%m-%d")
+    body = body or {}
+    pay_payslips(db, client, [ps], body.get("paid_on") or "", body.get("account_id"), body.get("bank_line_id"), request)
     log_audit(db, client.id, "payslip_marked_paid", "payslip", ps.id, ps.number, f"Net: {ps.net_pay}", request)
+    announce(db, client.id, "payslip.paid", {"id": ps.id, "number": ps.number, "net_pay": ps.net_pay, "paid_on": ps.paid_on})
     db.commit()
-    return {"message": "Payslip marked as paid"}
+    return {"message": "Payslip marked as paid", "paid_on": ps.paid_on}
+
+
+@app.post("/api/payroll/pay")
+def pay_payroll(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Several payslips paid at once - a payroll run's net pay leaving in one
+    transfer, matched to one bank line."""
+    client = get_client_user(request, db)
+    body = body or {}
+    try:
+        ids = [int(x) for x in (body.get("payslip_ids") or [])]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Choose the payslips that were paid")
+    slips = db.query(models.DBPayslip).filter(models.DBPayslip.client_id == client.id, models.DBPayslip.id.in_(ids)).all() if ids else []
+    if len(slips) != len(set(ids)):
+        raise HTTPException(status_code=404, detail="Payslip not found")
+    total = pay_payslips(db, client, slips, body.get("paid_on") or "", body.get("account_id"), body.get("bank_line_id"), request)
+    log_audit(db, client.id, "payroll_paid", "payslip", None, "", f"{len(slips)} payslips, net {total}", request)
+    for ps in slips:
+        announce(db, client.id, "payslip.paid", {"id": ps.id, "number": ps.number, "net_pay": ps.net_pay, "paid_on": ps.paid_on})
+    db.commit()
+    return {"paid": len(slips), "net_pay": total}
+
 
 @app.post("/api/payslips/{ps_id}/unmark-paid")
 def unmark_payslip_paid(ps_id: int, request: Request, db: Session = Depends(get_db)):
@@ -12198,10 +12306,264 @@ def unmark_payslip_paid(ps_id: int, request: Request, db: Session = Depends(get_
     ps = db.query(models.DBPayslip).filter(models.DBPayslip.id == ps_id, models.DBPayslip.client_id == client.id).first()
     if not ps:
         raise HTTPException(status_code=404, detail="Payslip not found")
+    if ps.status != "Paid":
+        raise HTTPException(status_code=400, detail=f"Payslip {ps.number} is not marked paid")
+    if ps.bank_line_id:
+        raise HTTPException(status_code=400, detail="This payslip was paid by a bank line. Take that line's coding back in Bank instead.")
     ps.status = "Sent" if ps.sent else "Draft"
+    ps.paid_on, ps.paid_account_id = "", None
     log_audit(db, client.id, "payslip_unmarked_paid", "payslip", ps.id, ps.number, "", request)
     db.commit()
     return {"message": "Payslip reopened", "status": ps.status}
+
+
+# --- expense claims ----------------------------------------------------------------------
+
+@app.post("/api/expenses/{claim_id}/paid")
+def hr_mark_paid(claim_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Approved is "we owe you this". Paid is "and it has left the account":
+    on which day, from which account, and - if there is one - on which bank line."""
+    client = get_client_user(request, db)
+    row = db.query(models.DBExpenseClaim).filter(
+        models.DBExpenseClaim.id == claim_id,
+        models.DBExpenseClaim.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    if row.status != "approved":
+        raise HTTPException(status_code=409,
+                            detail="Only an approved claim can be marked as paid")
+    body = body or {}
+    cur = (row.currency or "GBP").upper()
+    amount = to_major(row.amount_minor, cur)
+    line = payment_bank_line(db, client, body.get("bank_line_id"), amount, "the claim")
+    day = _paid_day(body.get("paid_on") or "", line)
+    row.status = "paid"
+    row.paid_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    row.paid_by = client.company_name or client.email or "HR"
+    row.paid_on = day
+    row.paid_account_id = line.account_id if line is not None else resolve_account(db, client.id, body.get("account_id"))
+    row.bank_line_id = line.id if line is not None else None
+    if line is not None:
+        code_bank_line(db, client, line, "staff_expenses", request=request)
+    db.add(models.DBNotification(
+        client_id=row.client_id, employee_id=row.employee_id,
+        title="Expense claim paid",
+        message=f"Your {row.category} claim for {amount:.2f} {cur} has been paid.",
+        type="success"))
+    log_audit(db, client.id, "expense_paid", "expense", row.id,
+              f"{row.category} {amount:.2f} {cur}", f"Employee ID: {row.employee_id}", request)
+    announce(db, client.id, "expense.paid", {"id": row.id, "employee_id": row.employee_id, "amount": amount, "currency": cur, "paid_on": day})
+    db.commit()
+    return {"id": row.id, "status": row.status, "paid_at": row.paid_at, "paid_on": row.paid_on}
+
+
+@app.post("/api/expenses/{claim_id}/unpaid")
+def hr_mark_unpaid(claim_id: int, request: Request, db: Session = Depends(get_db)):
+    """Undo "paid" entered by mistake: owed again."""
+    client = get_client_user(request, db)
+    row = db.query(models.DBExpenseClaim).filter(models.DBExpenseClaim.id == claim_id, models.DBExpenseClaim.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Claim not found")
+    if row.status != "paid":
+        raise HTTPException(status_code=409, detail="Only a paid claim can be marked unpaid")
+    if row.bank_line_id:
+        raise HTTPException(status_code=400, detail="This claim was repaid by a bank line. Take that line's coding back in Bank instead.")
+    row.status, row.paid_at, row.paid_by, row.paid_on, row.paid_account_id = "approved", "", "", "", None
+    log_audit(db, client.id, "expense_unpaid", "expense", row.id, row.category, "", request)
+    db.commit()
+    return {"id": row.id, "status": row.status}
+
+
+# --- what is owed to HMRC and the pension provider ------------------------------------------
+
+def tax_month_of(day) -> tuple:
+    """(tax year, tax month 1-12) for a date: month 1 is 6 April to 5 May."""
+    d = _parse_date(day) if not isinstance(day, date) else day
+    if not d:
+        return 0, 0
+    year = uk_paye.tax_year_of(d)
+    months = (d.year - year) * 12 + d.month - 4 - (1 if d.day < 6 else 0)
+    return year, months + 1
+
+
+def tax_month_bounds(year: int, month: int) -> tuple:
+    """(first day, last day, the day HMRC must have the money): a tax month
+    ends on the 5th, and paying electronically it is due on the 22nd after."""
+    first_m = 4 + (month - 1)
+    first = date(year + (first_m - 1) // 12, (first_m - 1) % 12 + 1, 6)
+    end_m = first_m + 1
+    last = date(year + (end_m - 1) // 12, (end_m - 1) % 12 + 1, 5)
+    due = date(last.year, last.month, 22)
+    return first, last, due
+
+
+def payroll_liabilities(db, client, year=None, today=None):
+    """Month by month for a tax year: what the payslips took for HMRC (tax,
+    both kinds of National Insurance, student and postgraduate loans) and for
+    the pension (both shares), what has been paid over, what is left, and
+    when it is due. Only UK payslips owe anything to HMRC."""
+    today = today or date.today()
+    year = year or uk_paye.tax_year_of(today)
+    slips = db.query(models.DBPayslip).filter(models.DBPayslip.client_id == client.id, models.DBPayslip.status != "Void",
+                                              models.DBPayslip.regime == "uk").all()
+    remits = db.query(models.DBPayrollRemittance).filter(models.DBPayrollRemittance.client_id == client.id,
+                                                         models.DBPayrollRemittance.tax_year == year).all()
+    months = []
+    for m in range(1, 13):
+        mine = [p for p in slips if tax_month_of(p.pay_date) == (year, m)]
+        first, last, due = tax_month_bounds(year, m)
+        paye = {"tax": money(sum(p.tax_amount or 0 for p in mine)), "employee_ni": money(sum(p.employee_ni or 0 for p in mine)),
+                "employer_ni": money(sum(p.employer_ni or 0 for p in mine)), "student_loan": money(sum(p.student_loan or 0 for p in mine)),
+                "postgrad_loan": money(sum(p.postgrad_loan or 0 for p in mine))}
+        paye["total"] = money(sum(paye.values()))
+        pension = {"employee": money(sum(p.pension_employee or 0 for p in mine)), "employer": money(sum(p.pension_employer or 0 for p in mine))}
+        pension["total"] = money(pension["employee"] + pension["employer"])
+        for block, kind in ((paye, "hmrc"), (pension, "pension")):
+            block["paid"] = money(sum(r.amount or 0 for r in remits if r.kind == kind and r.tax_month == m))
+            block["left"] = money(block["total"] - block["paid"])
+            block["status"] = ("nothing" if block["total"] <= 0 and block["paid"] <= 0 else
+                               "paid" if block["left"] <= 0.005 else
+                               "overdue" if today > due else
+                               "due_soon" if (due - today).days <= 7 else "upcoming")
+        months.append({"month": m, "from": first.isoformat(), "to": last.isoformat(), "due": due.isoformat(),
+                       "payslips": len(mine), "paye": paye, "pension": pension})
+    names = account_names(db, client.id)
+    return {"tax_year": year, "label": uk_paye.tax_year_label(year), "months": months,
+            "totals": {"paye_left": money(sum(max(0.0, x["paye"]["left"]) for x in months)),
+                       "pension_left": money(sum(max(0.0, x["pension"]["left"]) for x in months)),
+                       "overdue": sum(1 for x in months for k in ("paye", "pension") if x[k]["status"] == "overdue")},
+            "remittances": [{"id": r.id, "kind": r.kind, "tax_month": r.tax_month, "amount": money(r.amount or 0), "paid_on": r.paid_on,
+                             "reference": r.reference or "", "account": names.get(r.account_id, ""), "from_bank": bool(r.bank_line_id)}
+                            for r in sorted(remits, key=lambda r: (r.tax_month, r.id))],
+            "note": "Employment Allowance claimed on an Employer Payment Summary is not taken off what is shown as owed to HMRC."}
+
+
+def all_payroll_owed(db, client):
+    """What is still owed to HMRC and to the pension provider, across every
+    tax year with UK payslips."""
+    years = {tax_month_of(p.pay_date)[0] for p in db.query(models.DBPayslip).filter(
+        models.DBPayslip.client_id == client.id, models.DBPayslip.regime == "uk", models.DBPayslip.status != "Void").all()}
+    paye = pension = 0.0
+    for y in sorted(x for x in years if x):
+        t = payroll_liabilities(db, client, y)["totals"]
+        paye += t["paye_left"]
+        pension += t["pension_left"]
+    return money(paye), money(pension)
+
+
+@app.get("/api/payroll/liabilities")
+def get_payroll_liabilities(request: Request, tax_year: int = 0, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    if tax_year and not (2000 <= tax_year <= 2100):
+        raise HTTPException(status_code=400, detail="A tax year is the year it starts, like 2026")
+    return payroll_liabilities(db, client, tax_year or None)
+
+
+@app.post("/api/payroll/remittances")
+def record_payroll_remittance(request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """A payment to HMRC or the pension provider for one tax month."""
+    client = get_client_user(request, db)
+    body = body or {}
+    kind = str(body.get("kind") or "").strip().lower()
+    if kind not in PAYROLL_REMIT_KINDS:
+        raise HTTPException(status_code=400, detail="A payment is to HMRC or to the pension provider")
+    try:
+        year, month = int(body.get("tax_year") or 0), int(body.get("tax_month") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Say which tax year and month it pays")
+    if not (2000 <= year <= 2100) or not (1 <= month <= 12):
+        raise HTTPException(status_code=400, detail="Say which tax year and month (1 to 12) it pays")
+    amount = _money_field(body.get("amount"), "Amount")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="A payment is more than zero")
+    block = payroll_liabilities(db, client, year)["months"][month - 1]["paye" if kind == "hmrc" else "pension"]
+    if amount > block["left"] + 0.005:
+        raise HTTPException(status_code=400, detail=f"That is more than is owed for that month ({max(0.0, block['left']):.2f})")
+    line = payment_bank_line(db, client, body.get("bank_line_id"), amount, "the payment")
+    day = _paid_day(body.get("paid_on") or "", line)
+    row = models.DBPayrollRemittance(client_id=client.id, kind=kind, tax_year=year, tax_month=month, amount=amount, paid_on=day,
+                                     reference=str(body.get("reference") or "")[:120], note=str(body.get("note") or "")[:300],
+                                     account_id=line.account_id if line is not None else resolve_account(db, client.id, body.get("account_id")),
+                                     bank_line_id=line.id if line is not None else None)
+    db.add(row)
+    if line is not None:
+        code_bank_line(db, client, line, "tax" if kind == "hmrc" else "pension", request=request)
+    db.flush()
+    log_audit(db, client.id, "payroll_remittance", "payroll", row.id, kind, f"{uk_paye.tax_year_label(year)} month {month}: {amount}", request)
+    db.commit()
+    return {"id": row.id, "paid_on": row.paid_on}
+
+
+@app.delete("/api/payroll/remittances/{remit_id}")
+def delete_payroll_remittance(remit_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    row = db.query(models.DBPayrollRemittance).filter(models.DBPayrollRemittance.id == remit_id,
+                                                      models.DBPayrollRemittance.client_id == client.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    if row.bank_line_id:
+        raise HTTPException(status_code=400, detail="That payment came from a bank line. Take its coding back in Bank instead.")
+    db.delete(row)
+    log_audit(db, client.id, "payroll_remittance_removed", "payroll", remit_id, row.kind, f"{row.amount}", request)
+    db.commit()
+    return {"ok": True}
+
+
+def unlink_people_payments(db, line):
+    """A bank line's coding taken back: whatever it paid is owed again."""
+    for ps in db.query(models.DBPayslip).filter(models.DBPayslip.bank_line_id == line.id).all():
+        ps.status = "Sent" if ps.sent else "Draft"
+        ps.paid_on, ps.paid_account_id, ps.bank_line_id = "", None, None
+    for c in db.query(models.DBExpenseClaim).filter(models.DBExpenseClaim.bank_line_id == line.id).all():
+        c.status, c.paid_at, c.paid_by, c.paid_on, c.paid_account_id, c.bank_line_id = "approved", "", "", "", None, None
+    for r in db.query(models.DBPayrollRemittance).filter(models.DBPayrollRemittance.bank_line_id == line.id).all():
+        db.delete(r)
+
+
+# --- what the reports read --------------------------------------------------------------------
+
+def people_report_data(db, client):
+    """Per currency: what the staff cost by month (pay, employer NI and employer
+    pension; expense claims approved), the money that went out by month (net
+    pay, payments to HMRC and the pension provider, claims repaid), and what is
+    still owed (net pay, HMRC, pension, approved claims)."""
+    base = base_currency(client)
+    out = {}
+
+    def block(cur):
+        return out.setdefault(cur, {"payroll": {}, "claims": {}, "cash_out": {}, "owed": {"wages": 0.0, "hmrc": 0.0, "pension": 0.0, "claims": 0.0}})
+
+    def add(d, month, amount):
+        d[month or "Unknown"] = d.get(month or "Unknown", 0.0) + (amount or 0)
+
+    for p in db.query(models.DBPayslip).filter(models.DBPayslip.client_id == client.id, models.DBPayslip.status != "Void").all():
+        b = block(base)
+        add(b["payroll"], (p.pay_date or "")[:7], (p.gross_pay or 0) + (p.employer_ni or 0) + (p.pension_employer or 0))
+        if p.status == "Paid":
+            add(b["cash_out"], ((p.paid_on or p.pay_date) or "")[:7], p.net_pay or 0)
+        else:
+            b["owed"]["wages"] += p.net_pay or 0
+    for r in db.query(models.DBPayrollRemittance).filter(models.DBPayrollRemittance.client_id == client.id).all():
+        add(block(base)["cash_out"], (r.paid_on or "")[:7], r.amount or 0)
+    hmrc, pension = all_payroll_owed(db, client)
+    block(base)["owed"]["hmrc"], block(base)["owed"]["pension"] = hmrc, pension
+    for c in db.query(models.DBExpenseClaim).filter(models.DBExpenseClaim.client_id == client.id,
+                                                    models.DBExpenseClaim.status.in_(["approved", "paid"])).all():
+        cur = (c.currency or base).upper()
+        amount = to_major(c.amount_minor, cur)
+        b = block(cur)
+        add(b["claims"], (c.spent_on or c.created_at or "")[:7], amount)
+        if c.status == "paid":
+            add(b["cash_out"], ((c.paid_on or c.paid_at) or "")[:7], amount)
+        else:
+            b["owed"]["claims"] += amount
+    for b in out.values():
+        b["owed"] = {k: money(v) for k, v in b["owed"].items()}
+    return out
+
+
+def _empty_people():
+    return {"payroll": {}, "claims": {}, "cash_out": {}, "owed": {"wages": 0.0, "hmrc": 0.0, "pension": 0.0, "claims": 0.0}}
 
 
 @app.delete("/api/payslips/{ps_id}")
@@ -21277,36 +21639,6 @@ def hr_decide_expense(claim_id: int, request: Request, body: dict = None,
                    body.get("note"), client.company_name or client.email or "HR", request)
     db.commit()
     return {"id": row.id, "status": row.status}
-
-
-@app.post("/api/expenses/{claim_id}/paid")
-def hr_mark_paid(claim_id: int, request: Request, db: Session = Depends(get_db)):
-    """Approved is "we owe you this". Paid is "and it has left the account".
-    Only HR says the second, because only HR did it."""
-    client = get_client_user(request, db)
-    row = db.query(models.DBExpenseClaim).filter(
-        models.DBExpenseClaim.id == claim_id,
-        models.DBExpenseClaim.client_id == client.id).first()
-    if not row:
-        raise HTTPException(status_code=404, detail="Claim not found")
-    if row.status != "approved":
-        raise HTTPException(status_code=409,
-                            detail="Only an approved claim can be marked as paid")
-    row.status = "paid"
-    row.paid_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    row.paid_by = client.company_name or client.email or "HR"
-
-    cur = (row.currency or "GBP").upper()
-    db.add(models.DBNotification(
-        client_id=row.client_id, employee_id=row.employee_id,
-        title="Expense claim paid",
-        message=f"Your {row.category} claim for {to_major(row.amount_minor, cur):.2f} {cur} has been paid.",
-        type="success"))
-    log_audit(db, client.id, "expense_paid", "expense", row.id,
-              f"{row.category} {to_major(row.amount_minor, cur):.2f} {cur}",
-              f"Employee ID: {row.employee_id}", request)
-    db.commit()
-    return {"id": row.id, "status": row.status, "paid_at": row.paid_at}
 
 
 # --- What a manager has to decide --------------------------------------------
@@ -35270,6 +35602,8 @@ BANK_CATEGORIES = (
     ("rent", "Rent & premises", "expense", "out"),
     ("utilities", "Utilities", "expense", "out"),
     ("wages", "Wages & salaries", "expense", "out"),
+    ("pension", "Pension contributions", "expense", "out"),
+    ("staff_expenses", "Staff expenses repaid", "expense", "out"),
     ("subcontractors", "Subcontractors & freelancers", "expense", "out"),
     ("software", "Software & subscriptions", "expense", "out"),
     ("travel", "Travel & vehicles", "expense", "out"),
@@ -35424,6 +35758,7 @@ def uncode_bank_line(db, client, line):
             else:   # coded before payments were recorded one by one
                 bill.amount_paid = money(max(0.0, (bill.amount_paid or 0) - abs(line.amount or 0)))
                 bill.status = ledgers.bill_status(bill.total or 0, bill.amount_paid, "Awaiting Payment")
+    unlink_people_payments(db, line)
     line.category, line.tax_rate, line.transfer_account_id, line.bill_id, line.rule_id, line.coded_at = "", "", None, None, None, ""
     line.status = "unmatched" if (line.amount or 0) > 0 else "out"
 

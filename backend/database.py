@@ -1965,6 +1965,26 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 72: {sys.exc_info()[1]}")
 
+            # 73. Payroll and staff money in the books: when a payslip or an
+            # expense claim was paid, from which account, and on which bank
+            # line. Payments to HMRC and the pension provider get a table of
+            # their own, made by create_all.
+            try:
+                for ddl in (
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS paid_on VARCHAR DEFAULT ''",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS paid_account_id INTEGER",
+                    "ALTER TABLE payslips ADD COLUMN IF NOT EXISTS bank_line_id INTEGER",
+                    "CREATE INDEX IF NOT EXISTS ix_payslips_bank_line_id ON payslips (bank_line_id)",
+                    "ALTER TABLE expense_claims ADD COLUMN IF NOT EXISTS paid_on VARCHAR DEFAULT ''",
+                    "ALTER TABLE expense_claims ADD COLUMN IF NOT EXISTS paid_account_id INTEGER",
+                    "ALTER TABLE expense_claims ADD COLUMN IF NOT EXISTS bank_line_id INTEGER",
+                    "CREATE INDEX IF NOT EXISTS ix_expense_claims_bank_line_id ON expense_claims (bank_line_id)",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 73: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

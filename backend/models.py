@@ -837,6 +837,12 @@ class DBPayslip(Base):
     pension_employee = Column(Float, default=0.0)
     pension_employer = Column(Float, default=0.0)
     pension_relief = Column(Float, default=0.0)
+    # When the net pay actually left, from which of the business's accounts,
+    # and the bank line it went out on - so payroll reaches the books and the
+    # bank line and the payslip are one event, not two.
+    paid_on = Column(String, default="")
+    paid_account_id = Column(Integer, nullable=True)
+    bank_line_id = Column(Integer, nullable=True, index=True)
 
     tracking_id = Column(String, unique=True, index=True, default=lambda: str(uuid.uuid4()))
     open_count = Column(Integer, default=0)
@@ -880,6 +886,28 @@ class DBRtiSubmission(Base):
     created_by = Column(String, default="")
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     updated_at = Column(String, default="")
+
+
+class DBPayrollRemittance(Base):
+    """Money paid out of the payroll to somebody other than the staff: the tax,
+    National Insurance and student loans taken from pay, which go to HMRC, and
+    the pension contributions, which go to the provider. One row per payment,
+    for one tax month. What is still owed is worked out from the payslips of
+    that month less these."""
+    __tablename__ = "payroll_remittances"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    kind = Column(String, default="hmrc", index=True)        # hmrc | pension
+    tax_year = Column(Integer, default=0, index=True)        # 2026 for 2026-27
+    tax_month = Column(Integer, default=0)                   # 1 = 6 April to 5 May
+    amount = Column(Float, default=0.0)
+    paid_on = Column(String, default="")
+    reference = Column(String, default="")
+    note = Column(String, default="")
+    account_id = Column(Integer, nullable=True)
+    bank_line_id = Column(Integer, nullable=True, index=True)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
 class DBOnboardingItem(Base):
@@ -2601,6 +2629,11 @@ class DBExpenseClaim(Base):
     decision_note = Column(String, default="")
     paid_at = Column(String, default="")
     paid_by = Column(String, default="")
+    # The day the money went back to them, from which account, and the bank
+    # line it went out on.
+    paid_on = Column(String, default="")
+    paid_account_id = Column(Integer, nullable=True)
+    bank_line_id = Column(Integer, nullable=True, index=True)
 
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"), index=True)
 
