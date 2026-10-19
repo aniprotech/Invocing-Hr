@@ -2149,6 +2149,18 @@ function goToAttention(it) {
     }
     if (it.view === 'invoices-view') {
         setTimeout(function () { activateTabForFilter('#invoice-tabs', it.filter); }, 250);
+        return;
+    }
+    if (it.view === 'expenses-view') {
+        var sel = document.getElementById('exp-filter');
+        if (sel) { sel.value = it.filter; if (typeof loadExpensesView === 'function') loadExpensesView(); }
+        return;
+    }
+    if (it.view === 'payroll-view' && (it.filter === 'hmrc' || it.filter === 'pension')) {
+        setTimeout(function () {
+            var panel = document.getElementById(it.filter + '-panel');
+            if (panel && panel.scrollIntoView) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 400);
     }
 }
 
@@ -2463,7 +2475,17 @@ function openSearchResult(type, number, id) {
     if (type === 'quote' && number) { showView('quotes-view'); viewQuote(number); return; }
     if (type === 'employee' && id) { openEmployee(id); return; }
     if (type === 'recurring') { showView('recurring-view'); return; }
-    if (type === 'payslip') { showView('payroll-view'); return; }
+    if (type === 'payslip') { if (id && typeof viewPayslip === 'function') viewPayslip(id); else showView('payroll-view'); return; }
+    if (type === 'bill') { showView('bills-view'); if (id && typeof editBill === 'function') setTimeout(function () { editBill(id); }, 250); return; }
+    if (type === 'supplier') { showView('purchase-ledger-view'); if (id && typeof openPurchaseAccount === 'function') openPurchaseAccount(id); return; }
+    if (type === 'credit_note' && number) { viewCreditNote(decodeURIComponent(number)); return; }
+    if (type === 'item') {
+        _inventory.view = 'all';
+        showView('inventory-view');
+        var box = document.getElementById('inventory-search');
+        if (box) { box.value = decodeURIComponent(number || ''); if (typeof loadInventory === 'function') loadInventory(); }
+        return;
+    }
     if (type === 'contact') { if (id) { openCustomer(id); } else { showView('contacts-view'); } return; }
     if (type === 'skill') { showView('skills-view'); setTimeout(function () { if (typeof searchSkills === 'function') searchSkills(decodeURIComponent(number || '')); }, 300); return; }
     if (type === 'policy') { showView('policies-view'); return; }
@@ -2501,10 +2523,12 @@ function showSearchResults(results, q) {
     } else {
         var types = { page: 'Go to', invoice: 'Invoices', quote: 'Quotes', recurring: 'Recurring',
                       contact: 'Contacts', employee: 'Employees', payslip: 'Payroll',
-                      skill: 'Skills', policy: 'Policies', department: 'Departments' };
+                      skill: 'Skills', policy: 'Policies', department: 'Departments',
+                      bill: 'Bills', supplier: 'Suppliers', credit_note: 'Credit notes', item: 'Items' };
         var icons = { invoice: '&#128196;', quote: '&#128220;', recurring: '&#128257;',
                       contact: '&#128100;', employee: '&#128101;', payslip: '&#128176;',
-                      page: '&#8594;', skill: '&#128161;', policy: '&#128203;', department: '&#127970;' };
+                      page: '&#8594;', skill: '&#128161;', policy: '&#128203;', department: '&#127970;',
+                      bill: '&#129534;', supplier: '&#127981;', credit_note: '&#8617;', item: '&#128230;' };
         var grouped = {};
         results.forEach(function(r) {
             if (!grouped[r.type]) grouped[r.type] = [];

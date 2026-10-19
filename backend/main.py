@@ -1753,6 +1753,7 @@ def receive_bill_into_stock(bill_id: int, request: Request, body: dict = None, d
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc))
     log_audit(db, client.id, "stock_received_on_bill", "bill", bill.id, bill.number, f"{len(moved)} item(s)", request)
+    announce(db, client.id, "stock.moved", {"document": doc, "lines": moved})
     db.commit()
     return {"received": moved}
 
@@ -1800,6 +1801,7 @@ def restock_credit_note(number: str, request: Request, body: dict = None, db: Se
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc))
     log_audit(db, client.id, "stock_returned_on_credit_note", "credit_note", note.id, note.number, f"{len(moved)} item(s)", request)
+    announce(db, client.id, "stock.moved", {"document": doc, "lines": moved})
     db.commit()
     return {"returned": moved}
 
@@ -1825,6 +1827,7 @@ def supplier_credit_return_stock(credit_id: int, request: Request, body: dict = 
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc))
     log_audit(db, client.id, "stock_returned_to_supplier", "supplier_credit", credit.id, credit.number, f"{len(moved)} item(s)", request)
+    announce(db, client.id, "stock.moved", {"document": doc, "lines": moved})
     db.commit()
     return {"returned": moved}
 
@@ -3713,6 +3716,8 @@ def _mark_delivered(db, row):
             if inv.status not in ("Paid", "Partially Paid", "Void"):
                 inv.status = "Sent"
             inv.sent = today
+            announce(db, row.client_id, "invoice.sent", {"invoice": inv.number, "to": row.to_email or "", "status": inv.status,
+                                                         "due": money(inv.due or 0), "currency": (inv.currency or "").upper()})
     elif row.kind == "payslip":
         ps = db.query(models.DBPayslip).filter(
             models.DBPayslip.number == row.reference,
@@ -4281,6 +4286,9 @@ def create_invoice(invoice: InvoiceCreate, request: Request, db: Session = Depen
     db.commit()
     db.refresh(db_invoice)
     log_audit(db, client.id, "invoice_created", "invoice", db_invoice.id, number, f"Total: {total:.2f}", request)
+    announce(db, client.id, "invoice.created", {"invoice": number, "customer": db_invoice.to_contact or "", "total": money(total),
+                                                "currency": (db_invoice.currency or "").upper(), "status": db_invoice.status,
+                                                "due_date": db_invoice.due_date or ""})
     db.commit()
 
     return get_invoice(number, request, db)
@@ -5035,6 +5043,7 @@ def resolve_supplier(db, client, supplier_id=None, name="", email=""):
     row = models.DBSupplier(client_id=client.id, name=name, email=(str(email or "").strip()[:200]))
     db.add(row)
     db.flush()
+    announce(db, client.id, "supplier.created", {"id": row.id, "name": row.name, "account_ref": "", "email": row.email or ""})
     return row
 
 
@@ -5096,9 +5105,14 @@ def record_bill_payment(db, client, bill, amount, paid_on="", method="bank_trans
                                reference=str(reference or "").strip()[:120], note=str(note or "").strip()[:300],
                                account_id=acct, bank_line_id=bank_line_id, credit_id=credit_id)
     db.add(row)
+    was = bill.status
     bill.amount_paid = money((bill.amount_paid or 0) + amount)
     bill.status = ledgers.bill_status(bill.total or 0, bill.amount_paid, bill.status)
     db.flush()
+    if bill.status == "Paid" and was != "Paid":
+        announce(db, client.id, "bill.paid", {"bill": bill.number, "supplier": bill.vendor_name or "", "total": money(bill.total or 0),
+                                              "currency": bill_effective_currency(bill, (client.currency or "GBP")), "last_payment": amount,
+                                              "method": row.method, "paid_on": row.paid_on})
     return row
 
 
@@ -5169,6 +5183,9 @@ def create_bill(request: Request, body: dict = None, db: Session = Depends(get_d
         record_bill_payment(db, client, bill, min(settled, total), body.get("paid_on") or "", body.get("method") or "bank_transfer",
                             body.get("payment_reference") or "", "entered as already paid", body.get("account_id"))
     log_audit(db, client.id, "bill_created", "bill", bill.id, bill.number, f"Supplier: {bill.vendor_name}, Total: {bill.total}", request)
+    announce(db, client.id, "bill.created", {"bill": bill.number, "supplier": bill.vendor_name or "", "total": money(bill.total or 0),
+                                             "currency": bill_effective_currency(bill, (client.currency or "GBP")), "status": bill.status,
+                                             "due_date": bill.due_date or ""})
     db.commit()
     db.refresh(bill)
     return {"id": bill.id, "number": bill.number, "supplier_id": bill.supplier_id, "status": bill.status}
@@ -6454,6 +6471,9 @@ def add_invoice_payment(number: str, body: PaymentCreate, request: Request, db: 
     apply_payment_status(inv)
     log_audit(db, client.id, "invoice_payment_recorded", "invoice", inv.id, inv.number,
               f"Amount: {amount:.2f}, remaining: {inv.due:.2f}", request)
+    announce(db, client.id, "invoice.paid",
+             {"invoice": inv.number, "amount": amount, "currency": (inv.currency or client.currency or "GBP").upper(),
+              "method": payment.method, "reference": payment.reference, "status": inv.status, "customer": inv.to_contact or ""})
     db.commit()
     return {
         "message": "Payment recorded", "status": inv.status,
@@ -8205,6 +8225,38 @@ def global_search(request: Request, q: str = "", limit: int = 8,
         results.append(_hit("payslip", f"{who} - {p.number or ''}",
                             p.status or "", p.number or "", p.id))
 
+    # The purchase side, credit notes and stock: bills by number, supplier or
+    # their reference; suppliers by name, account or email; credit notes by
+    # number, invoice or customer; items by code or name.
+    for b in db.query(models.DBBill).filter(
+        models.DBBill.client_id == client.id,
+        matches(models.DBBill.number, models.DBBill.vendor_name, models.DBBill.reference),
+    ).order_by(models.DBBill.id.desc()).limit(cap).all():
+        results.append(_hit("bill", f"{b.number} - {b.vendor_name or 'No supplier'}", b.status or "", b.number or "", b.id))
+    for sp in db.query(models.DBSupplier).filter(
+        models.DBSupplier.client_id == client.id,
+        matches(models.DBSupplier.name, models.DBSupplier.account_ref, models.DBSupplier.email),
+    ).limit(cap).all():
+        results.append(_hit("supplier", sp.name or "Supplier", sp.account_ref or sp.email or ("closed" if not sp.active else ""), "", sp.id))
+    for cn in db.query(models.DBCreditNote).filter(
+        models.DBCreditNote.client_id == client.id,
+        matches(models.DBCreditNote.number, models.DBCreditNote.invoice_number, models.DBCreditNote.to_contact,
+                models.DBCreditNote.reason),
+    ).order_by(models.DBCreditNote.id.desc()).limit(cap).all():
+        results.append(_hit("credit_note", f"{cn.number} - {cn.to_contact or 'No customer'}",
+                            f"against {cn.invoice_number}" + (" (withdrawn)" if cn.status == "Void" else ""), cn.number or "", cn.id))
+    for it in db.query(models.DBItem).filter(
+        models.DBItem.client_id == client.id, models.DBItem.is_active == True,       # noqa: E712
+        matches(models.DBItem.code, models.DBItem.name),
+    ).limit(cap).all():
+        sub = (f"{(it.quantity_on_hand or 0):g} in stock" if it.track_inventory else "item")
+        results.append(_hit("item", f"{it.code} - {it.name}" if it.code else (it.name or "Item"), sub, it.code or "", it.id))
+
+    # A business sees what it has: an invoicing-only account is not shown
+    # its old employees, and an HR-only one is not shown invoices.
+    have = client_modules(client)
+    hr_kinds = {"employee", "skill", "policy", "department", "payslip"}
+    results = [r for r in results if (r["type"] in hr_kinds and "hr" in have) or (r["type"] not in hr_kinds and "invoicing" in have)]
     return {"query": term, "results": results}
 
 
@@ -12259,6 +12311,9 @@ def run_payroll(request: Request, body: PayrollRunRequest, db: Session = Depends
                        f"{body.period_start}..{body.period_end}")
     log_audit(db, client.id, "payroll_run", "payslip", None, f"{body.period_start}..{body.period_end}",
               f"{len(created)} payslips, net {total_net:.2f}", request)
+    if created:
+        announce(db, client.id, "payroll.run", {"period_start": body.period_start, "period_end": body.period_end, "pay_date": body.pay_date,
+                                                "payslips": len(created), "total_gross": money(total_gross), "total_net": money(total_net)})
     db.commit()
     return {
         "message": f"Generated {len(created)} payslip(s)",
@@ -20449,7 +20504,136 @@ def build_business_context(db, client):
         f"- Tax rates set up: " + (", ".join(
             f"{t.name} {t.percent}%" for t in tax_rates) or "none"),
     ]
+    lines += joined_up_context(db, client, today, sym)
     return "\n".join(lines)
+
+
+def joined_up_context(db, client, today, sym):
+    """The ledgers, credit notes, staff expenses, payroll money, the pension,
+    HMRC filings and stock - each built after the assistant was, so it
+    answered questions about them by saying it could not see them. Each part
+    stands alone: one that cannot be read is left out, never the whole
+    answer."""
+    out = []
+    as_of = today.isoformat()
+
+    def part(build):
+        try:
+            got = build()
+        except Exception:                                   # noqa: BLE001
+            logger.exception("Assistant context part failed")
+            return
+        if got:
+            out.extend([""] + got)
+
+    def purchase():
+        rows, base = purchase_accounts(db, client, as_of, only_owing=True)
+        held = db.query(models.DBSupplier).filter(models.DBSupplier.client_id == client.id, models.DBSupplier.on_hold == True).all()  # noqa: E712
+        drafts = db.query(models.DBBill).filter(models.DBBill.client_id == client.id, models.DBBill.status == "Draft").count()
+        credits = db.query(models.DBSupplierCredit).filter(models.DBSupplierCredit.client_id == client.id,
+                                                          models.DBSupplierCredit.status == "Open").all()
+        n = db.query(models.DBSupplier).filter(models.DBSupplier.client_id == client.id, models.DBSupplier.active == True).count()  # noqa: E712
+        got = ["PURCHASE LEDGER (suppliers)",
+               f"- Suppliers: {n}, on hold: {', '.join(x.name for x in held[:10]) or 'none'}",
+               f"- Owed to suppliers ({base}): {sum(r['total'] for r in rows if r['currency'] == base):.2f}, "
+               f"of which overdue {sum(r['overdue'] for r in rows if r['currency'] == base):.2f}",
+               f"- Draft bills not yet posted: {drafts}",
+               f"- Supplier credit notes still to use: {len(credits)} "
+               f"({sum((c.amount or 0) - (c.applied or 0) for c in credits):.2f})"]
+        for r in rows[:5]:
+            got.append(f"  - We owe {r['supplier']} {r['currency']} {r['total']:.2f}" + (f", {r['overdue']:.2f} overdue" if r["overdue"] else ""))
+        return got
+
+    def sales():
+        rows, _per, base = sales_accounts(db, client, as_of, only_owing=True)
+        over = [r for r in rows if r["credit_state"] == "over_limit"]
+        held = [r for r in rows if r["on_hold"]]
+        got = ["SALES LEDGER (customer accounts)",
+               f"- Customers owing: {len(rows)}; over their credit limit: {', '.join(r['contact'] for r in over[:10]) or 'none'}; "
+               f"on hold: {', '.join(r['contact'] for r in held[:10]) or 'none'}"]
+        return got
+
+    def credit_notes():
+        notes = db.query(models.DBCreditNote).filter(models.DBCreditNote.client_id == client.id,
+                                                     models.DBCreditNote.status != "Void").order_by(models.DBCreditNote.id.desc()).all()
+        if not notes:
+            return ["CREDIT NOTES", "- No credit notes issued"]
+        got = ["CREDIT NOTES", f"- Credit notes issued: {len(notes)}"]
+        for n in notes[:5]:
+            got.append(f"  - {n.number} against {n.invoice_number} to {n.to_contact or 'customer'} on {n.issue_date or ''}"
+                       + (f": {n.reason}" if n.reason else ""))
+        return got
+
+    def expenses():
+        claims = db.query(models.DBExpenseClaim).filter(models.DBExpenseClaim.client_id == client.id,
+                                                        models.DBExpenseClaim.status.in_(["pending", "approved"])).all()
+        cur = (client.currency or "GBP").upper()
+        pend = [c for c in claims if c.status == "pending"]
+        appr = [c for c in claims if c.status == "approved"]
+        return ["STAFF EXPENSE CLAIMS",
+                f"- Waiting for a decision: {len(pend)} ({cur} {_claims_total(pend, cur):.2f})",
+                f"- Approved but not yet repaid: {len(appr)} ({cur} {_claims_total(appr, cur):.2f})"]
+
+    def payroll_money():
+        if payroll_regime(db, client.id) != "uk":
+            return []
+        paye, pension = all_payroll_owed(db, client)
+        got = ["PAYROLL MONEY OWED (UK)",
+               f"- Owed to HMRC (PAYE tax, NI, student loans) and not yet paid over: GBP {paye:.2f}",
+               f"- Owed to the pension provider and not yet paid over: GBP {pension:.2f}"]
+        late = []
+        for m in payroll_liabilities(db, client, None, today)["months"]:
+            for k, who in (("paye", "HMRC"), ("pension", "pension")):
+                if m[k]["status"] in ("overdue", "due_soon"):
+                    late.append(f"  - {who} for tax month {m['month']}: GBP {m[k]['left']:.2f}, due {m['due']} ({m[k]['status'].replace('_', ' ')})")
+        return got + late
+
+    def pension():
+        sch = pension_scheme(db, client.id)
+        if not sch.get("enabled"):
+            return ["WORKPLACE PENSION", "- Auto-enrolment is not switched on"]
+        emps = db.query(models.DBEmployee).filter(models.DBEmployee.client_id == client.id, models.DBEmployee.status != "terminated").all()
+        members = [e for e in emps if (e.pension_status or "") == "member"]
+        letters = [f"{e.first_name} {e.last_name}".strip() for e in emps if e.pension_letter_due]
+        return ["WORKPLACE PENSION",
+                f"- Provider: {sch.get('provider') or 'not named'}; members: {len(members)}",
+                f"- Pension letters still to send: {', '.join(letters[:10]) or 'none'}"]
+
+    def hmrc():
+        if payroll_regime(db, client.id) != "uk":
+            return []
+        days = rti_pay_dates(db, client.id, limit=6)
+        last = db.query(models.DBRtiSubmission).filter(models.DBRtiSubmission.client_id == client.id).order_by(
+            models.DBRtiSubmission.id.desc()).first()
+        got = ["HMRC FILINGS (RTI)",
+               "- Pay days and whether a Full Payment Submission was sent from here: "
+               + ("; ".join(f"{d['pay_date']} {d['state'].replace('_', ' ')}" for d in days) or "no UK pay days yet")]
+        if last:
+            got.append(f"- Last submission: {last.kind} {last.pay_date or ''} {last.status} ({last.mode}) on {(last.created_at or '')[:10]}")
+        return got
+
+    def stock():
+        held = db.query(models.DBItem).filter(models.DBItem.client_id == client.id, models.DBItem.is_active == True,     # noqa: E712
+                                              models.DBItem.track_inventory == True).all()                                # noqa: E712
+        if not held:
+            return []
+        short = [i for i in held if inventory.stock_status(True, i.quantity_on_hand, i.reorder_level) in ("low", "out", "over")]
+        value = sum(inventory.stock_value(i.quantity_on_hand, i.average_cost) for i in held)
+        got = ["STOCK",
+               f"- Items tracked: {len(held)}, stock value at average cost: {sym}{value:.2f}",
+               f"- To reorder or out of stock: {len(short)}"]
+        for i in short[:8]:
+            got.append(f"  - {i.code or i.name}: {(i.quantity_on_hand or 0):g} on hand, reorder at {(i.reorder_level or 0):g}")
+        return got
+
+    have = client_modules(client)
+    if "invoicing" in have:
+        for b in (sales, purchase, credit_notes, stock):
+            part(b)
+    if "hr" in have:
+        for b in (expenses, payroll_money, pension, hmrc):
+            part(b)
+    return out
 
 
 
@@ -20485,7 +20669,7 @@ ASSISTANT_SYSTEM = (
     "say so directly - 'nobody is off today' - and do NOT say you lack the information. "
     "Only say you do not have something when the context genuinely has no line about it, "
     "and then name the screen where the user can find it "
-    "(Invoices, Employees, Leave, Payroll, Recruitment, Wallet). "
+    "(Invoices, Bills, Sales ledger, Purchase ledger, Stock, Employees, Leave, Payroll, Expense claims, Recruitment, Wallet). "
     "Be brief and concrete: two or three sentences, or a short list. Quote figures exactly as given. "
     "Do not give legal, tax or financial advice; suggest a qualified professional instead."
 )
@@ -30354,7 +30538,11 @@ WEBHOOK_LIMIT = 10
 WEBHOOK_EVENTS = ("employee.created", "employee.updated", "employee.left",
                   "leave.requested", "leave.decided", "probation.decided", "pay.changed",
                   "review.completed", "kudos.given", "invoice.paid", "invoice.refunded",
-                  "invoice.late_fee", "credit_note.issued", "quote.accepted", "quote.declined")
+                  "invoice.late_fee", "credit_note.issued", "quote.accepted", "quote.declined",
+                  # Added when the ledgers, payroll money and stock were joined up:
+                  # each was already happening, and nothing outside could hear it.
+                  "invoice.created", "invoice.sent", "bill.created", "bill.paid", "supplier.created",
+                  "payroll.run", "payslip.paid", "expense.paid", "hmrc.submitted", "stock.moved")
 WEBHOOK_MAX_ATTEMPTS = 5
 WEBHOOK_BACKOFF_MINUTES = (0, 1, 5, 30, 120)
 
@@ -36336,7 +36524,7 @@ def profit_loss_detail_csv(request: Request, from_: str = Query("", alias="from"
 # of zeroes is noise, and the point of this panel is that anything on it is
 # worth a click.
 
-ATTENTION_LIMIT = 8
+ATTENTION_LIMIT = 12
 
 # Mail the business sent to somebody else, as opposed to mail about the
 # account itself.
@@ -36430,6 +36618,12 @@ def attention_items(db: Session, client) -> list:
     add("leave_pending", leave, "Leave requests to decide", "somebody is waiting on an answer",
         ("leave-view",), "warn")
 
+    modules = client_modules(client)
+    if "invoicing" in modules:
+        _attention_ledgers(db, client, today, soon, add, cur)
+    if "hr" in modules:
+        _attention_people_money(db, client, today, soon, add, cur)
+
     # --- things that quietly went wrong --------------------------------------
     # Mail to customers and staff only. The account's own verification mail
     # has its own bar and its own Resend, and putting it here would mean a
@@ -36467,6 +36661,90 @@ def attention_items(db: Session, client) -> list:
     order = {"bad": 0, "warn": 1, "info": 2}
     items.sort(key=lambda x: (order.get(x["tone"], 3), -(x["amount"] or 0), -x["count"]))
     return items[:ATTENTION_LIMIT]
+
+
+def _attention_ledgers(db, client, today, soon, add, cur):
+    """Customer and supplier accounts that need a decision: a customer past
+    their credit limit or on hold and still owing, a supplier on hold with a
+    bill falling due, and bills typed in but never posted."""
+    try:
+        accounts, _per, base = sales_accounts(db, client, today.isoformat(), only_owing=True)
+    except Exception:           # a ledger that cannot be read must not take the dashboard down
+        accounts, base = [], cur
+    over = [a for a in accounts if a["credit_state"] == "over_limit"]
+    add("customers_over_limit", len(over), "Customers over their credit limit", "owing more than you agreed to let them",
+        ("sales-ledger-view",), "warn", sum(a["total"] for a in over if a["currency"] == base), base)
+    held = [a for a in accounts if a["on_hold"] and a["total"] > 0]
+    add("customers_on_hold", len(held), "Customers on hold who still owe", "on hold until they pay",
+        ("sales-ledger-view",), "info", sum(a["total"] for a in held if a["currency"] == base), base)
+
+    held_suppliers = {s.id for s in db.query(models.DBSupplier).filter(
+        models.DBSupplier.client_id == client.id, models.DBSupplier.on_hold == True).all()}       # noqa: E712
+    if held_suppliers:
+        bills = db.query(models.DBBill).filter(
+            models.DBBill.client_id == client.id, models.DBBill.supplier_id.in_(held_suppliers),
+            models.DBBill.status.notin_(["Paid", "Void", "Draft"])).all()
+        due = [b for b in bills if (_ymd_or_none(b.due_date) or soon + timedelta(days=1)) <= soon]
+        add("suppliers_on_hold", len({b.supplier_id for b in due}), "Suppliers on hold with bills due",
+            "you put them on hold, and their bills are due - settle the dispute or pay", ("purchase-ledger-view",), "warn")
+
+    drafts = db.query(models.DBBill).filter(models.DBBill.client_id == client.id, models.DBBill.status == "Draft").count()
+    add("bills_draft", drafts, "Draft bills to post", "not counted as money you owe until posted", ("bills-view",), "info")
+
+
+def _claims_total(claims, cur):
+    """What claims in the business's currency add up to. Claims in another
+    currency are counted, not added - a sum across currencies means nothing."""
+    return sum((c.amount_minor or 0) / 100.0 for c in claims if (c.currency or "GBP").upper() == cur)
+
+
+def _attention_people_money(db, client, today, soon, add, cur):
+    """Pay that has not gone out, what is owed to HMRC and the pension, pay
+    days HMRC has not been told about, pension letters, and expense claims."""
+    slips = db.query(models.DBPayslip).filter(
+        models.DBPayslip.client_id == client.id, models.DBPayslip.status.notin_(["Paid", "Void"])).all()
+    unpaid = [p for p in slips if (_ymd_or_none(p.pay_date) or soon + timedelta(days=1)) <= today]
+    add("wages_unpaid", len(unpaid), "Payslips past pay day, not paid", "people were due their pay",
+        ("payroll-view",), "bad", sum(p.net_pay or 0 for p in unpaid), cur)
+
+    years = {tax_month_of(p.pay_date)[0] for p in db.query(models.DBPayslip).filter(
+        models.DBPayslip.client_id == client.id, models.DBPayslip.regime == "uk", models.DBPayslip.status != "Void").all()}
+    late = soon_due = 0
+    late_amount = soon_amount = 0.0
+    for y in sorted(x for x in years if x):
+        for m in payroll_liabilities(db, client, y, today)["months"]:
+            for k in ("paye", "pension"):
+                if m[k]["status"] == "overdue":
+                    late, late_amount = late + 1, late_amount + m[k]["left"]
+                elif m[k]["status"] == "due_soon":
+                    soon_due, soon_amount = soon_due + 1, soon_amount + m[k]["left"]
+    add("payroll_overdue", late, "HMRC or pension payments overdue", "PAYE and pension money taken from pay and not paid over",
+        ("payroll-view",), "bad", late_amount, "GBP")
+    add("payroll_due", soon_due, "HMRC or pension payments due this week", "due on the 22nd", ("payroll-view",), "warn", soon_amount, "GBP")
+
+    # Only where this app can send the FPS. Until HMRC recognises it, the FPS
+    # is sent from other software and every pay day would show here forever.
+    if rti_cfg()["vendor_id"]:
+        cutoff = (today - timedelta(days=62)).isoformat()
+        missing = [d for d in rti_pay_dates(db, client.id, limit=6)
+                   if d["state"] != "sent" and cutoff <= d["pay_date"] <= today.isoformat()]
+        add("fps_not_sent", len(missing), "Pay days HMRC has not been told about",
+            "the FPS is due on or before pay day", ("payroll-view", "hmrc"), "bad")
+
+    letters = db.query(models.DBEmployee).filter(
+        models.DBEmployee.client_id == client.id, models.DBEmployee.status != "terminated",
+        models.DBEmployee.pension_letter_due != "", models.DBEmployee.pension_letter_due.isnot(None)).count()
+    add("pension_letters", letters, "Pension letters to send", "the law gives six weeks from their enrolment date",
+        ("payroll-view", "pension"), "warn")
+
+    claims = db.query(models.DBExpenseClaim).filter(
+        models.DBExpenseClaim.client_id == client.id, models.DBExpenseClaim.status.in_(["pending", "approved"])).all()
+    waiting = [c for c in claims if c.status == "pending"]
+    add("expenses_pending", len(waiting), "Expense claims to decide", "somebody paid and wants it back",
+        ("expenses-view", "pending"), "warn", _claims_total(waiting, cur), cur)
+    owed = [c for c in claims if c.status == "approved"]
+    add("expenses_unpaid", len(owed), "Approved expenses not repaid", "approved, so owed - and not yet paid",
+        ("expenses-view", "approved"), "warn", _claims_total(owed, cur), cur)
 
 
 @app.get("/api/dashboard/attention")
@@ -36919,6 +37197,8 @@ def rti_run(db, client, request, kind, built, *, send: bool, confirm_resend: boo
             summary=result["summary"], errors=answer["errors"], correlation=answer["correlation_id"], row=row)
     log_audit(db, client.id, "hmrc_rti_" + status, "rti", row.id, kind,
               f"{kind} {day or ''} {cfg['mode']}: {people} people", request)
+    announce(db, client.id, "hmrc.submitted", {"kind": kind, "pay_date": day or "", "tax_year": year, "status": status,
+                                               "mode": cfg["mode"], "people": people, "correlation_id": answer["correlation_id"]})
     db.commit()
     result.update(ok=answer["ok"], status=status, sent=True, hmrc_errors=answer["errors"],
                   correlation_id=answer["correlation_id"], submission_id=row.id)
@@ -37135,6 +37415,9 @@ def create_supplier(request: Request, body: dict = None, db: Session = Depends(g
     _apply_supplier_body(db, client, row, body)
     db.add(row)
     log_audit(db, client.id, "supplier_created", "supplier", None, row.name, "", request)
+    db.flush()
+    announce(db, client.id, "supplier.created", {"id": row.id, "name": row.name, "account_ref": row.account_ref or "",
+                                                 "email": row.email or ""})
     db.commit()
     db.refresh(row)
     return supplier_to_dict(row)

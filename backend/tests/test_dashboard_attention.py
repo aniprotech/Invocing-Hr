@@ -221,9 +221,10 @@ def test_the_worst_comes_first_and_the_panel_stays_short(tenant, account):
     assert len(tones) <= main.ATTENTION_LIMIT
 
 
-def test_a_business_behind_on_everything_still_gets_a_readable_panel(tenant, account):
+def test_a_business_behind_on_everything_still_gets_a_readable_panel(tenant, account, monkeypatch):
     """Ten things can be waiting. A list of ten is a second inbox, so the
     panel stops at the limit and the worst are the ones that survive."""
+    monkeypatch.setattr(main, "ATTENTION_LIMIT", 8)      # ten waiting, room for eight
     from conftest import make_employee
     an_invoice(tenant)                                                    # overdue
     an_invoice(tenant, issue_date=d(-1), due_date=d(3))                   # due_soon

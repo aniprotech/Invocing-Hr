@@ -677,3 +677,19 @@ def test_the_endpoints_need_a_login(client):
                          ("post", "/api/hmrc/rti/fps/send"), ("post", "/api/hmrc/rti/eps/check"), ("post", "/api/hmrc/rti/eps/send"),
                          ("get", "/api/hmrc/rti/submissions/1")):
         assert getattr(client, method)(path).status_code in (401, 403), path
+
+
+def test_hmrcs_answer_is_announced_to_webhooks(tenant, monkeypatch):
+    monkeypatch.setenv("WEBHOOKS_ASYNC", "0")
+    tenant.post("/api/webhooks", json={"url": "https://hooks.example/in", "events": ["hmrc.submitted"]})
+    set_up_to_send(tenant, monkeypatch, gateway=good_gateway())
+    payslip(tenant, person(tenant), "2026-04-30")
+    tenant.post("/api/hmrc/rti/fps/check", json={"pay_date": "2026-04-30"})
+    with main.SessionLocal() as db:
+        assert db.query(models.DBWebhookDelivery).filter(models.DBWebhookDelivery.event == "hmrc.submitted").count() == 0
+    tenant.post("/api/hmrc/rti/fps/send", json={"pay_date": "2026-04-30"})
+    with main.SessionLocal() as db:
+        rows = db.query(models.DBWebhookDelivery).filter(models.DBWebhookDelivery.event == "hmrc.submitted").all()
+        assert len(rows) == 1
+        data = json.loads(rows[0].payload)["data"]
+    assert data["kind"] == "FPS" and data["status"] == "accepted" and data["pay_date"] == "2026-04-30" and data["correlation_id"] == "CORR123"
