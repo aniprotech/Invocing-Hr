@@ -19335,11 +19335,23 @@ def update_goal_progress(goal_id: int, request: Request, body: dict, db: Session
     goal = db.query(models.DBEmployeeGoal).filter(models.DBEmployeeGoal.id == goal_id, models.DBEmployeeGoal.employee_id == emp_id).first()
     if not goal:
         raise HTTPException(status_code=404, detail="Goal not found")
-    goal.current_value = body.get("current_value", goal.current_value)
-    if goal.current_value >= goal.target_value:
+    # A number, from the person's own screen: anything else was stored as
+    # sent and then compared with the target, which a word cannot be.
+    raw = (body or {}).get("current_value", goal.current_value)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Progress is a number")
+    if value != value or value in (float("inf"), float("-inf")) or value < 0 or value > 1_000_000_000:
+        raise HTTPException(status_code=400, detail="Progress is a number from zero up")
+    goal.current_value = round(value, 4)
+    target = goal.target_value or 0
+    if target > 0 and goal.current_value >= target:
         goal.status = "completed"
+    elif goal.status == "completed" or goal.current_value > 0:
+        goal.status = "in_progress"
     db.commit()
-    return {"message": "Goal updated"}
+    return {"message": "Goal updated", "current_value": goal.current_value, "status": goal.status}
 
 
 # HR-side: Create goal for employee
@@ -37328,7 +37340,7 @@ def supplier_to_dict(s):
     return {"id": s.id, "name": s.name or "", "account_ref": s.account_ref or "", "contact_person": s.contact_person or "",
             "email": s.email or "", "phone_number": s.phone_number or "", "address": s.address or "", "tax_id": s.tax_id or "",
             "payment_terms_days": s.payment_terms_days, "currency": (s.currency or "").upper(), "bank_details": s.bank_details or "",
-            "notes": s.notes or "", "on_hold": bool(s.on_hold), "active": s.active is not False}
+            "notes": s.notes or "", "on_hold": bool(s.on_hold), "active": s.active is not False, "contact_id": s.contact_id}
 
 
 def _supplier_or_404(db, client, supplier_id):
@@ -37386,6 +37398,23 @@ def _apply_supplier_body(db, client, row, body):
         if code and not code.isalpha():
             raise HTTPException(status_code=400, detail="Currency is a three-letter code, like USD")
         row.currency = "" if code == base_currency(client) else code
+    if "contact_id" in body:
+        raw = body.get("contact_id")
+        if raw in (None, "", 0, "0"):
+            row.contact_id = None
+        else:
+            try:
+                cid = int(raw)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="Pick one of your customers")
+            contact = db.query(models.DBContact).filter(models.DBContact.id == cid, models.DBContact.client_id == client.id).first()
+            if not contact:
+                raise HTTPException(status_code=400, detail="That customer is not one of yours")
+            other = db.query(models.DBSupplier).filter(models.DBSupplier.client_id == client.id, models.DBSupplier.contact_id == cid,
+                                                       models.DBSupplier.id != (row.id or 0)).first()
+            if other:
+                raise HTTPException(status_code=400, detail=f"{contact.name} is already linked to the supplier {other.name}")
+            row.contact_id = cid
     if "on_hold" in body:
         row.on_hold = _flag_on(body.get("on_hold"), False)
     if "active" in body:
@@ -37778,6 +37807,66 @@ def _ledger_period(start, end):
     return _statement_period(start, end)
 
 
+# --- one business on both sides ---------------------------------------------------------
+# A business can sell to somebody it also buys from. The customer and the
+# supplier are two accounts - they are kept that way, the way the books keep
+# them - but each says the other exists, what is owed each way, and the net.
+# Linked by choice on the supplier; failing that, by exactly the same name.
+
+def linked_contact(db, client, supplier):
+    if supplier.contact_id:
+        c = db.query(models.DBContact).filter(models.DBContact.id == supplier.contact_id, models.DBContact.client_id == client.id).first()
+        if c:
+            return c, "linked"
+    name = (supplier.name or "").strip().lower()
+    if not name:
+        return None, ""
+    c = db.query(models.DBContact).filter(models.DBContact.client_id == client.id, func.lower(models.DBContact.name) == name).first()
+    if c and not db.query(models.DBSupplier).filter(models.DBSupplier.client_id == client.id, models.DBSupplier.contact_id == c.id,
+                                                    models.DBSupplier.id != supplier.id).first():
+        return c, "same_name"
+    return None, ""
+
+
+def linked_supplier(db, client, contact):
+    s = db.query(models.DBSupplier).filter(models.DBSupplier.client_id == client.id, models.DBSupplier.contact_id == contact.id).first()
+    if s:
+        return s, "linked"
+    name = (contact.name or "").strip().lower()
+    s = db.query(models.DBSupplier).filter(models.DBSupplier.client_id == client.id, models.DBSupplier.contact_id.is_(None),
+                                           func.lower(models.DBSupplier.name) == name).first() if name else None
+    return (s, "same_name") if s else (None, "")
+
+
+def _both_sides(owes_us, we_owe):
+    """Per currency: what they owe, what we owe, and the net - positive when
+    they owe us."""
+    out = []
+    for cur in sorted(set(owes_us) | set(we_owe)):
+        a, b = money(owes_us.get(cur, 0)), money(we_owe.get(cur, 0))
+        out.append({"currency": cur, "they_owe_us": a, "we_owe_them": b, "net": money(a - b)})
+    return out
+
+
+def _owed_by_customer(db, client, contact, as_of):
+    rows, _per, _b = ageing_by_customer(db, client, as_of)
+    key = (contact.name or "").strip().lower()
+    out = {}
+    for r in rows:
+        if r["contact"].strip().lower() == key:
+            out[r["currency"]] = out.get(r["currency"], 0) + r["total"]
+    return out
+
+
+def _owed_to_supplier(db, client, supplier_id, as_of):
+    rows, _bills, _b = payables_ageing(db, client, as_of, _purchase_data(db, client))
+    out = {}
+    for r in rows:
+        if r["supplier_id"] == supplier_id:
+            out[r["currency"]] = out.get(r["currency"], 0) + r["total"]
+    return out
+
+
 @app.get("/api/ledger/purchases/{supplier_id}")
 def supplier_ledger(supplier_id: int, request: Request, start: str = "", end: str = "", db: Session = Depends(get_db)):
     """One supplier's account between two days, per currency: the balance
@@ -37795,9 +37884,15 @@ def supplier_ledger(supplier_id: int, request: Request, start: str = "", end: st
     rows, per_bill, _b = payables_ageing(db, client, end, data)
     mine_rows = [r for r in rows if r["supplier_id"] == supplier_id]
     cred = [supplier_credit_to_dict(c, {s.id: s.name for s in suppliers.values()}, base) for c in credits if c.supplier_id == supplier_id]
+    also = None
+    if supplier_id:
+        contact, how = linked_contact(db, client, _supplier_or_404(db, client, supplier_id))
+        if contact:
+            also = {"contact_id": contact.id, "name": contact.name, "how": how,
+                    "position": _both_sides(_owed_by_customer(db, client, contact, end), {r["currency"]: r["total"] for r in mine_rows})}
     return {"supplier": supplier, "start": start, "end": end, "base": base, "ledgers": ledger,
             "ageing": mine_rows, "open_bills": [b for b in per_bill if b["supplier_id"] == supplier_id],
-            "credits": cred, "balance": {r["currency"]: r["total"] for r in mine_rows}}
+            "credits": cred, "balance": {r["currency"]: r["total"] for r in mine_rows}, "also_customer": also}
 
 
 @app.get("/api/ledger/purchases/{supplier_id}/ledger.csv")
@@ -37939,9 +38034,14 @@ def customer_ledger(contact_id: int, request: Request, start: str = "", end: str
     limit_cur = ((contact.currency or "") or base).upper()
     owed = money(sum(r["total"] for r in mine if r["currency"] == limit_cur))
     pos = ledgers.credit_position(owed, contact.credit_limit, bool(contact.on_hold))
+    supplier, how = linked_supplier(db, client, contact)
+    also = None
+    if supplier:
+        also = {"supplier_id": supplier.id, "name": supplier.name, "how": how,
+                "position": _both_sides({r["currency"]: r["total"] for r in mine}, _owed_to_supplier(db, client, supplier.id, end))}
     return {"account": {**contact_to_dict(contact), "credit": dict(pos, currency=limit_cur, balance=owed)},
             "start": start, "end": end, "base": base, "statements": statement_for(db, client, contact, start, end),
-            "ageing": mine, "open_invoices": [i for i in per_invoice if i["contact"].strip().lower() == key]}
+            "ageing": mine, "open_invoices": [i for i in per_invoice if i["contact"].strip().lower() == key], "also_supplier": also}
 
 
 @app.get("/api/ledger/credit-check")

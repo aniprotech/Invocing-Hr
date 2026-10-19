@@ -1634,6 +1634,7 @@
                             <div class="form-group"><label>Address</label><textarea id="supplier-address" class="form-control" rows="2"></textarea></div>
                             <div class="form-group"><label>How to pay them</label><textarea id="supplier-bank" class="form-control" rows="2" placeholder="Bank, sort code and account number, IBAN..."></textarea></div>
                             <div class="form-group"><label>Notes</label><textarea id="supplier-notes" class="form-control" rows="2"></textarea></div>
+                            <div class="form-group"><label for="supplier-contact">Also a customer</label><select id="supplier-contact" class="form-control"><option value="">No - or match a customer with the same name</option></select></div>
                             <label class="bcheck" style="display:flex;gap:8px;align-items:center;"><input type="checkbox" id="supplier-hold"> On hold: do not pay them yet (a reminder to whoever pays bills)</label>
                         </div>
                         <div class="modal-footer">
@@ -2672,6 +2673,7 @@
                     </div>
                     <div id="review-cycles"></div>
                     <div id="review-cycle-detail" style="margin-top:24px;"></div>
+                    <div id="checkin-coverage" style="margin-top:24px;display:none;"></div>
                 </div>
 
                 <!-- ========== PAY BANDS AND THE PAY REVIEW ==========

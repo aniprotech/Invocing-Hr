@@ -1999,6 +1999,14 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 74: {sys.exc_info()[1]}")
 
+            # 75. A supplier can be the same business as a customer.
+            try:
+                conn.execute(text("ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS contact_id INTEGER"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_suppliers_contact_id ON suppliers (contact_id)"))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 75: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

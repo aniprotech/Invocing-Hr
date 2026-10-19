@@ -2695,7 +2695,65 @@
 
             box.appendChild(row);
             host.appendChild(box);
+            loadPlatformEmailFailures(host);
         }
+
+        // The platform's own mail that did not go in the last seven days -
+        // sign-in codes, password resets - with the reasons grouped, because
+        // one broken transport fails the same way fifty times.
+        async function loadPlatformEmailFailures(host) {
+            var d;
+            try {
+                var res = await fetch('/api/superadmin/email-failures');
+                if (!res.ok) return;
+                d = await res.json();
+            } catch (e) { return; }
+            var old = document.getElementById('platform-email-failures');
+            if (old) old.remove();
+            var wrap = document.createElement('div');
+            wrap.id = 'platform-email-failures';
+            wrap.style.cssText = 'margin-top:14px;border:1px solid #334155;border-radius:12px;padding:16px 20px;background:#0f172a;';
+            var head = document.createElement('div');
+            head.style.cssText = 'font-weight:700;font-size:0.9rem;color:' + (d.failed_7d ? '#fb7185' : '#34d399') + ';';
+            head.textContent = d.failed_7d
+                ? d.failed_7d + ' platform email' + (d.failed_7d === 1 ? '' : 's') + ' did not go in the last 7 days (' + (d.sent_7d || 0) + ' sent)'
+                : 'Nothing failed in the last 7 days (' + (d.sent_7d || 0) + ' sent)';
+            wrap.appendChild(head);
+            (d.reasons || []).forEach(function (r) {
+                var line = document.createElement('div');
+                line.style.cssText = 'margin-top:6px;font-size:0.82rem;color:#cbd5e1;';
+                line.textContent = r.count + ' x ' + (r.reason || 'no reason given');
+                wrap.appendChild(line);
+            });
+            if ((d.failures || []).length) {
+                var table = document.createElement('table');
+                table.style.cssText = 'width:100%;margin-top:12px;font-size:0.78rem;color:#cbd5e1;border-collapse:collapse;';
+                var hr = document.createElement('tr');
+                ['When', 'What', 'To', 'Error'].forEach(function (h) {
+                    var th = document.createElement('th');
+                    th.style.cssText = 'text-align:left;padding:4px 6px;color:#94a3b8;font-weight:600;';
+                    th.textContent = h;
+                    hr.appendChild(th);
+                });
+                table.appendChild(hr);
+                d.failures.slice(0, 20).forEach(function (f) {
+                    var tr = document.createElement('tr');
+                    [f.when, f.what, f.to, f.error].forEach(function (v) {
+                        var td = document.createElement('td');
+                        td.style.cssText = 'padding:4px 6px;border-top:1px solid #1e293b;vertical-align:top;';
+                        td.textContent = v || '';
+                        tr.appendChild(td);
+                    });
+                    table.appendChild(tr);
+                });
+                var scroller = document.createElement('div');
+                scroller.style.cssText = 'overflow-x:auto;';
+                scroller.appendChild(table);
+                wrap.appendChild(scroller);
+            }
+            host.appendChild(wrap);
+        }
+        window.loadPlatformEmailFailures = loadPlatformEmailFailures;
 
         async function disconnectPlatformGmail() {
             // Worth asking: with nothing else set up this stops every code the

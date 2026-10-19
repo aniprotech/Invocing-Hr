@@ -1531,6 +1531,9 @@ class DBSupplier(Base):
     notes = Column(Text, default="")
     on_hold = Column(Boolean, default=False)
     active = Column(Boolean, default=True)
+    # The same business as one of the customers, when it is both: what they
+    # owe and what is owed to them are then shown side by side, with the net.
+    contact_id = Column(Integer, nullable=True, index=True)
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 

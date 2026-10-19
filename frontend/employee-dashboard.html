@@ -1899,7 +1899,7 @@
           if (r.review_to_write) flags.push(['Review to write', 'reviews']);
           if (r.one_to_one_quiet) flags.push([r.last_one_to_one ? 'No one-to-one since ' + r.last_one_to_one : 'No one-to-one yet', 'checkins']);
           if (r.probation) flags.push([r.probation.overdue ? 'Probation ended with no decision' : 'Probation ends ' + r.probation.end, 'team']);
-          if (r.skills_to_confirm) flags.push([r.skills_to_confirm + ' skill' + (r.skills_to_confirm === 1 ? '' : 's') + ' to confirm', 'team']);
+          if (r.skills_to_confirm) flags.push([r.skills_to_confirm + ' skill' + (r.skills_to_confirm === 1 ? '' : 's') + ' to confirm', 'skills']);
           if (r.goals_overdue) flags.push([r.goals_overdue + ' goal' + (r.goals_overdue === 1 ? '' : 's') + ' overdue', 'team']);
           if (flags.length) {
             var list = document.createElement('div'); list.className = 'mt-2 flex flex-wrap gap-1';
@@ -1907,7 +1907,7 @@
               var chip = document.createElement('button'); chip.type = 'button';
               chip.className = 'text-xs px-2 py-0.5 rounded-full border border-amber-200 bg-amber-50 text-amber-700';
               chip.textContent = f[0];
-              chip.addEventListener('click', function () { if (f[1] !== 'team') switchTab(f[1]); });
+              chip.addEventListener('click', function () { if (f[1] === 'skills') openTeamSkills(r.employee_id, r.name); else if (f[1] !== 'team') switchTab(f[1]); });
               list.appendChild(chip);
             });
             box.appendChild(list);
@@ -1919,6 +1919,68 @@
       } catch (e) { card.hidden = true; }
     }
     window.loadTeamOverview = loadTeamOverview;
+
+    // A report's skills, as they put them, with the ones not yet confirmed
+    // confirmable by their manager.
+    async function openTeamSkills(employeeId, name) {
+      var d;
+      try {
+        var res = await fetch('/api/employee/team-skills');
+        if (!res.ok) throw new Error('Request failed: ' + res.status);
+        d = await res.json();
+      } catch (e) { uiToast('Could not load their skills', 'error'); return; }
+      var rep = (d.reports || []).filter(function (x) { return x.employee_id === employeeId; })[0];
+      if (!rep) { uiToast('Not one of your reports', 'error'); return; }
+      var overlay = document.getElementById('teamSkillsOverlay');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'teamSkillsOverlay';
+        overlay.className = 'fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4';
+        document.body.appendChild(overlay);
+      }
+      overlay.textContent = '';
+      overlay.hidden = false;
+      var panel = document.createElement('div');
+      panel.className = 'bg-white rounded-2xl p-5 w-full max-w-md max-h-[85vh] overflow-y-auto';
+      var title = document.createElement('h3'); title.className = 'font-semibold text-gray-900 mb-3';
+      title.textContent = (rep.name || name || 'Their') + ' - skills';
+      panel.appendChild(title);
+      if (!rep.skills.length) {
+        var none = document.createElement('p'); none.className = 'text-sm text-gray-500'; none.textContent = 'They have not added any skills yet.'; panel.appendChild(none);
+      }
+      rep.skills.forEach(function (sk) {
+        var row = document.createElement('div'); row.className = 'flex items-center justify-between gap-2 py-2 border-b border-gray-100';
+        var label = document.createElement('div'); label.className = 'text-sm';
+        label.textContent = sk.name + (sk.level_word ? ' - ' + sk.level_word : '');
+        row.appendChild(label);
+        if (sk.verified) {
+          var done = document.createElement('span'); done.className = 'text-xs text-emerald-600'; done.textContent = 'Confirmed' + (sk.verified_by ? ' by ' + sk.verified_by : ''); row.appendChild(done);
+        } else {
+          var b = document.createElement('button'); b.type = 'button';
+          b.className = 'text-xs px-2.5 py-1 rounded-lg border border-brand-200 text-brand-700 hover:bg-brand-50';
+          b.textContent = 'Confirm';
+          b.addEventListener('click', async function () {
+            b.disabled = true;
+            try {
+              var r = await apiPost('/api/employee/team/' + employeeId + '/skills/' + sk.skill_id + '/verify');
+              if (!r.ok) throw new Error('refused');
+              var ok = document.createElement('span'); ok.className = 'text-xs text-emerald-600'; ok.textContent = 'Confirmed';
+              b.replaceWith(ok);
+              loadTeamOverview();
+            } catch (e) { b.disabled = false; uiToast('Could not confirm that', 'error'); }
+          });
+          row.appendChild(b);
+        }
+        panel.appendChild(row);
+      });
+      var close = document.createElement('button'); close.type = 'button';
+      close.className = 'mt-4 w-full py-2 rounded-xl border border-gray-200 text-sm';
+      close.textContent = 'Close';
+      close.addEventListener('click', function () { overlay.hidden = true; });
+      panel.appendChild(close);
+      overlay.appendChild(panel);
+    }
+    window.openTeamSkills = openTeamSkills;
 
     // --- Policies ---------------------------------------------------------------------
 
@@ -4500,10 +4562,33 @@
           var pColors = { high: 'bg-red-500', medium: 'bg-amber-500', low: 'bg-emerald-500' };
           var pBgs = { high: 'bg-red-50 text-red-700', medium: 'bg-amber-50 text-amber-700', low: 'bg-emerald-50 text-emerald-700' };
           var sColors = { completed: 'bg-emerald-100 text-emerald-700', in_progress: 'bg-brand-100 text-brand-700', pending: 'bg-gray-100 text-gray-500' };
-          grid.innerHTML += '<div class="bg-white rounded-2xl p-5 border border-gray-100 hover:shadow-lg transition-all"><div class="flex items-start justify-between mb-4"><div><h4 class="font-semibold text-gray-900">' + esc(g.title) + '</h4><p class="text-sm text-gray-500 mt-1">' + esc(g.description||'') + '</p></div><span class="px-2 py-0.5 text-xs font-medium rounded-full ' + (sColors[g.status]||'bg-gray-100 text-gray-500') + '">' + esc(g.status.replace('_',' ')) + '</span></div><div class="mb-3"><div class="flex justify-between text-sm mb-1"><span class="text-gray-500">' + g.current_value + ' / ' + g.target_value + ' ' + esc(g.unit) + '</span><span class="font-semibold text-gray-900">' + progress + '%</span></div><div class="h-2.5 bg-gray-100 rounded-full overflow-hidden"><div class="h-full bg-gradient-to-r from-brand-500 to-brand-400 rounded-full transition-all duration-500" style="width:' + progress + '%"></div></div></div><div class="flex items-center gap-2 text-xs text-gray-400"><span class="px-2 py-0.5 rounded-full ' + (pBgs[g.priority]||'bg-gray-100 text-gray-500') + '">' + esc(g.priority) + '</span><span>' + esc(g.due_date||'No deadline') + '</span></div></div>';
+          grid.innerHTML += '<div class="bg-white rounded-2xl p-5 border border-gray-100 hover:shadow-lg transition-all"><div class="flex items-start justify-between mb-4"><div><h4 class="font-semibold text-gray-900">' + esc(g.title) + '</h4><p class="text-sm text-gray-500 mt-1">' + esc(g.description||'') + '</p></div><span class="px-2 py-0.5 text-xs font-medium rounded-full ' + (sColors[g.status]||'bg-gray-100 text-gray-500') + '">' + esc(g.status.replace('_',' ')) + '</span></div><div class="mb-3"><div class="flex justify-between text-sm mb-1"><span class="text-gray-500">' + g.current_value + ' / ' + g.target_value + ' ' + esc(g.unit) + '</span><span class="font-semibold text-gray-900">' + progress + '%</span></div><div class="h-2.5 bg-gray-100 rounded-full overflow-hidden"><div class="h-full bg-gradient-to-r from-brand-500 to-brand-400 rounded-full transition-all duration-500" style="width:' + progress + '%"></div></div></div><div class="flex items-center gap-2 text-xs text-gray-400"><span class="px-2 py-0.5 rounded-full ' + (pBgs[g.priority]||'bg-gray-100 text-gray-500') + '">' + esc(g.priority) + '</span><span>' + esc(g.due_date||'No deadline') + '</span>' +
+            (g.status !== 'completed' ? '<button type="button" class="ml-auto px-2.5 py-1 rounded-lg border border-brand-200 text-brand-700 hover:bg-brand-50" data-goal-update="' + Number(g.id) + '">Update progress</button>' : '') + '</div></div>';
+        });
+        grid.querySelectorAll('[data-goal-update]').forEach(function (b) {
+          var g = goals.filter(function (x) { return String(x.id) === b.getAttribute('data-goal-update'); })[0];
+          b.addEventListener('click', function () { updateGoalProgress(g); });
         });
       } catch (e) { console.error(e); }
     }
+
+    // Progress on one of my goals: where it stands now, out of its target.
+    async function updateGoalProgress(g) {
+      if (!g) return;
+      var v = await uiPrompt('Where is "' + g.title + '" now, out of ' + g.target_value + ' ' + (g.unit || '') + '?', String(g.current_value || 0),
+                             { title: 'Update progress', confirmText: 'Save' });
+      if (v === null || v === undefined || String(v).trim() === '') return;
+      var n = Number(v);
+      if (!isFinite(n) || n < 0) { uiToast('Progress is a number from zero up', 'error'); return; }
+      try {
+        var res = await apiPost('/api/employee/goals/' + g.id + '/update', { current_value: n });
+        var d = await res.json().catch(function () { return {}; });
+        if (!res.ok) { uiToast(d.detail || 'Could not save that', 'error'); return; }
+        uiToast(d.status === 'completed' ? 'Goal reached - well done' : 'Progress saved', 'success');
+        loadGoals();
+      } catch (e) { uiToast('Could not save that. Please try again.', 'error'); }
+    }
+    window.updateGoalProgress = updateGoalProgress;
 
     async function loadLeave() {
       try {

@@ -9399,7 +9399,7 @@ showView = function(viewId) {
     if (viewId === 'orgchart-view') loadOrgChart();
     if (viewId === 'feed-view') loadFeedView();
     if (viewId === 'expenses-view') loadExpensesView();
-    if (viewId === 'reviews-view') loadReviewsView();
+    if (viewId === 'reviews-view') { loadReviewsView(); loadCheckInCoverage(); }
     if (viewId === 'training-view') { loadTrainingView(); loadTrainingPartners(); if (typeof loadCourses === 'function') loadCourses(); }
     if (viewId === 'compensation-view') loadPayView();
     if (viewId === 'skills-view') loadSkillsView();
@@ -11941,6 +11941,20 @@ function ledgerWireDetail(reload) {
     });
 }
 
+// The other side of an account that is both a customer and a supplier: what
+// is owed each way and the net, with a way across.
+function ledgerOtherSide(also, kind) {
+    if (!also) return '';
+    var lines = (also.position || []).map(function (p) {
+        var net = p.net > 0 ? 'they owe you ' + ledgerMoney(p.net, p.currency) : (p.net < 0 ? 'you owe them ' + ledgerMoney(-p.net, p.currency) : 'square');
+        return '<div>' + esc(p.currency) + ': they owe you ' + ledgerMoney(p.they_owe_us, p.currency) + ', you owe them ' + ledgerMoney(p.we_owe_them, p.currency) +
+            ' - <strong>net, ' + net + '</strong></div>';
+    }).join('');
+    return '<div style="margin-top:12px;padding:10px 12px;border:1px dashed var(--border-color);border-radius:8px;font-size:0.85rem;">' +
+        '<div style="font-size:0.74rem;color:var(--text-secondary);">' + (kind === 'supplier' ? 'Also a supplier' : 'Also a customer') + (also.how === 'same_name' ? ' (same name)' : '') + '</div>' +
+        '<a href="#" id="ledger-other-side" style="font-weight:600;color:var(--primary-color);">' + esc(also.name) + '</a>' + lines + '</div>';
+}
+
 async function openSalesAccount(id, start, end) {
     var q = [];
     if (start) q.push('start=' + encodeURIComponent(start));
@@ -11967,6 +11981,7 @@ async function openSalesAccount(id, start, end) {
     var statements = (d.statements || []).map(function (s) { return ledgerStatementTable(s, { inc: 'Charged', dec: 'Received', sales: true }); }).join('');
     document.getElementById('ledger-detail-body').innerHTML =
         '<div style="display:flex;gap:12px;flex-wrap:wrap;">' + creditBox + contactBox + '</div>' +
+        ledgerOtherSide(d.also_supplier, 'supplier') +
         (age ? '<div style="margin-top:12px;">' + ledgerAgeing(age, age.currency) + '</div>' : '') +
         '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;">' +
             '<button type="button" class="btn btn-outline btn-sm" id="ledger-edit">Edit account</button>' +
@@ -11980,6 +11995,8 @@ async function openSalesAccount(id, start, end) {
               : '<div style="color:var(--text-secondary);font-size:0.85rem;">Nothing is owed on this account.</div>');
     document.getElementById('ledger-detail-modal').style.display = 'flex';
     ledgerWireDetail(function (s, e) { openSalesAccount(id, s, e); });
+    var across = document.getElementById('ledger-other-side');
+    if (across && d.also_supplier) across.addEventListener('click', function (ev) { ev.preventDefault(); showView('purchase-ledger-view'); openPurchaseAccount(d.also_supplier.supplier_id); });
     document.getElementById('ledger-edit').addEventListener('click', async function () {
         if (!allContacts.some(function (x) { return x.id === id; })) await loadContacts();
         closeLedgerDetail();
@@ -12023,7 +12040,8 @@ async function openPurchaseAccount(id, start, end) {
             esc(s.contact_person || '') + (s.contact_person ? '<br>' : '') + esc(s.email || 'No email') + (s.phone_number ? '<br>' + esc(s.phone_number) : '') +
             '<br><span style="color:var(--text-secondary);">Terms: ' + (s.payment_terms_days == null ? 'your default' : esc(String(s.payment_terms_days)) + ' days') + '</span></div>' +
         '<div style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;flex:1;min-width:220px;font-size:0.85rem;"><div style="font-size:0.74rem;color:var(--text-secondary);">How to pay them</div>' +
-            (s.bank_details ? esc(s.bank_details).replace(/\n/g, '<br>') : '<span style="color:var(--text-secondary);">Not recorded</span>') + '</div></div>';
+            (s.bank_details ? esc(s.bank_details).replace(/\n/g, '<br>') : '<span style="color:var(--text-secondary);">Not recorded</span>') + '</div></div>' +
+        ledgerOtherSide(d.also_customer, 'customer');
     var openBills = (d.open_bills || []).map(function (b) {
         return '<tr><td>' + esc(b.number) + '</td><td>' + esc(b.issue_date || '') + '</td><td>' + esc(b.due_date || '') + '</td><td class="text-right">' + ledgerMoney(b.outstanding, b.currency) + '</td>' +
             '<td class="text-right"' + (b.days_overdue ? ' style="color:var(--danger-text);"' : '') + '>' + (b.days_overdue ? b.days_overdue + ' days late' : 'not yet due') + '</td>' +
@@ -12053,6 +12071,8 @@ async function openPurchaseAccount(id, start, end) {
         (credits ? '<div style="font-weight:600;margin:18px 0 6px;">Credit notes</div><div class="table-responsive"><table class="data-table inv-table" style="min-width:560px;font-size:0.85rem;"><thead><tr><th>Credit</th><th>Dated</th><th>Reason</th><th class="text-right">Amount</th><th class="text-right">Left to use</th><th></th></tr></thead><tbody>' + credits + '</tbody></table></div>' : '');
     document.getElementById('ledger-detail-modal').style.display = 'flex';
     ledgerWireDetail(function (a, b) { openPurchaseAccount(id, a, b); });
+    var acrossP = document.getElementById('ledger-other-side');
+    if (acrossP && d.also_customer) acrossP.addEventListener('click', function (ev) { ev.preventDefault(); showView('sales-ledger-view'); openSalesAccount(d.also_customer.contact_id); });
     var refresh = async function () { await openPurchaseAccount(id, d.start, d.end); loadPurchaseLedger(); if (typeof loadBills === 'function') loadBills(); };
     var el = function (n) { return document.getElementById(n); };
     if (real) {
@@ -12111,6 +12131,15 @@ async function openSupplierModal(id) {
     set('supplier-phone', s.phone_number); set('supplier-taxid', s.tax_id); set('supplier-terms', s.payment_terms_days); set('supplier-currency', s.currency);
     set('supplier-address', s.address); set('supplier-bank', s.bank_details); set('supplier-notes', s.notes);
     document.getElementById('supplier-hold').checked = !!s.on_hold;
+    var pick = document.getElementById('supplier-contact');
+    if (pick) {
+        var people = [];
+        try { people = await fetchJson('/api/contacts'); } catch (e) { people = []; }
+        pick.innerHTML = '<option value="">No - or match a customer with the same name</option>' + (Array.isArray(people) ? people : []).map(function (c) {
+            return '<option value="' + Number(c.id) + '">' + esc(c.name || c.email || 'Customer') + '</option>';
+        }).join('');
+        pick.value = s.contact_id ? String(s.contact_id) : '';
+    }
     document.getElementById('supplier-delete').style.display = id ? '' : 'none';
     document.getElementById('supplier-modal').style.display = 'flex';
 }
@@ -12124,6 +12153,8 @@ async function saveSupplier() {
         phone_number: v('supplier-phone'), tax_id: v('supplier-taxid'), payment_terms_days: terms === '' ? null : parseInt(terms, 10),
         currency: v('supplier-currency').toUpperCase(), address: v('supplier-address'), bank_details: v('supplier-bank'), notes: v('supplier-notes'),
         on_hold: document.getElementById('supplier-hold').checked };
+    var linkPick = document.getElementById('supplier-contact');
+    if (linkPick) body.contact_id = linkPick.value ? Number(linkPick.value) : null;
     if (!body.name) { showToast('A supplier needs a name', 'error'); return; }
     try {
         await fetchJson(id ? '/api/suppliers/' + id : '/api/suppliers', { method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -20218,6 +20249,37 @@ window.loadAnalyticsView = loadAnalyticsView;
 // ===========================================================================
 // The dates and the shared notes. The manager's private note is not sent
 // to HR, so there is nothing here that could show it.
+
+// Which reporting lines have met for a one-to-one lately, and which have gone
+// quiet - the number HR wants, with the quiet ones named.
+async function loadCheckInCoverage() {
+    var host = document.getElementById('checkin-coverage');
+    if (!host) return;
+    var d;
+    try { d = await fetchJson('/api/check-ins/coverage'); } catch (e) { host.style.display = 'none'; return; }
+    if (!d || !d.pairs) { host.style.display = 'none'; host.innerHTML = ''; return; }
+    var quiet = (d.rows || []).filter(function (r) { return !r.recent; });
+    var shown = quiet.slice(0, 15);
+    host.style.display = '';
+    host.innerHTML = '<div class="glass-widget" style="padding:18px 20px;">' +
+        '<div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:baseline;">' +
+            '<h3 style="margin:0;font-size:1rem;">One-to-ones</h3>' +
+            '<span style="font-size:0.85rem;color:var(--text-secondary);">' + d.recent + ' of ' + d.pairs + ' reporting line' + (d.pairs === 1 ? '' : 's') + ' met in the last ' + d.window_days + ' days</span></div>' +
+        (quiet.length
+            ? '<div style="font-size:0.85rem;margin:10px 0 6px;font-weight:600;">Gone quiet</div>' +
+              shown.map(function (r) {
+                  return '<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--border-color);font-size:0.85rem;">' +
+                      '<span><a href="#" data-cov-emp="' + r.employee_id + '">' + esc(r.employee_name || 'Someone') + '</a> with ' + esc(r.manager_name || 'their manager') + '</span>' +
+                      '<span style="color:var(--text-secondary);">' + (r.last_held ? 'last ' + esc(r.last_held) : 'never') + '</span></div>';
+              }).join('') +
+              (quiet.length > shown.length ? '<div style="font-size:0.8rem;color:var(--text-secondary);margin-top:6px;">and ' + (quiet.length - shown.length) + ' more</div>' : '')
+            : '<div style="font-size:0.85rem;color:var(--text-secondary);margin-top:8px;">Every reporting line has met recently.</div>') +
+        '</div>';
+    host.querySelectorAll('[data-cov-emp]').forEach(function (a) {
+        a.addEventListener('click', function (ev) { ev.preventDefault(); openEmployee(Number(a.getAttribute('data-cov-emp'))); });
+    });
+}
+window.loadCheckInCoverage = loadCheckInCoverage;
 
 async function loadEmployeeCheckIns(empId) {
     var host = document.getElementById('emp-checkins-list');
