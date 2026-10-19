@@ -10667,6 +10667,14 @@ def offboarding_checklist(db, client, emp):
     # Which of these stop the door closing. Unreturned equipment does; a
     # leave balance does not, it is settled in the final pay. Open tasks are
     # HR's own list and are not a reason to keep the account alive.
+    # Final pay: what has not been paid yet, and the last payslip made.
+    slips = db.query(models.DBPayslip).filter(models.DBPayslip.client_id == client.id, models.DBPayslip.employee_id == emp.id,
+                                              models.DBPayslip.status != "Void").all()
+    unpaid = [p for p in slips if p.status != "Paid"]
+    last = max(slips, key=lambda p: ((p.pay_date or ""), p.id)) if slips else None
+    uk = payroll_regime(db, client.id) == "uk"
+    pension_member = (emp.pension_status or "") in ("member", "postponed")
+
     blocking = []
     if assets_out:
         blocking.append(f"{len(assets_out)} item(s) of equipment not returned")
@@ -10686,6 +10694,13 @@ def offboarding_checklist(db, client, emp):
         "direct_reports": [{"id": r.id, "name": f"{r.first_name} {r.last_name}".strip()}
                            for r in reports],
         "decisions_waiting_on_them": waiting,
+        "final_pay": {"last_payslip": ({"id": last.id, "number": last.number, "pay_date": last.pay_date or "", "period_end": last.period_end or "",
+                                        "status": last.status} if last else None),
+                      "unpaid_payslips": len(unpaid), "unpaid_net": money(sum(p.net_pay or 0 for p in unpaid))},
+        "pension": {"member": pension_member, "status": emp.pension_status or "",
+                    "provider": (pension_scheme(db, client.id).get("provider") or "") if pension_member else ""},
+        "uk_payroll": uk,
+        "p45_ready": uk and bool(slips),
         # Whether the person can still sign in. True until the moment they
         # are marked as having left.
         "portal_access": (emp.status or "") != "terminated",
@@ -10787,6 +10802,12 @@ def complete_offboarding(emp_id: int, request: Request, body: dict = None,
     emp.status = "terminated"
     emp.end_date = end_date
     emp.offboarding_complete = True
+    # Leaving ends their workplace pension membership with this employer. If
+    # they ever come back it is a new job, assessed afresh - so they are put
+    # back to "never in" rather than left as a member of a job that ended.
+    pension_ended = (emp.pension_status or "") in ("member", "postponed")
+    if pension_ended:
+        emp.pension_status, emp.pension_postponed_until, emp.pension_letter_due = "", "", ""
     announce(db, client.id, "employee.left", {"id": emp.id, "email": emp.email, "end_date": end_date})
 
     log_audit(db, client.id, "employee_left", "employee", emp.id, check["name"],
@@ -10803,7 +10824,69 @@ def complete_offboarding(emp_id: int, request: Request, body: dict = None,
         "reports_moved": moved,
         "reassigned_to": new_manager.id if new_manager else None,
         "went_ahead_with": check["blocking"] if force else [],
+        "pension_ended": pension_ended,
+        "pension_provider": check["pension"]["provider"],
     }
+
+
+# --- the P45 ------------------------------------------------------------------------------
+# What a leaver takes to their next employer: who paid them, the tax code
+# they were on, and their pay and tax so far this tax year - in this job, and
+# in total with any earlier job this year. Worked out from the payslips.
+
+def p45_for(db, client, emp, leaving=""):
+    day = _parse_date(leaving or emp.end_date)
+    if not day:
+        raise HTTPException(status_code=400, detail="Set their last day first - the P45 is for the day they leave")
+    if payroll_regime(db, client.id) != "uk":
+        raise HTTPException(status_code=400, detail="A P45 comes from UK payroll; this business runs the simple payroll")
+    year = uk_paye.tax_year_of(day)
+    slips = sorted([p for p in db.query(models.DBPayslip).filter(
+        models.DBPayslip.client_id == client.id, models.DBPayslip.employee_id == emp.id, models.DBPayslip.regime == "uk",
+        models.DBPayslip.status != "Void", models.DBPayslip.tax_year == year).all()], key=lambda p: ((p.pay_date or ""), p.id))
+    last = slips[-1] if slips else None
+    pay = money(sum(p.taxable_pay or 0 for p in slips))
+    tax = money(sum(p.tax_amount or 0 for p in slips))
+    prev_pay = money(emp.p45_taxable_pay or 0) if (emp.p45_tax_year or 0) == year else 0.0
+    prev_tax = money(emp.p45_tax or 0) if (emp.p45_tax_year or 0) == year else 0.0
+    code, regime_letter, non_cumulative = hmrc_rti.split_tax_code((last.tax_code if last else "") or emp.tax_code or "")
+    period = None
+    if last and last.pay_date:
+        try:
+            kind, number = hmrc_rti.hmrc_pay_period(last.pay_frequency or emp.pay_frequency or "monthly", _parse_date(last.pay_date), year)
+            period = {"type": "week" if kind == "WeekNo" else "month", "number": number}
+        except hmrc_rti.RtiError:
+            period = None
+    refs = rti_employer(db, client.id)
+    lines, postcode = rti_address(emp)
+    return {
+        "tax_year": uk_paye.tax_year_label(year), "leaving_date": day.isoformat(),
+        "employer": {"name": client.company_name or "", "address": client.address or "",
+                     "paye_reference": f"{refs['office_no']}/{refs['paye_ref']}" if refs["office_no"] and refs["paye_ref"] else ""},
+        "employee": {"name": f"{emp.first_name} {emp.last_name}".strip(), "first_name": emp.first_name, "last_name": emp.last_name,
+                     "ni_number": emp.ni_number or "", "date_of_birth": emp.date_of_birth or "", "gender": emp.gender or "",
+                     "address_lines": lines, "postcode": postcode, "payroll_id": emp.employee_id or f"E{emp.id}"},
+        "tax_code": (regime_letter + code) if code else "", "week1_month1": non_cumulative,
+        "last_period": period,
+        "student_loan": bool(emp.student_loan_plan), "student_loan_plan": emp.student_loan_plan or "", "postgrad_loan": bool(emp.postgrad_loan),
+        "pay_this_employment": pay, "tax_this_employment": tax,
+        "total_pay_to_date": money(pay + prev_pay), "total_tax_to_date": money(tax + prev_tax),
+        "payslips": len(slips),
+        "missing": [m for m, ok in (("the employer's PAYE reference (HMRC filings > Your HMRC details)", bool(refs["office_no"] and refs["paye_ref"])),
+                                    ("their NI number", bool(emp.ni_number)), ("their address", bool(lines or postcode))) if not ok],
+        "notes": ["Part 1 goes to HMRC only if you do not report the leaving date on a Full Payment Submission - "
+                  "with RTI, the leaving date on the FPS is how HMRC is told.",
+                  "Parts 1A, 2 and 3 go to the employee, who gives 2 and 3 to their next employer."],
+    }
+
+
+@app.get("/api/employees/{emp_id}/p45")
+def employee_p45(emp_id: int, request: Request, leaving: str = "", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    emp = db.query(models.DBEmployee).filter(models.DBEmployee.id == emp_id, models.DBEmployee.client_id == client.id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    return p45_for(db, client, emp, _clean_ymd(leaving, "Leaving date"))
 
 # --- Onboarding API ---
 

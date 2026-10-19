@@ -6309,6 +6309,11 @@ async function viewEmployee(empId) {
         var payfreqEl = document.getElementById('emp-detail-payfreq');
         if (payfreqEl) payfreqEl.value = emp.pay_frequency || 'monthly';
 
+        var p45Btn = document.getElementById('emp-p45-btn');
+        if (p45Btn) {
+            p45Btn.style.display = (emp.status === 'terminated' || emp.status === 'offboarding') && isUkPayroll() ? 'inline-flex' : 'none';
+            p45Btn.onclick = function () { openP45(emp.id, emp.end_date || ''); };
+        }
         var offboardBtn = document.getElementById('emp-offboard-btn');
         if (offboardBtn) offboardBtn.style.display = (emp.status === 'active' || emp.status === 'onboarding') ? 'inline-flex' : 'none';
         loadOffboarding(emp);
@@ -6580,9 +6585,22 @@ function renderOffboarding(c) {
     html += line(!c.open_tasks.length,
         c.open_tasks.length ? c.open_tasks.length + ' leaver task(s) still open' : 'Leaver checklist done',
         c.open_tasks.slice(0, 4).map(function (t) { return esc(t.title); }).join(', ') + (c.open_tasks.length > 4 ? ', \u2026' : ''));
+    var fp = c.final_pay || {};
+    html += line(!fp.unpaid_payslips,
+        fp.unpaid_payslips ? fp.unpaid_payslips + ' payslip(s) not yet paid (' + _expMoney(fp.unpaid_net, c.currency) + ' net)' : (fp.last_payslip ? 'Everything they have been paid is recorded' : 'No payslips yet'),
+        (fp.last_payslip ? 'Last payslip ' + esc(fp.last_payslip.number) + (fp.last_payslip.pay_date ? ', paid on ' + esc(fp.last_payslip.pay_date) : '') + '. ' : '') +
+        'Their final payslip should include pay up to their last day and any leave owed. <a href="#" id="offb-final-payslip">Make their final payslip</a>');
+    if (c.pension && c.pension.member) html += line(true, 'In the workplace pension' + (c.pension.provider ? ' with ' + esc(c.pension.provider) : ''),
+        'Closing the account ends their membership. Tell the provider they have left, with their last day.');
+    if (c.uk_payroll) html += line(true, c.p45_ready ? 'P45 ready to give them' : 'P45 - once they have been paid through UK payroll',
+        c.p45_ready ? '<a href="#" id="offb-p45">Open their P45</a> (it uses the last day entered below)' : '');
     html += line(!c.portal_access, c.portal_access ? 'Can still sign in to the portal' : 'Portal access closed',
         c.portal_access ? 'Closes the moment their account is closed below' : '');
     document.getElementById('offb-checklist').innerHTML = html;
+    var finalLink = document.getElementById('offb-final-payslip');
+    if (finalLink) finalLink.addEventListener('click', function (ev) { ev.preventDefault(); showGeneratePayslipModal(); });
+    var p45Link = document.getElementById('offb-p45');
+    if (p45Link) p45Link.addEventListener('click', function (ev) { ev.preventDefault(); openP45(c.employee_id, (document.getElementById('offb-end') || {}).value || ''); });
 
     // Who can take their people: anybody here except them.
     var sel = document.getElementById('offb-reassign');
@@ -6607,6 +6625,54 @@ function renderOffboarding(c) {
     };
     document.getElementById('offb-error').style.display = 'none';
 }
+
+// --- The P45 ---------------------------------------------------------------------------
+// What a leaver takes to their next employer, worked out from their payslips.
+async function openP45(empId, leaving) {
+    var p;
+    try { p = await fetchJson('/api/employees/' + empId + '/p45' + (leaving ? '?leaving=' + encodeURIComponent(leaving) : '')); }
+    catch (e) { showToast(e.message, 'error'); return; }
+    var row = function (label, value) { return '<tr><td style="padding:6px 8px;color:var(--text-secondary);width:46%;">' + esc(label) + '</td><td style="padding:6px 8px;font-weight:600;">' + value + '</td></tr>'; };
+    var money = function (v) { return esc(formatCurrency(v || 0)); };
+    var e = p.employee || {};
+    document.getElementById('p45-body').innerHTML =
+        (p.missing && p.missing.length ? '<div style="padding:10px 12px;border:1px solid var(--warning-color);border-radius:8px;margin-bottom:12px;font-size:0.85rem;">Still missing: ' + esc(p.missing.join('; ')) + '</div>' : '') +
+        '<div id="p45-print-area"><table style="width:100%;border-collapse:collapse;font-size:0.9rem;">' +
+        row('Employer', esc(p.employer.name) + (p.employer.address ? '<div style="font-weight:400;font-size:0.82rem;">' + esc(p.employer.address).replace(/\n/g, '<br>') + '</div>' : '')) +
+        row('Employer PAYE reference', esc(p.employer.paye_reference || '-')) +
+        row('Employee', esc(e.name)) +
+        row('National Insurance number', esc(e.ni_number || '-')) +
+        row('Date of birth', esc(e.date_of_birth || '-')) +
+        row('Address', esc((e.address_lines || []).concat(e.postcode ? [e.postcode] : []).join(', ') || '-')) +
+        row('Payroll ID', esc(e.payroll_id || '-')) +
+        row('Leaving date', esc(p.leaving_date)) +
+        row('Tax code at leaving', esc(p.tax_code || '-') + (p.week1_month1 ? ' (week 1 / month 1)' : '')) +
+        row('Last entries', p.last_period ? esc((p.last_period.type === 'week' ? 'Week ' : 'Month ') + p.last_period.number) : '-') +
+        row('Student loan deductions to continue', p.student_loan ? 'Yes (plan ' + esc(p.student_loan_plan) + ')' : 'No') +
+        row('Postgraduate loan deductions to continue', p.postgrad_loan ? 'Yes' : 'No') +
+        row('Total pay to date (' + esc(p.tax_year) + ')', money(p.total_pay_to_date)) +
+        row('Total tax to date', money(p.total_tax_to_date)) +
+        row('Pay in this employment', money(p.pay_this_employment)) +
+        row('Tax in this employment', money(p.tax_this_employment)) +
+        '</table></div>' +
+        '<div style="font-size:0.78rem;color:var(--text-secondary);margin-top:12px;">' + (p.notes || []).map(esc).join('<br>') + '</div>';
+    var m = document.getElementById('p45-modal');
+    var shut = function () { m.style.display = 'none'; };
+    document.getElementById('p45-close').onclick = shut;
+    document.getElementById('p45-done').onclick = shut;
+    document.getElementById('p45-print').onclick = function () {
+        var wnd = window.open('', '_blank');
+        if (!wnd) { showToast('Allow pop-ups to print the P45', 'error'); return; }
+        wnd.document.write('<!doctype html><html><head><meta charset="utf-8"><title>P45 - ' + esc(e.name) + '</title>' +
+            '<style>body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:32px}td{border-bottom:1px solid #ddd}h1{font-size:18px}</style></head><body>' +
+            '<h1>P45 - details of employee leaving work</h1>' + document.getElementById('p45-print-area').innerHTML + '</body></html>');
+        wnd.document.close();
+        wnd.focus();
+        wnd.print();
+    };
+    m.style.display = 'flex';
+}
+window.openP45 = openP45;
 
 async function completeOffboarding() {
     if (!currentEmployeeId) return;
@@ -6635,6 +6701,7 @@ async function completeOffboarding() {
             return;
         }
         showToast('Account closed.' + (d.reports_moved ? ' ' + d.reports_moved + ' report(s) reassigned.' : ''), 'success');
+        if (d.pension_ended) showToast('Their pension membership has ended - tell ' + (d.pension_provider || 'the provider') + ' they left on ' + d.end_date + '.', 'info');
         hrDataChanged('employees', { employeeId: currentEmployeeId });
     } catch (e) {
         err.textContent = 'That did not go through.';
