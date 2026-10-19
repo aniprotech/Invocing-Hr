@@ -327,6 +327,8 @@ var NAV_FOR_VIEW = {
     'insights-view': 'nav-insights',
     'reports-view': 'nav-reports',
     'contacts-view': 'nav-contacts',
+    'sales-ledger-view': 'nav-sales-ledger',
+    'purchase-ledger-view': 'nav-purchase-ledger',
     'employees-view': 'nav-people',
     'employee-detail-view': 'nav-people',
     'departments-view': 'nav-people',
@@ -384,6 +386,8 @@ var ROUTE_SLUGS = {
     'insights-view': 'insights',
     'reports-view': 'reports',
     'contacts-view': 'contacts',
+    'sales-ledger-view': 'sales-ledger',
+    'purchase-ledger-view': 'purchase-ledger',
     'employees-view': 'people',
     'departments-view': 'departments',
     'attendance-view': 'attendance',
@@ -424,6 +428,8 @@ var DETAIL_ROUTES = [
     { re: /^invoices\/([^/]+)$/, open: function (id) { showView('invoices-view'); if (typeof viewInvoice === 'function') viewInvoice(decodeURIComponent(id)); } },
     { re: /^quotes\/([^/]+)$/,   open: function (id) { showView('quotes-view');   if (typeof viewQuote === 'function') viewQuote(decodeURIComponent(id)); } },
     { re: /^credit-notes\/([^/]+)$/, open: function (id) { showView('credit-notes-view'); if (typeof viewCreditNote === 'function') viewCreditNote(decodeURIComponent(id)); } },
+    { re: /^sales-ledger\/(\d+)$/, open: function (id) { showView('sales-ledger-view'); if (typeof openSalesAccount === 'function') openSalesAccount(Number(id)); } },
+    { re: /^purchase-ledger\/(\d+)$/, open: function (id) { showView('purchase-ledger-view'); if (typeof openPurchaseAccount === 'function') openPurchaseAccount(Number(id)); } },
     { re: /^people\/(\d+)$/,     open: function (id) { if (typeof openEmployee === 'function') openEmployee(Number(id)); else showView('employees-view'); } },
     { re: /^contacts\/(\d+)$/,   open: function (id) { if (typeof openCustomer === 'function') openCustomer(Number(id)); else showView('contacts-view'); } }
 ];
@@ -577,6 +583,8 @@ function showView(viewId) {
     if (viewId === 'quotes-view' && typeof fetchQuotes === 'function') fetchQuotes();
     if (viewId === 'credit-notes-view' && typeof fetchCreditNotes === 'function') fetchCreditNotes();
     if (viewId === 'inventory-view' && typeof loadInventory === 'function') loadInventory();
+    if (viewId === 'sales-ledger-view' && typeof loadSalesLedger === 'function') loadSalesLedger();
+    if (viewId === 'purchase-ledger-view' && typeof loadPurchaseLedger === 'function') loadPurchaseLedger();
     if (viewId === 'sales-pipeline-view' && typeof loadSalesPipeline === 'function') loadSalesPipeline();
     if (viewId === 'recurring-view' && typeof loadRecurring === 'function') loadRecurring();
     // Dates and currency are filled before the number is fetched, because the
@@ -4995,6 +5003,7 @@ function calculateTotals(scope) {
     if (subEl) subEl.textContent = subtotal.toFixed(2);
     if (vatEl) vatEl.textContent = totalVat.toFixed(2);
     if (totalEl) totalEl.textContent = (subtotal + totalVat).toFixed(2) + ' ' + curCode;
+    if (cfg.total === 'summary-total' && typeof scheduleInvoiceCreditCheck === 'function') scheduleInvoiceCreditCheck();
 }
 window.calculateTotals = calculateTotals;
 
@@ -7911,7 +7920,7 @@ function showHmrcResult(title, r) {
     if (r.starters && r.starters.length) html += '<div style="font-size:0.84rem;margin-top:8px;">New starters in this filing: ' + esc(r.starters.join(', ')) + '</div>';
     if (r.problems && r.problems.length) html += '<div style="font-weight:600;font-size:0.86rem;margin-top:12px;">To put right</div>' + list(r.problems, esc);
     if (r.hmrc_errors && r.hmrc_errors.length) html += '<div style="font-weight:600;font-size:0.86rem;margin-top:12px;">HMRC says</div>' + list(r.hmrc_errors, function (e) { return esc((e.number ? e.number + ': ' : '') + e.text); });
-    if (r.xml) html += '<details style="margin-top:12px;"><summary style="cursor:pointer;font-size:0.84rem;">The message that would be sent</summary><pre style="max-height:260px;overflow:auto;font-size:0.72rem;background:var(--bg-secondary);padding:10px;border-radius:6px;white-space:pre-wrap;word-break:break-all;">' + esc(r.xml) + '</pre></details>';
+    if (r.xml) html += '<details style="margin-top:12px;"><summary style="cursor:pointer;font-size:0.84rem;">The message that would be sent</summary><pre style="max-height:260px;overflow:auto;font-size:0.72rem;background:var(--surface-color);padding:10px;border-radius:6px;white-space:pre-wrap;word-break:break-all;">' + esc(r.xml) + '</pre></details>';
     document.getElementById('hmrc-result-title').textContent = title;
     document.getElementById('hmrc-result-body').innerHTML = html;
     document.getElementById('hmrc-result-modal').style.display = 'flex';
@@ -11386,29 +11395,49 @@ function renderBills(bills) {
     var tbody = document.getElementById('bills-table-body');
     var countSpan = document.getElementById('bill-count');
     if (countSpan) countSpan.textContent = bills.length + ' item' + (bills.length !== 1 ? 's' : '');
+    var note = document.getElementById('bills-drafts-note');
+    if (note) {
+        var drafts = allBills.filter(function (b) { return b.status === 'Draft'; }).length;
+        note.style.display = drafts ? '' : 'none';
+        var txt = document.getElementById('bills-drafts-text');
+        if (txt) txt.textContent = drafts + ' draft bill' + (drafts === 1 ? ' is' : 's are') + ' not counted in the purchase ledger or as money you owe until posted.';
+    }
     if (!tbody) return;
     tbody.innerHTML = '';
     if (bills.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text-secondary);">No bills found.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:40px;color:var(--text-secondary);">No bills found.</td></tr>';
         return;
     }
     bills.forEach(function(b) {
         var statusClass = (b.status || '').toLowerCase().replace(/\s+/g, '-');
+        var open = b.status === 'Awaiting Payment' || b.status === 'Partially Paid';
+        var cur = b.currency;
         tbody.insertAdjacentHTML('beforeend',
             '<tr>' +
             '<td><strong>' + esc(b.number || '-') + '</strong></td>' +
-            '<td>' + esc(b.vendor_name || '-') + '</td>' +
-            '<td>' + (b.issue_date || '-') + '</td>' +
-            '<td>' + (b.due_date || '-') + '</td>' +
-            '<td class="text-right">' + formatCurrency(b.total || 0) + '</td>' +
-            '<td class="text-right">' + formatCurrency(b.amount_paid || 0) + '</td>' +
+            '<td>' + (b.supplier_id ? '<a href="#" data-bill-supplier="' + b.supplier_id + '" style="color:var(--primary-color);text-decoration:none;">' + esc(b.vendor_name || '-') + '</a>' : esc(b.vendor_name || '-')) + '</td>' +
+            '<td>' + esc(b.issue_date || '-') + '</td>' +
+            '<td>' + esc(b.due_date || '-') + (b.overdue ? '<div style="font-size:0.72rem;color:var(--danger-text);">' + b.days_overdue + ' days late</div>' : '') + '</td>' +
+            '<td class="text-right">' + formatCurrency(b.total || 0, cur) + '</td>' +
+            '<td class="text-right">' + formatCurrency(b.amount_paid || 0, cur) + '</td>' +
+            '<td class="text-right"' + (b.balance > 0 && open ? ' style="font-weight:600;"' : '') + '>' + (open || b.status === 'Draft' ? formatCurrency(b.balance || 0, cur) : '-') + '</td>' +
             '<td><span class="status-pill status-' + statusClass + '">' + esc(b.status || 'Draft') + '</span></td>' +
-            '<td class="text-right">' +
-                '<button class="btn btn-outline btn-sm" onclick="editBill(' + b.id + ')" style="margin-right:4px;">Edit</button>' +
-                (b.status !== 'Paid' ? '<button class="btn btn-outline btn-sm" onclick="markBillPaid(' + b.id + ')" style="color:var(--success-color);border-color:var(--success-color);margin-right:4px;">Pay</button>' : '') +
-                '<button class="btn btn-outline btn-sm" onclick="deleteBill(' + b.id + ', \'' + esc(b.number) + '\')" style="color:var(--danger-color);border-color:var(--danger-color);">Del</button>' +
+            '<td class="text-right" style="white-space:nowrap;">' +
+                '<button class="btn btn-outline btn-sm" data-bill-edit="' + b.id + '" style="margin-right:4px;">Edit</button>' +
+                (b.status !== 'Paid' && b.status !== 'Void' ? '<button class="btn btn-outline btn-sm" data-bill-pay="' + b.id + '" style="color:var(--success-color);border-color:var(--success-color);margin-right:4px;">Pay</button>' : '') +
+                ((b.amount_paid || 0) > 0 ? '<button class="btn btn-outline btn-sm" data-bill-payments="' + b.id + '" style="margin-right:4px;">Payments</button>' : '') +
+                ((b.amount_paid || 0) === 0 && b.status !== 'Void' && b.status !== 'Draft' ? '<button class="btn btn-outline btn-sm" data-bill-void="' + b.id + '" data-bill-number="' + esc(b.number) + '" style="margin-right:4px;">Void</button>' : '') +
+                ((b.amount_paid || 0) > 0 ? '' : '<button class="btn btn-outline btn-sm" data-bill-del="' + b.id + '" data-bill-number="' + esc(b.number) + '" style="color:var(--danger-color);border-color:var(--danger-color);">Del</button>') +
             '</td></tr>'
         );
+    });
+    tbody.querySelectorAll('[data-bill-edit]').forEach(function (el) { el.addEventListener('click', function () { editBill(Number(el.getAttribute('data-bill-edit'))); }); });
+    tbody.querySelectorAll('[data-bill-pay]').forEach(function (el) { el.addEventListener('click', function () { markBillPaid(Number(el.getAttribute('data-bill-pay'))); }); });
+    tbody.querySelectorAll('[data-bill-payments]').forEach(function (el) { el.addEventListener('click', function () { showBillPayments(Number(el.getAttribute('data-bill-payments'))); }); });
+    tbody.querySelectorAll('[data-bill-void]').forEach(function (el) { el.addEventListener('click', function () { voidBill(Number(el.getAttribute('data-bill-void')), el.getAttribute('data-bill-number')); }); });
+    tbody.querySelectorAll('[data-bill-del]').forEach(function (el) { el.addEventListener('click', function () { deleteBill(Number(el.getAttribute('data-bill-del')), el.getAttribute('data-bill-number')); }); });
+    tbody.querySelectorAll('[data-bill-supplier]').forEach(function (el) {
+        el.addEventListener('click', function (ev) { ev.preventDefault(); showView('purchase-ledger-view'); openPurchaseAccount(Number(el.getAttribute('data-bill-supplier'))); });
     });
 }
 
@@ -11417,7 +11446,8 @@ function filterBills(status, btn) {
     document.querySelectorAll('#bills-view .invoices-tabs .tab').forEach(function(t) { t.classList.remove('active'); });
     if (btn) btn.classList.add('active');
     var filtered = status === '' ? allBills : allBills.filter(function(b) {
-        if (status === 'Unpaid') return b.status !== 'Paid' && b.status !== 'Draft';
+        if (status === 'Unpaid') return b.status === 'Awaiting Payment' || b.status === 'Partially Paid';
+        if (status === 'Overdue') return !!b.overdue;
         return (b.status || '').toLowerCase() === status.toLowerCase();
     });
     renderBills(filtered);
@@ -11447,6 +11477,11 @@ async function showAddBillModal() {
     document.getElementById('bill-total').value = '0';
     document.getElementById('bill-reference').value = '';
     document.getElementById('bill-notes').value = '';
+    var cur = document.getElementById('bill-currency');
+    if (cur) { cur.value = ''; cur.disabled = false; }
+    var draft = document.getElementById('bill-draft');
+    if (draft) { draft.checked = false; draft.disabled = false; }
+    await fillBillSupplierList();
     try {
         var res = await fetch('/api/next-bill-number', { credentials: 'same-origin' });
         if (!res.ok) throw new Error("Request failed: " + res.status);
@@ -11508,6 +11543,7 @@ window.calcBillTotal = calcBillTotal;
 
 async function saveBill() {
     var editId = document.getElementById('bill-edit-id').value;
+    var draftBox = document.getElementById('bill-draft');
     var payload = {
         number: document.getElementById('bill-number').value.trim(),
         vendor_name: document.getElementById('bill-vendor').value.trim(),
@@ -11520,16 +11556,19 @@ async function saveBill() {
         total: parseFloat(document.getElementById('bill-total').value) || 0,
         reference: document.getElementById('bill-reference').value.trim(),
         notes: document.getElementById('bill-notes').value.trim(),
-        status: 'Draft'
+        currency: ((document.getElementById('bill-currency') || {}).value || '').trim().toUpperCase()
     };
-    if (!payload.number || !payload.vendor_name) { showToast('Bill number and vendor name required', 'error'); return; }
+    // Whether it is a draft is only said where it can be changed: a bill being
+    // made, or one that is still a draft. A posted bill stays posted.
+    if (draftBox && !draftBox.disabled) payload.draft = !!draftBox.checked;
+    if (!payload.number || !payload.vendor_name) { showToast('Bill number and supplier required', 'error'); return; }
     try {
         var url = editId ? '/api/bills/' + editId : '/api/bills';
         var method = editId ? 'PUT' : 'POST';
         var res = await fetch(url, { method: method, headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) });
-        var data = await res.json();
+        var data = await res.json().catch(function () { return {}; });
         if (res.ok) {
-            showToast(editId ? 'Bill updated' : 'Bill created', 'success');
+            showToast(editId ? 'Bill updated' : (payload.draft ? 'Draft saved' : 'Bill posted'), 'success');
             closeAddBillModal();
             loadBills();
         } else {
@@ -11544,6 +11583,7 @@ async function editBill(id) {
         var res = await fetch('/api/bills/' + id, { credentials: 'same-origin' });
         if (!res.ok) throw new Error("Request failed: " + res.status);
         var b = await res.json();
+        await fillBillSupplierList();
         document.getElementById('bill-edit-id').value = b.id;
         document.getElementById('bill-modal-title').textContent = 'Edit Bill';
         document.getElementById('bill-number').value = b.number || '';
@@ -11557,30 +11597,635 @@ async function editBill(id) {
         document.getElementById('bill-total').value = b.total || 0;
         document.getElementById('bill-reference').value = b.reference || '';
         document.getElementById('bill-notes').value = b.notes || '';
+        var cur = document.getElementById('bill-currency');
+        if (cur) { cur.value = b.currency && b.currency !== _appCurrency ? b.currency : ''; cur.disabled = (b.amount_paid || 0) > 0; }
+        var draft = document.getElementById('bill-draft');
+        if (draft) { draft.checked = b.status === 'Draft'; draft.disabled = b.status !== 'Draft'; }
         document.getElementById('add-bill-modal').style.display = 'flex';
     } catch(e) { showToast('Failed to load bill', 'error'); }
 }
 window.editBill = editBill;
 
-async function markBillPaid(id) {
-    if (!await uiConfirm('Mark this bill as paid?')) return;
-    try {
-        var res = await fetch('/api/bills/' + id + '/pay', { method: 'POST', credentials: 'same-origin' });
-        if (res.ok) { showToast('Bill marked as paid', 'success'); loadBills(); }
-        else showToast('Failed to mark paid', 'error');
-    } catch(e) { showToast('Failed to mark paid', 'error'); }
-}
+// Paying a bill asks how much, when, how and from where, because "paid" is not
+// one fact: it may be part of the bill, on another day, from another account.
+async function markBillPaid(id) { return payBill(id); }
 window.markBillPaid = markBillPaid;
 
 async function deleteBill(id, number) {
     if (!await uiConfirm('Delete bill ' + number + '?')) return;
     try {
         var res = await fetch('/api/bills/' + id, { method: 'DELETE', credentials: 'same-origin' });
+        var data = await res.json().catch(function () { return {}; });
         if (res.ok) { showToast('Bill deleted', 'success'); loadBills(); }
-        else showToast('Failed to delete bill', 'error');
+        else showToast(data.detail || 'Failed to delete bill', 'error');
     } catch(e) { showToast('Failed to delete bill', 'error'); }
 }
 window.deleteBill = deleteBill;
+
+// Void keeps the bill on record (its number, its supplier) but out of what is owed.
+async function voidBill(id, number) {
+    if (!await uiConfirm('Void bill ' + number + '? It stays on record but is no longer owed or counted.', { title: 'Void bill', confirmText: 'Void', danger: true })) return;
+    try { await fetchJson('/api/bills/' + id + '/void', { method: 'POST' }); showToast('Bill ' + number + ' voided', 'success'); loadBills(); }
+    catch (e) { showToast(e.message, 'error'); }
+}
+window.voidBill = voidBill;
+
+async function fillBillSupplierList() {
+    var list = document.getElementById('bill-vendor-list');
+    if (!list) return;
+    try {
+        var suppliers = await fetchJson('/api/suppliers');
+        list.innerHTML = suppliers.map(function (s) { return '<option value="' + esc(s.name) + '"></option>'; }).join('');
+    } catch (e) { list.innerHTML = ''; }
+}
+
+
+// ============================================================
+// SALES AND PURCHASE LEDGERS
+// ============================================================
+// A ledger is every account in one place: what each customer owes (sales) or
+// what each supplier is owed (purchases), how late it is, and what stands
+// behind it. Nothing here keeps a balance - every figure is worked out by the
+// server from the invoices, bills, payments and credit notes under the account.
+var LEDGER_BUCKETS = [['current', 'Not yet due'], ['1_30', '1-30 days late'], ['31_60', '31-60 days late'], ['61_90', '61-90 days late'], ['over_90', 'Over 90 days late']];
+var LEDGER_KIND = { invoice: 'Invoice', credit_note: 'Credit note', payment: 'Payment', refund: 'Refund', bill: 'Bill', credit: 'Credit note' };
+var BILL_METHOD_OPTIONS = [{ value: 'bank_transfer', label: 'Bank transfer' }, { value: 'card', label: 'Card' }, { value: 'cash', label: 'Cash' },
+    { value: 'cheque', label: 'Cheque' }, { value: 'direct_debit', label: 'Direct debit' }, { value: 'other', label: 'Other' }];
+var _ledger = {
+    sales: { data: null, filter: 'owing', search: '', wired: false },
+    purchases: { data: null, filter: 'owing', search: '', wired: false }
+};
+var _ledgerOpen = null;       // the account shown in the detail window: { kind, id, start, end }
+
+function ledgerMoney(v, cur) { return formatCurrency(Number(v) || 0, cur || undefined); }
+
+function ledgerTile(label, value, tone) {
+    return '<div class="stat-card"><span class="stat-label">' + esc(label) + '</span><span class="stat-value"' +
+        (tone ? ' style="color:' + tone + ';"' : '') + '>' + value + '</span></div>';
+}
+
+function ledgerAgeing(buckets, cur) {
+    return '<div style="display:flex;gap:10px;flex-wrap:wrap;">' + LEDGER_BUCKETS.map(function (b, i) {
+        var v = (buckets || {})[b[0]] || 0;
+        return '<div style="flex:1;min-width:130px;padding:8px 10px;border:1px solid var(--border-color);border-radius:8px;">' +
+            '<div style="font-size:0.74rem;color:var(--text-secondary);">' + esc(b[1]) + '</div>' +
+            '<div style="font-weight:700;' + (i > 0 && v ? 'color:var(--danger-text);' : '') + '">' + ledgerMoney(v, cur) + '</div></div>';
+    }).join('') + '</div>';
+}
+
+var LEDGER_STATE = { on_hold: ['On hold', 'var(--danger-text)'], over_limit: ['Over limit', 'var(--danger-text)'], near_limit: ['Near limit', 'var(--warning-color)'] };
+function ledgerStatePill(state) {
+    var s = LEDGER_STATE[state];
+    return s ? '<span style="color:' + s[1] + ';font-weight:600;font-size:0.78rem;">' + esc(s[0]) + '</span>' : '';
+}
+
+function ledgerBindTabs(kind, tabsId, searchId) {
+    var st = _ledger[kind];
+    if (st.wired) return;
+    st.wired = true;
+    document.querySelectorAll('#' + tabsId + ' .tab').forEach(function (b) {
+        b.addEventListener('click', function () { st.filter = b.getAttribute('data-ledger-filter'); renderLedgerList(kind); });
+    });
+    var s = document.getElementById(searchId);
+    if (s) s.addEventListener('input', function () { st.search = s.value; renderLedgerList(kind); });
+}
+
+function ledgerAsOf(id) {
+    var el = document.getElementById(id);
+    return el && el.value ? el.value : '';
+}
+
+// Where the export of a ledger is, as of the day chosen.
+function ledgerCsvUrl(kind) {
+    var asOf = ledgerAsOf(kind === 'sales' ? 'sales-ledger-asof' : 'purchase-ledger-asof');
+    return (kind === 'sales' ? '/api/ledger/sales.csv' : '/api/ledger/purchases.csv') + (asOf ? '?as_of=' + encodeURIComponent(asOf) : '');
+}
+window.ledgerCsvUrl = ledgerCsvUrl;
+
+// ---- the lists --------------------------------------------------------------------
+async function loadSalesLedger() {
+    ledgerBindTabs('sales', 'sales-ledger-tabs', 'sales-ledger-search');
+    var asOf = ledgerAsOf('sales-ledger-asof');
+    var box = document.getElementById('sales-ledger-asof');
+    if (box && !box.getAttribute('data-wired')) { box.setAttribute('data-wired', '1'); box.addEventListener('change', loadSalesLedger); }
+    var csv = document.getElementById('sales-ledger-csv');
+    if (csv && !csv.getAttribute('data-wired')) {
+        csv.setAttribute('data-wired', '1');
+        csv.addEventListener('click', function () { window.location.href = ledgerCsvUrl('sales'); });
+    }
+    try { _ledger.sales.data = await fetchJson('/api/ledger/sales' + (asOf ? '?as_of=' + encodeURIComponent(asOf) : '')); }
+    catch (e) { showToast(e.message, 'error'); return; }
+    renderLedgerList('sales');
+}
+window.loadSalesLedger = loadSalesLedger;
+
+async function loadPurchaseLedger() {
+    ledgerBindTabs('purchases', 'purchase-ledger-tabs', 'purchase-ledger-search');
+    var asOf = ledgerAsOf('purchase-ledger-asof');
+    var box = document.getElementById('purchase-ledger-asof');
+    if (box && !box.getAttribute('data-wired')) { box.setAttribute('data-wired', '1'); box.addEventListener('change', loadPurchaseLedger); }
+    var wire = function (id, fn) { var el = document.getElementById(id); if (el && !el.getAttribute('data-wired')) { el.setAttribute('data-wired', '1'); el.addEventListener('click', fn); } };
+    wire('purchase-ledger-csv', function () { window.location.href = ledgerCsvUrl('purchases'); });
+    wire('purchase-supplier-new', function () { openSupplierModal(0); });
+    wire('purchase-credit-new', function () { openSupplierCredit(0); });
+    try { _ledger.purchases.data = await fetchJson('/api/ledger/purchases' + (asOf ? '?as_of=' + encodeURIComponent(asOf) : '')); }
+    catch (e) { showToast(e.message, 'error'); return; }
+    renderLedgerList('purchases');
+}
+window.loadPurchaseLedger = loadPurchaseLedger;
+
+function ledgerRowsFor(kind) {
+    var st = _ledger[kind], d = st.data;
+    if (!d) return [];
+    var term = (st.search || '').trim().toLowerCase();
+    var f = st.filter;
+    return (d.accounts || []).filter(function (r) {
+        var name = (kind === 'sales' ? r.contact : r.supplier) || '';
+        if (term && name.toLowerCase().indexOf(term) < 0 && (r.account_ref || '').toLowerCase().indexOf(term) < 0 && (r.email || '').toLowerCase().indexOf(term) < 0) return false;
+        if (f === 'owing') return kind === 'sales' ? r.total > 0 : (r.total !== 0 || r.credits > 0);
+        if (f === 'overdue') return r.overdue > 0;
+        if (f === 'limit') return r.credit_state === 'over_limit' || r.credit_state === 'near_limit';
+        if (f === 'hold') return !!r.on_hold;
+        return true;
+    });
+}
+
+function renderLedgerList(kind) {
+    var st = _ledger[kind], d = st.data;
+    if (!d) return;
+    var sales = kind === 'sales';
+    var t = d.totals || {};
+    var cur = d.currency;
+    var tilesEl = document.getElementById(sales ? 'sales-ledger-tiles' : 'purchase-ledger-tiles');
+    if (tilesEl) {
+        tilesEl.innerHTML = sales
+            ? ledgerTile('Owed to you', ledgerMoney(t.balance, cur)) + ledgerTile('Overdue', ledgerMoney(t.overdue, cur), t.overdue ? 'var(--danger-text)' : '') +
+              ledgerTile('Customers owing', String(t.accounts_owing || 0)) +
+              ledgerTile('Over limit or on hold', String((t.over_limit || 0) + (t.on_hold || 0)), (t.over_limit || t.on_hold) ? 'var(--warning-color)' : '')
+            : ledgerTile('You owe', ledgerMoney(t.balance, cur)) + ledgerTile('Overdue', ledgerMoney(t.overdue, cur), t.overdue ? 'var(--danger-text)' : '') +
+              ledgerTile('Suppliers owed', String(t.accounts_owing || 0)) + ledgerTile('Credit not yet used', ledgerMoney(t.credits, cur));
+    }
+    var ageEl = document.getElementById(sales ? 'sales-ledger-ageing' : 'purchase-ledger-ageing');
+    if (ageEl) ageEl.innerHTML = '<div style="font-weight:600;font-size:0.88rem;margin-bottom:8px;">' + (sales ? 'How late what you are owed is' : 'How late what you owe is') +
+        ' <span style="font-weight:400;color:var(--text-secondary);">as of ' + esc(d.as_of) + '</span></div>' + ledgerAgeing(t.buckets, cur) +
+        ((d.other_currencies || []).length ? '<div style="font-size:0.78rem;color:var(--text-secondary);margin-top:8px;">Also in ' + esc(d.other_currencies.join(', ')) + ' - shown on their own rows, never added to the above.</div>' : '');
+    var tabs = document.querySelectorAll('#' + (sales ? 'sales-ledger-tabs' : 'purchase-ledger-tabs') + ' .tab');
+    tabs.forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-ledger-filter') === st.filter); });
+    var rows = ledgerRowsFor(kind);
+    var count = document.getElementById(sales ? 'sales-ledger-count' : 'purchase-ledger-count');
+    if (count) count.textContent = rows.length + ' account' + (rows.length === 1 ? '' : 's');
+    var body = document.getElementById(sales ? 'sales-ledger-body' : 'purchase-ledger-body');
+    if (!body) return;
+    if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--text-secondary);">' +
+            (sales ? 'No customer accounts match.' : 'No supplier accounts match. Post a bill, or add a supplier.') + '</td></tr>';
+        return;
+    }
+    body.innerHTML = rows.map(function (r, i) {
+        var name = sales ? r.contact : r.supplier;
+        var id = sales ? r.contact_id : r.supplier_id;
+        var foreign = r.currency !== cur ? ' <span style="font-size:0.7rem;border:1px solid var(--border-color);border-radius:4px;padding:1px 4px;">' + esc(r.currency) + '</span>' : '';
+        var label = '<strong>' + esc(name || '-') + '</strong>' + foreign +
+            (r.account_ref ? '<div style="font-size:0.74rem;color:var(--text-secondary);">' + esc(r.account_ref) + '</div>' : '') +
+            (r.on_hold && !sales ? '<div>' + ledgerStatePill('on_hold') + '</div>' : '');
+        var link = id || (!sales && id === 0)
+            ? '<a href="#" data-ledger-open="' + id + '" style="color:var(--primary-color);text-decoration:none;">' + label + '</a>' : label;
+        var credit = '';
+        if (sales) {
+            credit = r.credit_limit
+                ? '<div style="font-size:0.8rem;">' + ledgerMoney(r.total, r.currency) + ' of ' + ledgerMoney(r.credit_limit, r.currency) + '</div>' +
+                  '<div style="height:5px;background:var(--border-color);border-radius:3px;margin:3px 0;max-width:140px;"><div style="height:5px;border-radius:3px;width:' + Math.min(100, r.used_pct || 0) + '%;background:' +
+                  (r.credit_state === 'over_limit' ? 'var(--danger-text)' : (r.credit_state === 'near_limit' ? 'var(--warning-color)' : 'var(--success-color)')) + ';"></div></div>' + ledgerStatePill(r.credit_state)
+                : '<span style="color:var(--text-secondary);font-size:0.8rem;">No limit</span> ' + ledgerStatePill(r.credit_state);
+        }
+        return '<tr>' +
+            '<td>' + link + '</td>' +
+            '<td class="text-right"><strong>' + ledgerMoney(r.total, r.currency) + '</strong>' + (sales ? '' : (r.credits ? '<div style="font-size:0.72rem;color:var(--text-secondary);">after ' + ledgerMoney(r.credits, r.currency) + ' credit</div>' : '')) + '</td>' +
+            '<td class="text-right"' + (r.overdue ? ' style="color:var(--danger-text);font-weight:600;"' : '') + '>' + (r.overdue ? ledgerMoney(r.overdue, r.currency) : '-') +
+                (r.oldest_days > 0 ? '<div style="font-size:0.72rem;color:var(--text-secondary);font-weight:400;">oldest ' + r.oldest_days + 'd</div>' : '') + '</td>' +
+            (sales ? '<td>' + credit + '</td>' : '<td class="text-right">' + (r.credits ? ledgerMoney(r.credits, r.currency) : '-') + '</td>') +
+            '<td style="font-size:0.82rem;">' + esc(sales ? (r.last_invoice || '-') : (r.last_bill || '-')) + '</td>' +
+            '<td style="font-size:0.82rem;">' + esc(r.last_payment || '-') + '</td>' +
+            '<td class="text-right">' + ((id || (!sales && id === 0)) ? '<button type="button" class="btn btn-outline btn-sm" data-ledger-open="' + id + '">Ledger</button>' : '') + '</td></tr>';
+    }).join('');
+    body.querySelectorAll('[data-ledger-open]').forEach(function (el) {
+        el.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            var id = Number(el.getAttribute('data-ledger-open'));
+            if (sales) openSalesAccount(id); else openPurchaseAccount(id);
+        });
+    });
+}
+
+// ---- one account ---------------------------------------------------------------------
+function ledgerStatementTable(led, labels) {
+    var inc = labels.inc, dec = labels.dec;
+    var cur = led.currency;
+    var lines = (led.lines || []).map(function (l) {
+        var up = sales_or_inc(l, labels);
+        return '<tr><td style="white-space:nowrap;">' + esc(l.date) + '</td><td><span style="font-size:0.72rem;border:1px solid var(--border-color);border-radius:4px;padding:1px 5px;margin-right:6px;">' +
+            esc(LEDGER_KIND[l.kind] || l.kind) + '</span>' + esc(l.description || '') + '</td>' +
+            '<td class="text-right">' + (up.up ? ledgerMoney(up.up, cur) : '') + '</td><td class="text-right">' + (up.down ? ledgerMoney(up.down, cur) : '') + '</td>' +
+            '<td class="text-right"><strong>' + ledgerMoney(l.balance, cur) + '</strong></td></tr>';
+    }).join('');
+    return '<div style="font-weight:600;margin:14px 0 6px;">' + esc(cur) + '</div><div class="table-responsive"><table class="data-table inv-table" style="min-width:640px;font-size:0.85rem;">' +
+        '<thead><tr><th>Date</th><th>Detail</th><th class="text-right">' + esc(inc) + '</th><th class="text-right">' + esc(dec) + '</th><th class="text-right">Balance</th></tr></thead><tbody>' +
+        '<tr style="background:var(--surface-color);"><td colspan="4">Balance brought forward</td><td class="text-right"><strong>' + ledgerMoney(led.opening_balance, cur) + '</strong></td></tr>' +
+        (lines || '<tr><td colspan="5" style="text-align:center;color:var(--text-secondary);padding:14px;">Nothing in this period.</td></tr>') +
+        '<tr style="background:var(--surface-color);"><td colspan="4">Balance carried forward</td><td class="text-right"><strong>' + ledgerMoney(led.closing_balance, cur) + '</strong></td></tr>' +
+        '</tbody></table></div>';
+}
+
+// A sales line says debit and credit, a purchase line increase and decrease.
+function sales_or_inc(l, labels) {
+    return labels.sales ? { up: l.debit, down: l.credit } : { up: l.increase, down: l.decrease };
+}
+
+function ledgerPeriodBar(start, end) {
+    return '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin:12px 0 4px;">' +
+        '<div class="form-group" style="margin:0;"><label style="font-size:0.74rem;">From</label><input type="date" id="ledger-detail-start" class="form-control" value="' + esc(start) + '"></div>' +
+        '<div class="form-group" style="margin:0;"><label style="font-size:0.74rem;">To</label><input type="date" id="ledger-detail-end" class="form-control" value="' + esc(end) + '"></div>' +
+        '<button type="button" class="btn btn-outline btn-sm" id="ledger-detail-apply">Show</button></div>';
+}
+
+function closeLedgerDetail() {
+    var m = document.getElementById('ledger-detail-modal');
+    if (m) m.style.display = 'none';
+    _ledgerOpen = null;
+}
+window.closeLedgerDetail = closeLedgerDetail;
+
+function ledgerWireDetail(reload) {
+    var close = document.getElementById('ledger-detail-close');
+    if (close && !close.getAttribute('data-wired')) { close.setAttribute('data-wired', '1'); close.addEventListener('click', closeLedgerDetail); }
+    var apply = document.getElementById('ledger-detail-apply');
+    if (apply) apply.addEventListener('click', function () {
+        reload(document.getElementById('ledger-detail-start').value, document.getElementById('ledger-detail-end').value);
+    });
+}
+
+async function openSalesAccount(id, start, end) {
+    var q = [];
+    if (start) q.push('start=' + encodeURIComponent(start));
+    if (end) q.push('end=' + encodeURIComponent(end));
+    var d;
+    try { d = await fetchJson('/api/ledger/sales/' + id + (q.length ? '?' + q.join('&') : '')); }
+    catch (e) { showToast(e.message, 'error'); return; }
+    _ledgerOpen = { kind: 'sales', id: id, start: d.start, end: d.end };
+    var a = d.account, c = a.credit || {};
+    document.getElementById('ledger-detail-title').textContent = a.name + (a.account_ref ? ' (' + a.account_ref + ')' : '');
+    var creditBox = '<div style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;flex:1;min-width:220px;">' +
+        '<div style="font-size:0.74rem;color:var(--text-secondary);">Credit</div>' +
+        '<div style="font-weight:700;">' + ledgerMoney(c.balance, c.currency) + (c.limit ? ' of ' + ledgerMoney(c.limit, c.currency) : ' owed, no limit set') + '</div>' +
+        (c.limit ? '<div style="font-size:0.8rem;">' + (c.available >= 0 ? ledgerMoney(c.available, c.currency) + ' left' : '<span style="color:var(--danger-text);">' + ledgerMoney(-c.available, c.currency) + ' over</span>') + '</div>' : '') +
+        '<div>' + ledgerStatePill(c.state) + '</div></div>';
+    var contactBox = '<div style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;flex:1;min-width:220px;font-size:0.85rem;">' +
+        '<div style="font-size:0.74rem;color:var(--text-secondary);">Contact</div>' + esc(a.email || 'No email') + (a.phone_number ? '<br>' + esc(a.phone_number) : '') +
+        '<br><span style="color:var(--text-secondary);">Terms: ' + (a.payment_terms_days == null ? 'your default' : esc(String(a.payment_terms_days)) + ' days') + '</span></div>';
+    var age = (d.ageing || []).find(function (r) { return r.currency === d.base; }) || (d.ageing || [])[0];
+    var open = (d.open_invoices || []).map(function (i) {
+        return '<tr><td><a href="#/invoices/' + encodeURIComponent(i.number) + '" style="color:var(--primary-color);">' + esc(i.number) + '</a></td><td>' + esc(i.issue_date || '') + '</td><td>' + esc(i.due_date || '') + '</td>' +
+            '<td class="text-right">' + ledgerMoney(i.outstanding, i.currency) + '</td><td class="text-right"' + (i.days_overdue ? ' style="color:var(--danger-text);"' : '') + '>' + (i.days_overdue ? i.days_overdue + ' days late' : 'not yet due') + '</td></tr>';
+    }).join('');
+    var statements = (d.statements || []).map(function (s) { return ledgerStatementTable(s, { inc: 'Charged', dec: 'Received', sales: true }); }).join('');
+    document.getElementById('ledger-detail-body').innerHTML =
+        '<div style="display:flex;gap:12px;flex-wrap:wrap;">' + creditBox + contactBox + '</div>' +
+        (age ? '<div style="margin-top:12px;">' + ledgerAgeing(age, age.currency) + '</div>' : '') +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;">' +
+            '<button type="button" class="btn btn-outline btn-sm" id="ledger-edit">Edit account</button>' +
+            '<button type="button" class="btn btn-outline btn-sm" id="ledger-hold">' + (a.on_hold ? 'Take off hold' : 'Put on hold') + '</button>' +
+            '<a class="btn btn-outline btn-sm" id="ledger-csv" href="/api/contacts/' + a.id + '/statement.csv?start=' + encodeURIComponent(d.start) + '&end=' + encodeURIComponent(d.end) + '">Statement CSV</a>' +
+            '<button type="button" class="btn btn-outline btn-sm" id="ledger-email">Email statement</button>' +
+            '<button type="button" class="btn btn-outline btn-sm" id="ledger-history">Customer history</button></div>' +
+        ledgerPeriodBar(d.start, d.end) + statements +
+        '<div style="font-weight:600;margin:18px 0 6px;">Open invoices</div>' +
+        (open ? '<div class="table-responsive"><table class="data-table inv-table" style="min-width:520px;font-size:0.85rem;"><thead><tr><th>Invoice</th><th>Issued</th><th>Due</th><th class="text-right">Owed</th><th class="text-right">How late</th></tr></thead><tbody>' + open + '</tbody></table></div>'
+              : '<div style="color:var(--text-secondary);font-size:0.85rem;">Nothing is owed on this account.</div>');
+    document.getElementById('ledger-detail-modal').style.display = 'flex';
+    ledgerWireDetail(function (s, e) { openSalesAccount(id, s, e); });
+    document.getElementById('ledger-edit').addEventListener('click', async function () {
+        if (!allContacts.some(function (x) { return x.id === id; })) await loadContacts();
+        closeLedgerDetail();
+        editContact(id);
+    });
+    document.getElementById('ledger-hold').addEventListener('click', async function () {
+        try {
+            await fetchJson('/api/contacts/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on_hold: !a.on_hold }) });
+            showToast(a.on_hold ? 'Account taken off hold' : 'Account put on hold', 'success');
+            await openSalesAccount(id, d.start, d.end);
+            loadSalesLedger();
+        } catch (e) { showToast(e.message, 'error'); }
+    });
+    document.getElementById('ledger-email').addEventListener('click', async function () {
+        if (!await uiConfirm('Email this statement (' + d.start + ' to ' + d.end + ') to ' + (a.email || 'the customer') + '?', { title: 'Email statement', confirmText: 'Send' })) return;
+        try {
+            var r = await fetchJson('/api/contacts/' + id + '/statement/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ start: d.start, end: d.end }) });
+            showToast(r.message || 'Statement sent', 'success');
+        } catch (e) { showToast(e.message, 'error'); }
+    });
+    document.getElementById('ledger-history').addEventListener('click', function () { closeLedgerDetail(); if (typeof openCustomer === 'function') openCustomer(id); });
+}
+window.openSalesAccount = openSalesAccount;
+
+async function openPurchaseAccount(id, start, end) {
+    var q = [];
+    if (start) q.push('start=' + encodeURIComponent(start));
+    if (end) q.push('end=' + encodeURIComponent(end));
+    var d;
+    try { d = await fetchJson('/api/ledger/purchases/' + id + (q.length ? '?' + q.join('&') : '')); }
+    catch (e) { showToast(e.message, 'error'); return; }
+    _ledgerOpen = { kind: 'purchases', id: id, start: d.start, end: d.end };
+    var s = d.supplier;
+    document.getElementById('ledger-detail-title').textContent = s.name + (s.account_ref ? ' (' + s.account_ref + ')' : '');
+    var age = (d.ageing || []).find(function (r) { return r.currency === d.base; }) || (d.ageing || [])[0];
+    var owed = Object.keys(d.balance || {}).map(function (k) { return ledgerMoney(d.balance[k], k); }).join(' + ') || ledgerMoney(0, d.base);
+    var info = '<div style="display:flex;gap:12px;flex-wrap:wrap;">' +
+        '<div style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;flex:1;min-width:200px;"><div style="font-size:0.74rem;color:var(--text-secondary);">You owe them</div><div style="font-weight:700;font-size:1.1rem;">' + owed + '</div>' +
+            (s.on_hold ? '<div>' + ledgerStatePill('on_hold') + '</div>' : '') + '</div>' +
+        '<div style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;flex:1;min-width:220px;font-size:0.85rem;"><div style="font-size:0.74rem;color:var(--text-secondary);">Contact</div>' +
+            esc(s.contact_person || '') + (s.contact_person ? '<br>' : '') + esc(s.email || 'No email') + (s.phone_number ? '<br>' + esc(s.phone_number) : '') +
+            '<br><span style="color:var(--text-secondary);">Terms: ' + (s.payment_terms_days == null ? 'your default' : esc(String(s.payment_terms_days)) + ' days') + '</span></div>' +
+        '<div style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;flex:1;min-width:220px;font-size:0.85rem;"><div style="font-size:0.74rem;color:var(--text-secondary);">How to pay them</div>' +
+            (s.bank_details ? esc(s.bank_details).replace(/\n/g, '<br>') : '<span style="color:var(--text-secondary);">Not recorded</span>') + '</div></div>';
+    var openBills = (d.open_bills || []).map(function (b) {
+        return '<tr><td>' + esc(b.number) + '</td><td>' + esc(b.issue_date || '') + '</td><td>' + esc(b.due_date || '') + '</td><td class="text-right">' + ledgerMoney(b.outstanding, b.currency) + '</td>' +
+            '<td class="text-right"' + (b.days_overdue ? ' style="color:var(--danger-text);"' : '') + '>' + (b.days_overdue ? b.days_overdue + ' days late' : 'not yet due') + '</td>' +
+            '<td class="text-right"><button type="button" class="btn btn-outline btn-sm" data-ledger-pay="' + b.bill_id + '">Pay</button></td></tr>';
+    }).join('');
+    var credits = (d.credits || []).filter(function (c) { return c.status !== 'Void'; }).map(function (c) {
+        return '<tr><td>' + esc(c.number) + (c.reference ? '<div style="font-size:0.72rem;color:var(--text-secondary);">' + esc(c.reference) + '</div>' : '') + '</td><td>' + esc(c.issue_date || '') + '</td><td>' + esc(c.reason || '') + '</td>' +
+            '<td class="text-right">' + ledgerMoney(c.amount, c.currency) + '</td><td class="text-right">' + ledgerMoney(c.remaining, c.currency) + '</td>' +
+            '<td class="text-right" style="white-space:nowrap;">' + (c.remaining > 0 && (d.open_bills || []).length ? '<button type="button" class="btn btn-outline btn-sm" data-ledger-use="' + c.id + '" data-remaining="' + c.remaining + '">Use</button> ' : '') +
+            (!c.applied ? '<button type="button" class="btn btn-outline btn-sm" data-ledger-void="' + c.id + '" style="color:var(--danger-color);border-color:var(--danger-color);">Void</button>' : '') + '</td></tr>';
+    }).join('');
+    var statements = (d.ledgers || []).map(function (l) { return ledgerStatementTable(l, { inc: 'Billed', dec: 'Paid or credited', sales: false }); }).join('');
+    var real = id !== 0;
+    document.getElementById('ledger-detail-body').innerHTML = info +
+        (age ? '<div style="margin-top:12px;">' + ledgerAgeing(age, age.currency) + '</div>' : '') +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;">' +
+            (real ? '<button type="button" class="btn btn-outline btn-sm" id="ledger-edit">Edit supplier</button>' : '') +
+            (real ? '<button type="button" class="btn btn-outline btn-sm" id="ledger-hold">' + (s.on_hold ? 'Take off hold' : 'Put on hold') + '</button>' : '') +
+            (real ? '<button type="button" class="btn btn-outline btn-sm" id="ledger-newbill">New bill</button>' : '') +
+            (real ? '<button type="button" class="btn btn-outline btn-sm" id="ledger-newcredit">Record a credit note</button>' : '') +
+            '<a class="btn btn-outline btn-sm" id="ledger-csv" href="/api/ledger/purchases/' + id + '/ledger.csv?start=' + encodeURIComponent(d.start) + '&end=' + encodeURIComponent(d.end) + '">Ledger CSV</a></div>' +
+        ledgerPeriodBar(d.start, d.end) + statements +
+        '<div style="font-weight:600;margin:18px 0 6px;">Bills to pay</div>' +
+        (openBills ? '<div class="table-responsive"><table class="data-table inv-table" style="min-width:560px;font-size:0.85rem;"><thead><tr><th>Bill</th><th>Issued</th><th>Due</th><th class="text-right">Owed</th><th class="text-right">How late</th><th></th></tr></thead><tbody>' + openBills + '</tbody></table></div>'
+                   : '<div style="color:var(--text-secondary);font-size:0.85rem;">Nothing is owed on this account.</div>') +
+        (credits ? '<div style="font-weight:600;margin:18px 0 6px;">Credit notes</div><div class="table-responsive"><table class="data-table inv-table" style="min-width:560px;font-size:0.85rem;"><thead><tr><th>Credit</th><th>Dated</th><th>Reason</th><th class="text-right">Amount</th><th class="text-right">Left to use</th><th></th></tr></thead><tbody>' + credits + '</tbody></table></div>' : '');
+    document.getElementById('ledger-detail-modal').style.display = 'flex';
+    ledgerWireDetail(function (a, b) { openPurchaseAccount(id, a, b); });
+    var refresh = async function () { await openPurchaseAccount(id, d.start, d.end); loadPurchaseLedger(); if (typeof loadBills === 'function') loadBills(); };
+    var el = function (n) { return document.getElementById(n); };
+    if (real) {
+        el('ledger-edit').addEventListener('click', function () { closeLedgerDetail(); openSupplierModal(id); });
+        el('ledger-hold').addEventListener('click', async function () {
+            try {
+                await fetchJson('/api/suppliers/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on_hold: !s.on_hold }) });
+                showToast(s.on_hold ? 'Supplier taken off hold' : 'Supplier put on hold', 'success');
+                refresh();
+            } catch (e) { showToast(e.message, 'error'); }
+        });
+        el('ledger-newbill').addEventListener('click', function () { closeLedgerDetail(); showView('bills-view'); showAddBillModal().then(function () { document.getElementById('bill-vendor').value = s.name; }); });
+        el('ledger-newcredit').addEventListener('click', function () { openSupplierCredit(id).then(refresh); });
+    }
+    document.querySelectorAll('[data-ledger-pay]').forEach(function (b) {
+        b.addEventListener('click', function () { payBill(Number(b.getAttribute('data-ledger-pay'))).then(refresh); });
+    });
+    document.querySelectorAll('[data-ledger-use]').forEach(function (b) {
+        b.addEventListener('click', function () { useSupplierCredit(Number(b.getAttribute('data-ledger-use')), id, Number(b.getAttribute('data-remaining'))).then(refresh); });
+    });
+    document.querySelectorAll('[data-ledger-void]').forEach(function (b) {
+        b.addEventListener('click', async function () {
+            if (!await uiConfirm('Void this credit note?', { title: 'Void credit note', confirmText: 'Void', danger: true })) return;
+            try { await fetchJson('/api/supplier-credits/' + b.getAttribute('data-ledger-void') + '/void', { method: 'POST' }); showToast('Credit note voided', 'success'); refresh(); }
+            catch (e) { showToast(e.message, 'error'); }
+        });
+    });
+}
+window.openPurchaseAccount = openPurchaseAccount;
+
+// ---- suppliers ------------------------------------------------------------------------
+function supplierModalWire() {
+    var m = document.getElementById('supplier-modal');
+    if (!m || m.getAttribute('data-wired')) return;
+    m.setAttribute('data-wired', '1');
+    var shut = function () { m.style.display = 'none'; };
+    document.getElementById('supplier-modal-close').addEventListener('click', shut);
+    document.getElementById('supplier-cancel').addEventListener('click', shut);
+    document.getElementById('supplier-save').addEventListener('click', saveSupplier);
+    document.getElementById('supplier-delete').addEventListener('click', removeSupplier);
+}
+
+async function openSupplierModal(id) {
+    supplierModalWire();
+    var s = { name: '', account_ref: '', contact_person: '', email: '', phone_number: '', tax_id: '', payment_terms_days: null, currency: '', address: '', bank_details: '', notes: '', on_hold: false };
+    if (id) {
+        try { s = await fetchJson('/api/suppliers/' + id); } catch (e) { showToast(e.message, 'error'); return; }
+    }
+    var set = function (n, v) { document.getElementById(n).value = v == null ? '' : v; };
+    document.getElementById('supplier-edit-id').value = id || '';
+    document.getElementById('supplier-modal-title').textContent = id ? 'Edit supplier' : 'New supplier';
+    set('supplier-name', s.name); set('supplier-ref', s.account_ref); set('supplier-person', s.contact_person); set('supplier-email', s.email);
+    set('supplier-phone', s.phone_number); set('supplier-taxid', s.tax_id); set('supplier-terms', s.payment_terms_days); set('supplier-currency', s.currency);
+    set('supplier-address', s.address); set('supplier-bank', s.bank_details); set('supplier-notes', s.notes);
+    document.getElementById('supplier-hold').checked = !!s.on_hold;
+    document.getElementById('supplier-delete').style.display = id ? '' : 'none';
+    document.getElementById('supplier-modal').style.display = 'flex';
+}
+window.openSupplierModal = openSupplierModal;
+
+async function saveSupplier() {
+    var v = function (n) { return document.getElementById(n).value.trim(); };
+    var id = document.getElementById('supplier-edit-id').value;
+    var terms = v('supplier-terms');
+    var body = { name: v('supplier-name'), account_ref: v('supplier-ref'), contact_person: v('supplier-person'), email: v('supplier-email'),
+        phone_number: v('supplier-phone'), tax_id: v('supplier-taxid'), payment_terms_days: terms === '' ? null : parseInt(terms, 10),
+        currency: v('supplier-currency').toUpperCase(), address: v('supplier-address'), bank_details: v('supplier-bank'), notes: v('supplier-notes'),
+        on_hold: document.getElementById('supplier-hold').checked };
+    if (!body.name) { showToast('A supplier needs a name', 'error'); return; }
+    try {
+        await fetchJson(id ? '/api/suppliers/' + id : '/api/suppliers', { method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        document.getElementById('supplier-modal').style.display = 'none';
+        showToast(id ? 'Supplier updated' : 'Supplier added', 'success');
+        if (document.getElementById('purchase-ledger-view') && document.getElementById('purchase-ledger-view').style.display !== 'none') loadPurchaseLedger();
+        if (typeof loadBills === 'function') loadBills();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.saveSupplier = saveSupplier;
+
+async function removeSupplier() {
+    var id = document.getElementById('supplier-edit-id').value;
+    if (!id || !await uiConfirm('Remove this supplier? If bills are posted to it, it is closed instead and the bills keep their supplier.', { title: 'Remove supplier', confirmText: 'Remove', danger: true })) return;
+    try {
+        var r = await fetchJson('/api/suppliers/' + id, { method: 'DELETE' });
+        document.getElementById('supplier-modal').style.display = 'none';
+        showToast(r.message || 'Removed', 'success');
+        loadPurchaseLedger();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function supplierOptions() {
+    try { return (await fetchJson('/api/suppliers')).map(function (s) { return { value: s.id, label: s.name }; }); } catch (e) { return []; }
+}
+
+async function openSupplierCredit(supplierId) {
+    var opts = await supplierOptions();
+    if (!opts.length) { showToast('Add a supplier first, or post a bill to one', 'error'); return; }
+    var f = await uiForm([
+        { name: 'supplier_id', label: 'Supplier', type: 'select', options: opts, value: supplierId || opts[0].value, required: true },
+        { name: 'amount', label: 'Credit amount', type: 'number', required: true, hint: 'What they have credited you, as on their credit note.' },
+        { name: 'issue_date', label: 'Dated', type: 'date', value: localDate(new Date()), required: true },
+        { name: 'reference', label: 'Their credit note number', type: 'text' },
+        { name: 'reason', label: 'Reason', type: 'text' }
+    ], { title: 'Supplier credit note', confirmText: 'Record it' });
+    if (!f) return;
+    try {
+        var c = await fetchJson('/api/supplier-credits', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ supplier_id: Number(f.supplier_id), amount: parseFloat(f.amount) || 0, issue_date: f.issue_date, reference: f.reference || '', reason: f.reason || '' }) });
+        showToast('Credit note ' + c.number + ' recorded', 'success');
+        if (document.getElementById('purchase-ledger-view') && document.getElementById('purchase-ledger-view').style.display !== 'none') loadPurchaseLedger();
+    } catch (e) { showToast(e.message, 'error'); }
+}
+window.openSupplierCredit = openSupplierCredit;
+
+async function useSupplierCredit(creditId, supplierId, remaining) {
+    var d;
+    try { d = await fetchJson('/api/ledger/purchases/' + supplierId); } catch (e) { showToast(e.message, 'error'); return; }
+    var bills = (d.open_bills || []);
+    if (!bills.length) { showToast('Nothing is owed to this supplier to set it against', 'error'); return; }
+    var f = await uiForm([
+        { name: 'bill_id', label: 'Set it against', type: 'select', required: true, value: bills[0].bill_id,
+          options: bills.map(function (b) { return { value: b.bill_id, label: b.number + ' - ' + ledgerMoney(b.outstanding, b.currency) + ' owed' }; }) },
+        { name: 'amount', label: 'How much', type: 'number', value: Math.min(remaining, bills[0].outstanding), required: true, hint: 'Up to ' + ledgerMoney(remaining) + ' of the credit is left.' }
+    ], { title: 'Use a credit note', confirmText: 'Set against bill' });
+    if (!f) return;
+    try {
+        await fetchJson('/api/supplier-credits/' + creditId + '/allocate', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bill_id: Number(f.bill_id), amount: parseFloat(f.amount) || 0 }) });
+        showToast('Credit set against the bill', 'success');
+    } catch (e) { showToast(e.message, 'error'); }
+}
+
+// ---- paying a bill -----------------------------------------------------------------------
+async function billAccountOptions() {
+    try {
+        var a = ((await fetchJson('/api/accounts')).accounts || []).filter(function (x) { return x.active; });
+        return [{ value: '', label: 'Default account' }].concat(a.map(function (x) { return { value: x.id, label: x.name }; }));
+    } catch (e) { return [{ value: '', label: 'Default account' }]; }
+}
+
+// Ask how a bill was paid and record it. Resolves true if a payment was made.
+async function recordBillPayment(bill) {
+    var left = bill.balance;
+    if (!(left > 0)) { showToast('Bill ' + bill.number + ' has nothing left to pay', 'error'); return false; }
+    var accounts = await billAccountOptions();
+    var f = await uiForm([
+        { name: 'amount', label: 'Amount paid', type: 'number', value: left, required: true, hint: ledgerMoney(left, bill.currency) + ' is left on ' + bill.number + (bill.vendor_name ? ' (' + bill.vendor_name + ')' : '') + '. Pay part of it if that is all you have paid.' },
+        { name: 'paid_on', label: 'Paid on', type: 'date', value: localDate(new Date()), required: true },
+        { name: 'method', label: 'How', type: 'select', options: BILL_METHOD_OPTIONS, value: 'bank_transfer' },
+        { name: 'account_id', label: 'From account', type: 'select', options: accounts, value: '' },
+        { name: 'reference', label: 'Reference', type: 'text', placeholder: 'Cheque number, transfer reference...' }
+    ], { title: 'Pay bill ' + bill.number, confirmText: 'Record payment' });
+    if (!f) return false;
+    try {
+        var r = await fetchJson('/api/bills/' + bill.id + '/payments', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ amount: parseFloat(f.amount) || 0, paid_on: f.paid_on, method: f.method, account_id: f.account_id ? Number(f.account_id) : null, reference: f.reference || '' }) });
+        showToast(r.status === 'Paid' ? 'Bill paid' : 'Payment recorded - ' + ledgerMoney(r.balance, bill.currency) + ' left', 'success');
+        if (r.warning) showToast(r.warning, 'info');
+        return true;
+    } catch (e) { showToast(e.message, 'error'); return false; }
+}
+window.recordBillPayment = recordBillPayment;
+
+async function payBill(id) {
+    var bill;
+    try { bill = await fetchJson('/api/bills/' + id); } catch (e) { showToast(e.message, 'error'); return false; }
+    var ok = await recordBillPayment(bill);
+    if (ok && typeof loadBills === 'function') loadBills();
+    return ok;
+}
+window.payBill = payBill;
+
+function billPaymentsWire() {
+    var m = document.getElementById('bill-payments-modal');
+    if (!m || m.getAttribute('data-wired')) return;
+    m.setAttribute('data-wired', '1');
+    var shut = function () { m.style.display = 'none'; };
+    document.getElementById('bill-payments-close').addEventListener('click', shut);
+    document.getElementById('bill-payments-done').addEventListener('click', shut);
+}
+
+async function showBillPayments(id) {
+    billPaymentsWire();
+    var b;
+    try { b = await fetchJson('/api/bills/' + id); } catch (e) { showToast(e.message, 'error'); return; }
+    document.getElementById('bill-payments-title').textContent = 'Bill ' + b.number + (b.vendor_name ? ' - ' + b.vendor_name : '');
+    var rows = (b.payments || []).map(function (p) {
+        return '<tr><td>' + esc(p.paid_on) + '</td><td>' + esc(p.method_label) + (p.account ? '<div style="font-size:0.72rem;color:var(--text-secondary);">' + esc(p.account) + '</div>' : '') + '</td>' +
+            '<td>' + esc(p.reference || '') + (p.from_bank ? ' <span style="font-size:0.7rem;color:var(--text-secondary);">(bank line)</span>' : '') + '</td>' +
+            '<td class="text-right">' + ledgerMoney(p.amount, b.currency) + '</td>' +
+            '<td class="text-right">' + (p.from_bank ? '' : '<button type="button" class="btn btn-outline btn-sm" data-bp-remove="' + p.id + '" style="color:var(--danger-color);border-color:var(--danger-color);">Take back</button>') + '</td></tr>';
+    }).join('');
+    document.getElementById('bill-payments-body').innerHTML =
+        '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:12px;font-size:0.9rem;">' +
+            '<div><span style="color:var(--text-secondary);">Total</span><br><strong>' + ledgerMoney(b.total, b.currency) + '</strong></div>' +
+            '<div><span style="color:var(--text-secondary);">Paid</span><br><strong>' + ledgerMoney(b.amount_paid, b.currency) + '</strong></div>' +
+            '<div><span style="color:var(--text-secondary);">Left</span><br><strong' + (b.overdue ? ' style="color:var(--danger-text);"' : '') + '>' + ledgerMoney(b.balance, b.currency) + '</strong></div>' +
+            '<div><span style="color:var(--text-secondary);">Due</span><br><strong>' + esc(b.due_date || '-') + '</strong></div></div>' +
+        (rows ? '<div class="table-responsive"><table class="data-table" style="font-size:0.85rem;min-width:460px;"><thead><tr><th>Paid on</th><th>How</th><th>Reference</th><th class="text-right">Amount</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+              : '<div style="color:var(--text-secondary);font-size:0.88rem;">Nothing has been paid on this bill yet.</div>') +
+        (b.supplier && b.supplier.bank_details ? '<div style="margin-top:12px;font-size:0.82rem;"><span style="color:var(--text-secondary);">How to pay ' + esc(b.supplier.name) + ':</span><br>' + esc(b.supplier.bank_details).replace(/\n/g, '<br>') + '</div>' : '');
+    var add = document.getElementById('bill-payments-add');
+    add.style.display = b.balance > 0 && b.status !== 'Draft' && b.status !== 'Void' ? '' : 'none';
+    add.onclick = async function () {
+        document.getElementById('bill-payments-modal').style.display = 'none';
+        if (await recordBillPayment(b)) loadBills();
+        showBillPayments(id);
+    };
+    document.getElementById('bill-payments-body').querySelectorAll('[data-bp-remove]').forEach(function (btn) {
+        btn.addEventListener('click', async function () {
+            if (!await uiConfirm('Take this payment back? The bill is owed again for that amount.', { title: 'Take payment back', confirmText: 'Take back', danger: true })) return;
+            try { await fetchJson('/api/bills/' + id + '/payments/' + btn.getAttribute('data-bp-remove'), { method: 'DELETE' }); showToast('Payment taken back', 'success'); loadBills(); showBillPayments(id); }
+            catch (e) { showToast(e.message, 'error'); }
+        });
+    });
+    document.getElementById('bill-payments-modal').style.display = 'flex';
+}
+window.showBillPayments = showBillPayments;
+
+async function postDraftBills() {
+    var n = allBills.filter(function (b) { return b.status === 'Draft'; }).length;
+    if (!n || !await uiConfirm('Post ' + n + ' draft bill' + (n === 1 ? '' : 's') + '? Posted bills count in the purchase ledger and as money you owe.', { title: 'Post draft bills', confirmText: 'Post them' })) return;
+    try { var r = await fetchJson('/api/bills/post-drafts', { method: 'POST' }); showToast(r.posted + ' bill' + (r.posted === 1 ? '' : 's') + ' posted', 'success'); loadBills(); }
+    catch (e) { showToast(e.message, 'error'); }
+}
+window.postDraftBills = postDraftBills;
+
+// ---- warned before selling to somebody over their limit ---------------------------------------
+var _creditCheckTimer = null;
+function scheduleInvoiceCreditCheck() {
+    clearTimeout(_creditCheckTimer);
+    _creditCheckTimer = setTimeout(checkInvoiceCredit, 400);
+}
+window.scheduleInvoiceCreditCheck = scheduleInvoiceCreditCheck;
+
+async function checkInvoiceCredit() {
+    var box = document.getElementById('inv-credit-warning');
+    var name = ((document.getElementById('inv-contact') || {}).value || '').trim();
+    if (!box) return;
+    if (!name) { box.style.display = 'none'; return; }
+    var totalText = ((document.getElementById('summary-total') || {}).textContent || '').trim();
+    var amount = parseFloat(totalText) || 0;
+    try {
+        var r = await fetchJson('/api/ledger/credit-check?name=' + encodeURIComponent(name) + '&amount=' + encodeURIComponent(amount));
+        if (r.warnings && r.warnings.length) {
+            box.innerHTML = r.warnings.map(esc).join('<br>');
+            box.style.display = '';
+        } else box.style.display = 'none';
+    } catch (e) { box.style.display = 'none'; }
+}
+window.checkInvoiceCredit = checkInvoiceCredit;
 
 // ============================================================
 // CONTACTS MODULE
@@ -11638,7 +12283,8 @@ function showAddContactModal() {
     document.getElementById('contact-name').value = '';
     document.getElementById('contact-email').value = '';
     document.getElementById('contact-phone').value = '';
-    ['contact-company', 'contact-address', 'contact-taxid', 'contact-terms', 'contact-currency', 'contact-cc'].forEach(function (id) { var el = document.getElementById(id); if (el) el.value = ''; });
+    ['contact-company', 'contact-address', 'contact-taxid', 'contact-terms', 'contact-currency', 'contact-cc', 'contact-account-ref', 'contact-credit-limit'].forEach(function (id) { var el = document.getElementById(id); if (el) el.value = ''; });
+    var holdOff = document.getElementById('contact-on-hold'); if (holdOff) holdOff.checked = false;
     ['contact-chase', 'contact-late-fees'].forEach(function (id) { var el = document.getElementById(id); if (el) el.checked = true; });
     document.getElementById('add-contact-modal').style.display = 'flex';
 }
@@ -11668,16 +12314,20 @@ async function saveContact() {
     if (curBox) billing.currency = curBox.value.trim().toUpperCase();
     var ccBox = document.getElementById('contact-cc');
     if (ccBox) billing.cc_email = ccBox.value.trim();
+    var refBox = document.getElementById('contact-account-ref'), limBox = document.getElementById('contact-credit-limit'), holdBox = document.getElementById('contact-on-hold');
+    if (refBox) billing.account_ref = refBox.value.trim();
+    if (limBox) billing.credit_limit = limBox.value.trim() === '' ? 0 : parseFloat(limBox.value);
+    if (holdBox) billing.on_hold = !!holdBox.checked;
     if (!name) { showToast('Contact name required', 'error'); return; }
     try {
         if (editId) {
             var res = await fetch('/api/contacts/' + editId, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(Object.assign({ name: name, email: email, phone_number: phone }, billing)) });
             if (res.ok) { showToast('Contact updated', 'success'); }
-            else { showToast('Failed to update contact', 'error'); return; }
+            else { var eu = await res.json().catch(function () { return {}; }); showToast(eu.detail || 'Failed to update contact', 'error'); return; }
         } else {
             var res = await fetch('/api/contacts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(Object.assign({ name: name, email: email, phone_number: phone }, billing)) });
             if (res.ok) { showToast('Contact created', 'success'); }
-            else { showToast('Failed to create contact', 'error'); return; }
+            else { var ec = await res.json().catch(function () { return {}; }); showToast(ec.detail || 'Failed to create contact', 'error'); return; }
         }
         closeAddContactModal();
         loadContacts();
@@ -11699,6 +12349,8 @@ async function editContact(id) {
     if (chaseBox) chaseBox.checked = c.chase !== false;
     if (feeBox) feeBox.checked = c.late_fees !== false;
     setv('contact-terms', c.payment_terms_days == null ? '' : String(c.payment_terms_days)); setv('contact-currency', c.currency); setv('contact-cc', c.cc_email);
+    setv('contact-account-ref', c.account_ref); setv('contact-credit-limit', c.credit_limit ? String(c.credit_limit) : '');
+    var holdOn = document.getElementById('contact-on-hold'); if (holdOn) holdOn.checked = !!c.on_hold;
     document.getElementById('add-contact-modal').style.display = 'flex';
 }
 window.editContact = editContact;
@@ -11718,11 +12370,11 @@ window.deleteContact = deleteContact;
 // ============================================================
 function showReportsTab(tab) {
     ['reports-content', 'reports-pl-content', 'reports-bs-content', 'reports-cash-content',
-     'reports-aged-content'].forEach(function(id) {
+     'reports-aged-content', 'reports-payables-content'].forEach(function(id) {
         var el = document.getElementById(id);
         if (el) el.style.display = 'none';
     });
-    ['rpt-pl-btn', 'rpt-bs-btn', 'rpt-cash-btn', 'rpt-aged-btn'].forEach(function(id) {
+    ['rpt-pl-btn', 'rpt-bs-btn', 'rpt-cash-btn', 'rpt-aged-btn', 'rpt-payables-btn'].forEach(function(id) {
         var el = document.getElementById(id);
         if (el) { el.style.fontWeight = 'normal'; el.classList.remove('btn-primary'); el.classList.add('btn-outline'); }
     });
@@ -11738,6 +12390,9 @@ function showReportsTab(tab) {
     } else if (tab === 'aged') {
         var el = document.getElementById('reports-aged-content'); if (el) el.style.display = 'block';
         var btn = document.getElementById('rpt-aged-btn'); if (btn) { btn.style.fontWeight = '700'; }
+    } else if (tab === 'payables') {
+        var el = document.getElementById('reports-payables-content'); if (el) el.style.display = 'block';
+        var btn = document.getElementById('rpt-payables-btn'); if (btn) { btn.style.fontWeight = '700'; }
     } else {
         var el = document.getElementById('reports-content'); if (el) el.style.display = 'block';
     }
@@ -11798,6 +12453,44 @@ async function loadAgedReceivables() {
     }
 }
 window.loadAgedReceivables = loadAgedReceivables;
+
+// Aged creditors: what the business owes, by how late - the purchase ledger's
+// ageing as a report, with the same as-of day and spreadsheets.
+async function loadAgedPayables() {
+    showReportsTab('payables');
+    var host = document.getElementById('payables-buckets');
+    var list = document.getElementById('payables-suppliers');
+    if (host) host.innerHTML = '<div style="padding:16px;color:var(--text-secondary);">Loading...</div>';
+    var asOf = (document.getElementById('payables-asof') || {}).value || '';
+    var q = asOf ? '?as_of=' + encodeURIComponent(asOf) : '';
+    var csv = document.getElementById('payables-csv'), csvDetail = document.getElementById('payables-csv-detail');
+    if (csv) csv.href = '/api/reports/ageing/payables.csv' + q;
+    if (csvDetail) csvDetail.href = '/api/reports/ageing/payables.csv' + (q ? q + '&detail=1' : '?detail=1');
+    var d;
+    try { d = await fetchJson('/api/reports/ageing/payables' + q); }
+    catch (e) { if (host) host.innerHTML = '<div style="padding:16px;color:var(--danger-color);">Could not load the report.</div>'; return; }
+    if (host) host.innerHTML = ledgerAgeing(d.buckets, d.currency) +
+        '<div style="text-align:center;padding:14px 0 4px;margin-top:10px;border-top:1px solid var(--border-color);">' +
+        '<span style="font-size:0.82rem;color:var(--text-secondary);">You owe</span> <strong>' + formatCurrency(d.total_outstanding, d.currency) + '</strong>' +
+        (d.credits ? ' <span style="font-size:0.82rem;color:var(--text-secondary);">after ' + formatCurrency(d.credits, d.currency) + ' of supplier credit</span>' : '') +
+        ' <span style="font-size:0.82rem;color:var(--text-secondary);">&middot; overdue</span> <strong' + (d.overdue ? ' style="color:var(--danger-text);"' : '') + '>' + formatCurrency(d.overdue, d.currency) + '</strong></div>' +
+        ((d.other_currencies || []).length ? '<div style="font-size:0.78rem;color:var(--text-secondary);text-align:center;">Also owed in ' + esc(d.other_currencies.join(', ')) + ', never added to the above.</div>' : '');
+    if (!list) return;
+    var rows = (d.suppliers || []).filter(function (r) { return r.total !== 0; });
+    if (!rows.length) { list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-secondary);">You owe no supplier anything as of this day.</div>'; return; }
+    list.innerHTML = '<div class="table-responsive"><table class="data-table inv-table" style="min-width:760px;"><thead><tr><th>Supplier</th>' +
+        LEDGER_BUCKETS.map(function (b) { return '<th class="text-right">' + esc(b[1]) + '</th>'; }).join('') + '<th class="text-right">Credit</th><th class="text-right">Total</th></tr></thead><tbody>' +
+        rows.map(function (r) {
+            return '<tr><td><a href="#" data-payables-open="' + r.supplier_id + '" style="color:var(--primary-color);text-decoration:none;">' + esc(r.supplier) + '</a>' +
+                (r.currency !== d.currency ? ' <span style="font-size:0.7rem;">' + esc(r.currency) + '</span>' : '') + '</td>' +
+                LEDGER_BUCKETS.map(function (b) { return '<td class="text-right">' + (r[b[0]] ? formatCurrency(r[b[0]], r.currency) : '-') + '</td>'; }).join('') +
+                '<td class="text-right">' + (r.credits ? formatCurrency(-r.credits, r.currency) : '-') + '</td><td class="text-right"><strong>' + formatCurrency(r.total, r.currency) + '</strong></td></tr>';
+        }).join('') + '</tbody></table></div>';
+    list.querySelectorAll('[data-payables-open]').forEach(function (a) {
+        a.addEventListener('click', function (ev) { ev.preventDefault(); showView('purchase-ledger-view'); openPurchaseAccount(Number(a.getAttribute('data-payables-open'))); });
+    });
+}
+window.loadAgedPayables = loadAgedPayables;
 
 function renderAgedReceivables(data) {
     var host = document.getElementById('aged-buckets');

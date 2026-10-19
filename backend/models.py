@@ -558,6 +558,13 @@ class DBContact(Base):
     payment_terms_days = Column(Integer, nullable=True)
     currency = Column(String, default="")
     cc_email = Column(String, default="")
+    # The customer's account in the sales ledger: the reference the business
+    # knows them by, how much credit they may run up (0 means no limit), and
+    # whether the account is on hold - a flag for whoever is about to sell to
+    # them, not a lock.
+    account_ref = Column(String, default="", index=True)
+    credit_limit = Column(Float, default=0.0)
+    on_hold = Column(Boolean, default=False)
 
     client = relationship("DBClient", back_populates="contacts")
 
@@ -1442,6 +1449,11 @@ class DBBill(Base):
     category = Column(String, default="general")
     reference = Column(String, default="")
     notes = Column(String, default="")
+    # The supplier account it is posted to. vendor_name stays as what was
+    # typed on the bill; this is what ties it to the purchase ledger. Empty on
+    # bills made before suppliers existed until the migration links them.
+    supplier_id = Column(Integer, nullable=True, index=True)
+    currency = Column(String, default="")
 
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
@@ -1461,6 +1473,78 @@ class DBBillLineItem(Base):
     tax_rate = Column(String, default="20%")
 
     bill = relationship("DBBill", back_populates="line_items")
+
+
+
+class DBSupplier(Base):
+    """A supplier's account in the purchase ledger: who they are, how to pay
+    them, what they allow, and a flag if payments to them should wait. What the
+    business owes them is not stored here - it is the bills posted to the
+    account, less payments and credits, worked out when asked."""
+    __tablename__ = "suppliers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    name = Column(String, index=True)
+    account_ref = Column(String, default="", index=True)
+    contact_person = Column(String, default="")
+    email = Column(String, default="")
+    phone_number = Column(String, default="")
+    address = Column(Text, default="")
+    tax_id = Column(String, default="")
+    payment_terms_days = Column(Integer, nullable=True)
+    currency = Column(String, default="")
+    # Where to pay them: bank, sort code and account number, IBAN... free text,
+    # because it is read by a person and differs by country.
+    bank_details = Column(Text, default="")
+    notes = Column(Text, default="")
+    on_hold = Column(Boolean, default=False)
+    active = Column(Boolean, default=True)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBBillPayment(Base):
+    """One payment against a bill, or one credit set against it. The bill keeps
+    a running amount_paid; this is the history that explains it, so "what did
+    we pay them, when, from where" has an answer. bank_line_id ties a payment to
+    the bank line that settled it, credit_id to the supplier credit applied."""
+    __tablename__ = "bill_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    bill_id = Column(Integer, ForeignKey("bills.id"), nullable=False, index=True)
+    amount = Column(Float, default=0.0)
+    paid_on = Column(String, default="")
+    method = Column(String, default="bank_transfer")
+    reference = Column(String, default="")
+    note = Column(String, default="")
+    account_id = Column(Integer, ForeignKey("money_accounts.id"), nullable=True, index=True)
+    bank_line_id = Column(Integer, nullable=True, index=True)
+    credit_id = Column(Integer, nullable=True, index=True)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBSupplierCredit(Base):
+    """A credit note from a supplier: they owe the business this much, to be set
+    against their bills. status: Open (some or all still to use), Applied (all
+    used) or Void."""
+    __tablename__ = "supplier_credits"
+    __table_args__ = (
+        UniqueConstraint('client_id', 'number', name='uq_client_supplier_credit_number'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    supplier_id = Column(Integer, nullable=False, index=True)
+    number = Column(String, index=True)
+    reference = Column(String, default="")      # the supplier's own number for it
+    issue_date = Column(String, default="")
+    amount = Column(Float, default=0.0)
+    applied = Column(Float, default=0.0)
+    currency = Column(String, default="")
+    reason = Column(String, default="")
+    status = Column(String, default="Open", index=True)
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
 # ===========================================================================

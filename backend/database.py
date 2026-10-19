@@ -73,6 +73,25 @@ def migration_report():
     return list(MIGRATION_ERRORS)
 
 
+# Migration 72's data step: every supplier name already typed on a bill becomes
+# a supplier account (one per business per name, any case), then each bill is
+# linked to its account. Both statements only touch bills with no supplier yet,
+# so running them again changes nothing. Plain SQL that SQLite and Postgres
+# both read, and named here so a test can run it against a real database.
+SUPPLIER_BACKFILL = (
+    "INSERT INTO suppliers (client_id, name, account_ref, contact_person, email, phone_number, address, tax_id, "
+    "currency, bank_details, notes, on_hold, active, created_at) "
+    "SELECT b.client_id, MIN(TRIM(b.vendor_name)), '', '', MIN(COALESCE(b.vendor_email, '')), '', '', '', '', '', '', FALSE, TRUE, "
+    "MIN(COALESCE(b.created_at, '')) FROM bills b "
+    "WHERE b.client_id IS NOT NULL AND b.supplier_id IS NULL AND TRIM(COALESCE(b.vendor_name, '')) <> '' "
+    "AND NOT EXISTS (SELECT 1 FROM suppliers s WHERE s.client_id = b.client_id AND LOWER(TRIM(s.name)) = LOWER(TRIM(b.vendor_name))) "
+    "GROUP BY b.client_id, LOWER(TRIM(b.vendor_name))",
+    "UPDATE bills SET supplier_id = (SELECT MIN(s.id) FROM suppliers s WHERE s.client_id = bills.client_id "
+    "AND LOWER(TRIM(s.name)) = LOWER(TRIM(bills.vendor_name))) "
+    "WHERE supplier_id IS NULL AND TRIM(COALESCE(vendor_name, '')) <> ''",
+)
+
+
 def ensure_columns():
     """Add missing columns to existing tables."""
     if DATABASE_URL.startswith("sqlite"):
@@ -1925,6 +1944,26 @@ def ensure_columns():
                 conn.commit()
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 71: {sys.exc_info()[1]}")
+
+            # 72. Sales and purchase ledgers: a customer's account details, a
+            # bill's supplier and currency. Then every supplier name already
+            # typed on a bill becomes a supplier account and the bills are
+            # linked to it - once, and only for bills not yet linked, so
+            # running it again changes nothing. The new tables come from
+            # create_all.
+            try:
+                for ddl in (
+                    "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS account_ref VARCHAR DEFAULT ''",
+                    "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS credit_limit DOUBLE PRECISION DEFAULT 0",
+                    "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS on_hold BOOLEAN DEFAULT FALSE",
+                    "ALTER TABLE bills ADD COLUMN IF NOT EXISTS supplier_id INTEGER",
+                    "ALTER TABLE bills ADD COLUMN IF NOT EXISTS currency VARCHAR DEFAULT ''",
+                    "CREATE INDEX IF NOT EXISTS ix_bills_supplier_id ON bills (supplier_id)",
+                ) + SUPPLIER_BACKFILL:
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 72: {sys.exc_info()[1]}")
 
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
