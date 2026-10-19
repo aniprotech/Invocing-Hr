@@ -143,7 +143,7 @@ def now():
 
 def book(db, item, kind, quantity, *, unit_cost=None, affects_stock=True,
          invoice_id=None, invoice_number="", reason="", note="", moved_on="",
-         created_by=""):
+         created_by="", document=""):
     """Write one row and move the item's total by it. The only place a quantity
     changes."""
     if affects_stock:
@@ -155,12 +155,13 @@ def book(db, item, kind, quantity, *, unit_cost=None, affects_stock=True,
         balance_after=round(item.quantity_on_hand or 0.0, 4),
         invoice_id=invoice_id, invoice_number=(invoice_number or "")[:60],
         reason=(reason or "")[:40], note=(note or "")[:200],
-        moved_on=moved_on or today(), created_by=(created_by or "")[:120])
+        moved_on=moved_on or today(), created_by=(created_by or "")[:120],
+        document=(document or "")[:60])
     db.add(row)
     return row
 
 
-def receive(db, item, quantity, unit_cost, *, note="", moved_on="", created_by=""):
+def receive(db, item, quantity, unit_cost, *, note="", moved_on="", created_by="", document=""):
     """Stock arrives. The average cost is worked out before the quantity moves,
     because it averages what was there with what is coming."""
     quantity = clean_quantity(quantity, "Quantity received")
@@ -169,7 +170,34 @@ def receive(db, item, quantity, unit_cost, *, note="", moved_on="", created_by="
     item.average_cost = average_after_receipt(
         item.quantity_on_hand, item.average_cost, quantity, unit_cost)
     return book(db, item, "received", quantity, unit_cost=unit_cost, note=note,
-                moved_on=moved_on, created_by=created_by)
+                moved_on=moved_on, created_by=created_by, document=document)
+
+
+def returned_in(db, item, quantity, *, note="", moved_on="", created_by="", document=""):
+    """A customer sent stock back. It comes back in at the average cost it
+    went out at, so the average does not move."""
+    quantity = clean_quantity(quantity, "Quantity returned")
+    _require_tracked(item)
+    return book(db, item, "return_in", quantity, note=note, moved_on=moved_on,
+                created_by=created_by, document=document)
+
+
+def returned_out(db, item, quantity, *, note="", moved_on="", created_by="", document=""):
+    """Stock sent back to the supplier. It leaves at the average cost."""
+    quantity = clean_quantity(quantity, "Quantity returned")
+    _require_tracked(item)
+    return book(db, item, "return_out", -quantity, note=note, moved_on=moved_on,
+                created_by=created_by, document=document)
+
+
+def already_on(db, client_id, document):
+    """{item_id: quantity} already moved for a document - what a bill has
+    received, or a credit note returned - so it is never done twice."""
+    out = {}
+    for mv in db.query(models.DBStockMovement).filter(models.DBStockMovement.client_id == client_id,
+                                                      models.DBStockMovement.document == document).all():
+        out[mv.item_id] = round(out.get(mv.item_id, 0.0) + abs(mv.quantity or 0.0), 4)
+    return out
 
 
 def count(db, item, counted, reason, *, note="", created_by=""):

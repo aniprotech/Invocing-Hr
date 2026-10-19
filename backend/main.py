@@ -1699,6 +1699,136 @@ def inventory_count(item_id: int, request: Request, body: dict = None,
     return item_to_dict(row)
 
 
+def _stock_lines(db, client, raw, what):
+    """[(item, quantity, unit_cost)] from a request's lines: each a tracked item
+    of this business's, a quantity above zero, no item twice."""
+    if not isinstance(raw, list) or not raw:
+        raise HTTPException(status_code=400, detail=f"Say which items and how many {what}")
+    out, seen = [], set()
+    for ln in raw:
+        if not isinstance(ln, dict):
+            raise HTTPException(status_code=400, detail="Each line names an item and a quantity")
+        try:
+            iid = int(ln.get("item_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Each line names an item")
+        if iid in seen:
+            raise HTTPException(status_code=400, detail="Name each item once")
+        seen.add(iid)
+        item = _own_item(db, client, iid)
+        if not item.track_inventory:
+            raise HTTPException(status_code=400, detail=f"{item.code or item.name} is not tracked - start tracking it first")
+        try:
+            qty = inventory.clean_quantity(ln.get("quantity"), "Quantity")
+        except inventory.StockError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        out.append((item, qty, ln.get("unit_cost")))
+    return out
+
+
+@app.post("/api/bills/{bill_id}/receive")
+def receive_bill_into_stock(bill_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """The goods on a bill arrive: each line received into stock at its cost,
+    marked with the bill, so the same delivery is not received twice."""
+    client = get_client_user(request, db)
+    bill = _bill_or_404(db, client, bill_id)
+    if bill.status in ("Draft", "Void"):
+        raise HTTPException(status_code=400, detail=f"Bill {bill.number} is {'a draft' if bill.status == 'Draft' else 'void'}: post it first")
+    body = _stock_args(body)
+    moved_on = _clean_ymd(body.get("date"), "Date") or (bill.issue_date or "")
+    if moved_on and moved_on > date.today().isoformat():
+        moved_on = date.today().isoformat()
+    doc = f"bill:{bill.id}"
+    lines = _stock_lines(db, client, body.get("lines"), "arrived")
+    done = inventory.already_on(db, client.id, doc)
+    if any(done.get(item.id) for item, _q, _c in lines) and not body.get("again"):
+        raise HTTPException(status_code=409, detail=f"Stock has already been received on bill {bill.number}. Receive again only for a second delivery - confirm to go ahead.")
+    moved = []
+    try:
+        for item, qty, cost in lines:
+            mv = inventory.receive(db, item, qty, cost, note=f"Bill {bill.number} from {bill.vendor_name or 'supplier'}",
+                                   moved_on=moved_on, created_by=client.email or "", document=doc)
+            moved.append({"item_id": item.id, "code": item.code or "", "quantity": mv.quantity, "unit_cost": mv.unit_cost, "on_hand": item.quantity_on_hand})
+    except inventory.StockError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    log_audit(db, client.id, "stock_received_on_bill", "bill", bill.id, bill.number, f"{len(moved)} item(s)", request)
+    db.commit()
+    return {"received": moved}
+
+
+@app.get("/api/bills/{bill_id}/stock")
+def bill_stock(bill_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    bill = _bill_or_404(db, client, bill_id)
+    rows = db.query(models.DBStockMovement).filter(models.DBStockMovement.client_id == client.id,
+                                                   models.DBStockMovement.document == f"bill:{bill.id}").order_by(models.DBStockMovement.id).all()
+    codes = {i.id: (i.code or i.name or "") for i in db.query(models.DBItem).filter(models.DBItem.client_id == client.id).all()}
+    return {"received": [{"item_id": r.item_id, "code": codes.get(r.item_id, ""), "quantity": r.quantity, "unit_cost": r.unit_cost,
+                          "moved_on": r.moved_on} for r in rows]}
+
+
+@app.post("/api/credit-notes/{number}/restock")
+def restock_credit_note(number: str, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Goods a customer sent back, on their credit note: back into stock, no
+    more of an item than the credited invoice sold of it."""
+    client = get_client_user(request, db)
+    note = db.query(models.DBCreditNote).filter(models.DBCreditNote.client_id == client.id, models.DBCreditNote.number == number).first()
+    if not note:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+    if note.status == "Void":
+        raise HTTPException(status_code=400, detail=f"Credit note {note.number} is void")
+    body = _stock_args(body)
+    lines = _stock_lines(db, client, body.get("lines"), "came back")
+    sold = {}
+    for li in db.query(models.DBLineItem).filter(models.DBLineItem.invoice_id == note.invoice_id).all():
+        if li.item_id:
+            sold[li.item_id] = sold.get(li.item_id, 0.0) + (li.qty or 0)
+    doc = f"credit_note:{note.number}"
+    done = inventory.already_on(db, client.id, doc)
+    for item, qty, _c in lines:
+        if item.id not in sold:
+            raise HTTPException(status_code=400, detail=f"{item.code or item.name} was not on the invoice this credit note is for")
+        if qty + done.get(item.id, 0.0) > sold[item.id] + 1e-6:
+            raise HTTPException(status_code=400, detail=f"Only {sold[item.id] - done.get(item.id, 0.0):g} of {item.code or item.name} can come back on this credit note")
+    moved = []
+    try:
+        for item, qty, _c in lines:
+            mv = inventory.returned_in(db, item, qty, note=f"Returned on credit note {note.number}", created_by=client.email or "", document=doc)
+            moved.append({"item_id": item.id, "code": item.code or "", "quantity": mv.quantity, "on_hand": item.quantity_on_hand})
+    except inventory.StockError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    log_audit(db, client.id, "stock_returned_on_credit_note", "credit_note", note.id, note.number, f"{len(moved)} item(s)", request)
+    db.commit()
+    return {"returned": moved}
+
+
+@app.post("/api/supplier-credits/{credit_id}/return-stock")
+def supplier_credit_return_stock(credit_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Goods sent back to the supplier, on their credit note: out of stock."""
+    client = get_client_user(request, db)
+    credit = _credit_or_404(db, client, credit_id)
+    if credit.status == "Void":
+        raise HTTPException(status_code=400, detail=f"Credit note {credit.number} is void")
+    body = _stock_args(body)
+    lines = _stock_lines(db, client, body.get("lines"), "went back")
+    doc = f"supplier_credit:{credit.id}"
+    if inventory.already_on(db, client.id, doc) and not body.get("again"):
+        raise HTTPException(status_code=409, detail=f"Stock has already been sent back on credit note {credit.number}. Confirm to send more.")
+    moved = []
+    try:
+        for item, qty, _c in lines:
+            mv = inventory.returned_out(db, item, qty, note=f"Returned to supplier, credit note {credit.number}", created_by=client.email or "", document=doc)
+            moved.append({"item_id": item.id, "code": item.code or "", "quantity": mv.quantity, "on_hand": item.quantity_on_hand})
+    except inventory.StockError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    log_audit(db, client.id, "stock_returned_to_supplier", "supplier_credit", credit.id, credit.number, f"{len(moved)} item(s)", request)
+    db.commit()
+    return {"returned": moved}
+
+
 @app.put("/api/inventory/{item_id}/reorder")
 def inventory_reorder_level(item_id: int, request: Request, body: dict = None,
                             db: Session = Depends(get_db)):
@@ -1727,6 +1857,7 @@ def inventory_movements(item_id: int, request: Request, limit: int = 200,
             "balance_after": m.balance_after, "invoice_number": m.invoice_number or "",
             "reason": m.reason or "", "note": m.note or "", "moved_on": m.moved_on or "",
             "created_by": m.created_by or "", "created_at": m.created_at or "",
+            "document": m.document or "",
         } for m in moves],
     }
 
@@ -6852,7 +6983,7 @@ def recurring_to_dict(t, db=None):
         "line_items": [{
             "name": li.name or "", "description": li.description, "qty": li.qty,
             "price": li.price, "disc": li.disc, "account": li.account,
-            "tax_rate": li.tax_rate,
+            "tax_rate": li.tax_rate, "item_id": li.item_id,
         } for li in t.line_items],
     }
 
@@ -6925,7 +7056,7 @@ def create_recurring(body: RecurringIn, request: Request, db: Session = Depends(
         db.add(models.DBRecurringLineItem(
             recurring_id=t.id, name=item.name or "", description=item.description,
             qty=item.qty, price=item.price, disc=item.disc or 0.0,
-            account=item.account, tax_rate=item.tax_rate,
+            account=item.account, tax_rate=item.tax_rate, item_id=item.item_id,
         ))
     log_audit(db, client.id, "recurring_created", "recurring", t.id, t.name or t.to_contact,
               t.frequency, request)
@@ -6968,7 +7099,7 @@ def update_recurring(rec_id: int, body: RecurringIn, request: Request,
         db.add(models.DBRecurringLineItem(
             recurring_id=t.id, name=item.name or "", description=item.description,
             qty=item.qty, price=item.price, disc=item.disc or 0.0,
-            account=item.account, tax_rate=item.tax_rate,
+            account=item.account, tax_rate=item.tax_rate, item_id=item.item_id,
         ))
     log_audit(db, client.id, "recurring_updated", "recurring", t.id,
               t.name or t.to_contact, t.frequency, request)
@@ -7018,7 +7149,7 @@ def issue_recurring_invoice(db, t, on_date):
         db.add(models.DBLineItem(
             invoice_id=inv.id, name=li.name or "", description=li.description,
             qty=li.qty, price=li.price, disc=li.disc or 0.0,
-            account=li.account, tax_rate=li.tax_rate,
+            account=li.account, tax_rate=li.tax_rate, item_id=li.item_id,
         ))
 
     t.last_run = on_date.strftime("%Y-%m-%d")

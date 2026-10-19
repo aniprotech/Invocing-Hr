@@ -1985,6 +1985,20 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 73: {sys.exc_info()[1]}")
 
+            # 74. Stock from more than invoices: a recurring template's lines
+            # name their item, and a stock movement names the bill or credit
+            # note behind it.
+            try:
+                for ddl in (
+                    "ALTER TABLE recurring_line_items ADD COLUMN IF NOT EXISTS item_id INTEGER",
+                    "ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS document VARCHAR DEFAULT ''",
+                    "CREATE INDEX IF NOT EXISTS ix_stock_movements_document ON stock_movements (document)",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 74: {sys.exc_info()[1]}")
+
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here
         # when it fails, which is the whole point of MIGRATION_ERRORS - but the

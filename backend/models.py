@@ -253,6 +253,9 @@ class DBRecurringLineItem(Base):
     disc = Column(Float, default=0.0)
     account = Column(String, default="200 - Sales")
     tax_rate = Column(String, default="20% (VAT on Income)")
+    # The saved item this line sells, carried onto every invoice raised from
+    # the template, so a recurring sale takes stock out like any other.
+    item_id = Column(Integer, nullable=True, index=True)
 
     template = relationship("DBRecurringInvoice", back_populates="line_items")
 
@@ -1808,6 +1811,8 @@ class DBStockMovement(Base):
       adjustment     a count that differs from the book - damage, loss, a find
       sale           stock leaving on an issued invoice
       sale_reversal  that invoice was voided, deleted, or lowered
+      return_in      a customer sent goods back, on their credit note
+      return_out     goods sent back to the supplier, on their credit note
       baseline       a sale that was already out before tracking (re)started.
                      It moves no stock (affects_stock is false); it exists so
                      that touching that old invoice does not take it out again.
@@ -1830,6 +1835,10 @@ class DBStockMovement(Base):
 
     invoice_id = Column(Integer, nullable=True, index=True)
     invoice_number = Column(String, default="")
+    # The document behind a movement that is not a sale: "bill:12",
+    # "credit_note:CN-0003", "supplier_credit:4" - so stock received on a bill
+    # or returned on a credit note is never counted twice.
+    document = Column(String, default="", index=True)
     reason = Column(String, default="")
     note = Column(String, default="")
     moved_on = Column(String, default="")

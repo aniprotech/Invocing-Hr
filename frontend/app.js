@@ -3000,6 +3000,7 @@ async function viewCreditNote(number) {
         show('cn-allocate-btn', live && cn.unapplied > 0);
         show('cn-refund-btn', live && cn.unapplied > 0);
         show('cn-void-btn', live && !(cn.allocated > 0) && !(cn.refunded > 0));
+        show('cn-restock-btn', live);
         showView('view-credit-note-view');
         setRoute('credit-notes/' + encodeURIComponent(cn.number));
     } catch (e) { showToast(e.message || 'Credit note not found', 'error'); }
@@ -11476,6 +11477,7 @@ function renderBills(bills) {
                 '<button class="btn btn-outline btn-sm" data-bill-edit="' + b.id + '" style="margin-right:4px;">Edit</button>' +
                 (b.status !== 'Paid' && b.status !== 'Void' ? '<button class="btn btn-outline btn-sm" data-bill-pay="' + b.id + '" style="color:var(--success-color);border-color:var(--success-color);margin-right:4px;">Pay</button>' : '') +
                 ((b.amount_paid || 0) > 0 ? '<button class="btn btn-outline btn-sm" data-bill-payments="' + b.id + '" style="margin-right:4px;">Payments</button>' : '') +
+                (b.status !== 'Void' && b.status !== 'Draft' ? '<button class="btn btn-outline btn-sm" data-bill-stock="' + b.id + '" title="Put the goods on this bill into stock" style="margin-right:4px;">Stock in</button>' : '') +
                 ((b.amount_paid || 0) === 0 && b.status !== 'Void' && b.status !== 'Draft' ? '<button class="btn btn-outline btn-sm" data-bill-void="' + b.id + '" data-bill-number="' + esc(b.number) + '" style="margin-right:4px;">Void</button>' : '') +
                 ((b.amount_paid || 0) > 0 ? '' : '<button class="btn btn-outline btn-sm" data-bill-del="' + b.id + '" data-bill-number="' + esc(b.number) + '" style="color:var(--danger-color);border-color:var(--danger-color);">Del</button>') +
             '</td></tr>'
@@ -11485,6 +11487,7 @@ function renderBills(bills) {
     tbody.querySelectorAll('[data-bill-pay]').forEach(function (el) { el.addEventListener('click', function () { markBillPaid(Number(el.getAttribute('data-bill-pay'))); }); });
     tbody.querySelectorAll('[data-bill-payments]').forEach(function (el) { el.addEventListener('click', function () { showBillPayments(Number(el.getAttribute('data-bill-payments'))); }); });
     tbody.querySelectorAll('[data-bill-void]').forEach(function (el) { el.addEventListener('click', function () { voidBill(Number(el.getAttribute('data-bill-void')), el.getAttribute('data-bill-number')); }); });
+    tbody.querySelectorAll('[data-bill-stock]').forEach(function (el) { el.addEventListener('click', function () { receiveBillStock(Number(el.getAttribute('data-bill-stock'))); }); });
     tbody.querySelectorAll('[data-bill-del]').forEach(function (el) { el.addEventListener('click', function () { deleteBill(Number(el.getAttribute('data-bill-del')), el.getAttribute('data-bill-number')); }); });
     tbody.querySelectorAll('[data-bill-supplier]').forEach(function (el) {
         el.addEventListener('click', function (ev) { ev.preventDefault(); showView('purchase-ledger-view'); openPurchaseAccount(Number(el.getAttribute('data-bill-supplier'))); });
@@ -12006,6 +12009,7 @@ async function openPurchaseAccount(id, start, end) {
         return '<tr><td>' + esc(c.number) + (c.reference ? '<div style="font-size:0.72rem;color:var(--text-secondary);">' + esc(c.reference) + '</div>' : '') + '</td><td>' + esc(c.issue_date || '') + '</td><td>' + esc(c.reason || '') + '</td>' +
             '<td class="text-right">' + ledgerMoney(c.amount, c.currency) + '</td><td class="text-right">' + ledgerMoney(c.remaining, c.currency) + '</td>' +
             '<td class="text-right" style="white-space:nowrap;">' + (c.remaining > 0 && (d.open_bills || []).length ? '<button type="button" class="btn btn-outline btn-sm" data-ledger-use="' + c.id + '" data-remaining="' + c.remaining + '">Use</button> ' : '') +
+            '<button type="button" class="btn btn-outline btn-sm" data-ledger-return="' + c.id + '" data-number="' + esc(c.number) + '">Return goods</button> ' +
             (!c.applied ? '<button type="button" class="btn btn-outline btn-sm" data-ledger-void="' + c.id + '" style="color:var(--danger-color);border-color:var(--danger-color);">Void</button>' : '') + '</td></tr>';
     }).join('');
     var statements = (d.ledgers || []).map(function (l) { return ledgerStatementTable(l, { inc: 'Billed', dec: 'Paid or credited', sales: false }); }).join('');
@@ -12044,6 +12048,9 @@ async function openPurchaseAccount(id, start, end) {
     });
     document.querySelectorAll('[data-ledger-use]').forEach(function (b) {
         b.addEventListener('click', function () { useSupplierCredit(Number(b.getAttribute('data-ledger-use')), id, Number(b.getAttribute('data-remaining'))).then(refresh); });
+    });
+    document.querySelectorAll('[data-ledger-return]').forEach(function (b) {
+        b.addEventListener('click', function () { returnStockToSupplier(Number(b.getAttribute('data-ledger-return')), b.getAttribute('data-number')); });
     });
     document.querySelectorAll('[data-ledger-void]').forEach(function (b) {
         b.addEventListener('click', async function () {
@@ -12243,6 +12250,131 @@ async function showBillPayments(id) {
     document.getElementById('bill-payments-modal').style.display = 'flex';
 }
 window.showBillPayments = showBillPayments;
+
+// --- Stock moved by a document -------------------------------------------------------------
+// A bill's goods arriving, a customer's goods coming back on a credit note, goods
+// going back to a supplier. One form for all three: which tracked items, how many.
+// The server refuses the same document twice unless asked, and says so here.
+async function openStockMove(opts) {
+    var stock;
+    try { stock = await fetchJson('/api/inventory?view=tracked'); } catch (e) { showToast(e.message, 'error'); return false; }
+    var items = (stock && stock.items) || [];
+    if (!items.length) { showToast('No items are tracked in stock yet. Start tracking one under Stock first.', 'info'); return false; }
+    var m = document.getElementById('stock-move-modal');
+    document.getElementById('stock-move-title').textContent = opts.title;
+    document.getElementById('stock-move-intro').textContent = opts.intro || '';
+    document.getElementById('stock-move-done').innerHTML = opts.done || '';
+    document.getElementById('stock-move-date-wrap').style.display = opts.date ? '' : 'none';
+    document.getElementById('stock-move-date').value = opts.date || '';
+    document.getElementById('stock-move-go').textContent = opts.go || 'Save';
+    var box = document.getElementById('stock-move-lines');
+    box.innerHTML = '';
+    var options = items.map(function (it) {
+        return '<option value="' + it.id + '">' + esc((it.code ? it.code + ' - ' : '') + (it.name || '')) + ' (' + Number(it.quantity_on_hand || 0) + ' on hand)</option>';
+    }).join('');
+    var addRow = function (line) {
+        line = line || {};
+        var row = document.createElement('div');
+        row.className = 'stock-move-row';
+        row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;';
+        row.innerHTML = '<select class="form-control sm-item" aria-label="Item" style="flex:2 1 220px;">' + options + '</select>' +
+            '<input type="number" class="form-control sm-qty" aria-label="Quantity" placeholder="Quantity" min="0" step="any" style="flex:1 1 90px;">' +
+            (opts.cost ? '<input type="number" class="form-control sm-cost" aria-label="Unit cost" placeholder="Unit cost" min="0" step="any" style="flex:1 1 90px;">' : '') +
+            '<button type="button" class="btn btn-outline btn-sm sm-remove" aria-label="Remove line">&times;</button>';
+        if (line.item_id) row.querySelector('.sm-item').value = String(line.item_id);
+        if (line.quantity) row.querySelector('.sm-qty').value = line.quantity;
+        if (opts.cost && line.unit_cost !== undefined && line.unit_cost !== null) row.querySelector('.sm-cost').value = line.unit_cost;
+        row.querySelector('.sm-remove').addEventListener('click', function () { row.remove(); });
+        box.appendChild(row);
+    };
+    var known = {};
+    items.forEach(function (it) { known[it.id] = it; });
+    var preset = (opts.lines || []).filter(function (l) { return known[l.item_id]; });
+    if (preset.length) preset.forEach(addRow); else addRow();
+    document.getElementById('stock-move-add').onclick = function () { addRow(); };
+    m.style.display = 'flex';
+    return new Promise(function (resolve) {
+        var shut = function (ok) { m.style.display = 'none'; resolve(ok); };
+        document.getElementById('stock-move-close').onclick = function () { shut(false); };
+        document.getElementById('stock-move-cancel').onclick = function () { shut(false); };
+        document.getElementById('stock-move-go').onclick = async function () {
+            var lines = [];
+            box.querySelectorAll('.stock-move-row').forEach(function (row) {
+                var q = row.querySelector('.sm-qty').value;
+                if (q === '' || q === null) return;
+                var line = { item_id: Number(row.querySelector('.sm-item').value), quantity: Number(q) };
+                var c = row.querySelector('.sm-cost');
+                if (c && c.value !== '') line.unit_cost = Number(c.value);
+                lines.push(line);
+            });
+            if (!lines.length) { showToast('Say how many of at least one item', 'error'); return; }
+            var body = { lines: lines };
+            if (opts.date) body.date = document.getElementById('stock-move-date').value;
+            var send = async function (again) {
+                if (again) body.again = true;
+                var res = await fetch(opts.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                var data = await res.json().catch(function () { return {}; });
+                return { res: res, data: data };
+            };
+            try {
+                var out = await send(false);
+                if (out.res.status === 409) {
+                    if (!await uiConfirm(out.data.detail || 'This has been done before. Do it again?', { title: opts.title, confirmText: 'Yes, again' })) return;
+                    out = await send(true);
+                }
+                if (!out.res.ok) { showToast(out.data.detail || 'Could not move the stock', 'error'); return; }
+                showToast(opts.doneText || 'Stock updated', 'success');
+                if (typeof loadInventory === 'function' && document.getElementById('inventory-view') && document.getElementById('inventory-view').style.display !== 'none') loadInventory();
+                shut(true);
+            } catch (e) { showToast(e.message, 'error'); }
+        };
+    });
+}
+window.openStockMove = openStockMove;
+
+async function receiveBillStock(billId) {
+    var b, got;
+    try {
+        b = await fetchJson('/api/bills/' + billId);
+        got = await fetchJson('/api/bills/' + billId + '/stock');
+    } catch (e) { showToast(e.message, 'error'); return false; }
+    var already = (got && got.received) || [];
+    return openStockMove({
+        title: 'Stock in - bill ' + (b.number || ''),
+        intro: 'The goods on this bill from ' + (b.vendor_name || 'the supplier') + ' go into stock at what they cost, and the average cost moves with them.',
+        done: already.length ? '<strong>Already received on this bill:</strong> ' + already.map(function (r) { return esc(r.code) + ' x ' + esc(r.quantity) + ' on ' + esc(r.moved_on); }).join('; ') : '',
+        url: '/api/bills/' + billId + '/receive', cost: true, date: b.issue_date || new Date().toISOString().slice(0, 10),
+        go: 'Receive into stock', doneText: 'Received into stock'
+    });
+}
+window.receiveBillStock = receiveBillStock;
+
+async function restockCreditNote() {
+    var cn = currentCreditNote;
+    if (!cn) return false;
+    var lines = [];
+    try {
+        var inv = await fetchJson('/api/invoices/' + encodeURIComponent(cn.invoice_number));
+        lines = (inv.line_items || []).filter(function (li) { return li.item_id; }).map(function (li) { return { item_id: li.item_id, quantity: li.qty }; });
+    } catch (e) { lines = []; }
+    return openStockMove({
+        title: 'Return goods to stock - ' + cn.number,
+        intro: 'What ' + (cn.to || 'the customer') + ' sent back goes back on the shelf, at the average cost. No more can come back than invoice ' + (cn.invoice_number || '') + ' sold.',
+        url: '/api/credit-notes/' + encodeURIComponent(cn.number) + '/restock', lines: lines,
+        go: 'Return to stock', doneText: 'Goods returned to stock'
+    });
+}
+window.restockCreditNote = restockCreditNote;
+
+async function returnStockToSupplier(creditId, number) {
+    return openStockMove({
+        title: 'Return goods - credit note ' + (number || ''),
+        intro: 'Goods sent back to the supplier leave stock at the average cost.',
+        url: '/api/supplier-credits/' + creditId + '/return-stock',
+        go: 'Take out of stock', doneText: 'Goods taken out of stock'
+    });
+}
+window.returnStockToSupplier = returnStockToSupplier;
 
 async function postDraftBills() {
     var n = allBills.filter(function (b) { return b.status === 'Draft'; }).length;
@@ -16725,7 +16857,7 @@ async function makeInvoiceRecurring() {
         var tax_rate = row.querySelector('.item-tax-rate') ? row.querySelector('.item-tax-rate').value : 'No Tax';
         if (name || desc || qty > 0 || price > 0) {
             line_items.push({ name: name, description: desc, qty: qty, price: price,
-                              disc: disc, account: account, tax_rate: tax_rate });
+                              disc: disc, account: account, tax_rate: tax_rate, item_id: lineItemId(row) });
         }
     });
     if (!line_items.length) { showToast('Add at least one line item', 'error'); return; }
@@ -21493,7 +21625,8 @@ window.downloadInventoryCsv = downloadInventoryCsv;
 
 var INVENTORY_KIND = {
     opening: 'Opening count', received: 'Received', sale: 'Sold', sale_reversal: 'Put back',
-    adjustment: 'Count', baseline: 'Already out before tracking'
+    adjustment: 'Count', baseline: 'Already out before tracking',
+    return_in: 'Returned by customer', return_out: 'Returned to supplier'
 };
 
 async function inventoryHistory(it) {
