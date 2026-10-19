@@ -27,6 +27,13 @@ def _reset():
 def net(monkeypatch):
     calls = []
     monkeypatch.setenv("WEBHOOKS_ASYNC", "0")       # the test drives delivery, no thread racing it
+    # Delivery is for every business at once, so anything an earlier test
+    # left queued goes out first, into nowhere, before this one records.
+    monkeypatch.setattr(main, "_post_webhook", lambda url, body, headers, timeout=6: (200, ""))
+    with main.SessionLocal() as db:
+        while main.deliver_webhooks(db):
+            db.commit()
+        db.commit()
     monkeypatch.setattr(main, "_post_webhook", lambda url, body, headers, timeout=6: (calls.append(json.loads(body)) or (200, "")))
     return calls
 
