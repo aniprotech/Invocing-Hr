@@ -108,6 +108,11 @@ class DBInvoice(Base):
     chase_paused = Column(Boolean, default=False)
     # The day it is to be emailed, when that is later than now.
     send_at = Column(String, default="")
+    # A payment link is an invoice made to be paid from a link: "" for an
+    # ordinary invoice, else active | cancelled | expired. It is never chased,
+    # and stops being payable after payment_link_expires.
+    payment_link = Column(String, default="", index=True)
+    payment_link_expires = Column(String, default="")
 
     line_items = relationship("DBLineItem", back_populates="invoice")
     client = relationship("DBClient", back_populates="invoices")

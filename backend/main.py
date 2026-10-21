@@ -1088,6 +1088,7 @@ MODULE_PATHS = (
     ("/api/goals", "hr"),
     ("/api/org-chart", "hr"),
     ("/api/invoices", "invoicing"),
+    ("/api/payment-links", "invoicing"),
     ("/api/quotes", "invoicing"),
     ("/api/bills", "invoicing"),
     ("/api/sales/", "invoicing"),
@@ -4692,8 +4693,8 @@ def public_invoice_pdf(tracking_id: str, db: Session = Depends(get_db)):
     """The document itself, for the person it was sent to. The same rule as
     the page: a draft or a void invoice is not available from a link."""
     inv = db.query(models.DBInvoice).filter(models.DBInvoice.tracking_id == tracking_id).first()
-    if not inv or inv.status in ("Draft", "Void"):
-        raise HTTPException(status_code=404, detail="That invoice is not available")
+    if not inv or inv.status in ("Draft", "Void") or link_is_expired(inv):
+        raise HTTPException(status_code=404, detail=link_unavailable_detail(inv))
     client = db.query(models.DBClient).filter(models.DBClient.id == inv.client_id).first()
     if not client:
         raise HTTPException(status_code=404, detail="That invoice is not available")
@@ -24347,7 +24348,9 @@ def public_invoice_payload(db: Session, inv, client):
 
     return {
         "number": inv.number,
-        "title": (theme.approved_invoice_title if theme else "") or "TAX INVOICE",
+        "title": "PAYMENT REQUEST" if inv.payment_link else ((theme.approved_invoice_title if theme else "") or "TAX INVOICE"),
+        "payment_link": bool(inv.payment_link),
+        "valid_until": inv.payment_link_expires or "" if inv.payment_link else "",
         "status": inv.status,
         "issue_date": inv.issue_date,
         "due_date": inv.due_date,
@@ -24376,7 +24379,8 @@ def public_invoice_payload(db: Session, inv, client):
             "phone": client.phone_number or "",
             "tax_id": client.abn or "",
         },
-        "to": {"name": inv.to_contact or "", "company": inv.to_company or "", "address": inv.to_address or "",
+        "to": {"name": "" if (inv.payment_link and inv.to_contact == PAYMENT_LINK_PLACEHOLDER) else (inv.to_contact or ""),
+               "company": inv.to_company or "", "address": inv.to_address or "",
                "tax_id": inv.to_tax_id or ""},
         "bank_details": inv.bank_details or "",
         "payment_terms": (theme.payment_terms if theme else "") or "",
@@ -24414,8 +24418,8 @@ def public_invoice(tracking_id: str, request: Request, db: Session = Depends(get
         models.DBInvoice.tracking_id == tracking_id).first()
     # A draft has not been issued to anybody, and a void one has been withdrawn.
     # Neither should be readable from a link that may have been forwarded.
-    if not inv or inv.status in ("Draft", "Void"):
-        raise HTTPException(status_code=404, detail="That invoice is not available")
+    if not inv or inv.status in ("Draft", "Void") or link_is_expired(inv):
+        raise HTTPException(status_code=404, detail=link_unavailable_detail(inv))
 
     client = db.query(models.DBClient).filter(
         models.DBClient.id == inv.client_id).first()
@@ -24707,8 +24711,8 @@ def payable_invoice(db: Session, tracking_id: str):
     """The invoice behind a payment link, if it can still be paid."""
     inv = db.query(models.DBInvoice).filter(
         models.DBInvoice.tracking_id == tracking_id).first()
-    if not inv or inv.status in ("Draft", "Void"):
-        raise HTTPException(status_code=404, detail="That invoice is not available")
+    if not inv or inv.status in ("Draft", "Void") or link_is_expired(inv):
+        raise HTTPException(status_code=404, detail=link_unavailable_detail(inv))
     return inv
 
 
@@ -35579,6 +35583,247 @@ def purchases_suppliers(request: Request, db: Session = Depends(get_db)):
                     s["overdue"] += 1
     suppliers = sorted(out.values(), key=lambda x: (-x["owed"], x["name"].lower()))
     return {"suppliers": suppliers, "currency": base_currency(client)}
+
+
+# --- Payment links --------------------------------------------------------------
+# Get paid without raising an invoice by hand: an amount, what it is for, and a
+# link to send. Behind it is a real one-line invoice, so every way of paying an
+# invoice works, the receipt and the bank reconciliation are the usual ones,
+# and the money is counted as sales. It is never chased, and it stops working
+# on its expiry date.
+
+PAYMENT_LINK_PLACEHOLDER = "Payment link"
+
+
+def link_is_expired(inv):
+    """An active link past its last day that has not been paid in full."""
+    if not inv or inv.payment_link != "active" or not (inv.payment_link_expires or ""):
+        return False
+    if inv.status == "Paid" or (inv.due or 0) <= 0.005:
+        return False
+    return inv.payment_link_expires < date.today().isoformat()
+
+
+def link_unavailable_detail(inv):
+    if inv is not None and inv.payment_link == "cancelled":
+        return "This payment link has been cancelled"
+    if inv is not None and (inv.payment_link == "expired" or link_is_expired(inv)):
+        return "This payment link has expired"
+    return "That invoice is not available"
+
+
+def link_state(inv):
+    if inv.status == "Paid" or (inv.due or 0) <= 0.005:
+        return "paid"
+    if inv.payment_link in ("cancelled", "expired"):
+        return inv.payment_link
+    return "expired" if link_is_expired(inv) else "open"
+
+
+def link_to_dict(db, inv, detail=False):
+    first = inv.line_items[0] if inv.line_items else None
+    total = money((inv.paid or 0.0) + (inv.due or 0.0))
+    out = {"number": inv.number, "tracking_id": inv.tracking_id, "description": (first.description if first else "") or "",
+           "amount": total, "paid": money(inv.paid or 0.0), "due": money(inv.due or 0.0),
+           "currency": (inv.currency or "GBP").upper(),
+           "customer": "" if inv.to_contact == PAYMENT_LINK_PLACEHOLDER else (inv.to_contact or ""),
+           "email": inv.email or "", "reference": inv.ref or "", "state": link_state(inv), "created": inv.issue_date or "",
+           "expires_on": inv.payment_link_expires or "", "opens": inv.open_count or 0, "last_opened": inv.last_opened or "",
+           "sent": inv.sent or ""}
+    if detail:
+        pays = db.query(models.DBPayment).filter(models.DBPayment.invoice_id == inv.id).order_by(models.DBPayment.id.asc()).all()
+        out["payments"] = [{"amount": p.amount or 0.0, "paid_on": p.paid_on or "", "method": p.method or "", "reference": p.reference or ""} for p in pays]
+    return out
+
+
+class PaymentLinkIn(BaseModel):
+    amount: float
+    description: str
+    customer_name: Optional[str] = ""
+    email: Optional[str] = ""
+    reference: Optional[str] = ""
+    expires_in_days: Optional[int] = 30
+    send: Optional[bool] = False
+
+
+def payment_link_row(db, client, number):
+    inv = db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id, models.DBInvoice.number == number,
+                                            models.DBInvoice.payment_link != "").first()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Payment link not found")
+    return inv
+
+
+def send_payment_link_email(db, client, inv, background_tasks, request):
+    """Email the link, in words that say what it is: a request to pay, not an
+    invoice. Raises HTTPException with the reason when it cannot go."""
+    if not inv.email or not validate_email_address(inv.email):
+        raise HTTPException(status_code=400, detail="Add the customer's email address to send the link")
+    from_email = platform_from_address()
+    if not from_email:
+        raise HTTPException(status_code=400, detail="No sender email configured.")
+    ready, missing = email_delivery_ready(db, client.id)
+    if not ready:
+        raise HTTPException(status_code=503, detail=f"The link cannot be emailed at the moment - {missing}.")
+    company = tenant_setting(db, client.id, "company_name", "") or client.company_name or "Accounts"
+    cur = currency_symbol((inv.currency or client.currency or "GBP").upper())
+    first = inv.line_items[0] if inv.line_items else None
+    what = (first.description if first else "") or "your payment"
+    amount = money(inv.due or 0.0)
+    link = page_url(f"/invoice.html?id={inv.tracking_id}", request)
+    greeting = "Hello" + (f" {inv.to_contact}" if inv.to_contact and inv.to_contact != PAYMENT_LINK_PLACEHOLDER else "")
+    until = f"\nThe link works until {inv.payment_link_expires}.\n" if inv.payment_link_expires else ""
+    subject = f"{company} has asked you to pay {cur}{amount:.2f}"
+    body = (f"{greeting},\n\n{company} has asked you to pay {cur}{amount:.2f} for: {what}.\n\nPay online here:\n{link}\n{until}\n"
+            f"If you have any questions, reply to this email.\n\nKind regards,\n{company}\n")
+    html_body = f"""<!DOCTYPE html><html><body style="font-family:Arial,Helvetica,sans-serif;color:#1e293b;line-height:1.6;margin:0;background:#f1f5f9;">
+      <div style="max-width:560px;margin:0 auto;padding:36px 20px;"><div style="background:#fff;border-radius:12px;padding:32px 28px;">
+        <p style="margin:0 0 16px;font-size:15px;">{esc(greeting)},</p>
+        <p style="margin:0 0 20px;font-size:15px;color:#475569;"><strong>{esc(company)}</strong> has asked you to pay:</p>
+        <div style="background:#0f172a;border-radius:10px;padding:20px 24px;margin-bottom:22px;color:#fff;">
+          <div style="font-size:13px;color:#94a3b8;">{esc(what)}</div>
+          <div style="font-size:28px;font-weight:800;margin-top:4px;">{cur}{amount:.2f}</div></div>
+        <p style="text-align:center;margin:0 0 20px;"><a href="{esc(link)}" style="display:inline-block;background:#0284c7;color:#fff;text-decoration:none;font-weight:700;padding:13px 28px;border-radius:8px;">Pay now</a></p>
+        {f'<p style="margin:0 0 16px;font-size:13px;color:#64748b;">The link works until {esc(inv.payment_link_expires)}.</p>' if inv.payment_link_expires else ''}
+        <p style="margin:0;font-size:13px;color:#64748b;">If you have any questions, reply to this email.</p>
+      </div></div></body></html>"""
+    charge = require_credit(db, client.id, "invoice_send", 1, inv.number)
+    delivery = start_delivery(db, client.id, "payment_link", inv.number, inv.email, charge)
+    background_tasks.add_task(deliver_and_record, delivery.id, inv.email, subject, body, f"{company} <{from_email}>",
+                              html_body, None, "", client.logo_url or "", client_id=client.id)
+    inv.sent = date.today().isoformat()
+    log_audit(db, client.id, "payment_link_sent", "invoice", inv.id, inv.number, f"Sent to {inv.email}", request)
+    db.commit()
+
+
+@app.post("/api/payment-links")
+def create_payment_link(body: PaymentLinkIn, request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    amount = money(body.amount)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="The amount must be more than nothing")
+    if amount > 10_000_000:
+        raise HTTPException(status_code=400, detail="That amount is too large for a payment link")
+    description = " ".join((body.description or "").split())
+    if not description:
+        raise HTTPException(status_code=400, detail="Say what the payment is for")
+    if len(description) > 200:
+        raise HTTPException(status_code=400, detail="Keep the description to 200 characters")
+    email = (body.email or "").strip()
+    if email and not validate_email_address(email):
+        raise HTTPException(status_code=400, detail="That email address does not look right")
+    if body.send and not email:
+        raise HTTPException(status_code=400, detail="Add the customer's email address to send the link")
+    days = 30 if body.expires_in_days is None else body.expires_in_days
+    if not 1 <= days <= 365:
+        raise HTTPException(status_code=400, detail="The link can last between 1 and 365 days")
+    today = date.today()
+    expires = (today + timedelta(days=days)).isoformat()
+    inv = models.DBInvoice(
+        client_id=client.id, number=next_sequence_number(db, models.DBInvoice, client.id, invoice_prefix_for(db, client.id)),
+        ref=(body.reference or "").strip()[:120], to_contact=((body.customer_name or "").strip() or PAYMENT_LINK_PLACEHOLDER)[:120],
+        email=email, issue_date=today.isoformat(), due_date=expires, paid=0.0, due=amount, status="Awaiting Payment", sent="",
+        tax_type="exclusive", currency=(client.currency or "GBP").upper(), chase_paused=True, payment_link="active",
+        payment_link_expires=expires)
+    db.add(inv)
+    db.flush()
+    db.add(models.DBLineItem(invoice_id=inv.id, name="", description=description, qty=1, price=amount, disc=0.0,
+                             account="200 - Sales", tax_rate="No Tax"))
+    log_audit(db, client.id, "payment_link_created", "invoice", inv.id, inv.number, f"{amount:.2f}, {description}", request)
+    db.commit()
+    db.refresh(inv)
+    out = link_to_dict(db, inv)
+    # A link nobody can pay with online is a page with a bank account on it:
+    # say so now, while it can be fixed, not when the customer is confused.
+    out["warning"] = "" if invoice_payment_methods(db, inv) else \
+        "No online payment method is switched on, so this link will only show your bank details. Turn one on under Payment options."
+    out["sent_now"], out["send_error"] = False, ""
+    if body.send:
+        try:
+            send_payment_link_email(db, client, inv, background_tasks, request)
+            out["sent_now"] = True
+        except HTTPException as exc:
+            db.rollback()
+            out["send_error"] = str(exc.detail)
+    return out
+
+
+@app.get("/api/payment-links")
+def list_payment_links(request: Request, status: str = "all", q: str = "", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    status = (status or "all").lower()
+    if status not in ("all", "open", "paid", "expired", "cancelled"):
+        raise HTTPException(status_code=400, detail="Status must be one of: all, open, paid, expired, cancelled")
+    rows = db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id, models.DBInvoice.payment_link != "") \
+        .order_by(models.DBInvoice.id.desc()).limit(500).all()
+    items = [link_to_dict(db, i) for i in rows]
+    if status != "all":
+        items = [i for i in items if i["state"] == status]
+    needle = q.strip().lower()
+    if needle:
+        items = [i for i in items if needle in " ".join([i["number"], i["customer"], i["description"], i["reference"], i["email"]]).lower()]
+    return {"links": items, "count": len(items), "open_total": money(sum(i["due"] for i in items if i["state"] == "open")),
+            "paid_total": money(sum(i["paid"] for i in items if i["state"] == "paid")), "currency": (client.currency or "GBP").upper()}
+
+
+@app.get("/api/payment-links/{number}")
+def get_payment_link(number: str, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    return link_to_dict(db, payment_link_row(db, client, number), True)
+
+
+@app.post("/api/payment-links/{number}/send")
+def send_payment_link(number: str, request: Request, background_tasks: BackgroundTasks, body: dict = None,
+                      db: Session = Depends(get_db)):
+    """Email the link, or email it again, to the address given or the one on it."""
+    client = get_client_user(request, db)
+    inv = payment_link_row(db, client, number)
+    if link_state(inv) != "open":
+        raise HTTPException(status_code=400, detail="Only an open link can be sent")
+    to = str((body or {}).get("email") or "").strip()
+    if to:
+        if not validate_email_address(to):
+            raise HTTPException(status_code=400, detail="That email address does not look right")
+        inv.email = to
+    send_payment_link_email(db, client, inv, background_tasks, request)
+    return {"message": f"Link sent to {inv.email}"}
+
+
+@app.post("/api/payment-links/{number}/cancel")
+def cancel_payment_link(number: str, request: Request, db: Session = Depends(get_db)):
+    """Withdraw a link nobody has paid: the page stops working and the invoice
+    behind it is voided, so it counts as nothing."""
+    client = get_client_user(request, db)
+    inv = payment_link_row(db, client, number)
+    if link_state(inv) != "open":
+        raise HTTPException(status_code=400, detail="Only an open link can be cancelled")
+    if (inv.paid or 0) > 0.005:
+        raise HTTPException(status_code=400, detail="Part of this has been paid. Record a refund on the invoice instead.")
+    inv.status, inv.payment_link = "Void", "cancelled"
+    log_audit(db, client.id, "payment_link_cancelled", "invoice", inv.id, inv.number, "", request)
+    db.commit()
+    return link_to_dict(db, inv)
+
+
+@scheduled_job("payment_link_expiry")
+def job_payment_link_expiry(db, now):
+    """Close links that have run out. An unpaid one is voided so it does not sit
+    in the books as overdue; one part-paid is marked expired and left to be
+    collected like any invoice."""
+    today = now.date().isoformat()
+    n = 0
+    for inv in db.query(models.DBInvoice).filter(models.DBInvoice.payment_link == "active",
+                                                 models.DBInvoice.payment_link_expires != "",
+                                                 models.DBInvoice.payment_link_expires < today,
+                                                 models.DBInvoice.status.notin_(["Paid", "Void"])).all():
+        if (inv.due or 0) <= 0.005:
+            continue
+        inv.payment_link = "expired"
+        if (inv.paid or 0) <= 0.005:
+            inv.status = "Void"
+        n += 1
+    db.commit()
+    return f"{n} link(s) expired"
 
 
 @app.get("/api/invoice-list.csv")
