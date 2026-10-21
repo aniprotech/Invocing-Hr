@@ -139,7 +139,7 @@ const tick = () => new Promise(r => setTimeout(r, 0));
         doc.getElementById('stock-move-go').onclick();
         await done;
         const post = sent.find(s => s.method === 'POST');
-        check('Return goods on a supplier credit takes them out of stock', post.url === '/api/supplier-credits/3/return-stock' && post.body.lines[0].quantity === 4 &&
+        check('Return goods on a supplier credit takes them out of stock', post.url === '/api/supplier-credit-notes/3/return-stock' && post.body.lines[0].quantity === 4 &&
             (w._toasts || []).some(t => /taken out of stock/.test(t[0])));
     }
 

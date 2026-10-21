@@ -1112,13 +1112,19 @@ MODULE_PATHS = (
     ("/api/goals", "hr"),
     ("/api/org-chart", "hr"),
     ("/api/invoices", "invoicing"),
+    ("/api/payment-links", "invoicing"),
     ("/api/quotes", "invoicing"),
     ("/api/bills", "invoicing"),
+    ("/api/sales/", "invoicing"),
+    ("/api/purchases/", "invoicing"),
+    ("/api/bill-payments", "invoicing"),
+    ("/api/supplier-credit-notes", "invoicing"),
+    ("/api/purchase-orders", "invoicing"),
+    ("/api/business-expenses", "invoicing"),
     ("/api/recurring", "invoicing"),
     ("/api/items", "invoicing"),
     ("/api/inventory", "invoicing"),
     ("/api/suppliers", "invoicing"),
-    ("/api/supplier-credits", "invoicing"),
     ("/api/ledger", "invoicing"),
     ("/api/credit-notes", "invoicing"),
     ("/api/chasing", "invoicing"),
@@ -1128,7 +1134,6 @@ MODULE_PATHS = (
     ("/api/next-invoice-number", "invoicing"),
     ("/api/next-quote-number", "invoicing"),
     ("/api/next-bill-number", "invoicing"),
-    ("/api/sales/", "invoicing"),
 )
 
 
@@ -1554,6 +1559,7 @@ def delete_item(item_id: int, request: Request, db: Session = Depends(get_db)):
 # stock by themselves, serial numbers, and more than one location.
 # ============================================================================
 import inventory  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
 
 inventory.install()
 
@@ -1806,11 +1812,11 @@ def restock_credit_note(number: str, request: Request, body: dict = None, db: Se
     return {"returned": moved}
 
 
-@app.post("/api/supplier-credits/{credit_id}/return-stock")
+@app.post("/api/supplier-credit-notes/{credit_id}/return-stock")
 def supplier_credit_return_stock(credit_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
     """Goods sent back to the supplier, on their credit note: out of stock."""
     client = get_client_user(request, db)
-    credit = _credit_or_404(db, client, credit_id)
+    credit = credit_for(db, client, credit_id)
     if credit.status == "Void":
         raise HTTPException(status_code=400, detail=f"Credit note {credit.number} is void")
     body = _stock_args(body)
@@ -4862,8 +4868,8 @@ def public_invoice_pdf(tracking_id: str, db: Session = Depends(get_db)):
     """The document itself, for the person it was sent to. The same rule as
     the page: a draft or a void invoice is not available from a link."""
     inv = db.query(models.DBInvoice).filter(models.DBInvoice.tracking_id == tracking_id).first()
-    if not inv or inv.status in ("Draft", "Void"):
-        raise HTTPException(status_code=404, detail="That invoice is not available")
+    if not inv or inv.status in ("Draft", "Void") or link_is_expired(inv):
+        raise HTTPException(status_code=404, detail=link_unavailable_detail(inv))
     client = db.query(models.DBClient).filter(models.DBClient.id == inv.client_id).first()
     if not client:
         raise HTTPException(status_code=404, detail="That invoice is not available")
@@ -4963,7 +4969,7 @@ import math  # noqa: E402
 
 import ledgers  # noqa: E402
 
-BILL_STATUSES = ("Draft", "Awaiting Payment", "Partially Paid", "Paid", "Void")
+BILL_STATUSES = ("Draft", "Awaiting Payment", "Unpaid", "Partially Paid", "Paid", "Void")
 MAX_MONEY = 1_000_000_000
 
 
@@ -4984,13 +4990,6 @@ def bill_effective_currency(bill, base) -> str:
     return ((bill.currency or "") or base).upper()
 
 
-def bill_payment_to_dict(p, accounts=None):
-    return {"id": p.id, "amount": money(p.amount or 0), "paid_on": p.paid_on or "", "method": p.method or "",
-            "method_label": ledgers.BILL_METHODS.get(p.method or "", p.method or ""), "reference": p.reference or "",
-            "note": p.note or "", "account_id": p.account_id, "account": (accounts or {}).get(p.account_id, ""),
-            "from_bank": bool(p.bank_line_id), "credit_id": p.credit_id}
-
-
 def supplier_bill_to_dict(b, base="GBP", today=None, payments=None, accounts=None):
     today = today or date.today().isoformat()
     paid = money(b.amount_paid or 0)
@@ -5004,7 +5003,7 @@ def supplier_bill_to_dict(b, base="GBP", today=None, payments=None, accounts=Non
            "balance": balance, "status": status, "category": b.category or "general", "reference": b.reference or "",
            "notes": b.notes or "", "currency": bill_effective_currency(b, base), "overdue": late > 0, "days_overdue": late}
     if payments is not None:
-        out["payments"] = [bill_payment_to_dict(p, accounts) for p in payments]
+        out["payments"] = [bill_payment_to_dict(p, b, accounts) for p in payments]
     return out
 
 
@@ -5078,59 +5077,6 @@ def _bill_totals(body, current=None):
     return amount, tax, expected
 
 
-def record_bill_payment(db, client, bill, amount, paid_on="", method="bank_transfer", reference="", note="",
-                        account_id=None, bank_line_id=None, credit_id=None):
-    """Pay some or all of what is left on a bill. Everything that can be wrong
-    with a payment is refused here, so every way of paying - the form, the
-    shortcut, a bank line, a supplier credit - holds to the same rules."""
-    if bill.status in ("Draft", "Void"):
-        raise HTTPException(status_code=400, detail=f"Bill {bill.number} is a {bill.status.lower()}: post it before paying it" if bill.status == "Draft"
-                            else f"Bill {bill.number} is void")
-    amount = money(amount)
-    balance = ledgers.bill_balance(bill.total or 0, bill.amount_paid or 0)
-    if amount <= 0:
-        raise HTTPException(status_code=400, detail="A payment is more than zero")
-    if balance <= 0:
-        raise HTTPException(status_code=400, detail=f"Bill {bill.number} is already paid")
-    if amount > balance + 0.005:
-        raise HTTPException(status_code=400, detail=f"That is more than bill {bill.number} has left ({balance:.2f})")
-    day = _clean_ymd(paid_on, "Payment date") or date.today().isoformat()
-    method = str(method or "bank_transfer").strip().lower()
-    if method not in ledgers.BILL_METHODS or (method == "credit" and not credit_id):
-        raise HTTPException(status_code=400, detail="Pick how it was paid: " + ", ".join(v for k, v in ledgers.BILL_METHODS.items() if k != "credit"))
-    acct = None
-    if method != "credit":
-        acct = resolve_account(db, client.id, account_id)
-    row = models.DBBillPayment(client_id=client.id, bill_id=bill.id, amount=amount, paid_on=day, method=method,
-                               reference=str(reference or "").strip()[:120], note=str(note or "").strip()[:300],
-                               account_id=acct, bank_line_id=bank_line_id, credit_id=credit_id)
-    db.add(row)
-    was = bill.status
-    bill.amount_paid = money((bill.amount_paid or 0) + amount)
-    bill.status = ledgers.bill_status(bill.total or 0, bill.amount_paid, bill.status)
-    db.flush()
-    if bill.status == "Paid" and was != "Paid":
-        announce(db, client.id, "bill.paid", {"bill": bill.number, "supplier": bill.vendor_name or "", "total": money(bill.total or 0),
-                                              "currency": bill_effective_currency(bill, (client.currency or "GBP")), "last_payment": amount,
-                                              "method": row.method, "paid_on": row.paid_on})
-    return row
-
-
-def remove_bill_payment(db, bill, payment):
-    """Take a payment back: the bill is owed again, and a credit that was set
-    against it is free to use again."""
-    bill.amount_paid = money(max(0.0, (bill.amount_paid or 0) - (payment.amount or 0)))
-    bill.status = ledgers.bill_status(bill.total or 0, bill.amount_paid, bill.status if bill.status in ("Draft", "Void") else "Awaiting Payment")
-    if payment.credit_id:
-        credit = db.query(models.DBSupplierCredit).filter(models.DBSupplierCredit.id == payment.credit_id).first()
-        if credit:
-            credit.applied = money(max(0.0, (credit.applied or 0) - (payment.amount or 0)))
-            if credit.status == "Applied":
-                credit.status = "Open"
-    db.delete(payment)
-    db.flush()
-
-
 @app.get("/api/bills")
 def list_bills(request: Request, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
@@ -5162,7 +5108,7 @@ def create_bill(request: Request, body: dict = None, db: Session = Depends(get_d
     amount, tax, total = _bill_totals(body)
     want = "Draft" if body.get("draft") else (str(body.get("status") or "Awaiting Payment").strip())
     if want not in BILL_STATUSES:
-        raise HTTPException(status_code=400, detail="A bill's status is Draft, Awaiting Payment, Partially Paid, Paid or Void")
+        raise HTTPException(status_code=400, detail="A bill's status is Draft, Unpaid, Awaiting Payment, Partially Paid, Paid or Void")
     cur = str(body.get("currency") or supplier.currency or "").strip().upper()[:3]
     if cur and not cur.isalpha():
         raise HTTPException(status_code=400, detail="Currency is a three-letter code, like USD")
@@ -5170,7 +5116,7 @@ def create_bill(request: Request, body: dict = None, db: Session = Depends(get_d
         cur = ""
     bill = models.DBBill(client_id=client.id, number=number, vendor_name=supplier.name, vendor_email=(body.get("vendor_email") or supplier.email or "")[:200],
                          supplier_id=supplier.id, issue_date=issue, due_date=due, amount=amount, tax_amount=tax, total=total,
-                         status="Draft" if want == "Draft" else "Awaiting Payment", category=str(body.get("category") or "general")[:40],
+                         status=want if want in ("Draft", "Unpaid") else "Awaiting Payment", category=str(body.get("category") or "general")[:40],
                          reference=str(body.get("reference") or "")[:120], notes=str(body.get("notes") or "")[:2000], currency=cur)
     db.add(bill)
     db.flush()
@@ -5212,7 +5158,15 @@ def update_bill(bill_id: int, request: Request, body: dict = None, db: Session =
     if bill.status == "Void":
         raise HTTPException(status_code=400, detail="A void bill cannot be changed")
     if "amount_paid" in body and money(body.get("amount_paid") or 0) != money(bill.amount_paid or 0):
-        raise HTTPException(status_code=400, detail="Record a payment instead of changing what has been paid")
+        # A bill whose payments are recorded one by one is paid by recording
+        # them. One from before that - with no payment records behind it - can
+        # still have what was paid typed in, the way the Bills screen does.
+        if db.query(models.DBBillPayment).filter(models.DBBillPayment.bill_id == bill.id).count():
+            raise HTTPException(status_code=400, detail="Record a payment instead of changing what has been paid")
+        typed = _money_field(body.get("amount_paid"), "Amount paid")
+        if typed < 0:
+            raise HTTPException(status_code=400, detail="Amount paid cannot be negative")
+        bill.amount_paid = typed
     if "number" in body:
         number = re.sub(r"\s+", " ", str(body.get("number") or "")).strip()[:40]
         if not number:
@@ -5264,7 +5218,7 @@ def update_bill(bill_id: int, request: Request, body: dict = None, db: Session =
             raise HTTPException(status_code=400, detail="Use Void to void a bill; a status is Draft, Awaiting Payment, Partially Paid or Paid")
         if want == "Draft" and (bill.amount_paid or 0) > 0:
             raise HTTPException(status_code=400, detail="A bill with payments against it cannot go back to a draft")
-        bill.status = "Draft" if want == "Draft" else "Awaiting Payment"
+        bill.status = want if want in ("Draft", "Unpaid") else "Awaiting Payment"
     bill.status = ledgers.bill_status(bill.total or 0, bill.amount_paid or 0, bill.status)
     log_audit(db, client.id, "bill_updated", "bill", bill.id, bill.number, "", request)
     db.commit()
@@ -5276,65 +5230,122 @@ def update_bill(bill_id: int, request: Request, body: dict = None, db: Session =
 def delete_bill(bill_id: int, request: Request, db: Session = Depends(get_db)):
     client = get_client_user(request, db)
     bill = _bill_or_404(db, client, bill_id)
-    if db.query(models.DBBillPayment).filter(models.DBBillPayment.bill_id == bill.id).count() or (bill.amount_paid or 0) > 0:
-        raise HTTPException(status_code=400, detail=f"Bill {bill.number} has payments against it. Void it, or take the payments back first.")
+    if db.query(models.DBBillPayment).filter(models.DBBillPayment.bill_id == bill.id, models.DBBillPayment.bank_line_id.isnot(None)).count():
+        raise HTTPException(status_code=400, detail=f"Bill {bill.number} was paid from a bank line. Uncode the line in Bank first.")
     db.query(models.DBBillLineItem).filter(models.DBBillLineItem.bill_id == bill.id).delete()
+    # Its payments go with it - and a credit note that had been set against it
+    # gets that credit back, rather than losing track of it.
+    for pay in db.query(models.DBBillPayment).filter(models.DBBillPayment.bill_id == bill.id).all():
+        if pay.method == "credit_note":
+            note = db.query(models.DBSupplierCreditNote).filter(
+                models.DBSupplierCreditNote.client_id == client.id,
+                models.DBSupplierCreditNote.number == (pay.reference or "")).first()
+            if note:
+                note.allocated = money(max((note.allocated or 0.0) - (pay.amount or 0.0), 0.0))
+                refresh_credit_status(note)
+        db.delete(pay)
+    for note in db.query(models.DBSupplierCreditNote).filter(models.DBSupplierCreditNote.client_id == client.id,
+                                                             models.DBSupplierCreditNote.bill_id == bill.id).all():
+        note.bill_id = None                     # the note stays; it just no longer points at a bill that is gone
+    for po in db.query(models.DBPurchaseOrder).filter(models.DBPurchaseOrder.client_id == client.id,
+                                                      models.DBPurchaseOrder.bill_id == bill.id).all():
+        po.status, po.bill_id, po.bill_number, po.billed_on = "Approved", None, "", ""   # back to be billed again
     log_audit(db, client.id, "bill_deleted", "bill", bill.id, bill.number, "", request)
     db.delete(bill)
     db.commit()
     return {"ok": True}
 
 
+BILL_PAYMENT_METHODS = ("bank_transfer", "card", "cash", "cheque", "direct_debit", "other", "credit_note")
+
+
+class BillPaymentIn(BaseModel):
+    amount: float
+    paid_on: Optional[str] = ""
+    method: Optional[str] = "bank_transfer"
+    reference: Optional[str] = ""
+    note: Optional[str] = ""
+    account_id: Optional[int] = None
+
+
+def bill_total(bill):
+    return money(bill.total or bill.amount or 0.0)
+
+
+def bill_outstanding(bill):
+    return money(max(bill_total(bill) - (bill.amount_paid or 0.0), 0.0))
+
+
+def bill_payment_to_dict(p, bill=None, accounts=None):
+    return {"id": p.id, "bill_id": p.bill_id, "bill_number": bill.number if bill else "",
+            "supplier": bill.vendor_name if bill else "", "amount": p.amount or 0.0, "paid_on": p.paid_on or "",
+            "method": p.method or "", "reference": p.reference or "", "note": p.note or "",
+            "account_id": p.account_id, "account": (accounts or {}).get(p.account_id, ""),
+            "from_bank": bool(getattr(p, "bank_line_id", None))}
+
+
+def record_bill_payment(db, client, bill, amount, paid_on="", method="bank_transfer", reference="", note="",
+                        account_id=None, request=None, bank_line_id=None):
+    """Put a payment on a bill and move its status with it. The one place a
+    bill's amount_paid changes, so the ledger and the running total agree."""
+    if bill.status == "Void":
+        raise HTTPException(status_code=400, detail=f"Bill {bill.number} is void")
+    amount = money(amount)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="The payment must be more than nothing")
+    outstanding = bill_outstanding(bill)
+    if outstanding <= 0:
+        raise HTTPException(status_code=400, detail="This bill has nothing left to pay")
+    if amount > outstanding + 0.005:
+        raise HTTPException(status_code=400, detail=f"A payment of {amount:.2f} is more than the {outstanding:.2f} still owed")
+    if paid_on and not _parse_date(paid_on):
+        raise HTTPException(status_code=400, detail="The payment date must be in YYYY-MM-DD format")
+    if method not in BILL_PAYMENT_METHODS:
+        raise HTTPException(status_code=400, detail="Pick how it was paid from the list")
+    payment = models.DBBillPayment(
+        client_id=client.id, bill_id=bill.id, amount=amount,
+        paid_on=paid_on or date.today().isoformat(), method=method,
+        reference=(reference or "").strip()[:120], note=(note or "").strip()[:300],
+        account_id=resolve_account(db, client.id, account_id) if method != "credit_note" else None,
+        bank_line_id=bank_line_id)
+    db.add(payment)
+    was = bill.status
+    bill.amount_paid = money((bill.amount_paid or 0.0) + amount)
+    bill.status = "Paid" if bill_outstanding(bill) <= 0.005 else "Partially Paid"
+    if bill.status == "Paid" and was != "Paid":
+        announce(db, client.id, "bill.paid", {"bill": bill.number, "supplier": bill.vendor_name or "", "total": money(bill.total or 0),
+                                              "currency": bill_effective_currency(bill, (client.currency or "GBP")), "last_payment": amount,
+                                              "method": method, "paid_on": payment.paid_on})
+    log_audit(db, client.id, "bill_payment_recorded", "bill", bill.id, bill.number,
+              f"Amount: {amount:.2f}, method: {method}", request)
+    db.flush()
+    return payment
+
+
+def bill_for(db, client, bill_id):
+    bill = db.query(models.DBBill).filter(models.DBBill.id == bill_id, models.DBBill.client_id == client.id).first()
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    return bill
+
+
 @app.post("/api/bills/{bill_id}/pay")
 def mark_bill_paid(bill_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
-    """Pay what is left on a bill, today (or on the day given): the shortcut
-    for "this one is done". It records a payment like any other."""
+    """Pay what is left in one go. Records a real payment for it, so the
+    Payments list and the bill's history say so."""
     client = get_client_user(request, db)
-    bill = _bill_or_404(db, client, bill_id)
+    bill = bill_for(db, client, bill_id)
     body = body or {}
-    balance = ledgers.bill_balance(bill.total or 0, bill.amount_paid or 0)
-    amount = _money_field(body.get("amount"), "Amount") if body.get("amount") else balance
-    if bill.status == "Draft":
-        bill.status = "Awaiting Payment"        # paying a draft posts it first
-    if balance <= 0 and (bill.total or 0) <= 0:
+    if body.get("method") == "credit_note":
+        raise HTTPException(status_code=400, detail="A credit note is set against a bill from the credit note")
+    if bill_outstanding(bill) > 0:
+        record_bill_payment(db, client, bill, bill_outstanding(bill), body.get("paid_on") or "",
+                            body.get("method") or "bank_transfer", body.get("reference") or "",
+                            body.get("note") or "", body.get("account_id"), request)
+    else:
         bill.status = "Paid"
-        db.commit()
-        return {"ok": True, "status": "Paid"}
-    row = record_bill_payment(db, client, bill, amount, body.get("paid_on") or "", body.get("method") or "bank_transfer",
-                              body.get("reference") or "", body.get("note") or "", body.get("account_id"))
-    log_audit(db, client.id, "bill_paid", "bill", bill.id, bill.number, f"Amount: {row.amount}", request)
     db.commit()
-    return {"ok": True, "status": bill.status, "payment_id": row.id, "balance": ledgers.bill_balance(bill.total or 0, bill.amount_paid or 0)}
-
-
-@app.post("/api/bills/{bill_id}/payments")
-def add_bill_payment(bill_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
-    client = get_client_user(request, db)
-    bill = _bill_or_404(db, client, bill_id)
-    body = body or {}
-    row = record_bill_payment(db, client, bill, _money_field(body.get("amount"), "Amount"), body.get("paid_on") or "",
-                              body.get("method") or "bank_transfer", body.get("reference") or "", body.get("note") or "", body.get("account_id"))
-    log_audit(db, client.id, "bill_payment_recorded", "bill", bill.id, bill.number, f"{row.amount} on {row.paid_on}", request)
-    sup = db.query(models.DBSupplier).filter(models.DBSupplier.id == bill.supplier_id).first() if bill.supplier_id else None
-    db.commit()
-    return {"id": row.id, "status": bill.status, "amount_paid": money(bill.amount_paid or 0),
-            "balance": ledgers.bill_balance(bill.total or 0, bill.amount_paid or 0),
-            "warning": "This supplier is on hold." if sup is not None and sup.on_hold else ""}
-
-
-@app.delete("/api/bills/{bill_id}/payments/{payment_id}")
-def delete_bill_payment(bill_id: int, payment_id: int, request: Request, db: Session = Depends(get_db)):
-    client = get_client_user(request, db)
-    bill = _bill_or_404(db, client, bill_id)
-    row = db.query(models.DBBillPayment).filter(models.DBBillPayment.id == payment_id, models.DBBillPayment.bill_id == bill.id).first()
-    if not row:
-        raise HTTPException(status_code=404, detail="Payment not found")
-    if row.bank_line_id:
-        raise HTTPException(status_code=400, detail="That payment came from a bank line. Take its coding back in Bank instead.")
-    remove_bill_payment(db, bill, row)
-    log_audit(db, client.id, "bill_payment_removed", "bill", bill.id, bill.number, f"{row.amount}", request)
-    db.commit()
-    return {"ok": True, "status": bill.status, "amount_paid": money(bill.amount_paid or 0)}
+    return {"ok": True, "status": "Paid"}
 
 
 @app.post("/api/bills/{bill_id}/void")
@@ -5361,6 +5372,690 @@ def post_draft_bills(request: Request, db: Session = Depends(get_db)):
     log_audit(db, client.id, "bills_posted", "bill", None, "", f"{len(drafts)} draft bills posted", request)
     db.commit()
     return {"posted": len(drafts)}
+
+
+@app.get("/api/bills/{bill_id}/payments")
+def list_bill_payments(bill_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    bill = bill_for(db, client, bill_id)
+    rows = db.query(models.DBBillPayment).filter(models.DBBillPayment.bill_id == bill.id) \
+        .order_by(models.DBBillPayment.paid_on.desc(), models.DBBillPayment.id.desc()).all()
+    names = {a.id: a.name for a in db.query(models.DBMoneyAccount).filter(models.DBMoneyAccount.client_id == client.id).all()}
+    return {"total": bill_total(bill), "paid": money(bill.amount_paid or 0.0), "outstanding": bill_outstanding(bill),
+            "payments": [bill_payment_to_dict(p, bill, names) for p in rows]}
+
+
+@app.post("/api/bills/{bill_id}/payments")
+def add_bill_payment(bill_id: int, body: BillPaymentIn, request: Request, db: Session = Depends(get_db)):
+    """Record a payment, part or all. Status moves to Partially Paid, then Paid."""
+    client = get_client_user(request, db)
+    bill = bill_for(db, client, bill_id)
+    if body.method == "credit_note":
+        raise HTTPException(status_code=400, detail="A credit note is set against a bill from the credit note")
+    p = record_bill_payment(db, client, bill, body.amount, body.paid_on or "", body.method or "bank_transfer",
+                            body.reference or "", body.note or "", body.account_id, request)
+    db.commit()
+    return {"message": "Payment recorded", "payment_id": p.id, "status": bill.status,
+            "paid": money(bill.amount_paid or 0.0), "outstanding": bill_outstanding(bill)}
+
+
+@app.delete("/api/bills/{bill_id}/payments/{payment_id}")
+def delete_bill_payment(bill_id: int, payment_id: int, request: Request, db: Session = Depends(get_db)):
+    """Reverse a payment entered by mistake."""
+    client = get_client_user(request, db)
+    bill = bill_for(db, client, bill_id)
+    p = db.query(models.DBBillPayment).filter(models.DBBillPayment.id == payment_id,
+                                              models.DBBillPayment.bill_id == bill.id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    if p.method == "credit_note":
+        raise HTTPException(status_code=400, detail="This is a credit note set against the bill. Take it off from the credit note.")
+    if p.bank_line_id:
+        raise HTTPException(status_code=400, detail="This payment came from a bank line. Uncode the line in Bank to take it back.")
+    bill.amount_paid = money(max((bill.amount_paid or 0.0) - (p.amount or 0.0), 0.0))
+    bill.status = "Partially Paid" if (bill.amount_paid or 0) > 0.005 else "Unpaid"
+    log_audit(db, client.id, "bill_payment_removed", "bill", bill.id, bill.number, f"Amount: {p.amount:.2f}", request)
+    db.delete(p)
+    db.commit()
+    return {"message": "Payment removed", "status": bill.status, "outstanding": bill_outstanding(bill)}
+
+
+def unpay_bill(db, bill, payment):
+    """Take one payment off a bill - the way the Payments screen does - for the
+    places that undo a payment themselves, such as uncoding a bank line."""
+    bill.amount_paid = money(max((bill.amount_paid or 0.0) - (payment.amount or 0.0), 0.0))
+    bill.status = "Partially Paid" if (bill.amount_paid or 0) > 0.005 else "Unpaid"
+    db.delete(payment)
+    db.flush()
+
+
+def bill_payments_query(db, client, q="", start="", end="", method=""):
+    qy = db.query(models.DBBillPayment, models.DBBill).join(models.DBBill, models.DBBill.id == models.DBBillPayment.bill_id) \
+        .filter(models.DBBillPayment.client_id == client.id)
+    if start:
+        qy = qy.filter(models.DBBillPayment.paid_on >= start)
+    if end:
+        qy = qy.filter(models.DBBillPayment.paid_on <= end)
+    if method:
+        qy = qy.filter(models.DBBillPayment.method == method)
+    if q.strip():
+        like = f"%{q.strip().lower()}%"
+        qy = qy.filter(func.lower(models.DBBill.vendor_name).like(like) | func.lower(models.DBBill.number).like(like)
+                       | func.lower(models.DBBillPayment.reference).like(like))
+    return qy.order_by(models.DBBillPayment.paid_on.desc(), models.DBBillPayment.id.desc())
+
+
+@app.get("/api/bill-payments")
+def bill_payments(request: Request, q: str = "", start: str = "", end: str = "", method: str = "",
+                  db: Session = Depends(get_db)):
+    """Every payment made to suppliers: who, when, how much, from which account."""
+    client = get_client_user(request, db)
+    for label, v in (("start", start), ("end", end)):
+        if v and not _parse_date(v):
+            raise HTTPException(status_code=400, detail=f"{label.title()} date must be in YYYY-MM-DD format")
+    if method and method not in BILL_PAYMENT_METHODS:
+        raise HTTPException(status_code=400, detail="Unknown payment method")
+    names = {a.id: a.name for a in db.query(models.DBMoneyAccount).filter(models.DBMoneyAccount.client_id == client.id).all()}
+    rows = bill_payments_query(db, client, q, start, end, method).limit(1000).all()
+    out = [bill_payment_to_dict(p, b, names) for p, b in rows]
+    return {"payments": out, "count": len(out), "total": money(sum(x["amount"] for x in out)),
+            "currency": base_currency(client)}
+
+
+@app.get("/api/bill-payments.csv")
+def bill_payments_csv(request: Request, q: str = "", start: str = "", end: str = "", method: str = "",
+                      db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    names = {a.id: a.name for a in db.query(models.DBMoneyAccount).filter(models.DBMoneyAccount.client_id == client.id).all()}
+    rows = [bill_payment_to_dict(p, b, names) for p, b in bill_payments_query(db, client, q, start, end, method).all()]
+    return _csv_response("supplier-payments.csv", ["Date", "Supplier", "Bill", "Amount", "Method", "Reference", "Paid from", "Note"],
+                         [[r["paid_on"], r["supplier"], r["bill_number"], f"{r['amount']:.2f}", r["method"], r["reference"], r["account"], r["note"]]
+                          for r in rows])
+
+
+# --- Supplier credit notes ------------------------------------------------------
+
+class SupplierCreditIn(BaseModel):
+    vendor_name: Optional[str] = ""
+    vendor_email: Optional[str] = ""
+    supplier_ref: Optional[str] = ""
+    issue_date: Optional[str] = ""
+    reason: Optional[str] = ""
+    amount: float
+    tax_amount: Optional[float] = 0.0
+    bill_id: Optional[int] = None
+    apply_to_bill: Optional[bool] = True
+
+
+def credit_remaining(note):
+    return money(max((note.total or 0.0) - (note.allocated or 0.0) - (note.refunded or 0.0), 0.0))
+
+
+def refresh_credit_status(note):
+    """Open while any of it is left to use; Applied once all of it has been."""
+    if note.status == "Void":
+        return
+    note.status = "Open" if credit_remaining(note) > 0.005 else "Applied"
+
+
+def credit_to_dict(note, allocations=None):
+    out = {"id": note.id, "number": note.number, "supplier_ref": note.supplier_ref or "", "vendor_name": note.vendor_name or "",
+           "vendor_email": note.vendor_email or "", "issue_date": note.issue_date or "", "reason": note.reason or "",
+           "amount": note.amount or 0.0, "tax_amount": note.tax_amount or 0.0, "total": note.total or 0.0,
+           "bill_id": note.bill_id, "bill_number": note.bill_number or "", "status": note.status,
+           "allocated": note.allocated or 0.0, "refunded": note.refunded or 0.0, "remaining": credit_remaining(note),
+           "refunded_on": note.refunded_on or "", "refund_method": note.refund_method or "",
+           "refund_reference": note.refund_reference or "", "voided_on": note.voided_on or "", "void_reason": note.void_reason or ""}
+    if allocations is not None:
+        out["allocations"] = allocations
+    return out
+
+
+def credit_for(db, client, note_id):
+    note = db.query(models.DBSupplierCreditNote).filter(models.DBSupplierCreditNote.id == note_id,
+                                                        models.DBSupplierCreditNote.client_id == client.id).first()
+    if not note:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+    return note
+
+
+def credit_allocations(db, client, note):
+    rows = db.query(models.DBBillPayment, models.DBBill).join(models.DBBill, models.DBBill.id == models.DBBillPayment.bill_id) \
+        .filter(models.DBBillPayment.client_id == client.id, models.DBBillPayment.method == "credit_note",
+                models.DBBillPayment.reference == note.number).order_by(models.DBBillPayment.id.asc()).all()
+    return [{"payment_id": p.id, "bill_id": b.id, "bill_number": b.number, "amount": p.amount or 0.0, "date": p.paid_on or ""}
+            for p, b in rows]
+
+
+def allocate_credit(db, client, note, bill, amount, request=None):
+    amount = money(amount)
+    if note.status == "Void":
+        raise HTTPException(status_code=400, detail="This credit note has been voided")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="The amount must be more than nothing")
+    if amount > credit_remaining(note) + 0.005:
+        raise HTTPException(status_code=400, detail=f"Only {credit_remaining(note):.2f} of this credit note is left")
+    pay = record_bill_payment(db, client, bill, amount, date.today().isoformat(), "credit_note", note.number,
+                              f"Credit note {note.supplier_ref or note.number}", None, request)
+    note.allocated = money((note.allocated or 0.0) + amount)
+    refresh_credit_status(note)
+    return pay
+
+
+@app.get("/api/supplier-credit-notes")
+def list_supplier_credit_notes(request: Request, status: str = "all", q: str = "", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    qy = db.query(models.DBSupplierCreditNote).filter(models.DBSupplierCreditNote.client_id == client.id)
+    status = (status or "all").lower()
+    if status not in ("all", "open", "applied", "void"):
+        raise HTTPException(status_code=400, detail="Status must be one of: all, open, applied, void")
+    if status != "all":
+        qy = qy.filter(models.DBSupplierCreditNote.status == status.title())
+    if q.strip():
+        like = f"%{q.strip().lower()}%"
+        qy = qy.filter(func.lower(models.DBSupplierCreditNote.vendor_name).like(like)
+                       | func.lower(models.DBSupplierCreditNote.number).like(like)
+                       | func.lower(models.DBSupplierCreditNote.supplier_ref).like(like))
+    rows = qy.order_by(models.DBSupplierCreditNote.id.desc()).all()
+    open_total = money(sum(credit_remaining(n) for n in rows if n.status == "Open"))
+    return {"credit_notes": [credit_to_dict(n) for n in rows], "count": len(rows), "open_total": open_total,
+            "currency": base_currency(client)}
+
+
+@app.get("/api/supplier-credit-notes/{note_id}")
+def get_supplier_credit_note(note_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    note = credit_for(db, client, note_id)
+    return credit_to_dict(note, credit_allocations(db, client, note))
+
+
+@app.post("/api/supplier-credit-notes")
+def create_supplier_credit_note(body: SupplierCreditIn, request: Request, db: Session = Depends(get_db)):
+    """Record a credit note from a supplier. Against a bill, it comes straight
+    off what that bill owes (unless told not to); anything beyond that stays on
+    the note to set against another bill or be paid back."""
+    client = get_client_user(request, db)
+    amount, tax = money(body.amount), money(body.tax_amount or 0.0)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="The amount must be more than nothing")
+    if tax < 0:
+        raise HTTPException(status_code=400, detail="Tax cannot be negative")
+    if body.issue_date and not _parse_date(body.issue_date):
+        raise HTTPException(status_code=400, detail="The date must be in YYYY-MM-DD format")
+    bill = bill_for(db, client, body.bill_id) if body.bill_id else None
+    vendor = (body.vendor_name or (bill.vendor_name if bill else "") or "").strip()
+    if not vendor:
+        raise HTTPException(status_code=400, detail="Supplier name is required")
+    note = models.DBSupplierCreditNote(
+        client_id=client.id, number=next_sequence_number(db, models.DBSupplierCreditNote, client.id, "SCN-"),
+        supplier_ref=(body.supplier_ref or "").strip()[:60], vendor_name=vendor[:200],
+        vendor_email=((body.vendor_email or (bill.vendor_email if bill else "") or "")).strip()[:200],
+        issue_date=body.issue_date or date.today().isoformat(), reason=(body.reason or "").strip()[:300],
+        amount=amount, tax_amount=tax, total=money(amount + tax),
+        bill_id=bill.id if bill else None, bill_number=bill.number if bill else "")
+    db.add(note)
+    db.flush()
+    if bill and body.apply_to_bill is not False and bill_outstanding(bill) > 0:
+        allocate_credit(db, client, note, bill, min(note.total, bill_outstanding(bill)), request)
+    log_audit(db, client.id, "supplier_credit_note_created", "supplier_credit_note", note.id, note.number,
+              f"{vendor}, total {note.total:.2f}", request)
+    db.commit()
+    return credit_to_dict(note, credit_allocations(db, client, note))
+
+
+@app.post("/api/supplier-credit-notes/{note_id}/allocate")
+def allocate_supplier_credit_note(note_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Set some of the credit against a bill."""
+    client = get_client_user(request, db)
+    note = credit_for(db, client, note_id)
+    body = body or {}
+    try:
+        bill_id = int(body.get("bill_id"))
+        amount = float(body.get("amount"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Choose a bill and an amount")
+    bill = bill_for(db, client, bill_id)
+    allocate_credit(db, client, note, bill, amount, request)
+    log_audit(db, client.id, "supplier_credit_note_allocated", "supplier_credit_note", note.id, note.number,
+              f"{money(amount):.2f} against {bill.number}", request)
+    db.commit()
+    return credit_to_dict(note, credit_allocations(db, client, note))
+
+
+@app.delete("/api/supplier-credit-notes/{note_id}/allocations/{payment_id}")
+def remove_supplier_credit_allocation(note_id: int, payment_id: int, request: Request, db: Session = Depends(get_db)):
+    """Take the credit back off a bill: the bill owes it again and the note has it to use."""
+    client = get_client_user(request, db)
+    note = credit_for(db, client, note_id)
+    pay = db.query(models.DBBillPayment).filter(models.DBBillPayment.id == payment_id,
+                                                models.DBBillPayment.client_id == client.id,
+                                                models.DBBillPayment.method == "credit_note",
+                                                models.DBBillPayment.reference == note.number).first()
+    if not pay:
+        raise HTTPException(status_code=404, detail="That credit is not set against a bill")
+    bill = db.query(models.DBBill).filter(models.DBBill.id == pay.bill_id).first()
+    if bill:
+        bill.amount_paid = money(max((bill.amount_paid or 0.0) - (pay.amount or 0.0), 0.0))
+        bill.status = "Partially Paid" if (bill.amount_paid or 0) > 0.005 else "Unpaid"
+    note.allocated = money(max((note.allocated or 0.0) - (pay.amount or 0.0), 0.0))
+    refresh_credit_status(note)
+    log_audit(db, client.id, "supplier_credit_note_unallocated", "supplier_credit_note", note.id, note.number,
+              f"{pay.amount:.2f} off {bill.number if bill else ''}", request)
+    db.delete(pay)
+    db.commit()
+    return credit_to_dict(note, credit_allocations(db, client, note))
+
+
+@app.post("/api/supplier-credit-notes/{note_id}/refund")
+def refund_supplier_credit_note(note_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """The supplier has paid the money back instead."""
+    client = get_client_user(request, db)
+    note = credit_for(db, client, note_id)
+    body = body or {}
+    if note.status == "Void":
+        raise HTTPException(status_code=400, detail="This credit note has been voided")
+    try:
+        amount = money(float(body.get("amount")))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Enter the amount that was paid back")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="The amount must be more than nothing")
+    if amount > credit_remaining(note) + 0.005:
+        raise HTTPException(status_code=400, detail=f"Only {credit_remaining(note):.2f} of this credit note is left")
+    on = str(body.get("date") or "") or date.today().isoformat()
+    if not _parse_date(on):
+        raise HTTPException(status_code=400, detail="The date must be in YYYY-MM-DD format")
+    method = str(body.get("method") or "bank_transfer")
+    if method not in BILL_PAYMENT_METHODS or method == "credit_note":
+        raise HTTPException(status_code=400, detail="Pick how it was paid back from the list")
+    note.refunded = money((note.refunded or 0.0) + amount)
+    note.refunded_on, note.refund_method = on, method
+    note.refund_reference = str(body.get("reference") or "").strip()[:120]
+    note.refund_account_id = resolve_account(db, client.id, body.get("account_id"))
+    refresh_credit_status(note)
+    log_audit(db, client.id, "supplier_credit_note_refunded", "supplier_credit_note", note.id, note.number, f"{amount:.2f}", request)
+    db.commit()
+    return credit_to_dict(note, credit_allocations(db, client, note))
+
+
+@app.post("/api/supplier-credit-notes/{note_id}/void")
+def void_supplier_credit_note(note_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Cancel a credit note entered by mistake. Only while none of it is used:
+    take it off the bills first."""
+    client = get_client_user(request, db)
+    note = credit_for(db, client, note_id)
+    if note.status == "Void":
+        raise HTTPException(status_code=400, detail="Already voided")
+    if (note.allocated or 0) > 0.005:
+        raise HTTPException(status_code=400, detail="Part of this credit is set against a bill. Take it off the bill first.")
+    if (note.refunded or 0) > 0.005:
+        raise HTTPException(status_code=400, detail="Part of this credit has been paid back, so it stays on record")
+    note.status = "Void"
+    note.voided_on = date.today().isoformat()
+    note.void_reason = str((body or {}).get("reason") or "").strip()[:300]
+    log_audit(db, client.id, "supplier_credit_note_voided", "supplier_credit_note", note.id, note.number, note.void_reason, request)
+    db.commit()
+    return credit_to_dict(note, [])
+
+
+# --- Purchase orders ------------------------------------------------------------
+
+class POLineIn(BaseModel):
+    description: str
+    qty: float = 1.0
+    price: float = 0.0
+    tax_rate: Optional[float] = 0.0
+
+
+class PurchaseOrderIn(BaseModel):
+    vendor_name: str
+    vendor_email: Optional[str] = ""
+    issue_date: Optional[str] = ""
+    delivery_date: Optional[str] = ""
+    reference: Optional[str] = ""
+    notes: Optional[str] = ""
+    lines: List[POLineIn]
+
+
+PO_MAX_LINES = 100
+
+
+def po_totals(lines):
+    subtotal = tax = 0.0
+    for ln in lines:
+        net = money((ln.qty or 0.0) * (ln.price or 0.0))
+        subtotal = money(subtotal + net)
+        tax = money(tax + money(net * (ln.tax_rate or 0.0) / 100.0))
+    return subtotal, tax, money(subtotal + tax)
+
+
+def po_to_dict(po, with_lines=False):
+    out = {"id": po.id, "number": po.number, "vendor_name": po.vendor_name or "", "vendor_email": po.vendor_email or "",
+           "issue_date": po.issue_date or "", "delivery_date": po.delivery_date or "", "reference": po.reference or "",
+           "notes": po.notes or "", "subtotal": po.subtotal or 0.0, "tax_total": po.tax_total or 0.0, "total": po.total or 0.0,
+           "status": po.status, "approved_on": po.approved_on or "", "bill_id": po.bill_id, "bill_number": po.bill_number or "",
+           "billed_on": po.billed_on or "", "voided_on": po.voided_on or "", "void_reason": po.void_reason or ""}
+    if with_lines:
+        out["lines"] = [{"description": ln.description or "", "qty": ln.qty, "price": ln.price, "tax_rate": ln.tax_rate or 0.0,
+                         "net": money((ln.qty or 0.0) * (ln.price or 0.0))} for ln in po.lines]
+    return out
+
+
+def validate_po(body):
+    if not (body.vendor_name or "").strip():
+        raise HTTPException(status_code=400, detail="Supplier name is required")
+    for label, v in (("issue date", body.issue_date), ("delivery date", body.delivery_date)):
+        if v and not _parse_date(v):
+            raise HTTPException(status_code=400, detail=f"The {label} must be in YYYY-MM-DD format")
+    if body.issue_date and body.delivery_date and _parse_date(body.delivery_date) < _parse_date(body.issue_date):
+        raise HTTPException(status_code=400, detail="The delivery date cannot be before the order date")
+    if not body.lines:
+        raise HTTPException(status_code=400, detail="Add at least one line")
+    if len(body.lines) > PO_MAX_LINES:
+        raise HTTPException(status_code=400, detail=f"At most {PO_MAX_LINES} lines")
+    for i, ln in enumerate(body.lines, 1):
+        if not (ln.description or "").strip():
+            raise HTTPException(status_code=400, detail=f"Line {i} needs a description")
+        if not (ln.qty and ln.qty > 0):
+            raise HTTPException(status_code=400, detail=f"Line {i}: the quantity must be more than nothing")
+        if (ln.price or 0) < 0:
+            raise HTTPException(status_code=400, detail=f"Line {i}: the price cannot be negative")
+        if not (0 <= (ln.tax_rate or 0) <= 100):
+            raise HTTPException(status_code=400, detail=f"Line {i}: the tax rate must be between 0 and 100")
+
+
+def apply_po(po, body):
+    po.vendor_name = body.vendor_name.strip()[:200]
+    po.vendor_email = (body.vendor_email or "").strip()[:200]
+    po.issue_date = body.issue_date or po.issue_date or date.today().isoformat()
+    po.delivery_date = body.delivery_date or ""
+    po.reference = (body.reference or "").strip()[:120]
+    po.notes = (body.notes or "").strip()[:1000]
+    po.lines = [models.DBPurchaseOrderLine(description=ln.description.strip()[:300], qty=ln.qty,
+                                           price=money(ln.price or 0.0), tax_rate=ln.tax_rate or 0.0) for ln in body.lines]
+    po.subtotal, po.tax_total, po.total = po_totals(body.lines)
+
+
+def po_row(db, client, po_id):
+    po = db.query(models.DBPurchaseOrder).filter(models.DBPurchaseOrder.id == po_id,
+                                                 models.DBPurchaseOrder.client_id == client.id).first()
+    if not po:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+    return po
+
+
+@app.get("/api/purchase-orders")
+def list_purchase_orders(request: Request, status: str = "all", q: str = "", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    status = (status or "all").lower()
+    if status not in ("all", "draft", "approved", "billed", "void"):
+        raise HTTPException(status_code=400, detail="Status must be one of: all, draft, approved, billed, void")
+    qy = db.query(models.DBPurchaseOrder).filter(models.DBPurchaseOrder.client_id == client.id)
+    if status != "all":
+        qy = qy.filter(models.DBPurchaseOrder.status == status.title())
+    if q.strip():
+        like = f"%{q.strip().lower()}%"
+        qy = qy.filter(func.lower(models.DBPurchaseOrder.vendor_name).like(like) | func.lower(models.DBPurchaseOrder.number).like(like)
+                       | func.lower(models.DBPurchaseOrder.reference).like(like))
+    rows = qy.order_by(models.DBPurchaseOrder.id.desc()).all()
+    awaiting = money(sum(p.total or 0.0 for p in rows if p.status == "Approved"))
+    return {"orders": [po_to_dict(p) for p in rows], "count": len(rows), "approved_total": awaiting,
+            "currency": base_currency(client)}
+
+
+@app.get("/api/purchase-orders/{po_id}")
+def get_purchase_order(po_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    return po_to_dict(po_row(db, client, po_id), True)
+
+
+@app.post("/api/purchase-orders")
+def create_purchase_order(body: PurchaseOrderIn, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    validate_po(body)
+    po = models.DBPurchaseOrder(client_id=client.id,
+                                number=next_sequence_number(db, models.DBPurchaseOrder, client.id, "PO-"))
+    apply_po(po, body)
+    db.add(po)
+    db.flush()
+    log_audit(db, client.id, "purchase_order_created", "purchase_order", po.id, po.number, f"{po.vendor_name}, {po.total:.2f}", request)
+    db.commit()
+    return po_to_dict(po, True)
+
+
+@app.put("/api/purchase-orders/{po_id}")
+def update_purchase_order(po_id: int, body: PurchaseOrderIn, request: Request, db: Session = Depends(get_db)):
+    """Only while it is a draft: once approved it has been agreed, and changing
+    it quietly would leave the supplier with a different order."""
+    client = get_client_user(request, db)
+    po = po_row(db, client, po_id)
+    if po.status != "Draft":
+        raise HTTPException(status_code=400, detail=f"A {po.status.lower()} order cannot be edited. Only a draft can.")
+    validate_po(body)
+    apply_po(po, body)
+    log_audit(db, client.id, "purchase_order_updated", "purchase_order", po.id, po.number, "", request)
+    db.commit()
+    return po_to_dict(po, True)
+
+
+@app.post("/api/purchase-orders/{po_id}/approve")
+def approve_purchase_order(po_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    po = po_row(db, client, po_id)
+    if po.status != "Draft":
+        raise HTTPException(status_code=400, detail=f"This order is already {po.status.lower()}")
+    po.status, po.approved_on = "Approved", date.today().isoformat()
+    log_audit(db, client.id, "purchase_order_approved", "purchase_order", po.id, po.number, "", request)
+    db.commit()
+    return po_to_dict(po, True)
+
+
+@app.post("/api/purchase-orders/{po_id}/bill")
+def bill_purchase_order(po_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    """Make the supplier's bill from the order, as a draft to check against what
+    arrived. An order is billed once."""
+    client = get_client_user(request, db)
+    po = po_row(db, client, po_id)
+    if po.status == "Billed":
+        raise HTTPException(status_code=400, detail=f"Already billed as {po.bill_number}")
+    if po.status != "Approved":
+        raise HTTPException(status_code=400, detail="Approve the order before making a bill from it")
+    try:
+        days = int((body or {}).get("due_days", 30))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Payment terms must be a whole number of days")
+    if not 0 <= days <= 365:
+        raise HTTPException(status_code=400, detail="Payment terms must be between 0 and 365 days")
+    today = date.today()
+    bill = models.DBBill(
+        client_id=client.id, number=next_sequence_number(db, models.DBBill, client.id, "BILL-"),
+        vendor_name=po.vendor_name, vendor_email=po.vendor_email or "", issue_date=today.isoformat(),
+        due_date=(today + timedelta(days=days)).isoformat(), amount=po.subtotal or 0.0, tax_amount=po.tax_total or 0.0,
+        total=po.total or 0.0, amount_paid=0.0, status="Draft", category="general", reference=po.number,
+        notes=f"From purchase order {po.number}")
+    db.add(bill)
+    db.flush()
+    for ln in po.lines:
+        db.add(models.DBBillLineItem(bill_id=bill.id, description=ln.description, qty=ln.qty, price=ln.price,
+                                     tax_rate=f"{ln.tax_rate or 0:g}%"))
+    po.status, po.bill_id, po.bill_number, po.billed_on = "Billed", bill.id, bill.number, today.isoformat()
+    log_audit(db, client.id, "purchase_order_billed", "purchase_order", po.id, po.number, f"Bill {bill.number}", request)
+    db.commit()
+    return {"order": po_to_dict(po, True), "bill_id": bill.id, "bill_number": bill.number}
+
+
+@app.post("/api/purchase-orders/{po_id}/void")
+def void_purchase_order(po_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    po = po_row(db, client, po_id)
+    if po.status == "Void":
+        raise HTTPException(status_code=400, detail="Already voided")
+    if po.status == "Billed":
+        raise HTTPException(status_code=400, detail=f"This order has been billed as {po.bill_number}. Deal with the bill instead.")
+    po.status, po.voided_on = "Void", date.today().isoformat()
+    po.void_reason = str((body or {}).get("reason") or "").strip()[:300]
+    log_audit(db, client.id, "purchase_order_voided", "purchase_order", po.id, po.number, po.void_reason, request)
+    db.commit()
+    return po_to_dict(po, True)
+
+
+@app.delete("/api/purchase-orders/{po_id}")
+def delete_purchase_order(po_id: int, request: Request, db: Session = Depends(get_db)):
+    """A draft that was never sent can go. Anything further along stays on record - void it."""
+    client = get_client_user(request, db)
+    po = po_row(db, client, po_id)
+    if po.status != "Draft":
+        raise HTTPException(status_code=400, detail=f"A {po.status.lower()} order stays on record. Void it instead.")
+    log_audit(db, client.id, "purchase_order_deleted", "purchase_order", po.id, po.number, "", request)
+    db.delete(po)
+    db.commit()
+    return {"message": "Draft deleted"}
+
+
+# --- Business expenses ------------------------------------------------------------
+# Money already spent that did not arrive as a supplier bill: a card payment,
+# petty cash. Not staff expense claims - those are reimbursed under People.
+
+BIZ_EXPENSE_CATEGORIES = ("general", "office", "software", "utilities", "rent", "marketing", "travel", "professional")
+BIZ_EXPENSE_METHODS = ("card", "cash", "bank_transfer", "cheque", "direct_debit", "other")
+
+
+class BusinessExpenseIn(BaseModel):
+    spent_on: Optional[str] = ""
+    payee: Optional[str] = ""
+    description: Optional[str] = ""
+    category: Optional[str] = "general"
+    amount: float
+    tax_amount: Optional[float] = 0.0
+    method: Optional[str] = "card"
+    account_id: Optional[int] = None
+    reference: Optional[str] = ""
+
+
+def biz_expense_to_dict(e, names=None):
+    return {"id": e.id, "spent_on": e.spent_on or "", "payee": e.payee or "", "description": e.description or "",
+            "category": e.category or "general", "amount": e.amount or 0.0, "tax_amount": e.tax_amount or 0.0,
+            "total": e.total or 0.0, "method": e.method or "", "account_id": e.account_id,
+            "account": (names or {}).get(e.account_id, ""), "reference": e.reference or ""}
+
+
+def validate_biz_expense(body):
+    if not ((body.payee or "").strip() or (body.description or "").strip()):
+        raise HTTPException(status_code=400, detail="Say who it was paid to or what it was for")
+    if not (body.amount and body.amount > 0):
+        raise HTTPException(status_code=400, detail="The amount must be more than nothing")
+    if (body.tax_amount or 0) < 0:
+        raise HTTPException(status_code=400, detail="Tax cannot be negative")
+    if body.spent_on and not _parse_date(body.spent_on):
+        raise HTTPException(status_code=400, detail="The date must be in YYYY-MM-DD format")
+    if (body.category or "general") not in BIZ_EXPENSE_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Pick a category from the list")
+    if (body.method or "card") not in BIZ_EXPENSE_METHODS:
+        raise HTTPException(status_code=400, detail="Pick how it was paid from the list")
+
+
+def apply_biz_expense(db, client, e, body):
+    e.spent_on = body.spent_on or date.today().isoformat()
+    e.payee = (body.payee or "").strip()[:200]
+    e.description = (body.description or "").strip()[:300]
+    e.category = body.category or "general"
+    e.amount = money(body.amount)
+    e.tax_amount = money(body.tax_amount or 0.0)
+    e.total = money(e.amount + e.tax_amount)
+    e.method = body.method or "card"
+    e.account_id = resolve_account(db, client.id, body.account_id) if body.account_id else None
+    e.reference = (body.reference or "").strip()[:120]
+
+
+def biz_expenses_query(db, client, q="", start="", end="", category=""):
+    qy = db.query(models.DBBusinessExpense).filter(models.DBBusinessExpense.client_id == client.id)
+    for label, v in (("Start", start), ("End", end)):
+        if v and not _parse_date(v):
+            raise HTTPException(status_code=400, detail=f"{label} date must be in YYYY-MM-DD format")
+    if start:
+        qy = qy.filter(models.DBBusinessExpense.spent_on >= start)
+    if end:
+        qy = qy.filter(models.DBBusinessExpense.spent_on <= end)
+    if category:
+        if category not in BIZ_EXPENSE_CATEGORIES:
+            raise HTTPException(status_code=400, detail="Unknown category")
+        qy = qy.filter(models.DBBusinessExpense.category == category)
+    if q.strip():
+        like = f"%{q.strip().lower()}%"
+        qy = qy.filter(func.lower(models.DBBusinessExpense.payee).like(like) | func.lower(models.DBBusinessExpense.description).like(like)
+                       | func.lower(models.DBBusinessExpense.reference).like(like))
+    return qy.order_by(models.DBBusinessExpense.spent_on.desc(), models.DBBusinessExpense.id.desc())
+
+
+def biz_account_names(db, client):
+    return {a.id: a.name for a in db.query(models.DBMoneyAccount).filter(models.DBMoneyAccount.client_id == client.id).all()}
+
+
+@app.get("/api/business-expenses")
+def list_business_expenses(request: Request, q: str = "", start: str = "", end: str = "", category: str = "",
+                           db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    names = biz_account_names(db, client)
+    rows = biz_expenses_query(db, client, q, start, end, category).limit(1000).all()
+    by_cat = {}
+    for e in rows:
+        by_cat[e.category or "general"] = money(by_cat.get(e.category or "general", 0.0) + (e.total or 0.0))
+    return {"expenses": [biz_expense_to_dict(e, names) for e in rows], "count": len(rows),
+            "total": money(sum(e.total or 0.0 for e in rows)), "by_category": by_cat,
+            "categories": list(BIZ_EXPENSE_CATEGORIES), "methods": list(BIZ_EXPENSE_METHODS), "currency": base_currency(client)}
+
+
+@app.get("/api/business-expenses.csv")
+def business_expenses_csv(request: Request, q: str = "", start: str = "", end: str = "", category: str = "",
+                          db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    names = biz_account_names(db, client)
+    rows = [biz_expense_to_dict(e, names) for e in biz_expenses_query(db, client, q, start, end, category).all()]
+    return _csv_response("business-expenses.csv", ["Date", "Paid to", "Description", "Category", "Amount", "Tax", "Total", "Method", "Paid from", "Reference"],
+                         [[r["spent_on"], r["payee"], r["description"], r["category"], f"{r['amount']:.2f}", f"{r['tax_amount']:.2f}",
+                           f"{r['total']:.2f}", r["method"], r["account"], r["reference"]] for r in rows])
+
+
+@app.post("/api/business-expenses")
+def create_business_expense(body: BusinessExpenseIn, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    validate_biz_expense(body)
+    e = models.DBBusinessExpense(client_id=client.id)
+    apply_biz_expense(db, client, e, body)
+    db.add(e)
+    db.flush()
+    log_audit(db, client.id, "business_expense_created", "business_expense", e.id, e.payee or e.description, f"{e.total:.2f}", request)
+    db.commit()
+    return biz_expense_to_dict(e, biz_account_names(db, client))
+
+
+def biz_expense_for(db, client, expense_id):
+    e = db.query(models.DBBusinessExpense).filter(models.DBBusinessExpense.id == expense_id,
+                                                  models.DBBusinessExpense.client_id == client.id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    return e
+
+
+@app.put("/api/business-expenses/{expense_id}")
+def update_business_expense(expense_id: int, body: BusinessExpenseIn, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    e = biz_expense_for(db, client, expense_id)
+    validate_biz_expense(body)
+    apply_biz_expense(db, client, e, body)
+    log_audit(db, client.id, "business_expense_updated", "business_expense", e.id, e.payee or e.description, f"{e.total:.2f}", request)
+    db.commit()
+    return biz_expense_to_dict(e, biz_account_names(db, client))
+
+
+@app.delete("/api/business-expenses/{expense_id}")
+def delete_business_expense(expense_id: int, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    e = biz_expense_for(db, client, expense_id)
+    log_audit(db, client.id, "business_expense_deleted", "business_expense", e.id, e.payee or e.description, f"{e.total:.2f}", request)
+    db.delete(e)
+    db.commit()
+    return {"message": "Expense deleted"}
 
 
 @app.get("/api/next-bill-number")
@@ -5397,7 +6092,8 @@ def _purchase_report_data(db, client):
     figure in one currency must never be added to another's."""
     base = base_currency(client)
     bills = [b for b in db.query(models.DBBill).filter(models.DBBill.client_id == client.id).all() if (b.status or "") != "Void"]
-    credits = [c for c in db.query(models.DBSupplierCredit).filter(models.DBSupplierCredit.client_id == client.id).all() if (c.status or "") != "Void"]
+    suppliers = {x.id: x for x in db.query(models.DBSupplier).filter(models.DBSupplier.client_id == client.id).all()}
+    credits = supplier_notes(db, client, suppliers, {b.id: b for b in bills})
     pays = {}
     for p in db.query(models.DBBillPayment).filter(models.DBBillPayment.client_id == client.id).all():
         pays.setdefault(p.bill_id, []).append(p)
@@ -5417,7 +6113,7 @@ def _bill_cash_out(bill, pays):
     out, explained = [], 0.0
     for p in pays:
         explained += p.amount or 0
-        if p.method != "credit":
+        if p.method != "credit_note":
             out.append(((p.paid_on or "")[:7] or "Unknown", p.amount or 0))
     gap = money((bill.amount_paid or 0) - explained)
     if gap > 0:
@@ -7220,6 +7916,196 @@ def job_recurring_invoices(db, now):
                     sent += 1
     db.commit()
     return f"{issued} invoice(s) raised" + (f", {sent} sent" if sent else "")
+
+
+# --- Recurring bills ----------------------------------------------------------
+# The supplier side of the above: a bill that comes round - rent, software, a
+# retainer - entered on its date without anybody retyping it. Raised as a
+# draft to be looked at, or approved straight away if the business says so.
+
+
+class RecurringBillIn(BaseModel):
+    name: Optional[str] = ""
+    vendor_name: str
+    vendor_email: Optional[str] = ""
+    category: Optional[str] = "general"
+    reference: Optional[str] = ""
+    notes: Optional[str] = ""
+    amount: float
+    tax_amount: Optional[float] = 0.0
+    frequency: Optional[str] = "monthly"
+    payment_terms_days: Optional[int] = 30
+    next_run: str
+    end_date: Optional[str] = ""
+    is_active: Optional[bool] = True
+    auto_approve: Optional[bool] = False
+
+
+def recurring_bill_to_dict(t):
+    total = money((t.amount or 0.0) + (t.tax_amount or 0.0))
+    return {
+        "id": t.id, "name": t.name or "", "vendor_name": t.vendor_name or "",
+        "vendor_email": t.vendor_email or "", "category": t.category or "general",
+        "reference": t.reference or "", "notes": t.notes or "",
+        "amount": t.amount or 0.0, "tax_amount": t.tax_amount or 0.0, "total": total,
+        "frequency": t.frequency, "payment_terms_days": t.payment_terms_days if t.payment_terms_days is not None else 30,
+        "next_run": t.next_run or "", "end_date": t.end_date or "",
+        "is_active": bool(t.is_active), "auto_approve": bool(t.auto_approve),
+        "last_run": t.last_run or "", "last_bill_number": t.last_bill_number or "",
+        "bills_created": t.bills_created or 0,
+    }
+
+
+def validate_recurring_bill(body):
+    if not (body.vendor_name or "").strip():
+        raise HTTPException(status_code=400, detail="Supplier name is required")
+    if not (body.amount and body.amount > 0):
+        raise HTTPException(status_code=400, detail="The amount must be more than nothing")
+    if (body.tax_amount or 0) < 0:
+        raise HTTPException(status_code=400, detail="Tax cannot be negative")
+    return validate_recurring(body)     # frequency, dates and terms are the same rules
+
+
+def recurring_bill_row(db, client, rec_id):
+    t = db.query(models.DBRecurringBill).filter(
+        models.DBRecurringBill.id == rec_id, models.DBRecurringBill.client_id == client.id).first()
+    if not t:
+        raise HTTPException(status_code=404, detail="Recurring bill not found")
+    return t
+
+
+def apply_recurring_bill(t, body, terms):
+    t.name = (body.name or "").strip()
+    t.vendor_name = body.vendor_name.strip()
+    t.vendor_email = (body.vendor_email or "").strip()
+    t.category = body.category or "general"
+    t.reference = (body.reference or "").strip()
+    t.notes = (body.notes or "").strip()
+    t.amount = money(body.amount)
+    t.tax_amount = money(body.tax_amount or 0.0)
+    t.frequency = body.frequency
+    t.payment_terms_days = terms
+    t.next_run = body.next_run
+    t.end_date = body.end_date or ""
+    t.is_active = bool(body.is_active)
+    t.auto_approve = bool(body.auto_approve)
+
+
+@app.get("/api/recurring-bills")
+def list_recurring_bills(request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    rows = db.query(models.DBRecurringBill).filter(
+        models.DBRecurringBill.client_id == client.id).order_by(models.DBRecurringBill.id.desc()).all()
+    return [recurring_bill_to_dict(t) for t in rows]
+
+
+@app.post("/api/recurring-bills")
+def create_recurring_bill(body: RecurringBillIn, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    terms = validate_recurring_bill(body)
+    t = models.DBRecurringBill(client_id=client.id)
+    apply_recurring_bill(t, body, terms)
+    db.add(t)
+    db.flush()
+    log_audit(db, client.id, "recurring_bill_created", "recurring_bill", t.id, t.name or t.vendor_name, t.frequency, request)
+    db.commit()
+    db.refresh(t)
+    return recurring_bill_to_dict(t)
+
+
+@app.put("/api/recurring-bills/{rec_id}")
+def update_recurring_bill(rec_id: int, body: RecurringBillIn, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    t = recurring_bill_row(db, client, rec_id)
+    terms = validate_recurring_bill(body)
+    apply_recurring_bill(t, body, terms)
+    log_audit(db, client.id, "recurring_bill_updated", "recurring_bill", t.id, t.name or t.vendor_name, t.frequency, request)
+    db.commit()
+    db.refresh(t)
+    return recurring_bill_to_dict(t)
+
+
+@app.post("/api/recurring-bills/{rec_id}/{action}")
+def pause_or_resume_recurring_bill(rec_id: int, action: str, request: Request, db: Session = Depends(get_db)):
+    """Pause stops new bills without losing the schedule; resume carries on
+    from the next date it was due."""
+    client = get_client_user(request, db)
+    if action not in ("pause", "resume"):
+        raise HTTPException(status_code=404, detail="No such action")
+    t = recurring_bill_row(db, client, rec_id)
+    if action == "resume":
+        end = _parse_date(t.end_date)
+        nxt = _parse_date(t.next_run)
+        if end and nxt and nxt > end:
+            raise HTTPException(status_code=400, detail="This one has reached its end date. Change the end date to carry on.")
+    t.is_active = action == "resume"
+    log_audit(db, client.id, f"recurring_bill_{action}d", "recurring_bill", t.id, t.name or t.vendor_name, "", request)
+    db.commit()
+    return recurring_bill_to_dict(t)
+
+
+@app.delete("/api/recurring-bills/{rec_id}")
+def delete_recurring_bill(rec_id: int, request: Request, db: Session = Depends(get_db)):
+    """Stops future bills. The ones already entered are real records and are
+    left exactly where they are."""
+    client = get_client_user(request, db)
+    t = recurring_bill_row(db, client, rec_id)
+    log_audit(db, client.id, "recurring_bill_deleted", "recurring_bill", t.id, t.name or t.vendor_name, "", request)
+    db.delete(t)
+    db.commit()
+    return {"message": "Recurring bill stopped"}
+
+
+def issue_recurring_bill(db, t, on_date):
+    """Enter one bill from a template and move the schedule on."""
+    number = next_sequence_number(db, models.DBBill, t.client_id, "BILL-")
+    amount, tax = money(t.amount or 0.0), money(t.tax_amount or 0.0)
+    bill = models.DBBill(
+        client_id=t.client_id, number=number, vendor_name=t.vendor_name or "", vendor_email=t.vendor_email or "",
+        issue_date=on_date.strftime("%Y-%m-%d"),
+        due_date=(on_date + timedelta(days=t.payment_terms_days if t.payment_terms_days is not None else 30)).strftime("%Y-%m-%d"),
+        amount=amount, tax_amount=tax, total=money(amount + tax), amount_paid=0.0,
+        status="Unpaid" if t.auto_approve else "Draft", category=t.category or "general",
+        reference=t.reference or "", notes=t.notes or "")
+    db.add(bill)
+    db.flush()
+    t.last_run = on_date.strftime("%Y-%m-%d")
+    t.last_bill_number = number
+    t.bills_created = (t.bills_created or 0) + 1
+    nxt = advance_date(on_date, t.frequency)
+    t.next_run = nxt.strftime("%Y-%m-%d")
+    end = _parse_date(t.end_date)
+    if end and nxt > end:
+        t.is_active = False             # reached its end date: stops rather than lingers
+    return bill
+
+
+@scheduled_job("recurring_bills")
+def job_recurring_bills(db, now):
+    """Enter whatever is due today, and catch up on any period missed while the
+    app was down, so a rent bill is never silently lost."""
+    today = now.date()
+    entered = 0
+    templates = db.query(models.DBRecurringBill).filter(
+        models.DBRecurringBill.is_active == True,          # noqa: E712
+        models.DBRecurringBill.next_run != "",
+        models.DBRecurringBill.next_run <= today.strftime("%Y-%m-%d"),
+    ).all()
+    for t in templates:
+        guard = 0
+        while t.is_active and guard < 60:
+            due_on = _parse_date(t.next_run)
+            if not due_on or due_on > today:
+                break
+            end = _parse_date(t.end_date)
+            if end and due_on > end:
+                t.is_active = False
+                break
+            issue_recurring_bill(db, t, due_on)
+            entered += 1
+            guard += 1
+    db.commit()
+    return f"{entered} bill(s) entered"
 
 
 def reminder_stage_for(days_overdue):
@@ -17584,6 +18470,58 @@ def superadmin_gateways(request: Request):
     }
 
 
+@app.get("/api/superadmin/saltedge-check")
+def saltedge_check(request: Request, db: Session = Depends(get_db)):
+    """Ask Salt Edge whether these keys work, and say what is still wrong.
+
+    Reads one page of banks: it moves no money and creates no customer. Anything
+    that would break a payment before Salt Edge is even asked is reported too -
+    a key that will not sign, no https address for the callbacks, no account for
+    the money to land in.
+    """
+    require_superadmin(request)
+    cfg = saltedge_cfg()
+    if not saltedge.is_configured(cfg):
+        return {"ok": False, "reason": "no_keys",
+                "message": "SALTEDGE_APP_ID and SALTEDGE_SECRET are not both set.", "notes": []}
+
+    notes = []
+    base = (os.getenv("APP_BASE_URL", "") or "").strip()
+    if not base.startswith("https://"):
+        notes.append("APP_BASE_URL must be the https address you gave Salt Edge, or callbacks are refused.")
+    elif base.endswith("/"):
+        notes.append("APP_BASE_URL ends in a slash - it has to match what Salt Edge was given exactly.")
+    if not (saltedge.can_take(cfg, "GBP") or saltedge.can_take(cfg, "EUR")):
+        notes.append("No account for the money to land in: set SALTEDGE_CREDITOR_NAME with a sort code and account number (GBP) or an IBAN (EUR).")
+    if cfg["private_key"]:
+        try:
+            saltedge.sign(cfg["private_key"], "check")
+        except Exception:                    # noqa: BLE001
+            return {"ok": False, "reason": "bad_private_key", "notes": notes,
+                    "message": "SALTEDGE_PRIVATE_KEY cannot be used to sign. Paste the whole private.pem with its line breaks written as \\n."}
+    else:
+        notes.append("No SALTEDGE_PRIVATE_KEY: fine in Test, but a Live client must sign every request.")
+    if collection_mode(db) != "platform":
+        notes.append("Collection mode is not 'platform', so Salt Edge is not offered on invoices.")
+
+    try:
+        saltedge.call(cfg, "GET", "/providers", query={"country_code": "GB", "per_page": 1})
+    except saltedge.SaltEdgeError as exc:
+        if exc.status == 0:
+            return {"ok": False, "reason": "unreachable", "notes": notes,
+                    "message": f"Could not reach Salt Edge: {exc.message}"[:200]}
+        if exc.status in (401, 403):
+            hint = ("The signature was refused - check the public key on the dashboard matches SALTEDGE_PRIVATE_KEY."
+                    if cfg["private_key"] else
+                    "App-id or Secret refused. If the client is Live, requests must be signed (SALTEDGE_PRIVATE_KEY).")
+            return {"ok": False, "reason": "refused", "notes": notes,
+                    "message": f"Salt Edge said {exc.status} {exc.error_class}: {exc.message}. {hint}"[:400]}
+        return {"ok": False, "reason": "error", "notes": notes,
+                "message": f"Salt Edge said {exc.status} {exc.error_class}: {exc.message}"[:300]}
+    return {"ok": True, "notes": notes,
+            "message": "Salt Edge accepted the keys." + (" Still to fix: see below." if notes else "")}
+
+
 def _saltedge_gateway_status():
     """Salt Edge for the operator's gateways panel: what is set, what is still
     missing, and the three addresses to give Salt Edge."""
@@ -20542,8 +21480,8 @@ def joined_up_context(db, client, today, sym):
         rows, base = purchase_accounts(db, client, as_of, only_owing=True)
         held = db.query(models.DBSupplier).filter(models.DBSupplier.client_id == client.id, models.DBSupplier.on_hold == True).all()  # noqa: E712
         drafts = db.query(models.DBBill).filter(models.DBBill.client_id == client.id, models.DBBill.status == "Draft").count()
-        credits = db.query(models.DBSupplierCredit).filter(models.DBSupplierCredit.client_id == client.id,
-                                                          models.DBSupplierCredit.status == "Open").all()
+        credits = db.query(models.DBSupplierCreditNote).filter(models.DBSupplierCreditNote.client_id == client.id,
+                                                              models.DBSupplierCreditNote.status == "Open").all()
         n = db.query(models.DBSupplier).filter(models.DBSupplier.client_id == client.id, models.DBSupplier.active == True).count()  # noqa: E712
         got = ["PURCHASE LEDGER (suppliers)",
                f"- Suppliers: {n}, on hold: {', '.join(x.name for x in held[:10]) or 'none'}",
@@ -20551,7 +21489,7 @@ def joined_up_context(db, client, today, sym):
                f"of which overdue {sum(r['overdue'] for r in rows if r['currency'] == base):.2f}",
                f"- Draft bills not yet posted: {drafts}",
                f"- Supplier credit notes still to use: {len(credits)} "
-               f"({sum((c.amount or 0) - (c.applied or 0) for c in credits):.2f})"]
+               f"({sum(credit_remaining(c) for c in credits):.2f})"]
         for r in rows[:5]:
             got.append(f"  - We owe {r['supplier']} {r['currency']} {r['total']:.2f}" + (f", {r['overdue']:.2f} overdue" if r["overdue"] else ""))
         return got
@@ -24458,7 +25396,9 @@ def public_invoice_payload(db: Session, inv, client):
 
     return {
         "number": inv.number,
-        "title": (theme.approved_invoice_title if theme else "") or "TAX INVOICE",
+        "title": "PAYMENT REQUEST" if inv.payment_link else ((theme.approved_invoice_title if theme else "") or "TAX INVOICE"),
+        "payment_link": bool(inv.payment_link),
+        "valid_until": inv.payment_link_expires or "" if inv.payment_link else "",
         "status": inv.status,
         "issue_date": inv.issue_date,
         "due_date": inv.due_date,
@@ -24487,7 +25427,8 @@ def public_invoice_payload(db: Session, inv, client):
             "phone": client.phone_number or "",
             "tax_id": client.abn or "",
         },
-        "to": {"name": inv.to_contact or "", "company": inv.to_company or "", "address": inv.to_address or "",
+        "to": {"name": "" if (inv.payment_link and inv.to_contact == PAYMENT_LINK_PLACEHOLDER) else (inv.to_contact or ""),
+               "company": inv.to_company or "", "address": inv.to_address or "",
                "tax_id": inv.to_tax_id or ""},
         "bank_details": inv.bank_details or "",
         "payment_terms": (theme.payment_terms if theme else "") or "",
@@ -24525,8 +25466,8 @@ def public_invoice(tracking_id: str, request: Request, db: Session = Depends(get
         models.DBInvoice.tracking_id == tracking_id).first()
     # A draft has not been issued to anybody, and a void one has been withdrawn.
     # Neither should be readable from a link that may have been forwarded.
-    if not inv or inv.status in ("Draft", "Void"):
-        raise HTTPException(status_code=404, detail="That invoice is not available")
+    if not inv or inv.status in ("Draft", "Void") or link_is_expired(inv):
+        raise HTTPException(status_code=404, detail=link_unavailable_detail(inv))
 
     client = db.query(models.DBClient).filter(
         models.DBClient.id == inv.client_id).first()
@@ -24705,6 +25646,14 @@ def list_client_gateways(request: Request, db: Session = Depends(get_db)):
             })
             for p in CLIENT_PROVIDERS
         ],
+        # Salt Edge runs on the platform's account, so a business has no keys to
+        # enter: it is shown here as a status only.
+        "platform_methods": [{
+            "provider": "saltedge", "label": "Pay from your bank (Salt Edge)",
+            "currencies": [c for c in ("GBP", "EUR") if saltedge.can_take(saltedge_cfg(), c)],
+            "collection_mode": collection_mode(db),
+            "offered": saltedge_ready(db, "GBP") or saltedge_ready(db, "EUR"),
+        }],
         # Said plainly so nobody wires their own keys expecting wallet credit.
         "note": "These collect money from your customers into your own account. "
                 "Topping up your aniprotech wallet is separate and always goes "
@@ -24810,8 +25759,8 @@ def payable_invoice(db: Session, tracking_id: str):
     """The invoice behind a payment link, if it can still be paid."""
     inv = db.query(models.DBInvoice).filter(
         models.DBInvoice.tracking_id == tracking_id).first()
-    if not inv or inv.status in ("Draft", "Void"):
-        raise HTTPException(status_code=404, detail="That invoice is not available")
+    if not inv or inv.status in ("Draft", "Void") or link_is_expired(inv):
+        raise HTTPException(status_code=404, detail=link_unavailable_detail(inv))
     return inv
 
 
@@ -25308,7 +26257,7 @@ class Setting:
         if self.kind == "secret":
             # A password. Anything goes in; nothing comes back out - the list
             # endpoint masks it, and an empty value on save means "leave it".
-            return raw[:400]
+            return raw[:8000]
 
         if self.kind == "colour":
             # Anything else would be injected straight into a stylesheet.
@@ -25521,6 +26470,47 @@ PLATFORM_SETTINGS = [
     Setting("landing.notice", "Notice bar", "Landing", "text", "",
             help="Shown across the top of the front page. Leave empty for none - "
                  "it is the fastest way to say something to every visitor."),
+
+    # --- HMRC payroll filings -----------------------------------------------
+    # One set for the whole platform: HMRC recognises the software, not each
+    # employer. A business's own PAYE references and Gateway login stay on its
+    # Payroll screen. The key that protects those logins is deliberately not
+    # here (HMRC_ENCRYPTION_KEY) - it must not sit beside what it protects.
+    Setting("hmrc.vendor_id", "Vendor ID", "HMRC", "text", "", env="HMRC_VENDOR_ID",
+            help="Issued by HMRC's Software Developer Support Team once they recognise the software."),
+    Setting("hmrc.endpoint", "Gateway address", "HMRC", "text", "", env="HMRC_RTI_ENDPOINT",
+            help="Where filings are sent. HMRC gives you the test address first."),
+    Setting("hmrc.mode", "Mode", "HMRC", "choice", "test", env="HMRC_RTI_MODE",
+            choices=["test", "live"],
+            help="Test: HMRC checks and answers and records nothing. Stay on test until HMRC has recognised the software."),
+    Setting("hmrc.irmark", "Send the IRmark", "HMRC", "bool", "false", env="HMRC_RTI_IRMARK",
+            help="Turn on only after HMRC's test service has accepted our IRmark."),
+
+    # --- Salt Edge (pay an invoice from the payer's own bank) ---------------
+    # The platform's own account: the money lands in the creditor account
+    # below, so Salt Edge is offered only while collection mode is platform.
+    Setting("saltedge.app_id", "App ID", "Salt Edge", "text", "", env="SALTEDGE_APP_ID",
+            help="Salt Edge dashboard, API keys."),
+    Setting("saltedge.secret", "Secret", "Salt Edge", "secret", "", env="SALTEDGE_SECRET",
+            help="Salt Edge dashboard, API keys. Leave empty to keep the one saved."),
+    Setting("saltedge.private_key", "Private key", "Salt Edge", "secret", "", env="SALTEDGE_PRIVATE_KEY",
+            help="The whole private.pem. Required once your Salt Edge client is Live; the public half goes on "
+                 "their Keys & Secrets page. Leave empty to keep the one saved."),
+    Setting("saltedge.callback_public_key", "Callback public key", "Salt Edge", "longtext", "",
+            env="SALTEDGE_CALLBACK_PUBLIC_KEY",
+            help="Only if Salt Edge announces a new key version. Empty uses the built-in 6.0 key."),
+    Setting("saltedge.creditor_name", "Name on the receiving account", "Salt Edge", "text", "",
+            env="SALTEDGE_CREDITOR_NAME"),
+    Setting("saltedge.creditor_sort_code", "Sort code (GBP)", "Salt Edge", "text", "",
+            env="SALTEDGE_CREDITOR_SORT_CODE"),
+    Setting("saltedge.creditor_account_number", "Account number (GBP)", "Salt Edge", "text", "",
+            env="SALTEDGE_CREDITOR_ACCOUNT_NUMBER"),
+    Setting("saltedge.creditor_iban", "IBAN (EUR)", "Salt Edge", "text", "", env="SALTEDGE_CREDITOR_IBAN"),
+    Setting("saltedge.provider_code", "Send every payer to one bank", "Salt Edge", "text", "",
+            env="SALTEDGE_PROVIDER_CODE", help="A Salt Edge provider code. Empty lets payers search for theirs."),
+    Setting("saltedge.vrp_type", "Autodebit type", "Salt Edge", "choice", "commercial", env="SALTEDGE_VRP_TYPE",
+            choices=["commercial", "sweeping"],
+            help="Commercial: a business collecting from its customers. Sweeping is between a person's own accounts."),
 
     # --- AI ----------------------------------------------------------------
     Setting("ai.enabled", "AI features", "AI", "bool", "true",
@@ -26432,8 +27422,30 @@ SALTEDGE_CONSENT_DAYS = 3           # how long a payer has to approve at their b
 _saltedge_banks = {"key": "", "at": 0.0, "banks": []}
 
 
-def saltedge_cfg():
-    return saltedge.settings()
+SALTEDGE_SETTING_FOR = {
+    "SALTEDGE_APP_ID": "saltedge.app_id", "SALTEDGE_SECRET": "saltedge.secret",
+    "SALTEDGE_PRIVATE_KEY": "saltedge.private_key",
+    "SALTEDGE_CALLBACK_PUBLIC_KEY": "saltedge.callback_public_key",
+    "SALTEDGE_CREDITOR_NAME": "saltedge.creditor_name",
+    "SALTEDGE_CREDITOR_SORT_CODE": "saltedge.creditor_sort_code",
+    "SALTEDGE_CREDITOR_ACCOUNT_NUMBER": "saltedge.creditor_account_number",
+    "SALTEDGE_CREDITOR_IBAN": "saltedge.creditor_iban",
+    "SALTEDGE_PROVIDER_CODE": "saltedge.provider_code",
+    "SALTEDGE_VRP_TYPE": "saltedge.vrp_type",
+}
+
+
+def saltedge_cfg(db=None):
+    """Salt Edge's settings: what the operator saved on the settings screen,
+    else the environment variable that used to hold it."""
+    def build(session):
+        env = {name: platform_setting(session, key) for name, key in SALTEDGE_SETTING_FOR.items()}
+        env["SALTEDGE_API_BASE"] = os.getenv("SALTEDGE_API_BASE", "")
+        return saltedge.settings(env)
+    if db is not None:
+        return build(db)
+    with SessionLocal() as session:
+        return build(session)
 
 
 def _se_now():
@@ -32855,6 +33867,167 @@ def ageing_csv(request: Request, as_of: str = "", detail: int = 0, db: Session =
                          [[r["contact"], r["email"], r["currency"], r["invoices"], r["current"], r["1_30"], r["31_60"], r["61_90"], r["over_90"], r["total"], r["oldest_days"]] for r in rows])
 
 
+# --- Purchase reports -------------------------------------------------------------
+# The supplier side of the ageing and spend reports: what is owed to suppliers
+# and for how long, and where the money went.
+
+def payables_by_supplier(db, client, as_of):
+    """What was owed on each bill at the end of a day, bucketed by how late it
+    was then. A bill's own payments are counted by their date; anything the
+    running total shows that has no payment record behind it (paid before
+    payments were kept) is taken as paid."""
+    day = _parse_date(as_of) or date.today()
+    bills = [b for b in db.query(models.DBBill).filter(models.DBBill.client_id == client.id,
+                                                      models.DBBill.status != "Draft").all()
+             if (b.issue_date or "")[:10] <= as_of]
+    pays = {}
+    if bills:
+        for p in db.query(models.DBBillPayment).filter(models.DBBillPayment.bill_id.in_([b.id for b in bills])).all():
+            pays.setdefault(p.bill_id, []).append(p)
+    suppliers, per_bill = {}, []
+    for b in bills:
+        mine = pays.get(b.id, [])
+        by_day = sum((p.amount or 0.0) for p in mine if (p.paid_on or "")[:10] <= as_of)
+        legacy = max((b.amount_paid or 0.0) - sum((p.amount or 0.0) for p in mine), 0.0)
+        owed = money(max(bill_total(b) - by_day - legacy, 0.0))
+        if owed <= 0.005:
+            continue
+        due = _parse_date(b.due_date)
+        late = (day - due).days if due else 0
+        bucket = _age_bucket(late)
+        name = " ".join((b.vendor_name or "").split()) or "Unnamed"
+        row = suppliers.setdefault(name.lower(), {"name": name, "bills": 0, "total": 0.0, "oldest_days": 0,
+                                                  **{k: 0.0 for k in AGE_BUCKETS}})
+        row["bills"] += 1
+        row[bucket] = money(row[bucket] + owed)
+        row["total"] = money(row["total"] + owed)
+        row["oldest_days"] = max(row["oldest_days"], late)
+        per_bill.append({"id": b.id, "number": b.number, "supplier": name, "issue_date": b.issue_date or "",
+                         "due_date": b.due_date or "", "days_overdue": max(late, 0), "bucket": bucket, "outstanding": owed})
+    rows = sorted(suppliers.values(), key=lambda r: (-r["total"], r["name"].lower()))
+    per_bill.sort(key=lambda r: (-r["days_overdue"], r["number"] or ""))
+    return rows, per_bill
+
+
+@app.get("/api/purchases/reports/ageing")
+def payables_ageing_report(request: Request, as_of: str = "", db: Session = Depends(get_db)):
+    """Who you owe, and for how long, as of a day."""
+    client = get_client_user(request, db)
+    as_of = _clean_ymd(as_of, "as_of") or date.today().isoformat()
+    rows, per_bill = payables_by_supplier(db, client, as_of)
+    buckets = {k: money(sum(r[k] for r in rows)) for k in AGE_BUCKETS}
+    return {"as_of": as_of, "currency": base_currency(client), "buckets": buckets,
+            "total_outstanding": money(sum(buckets.values())), "suppliers": rows, "bills": per_bill}
+
+
+@app.get("/api/purchases/reports/ageing.csv")
+def payables_ageing_csv(request: Request, as_of: str = "", detail: int = 0, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    as_of = _clean_ymd(as_of, "as_of") or date.today().isoformat()
+    rows, per_bill = payables_by_supplier(db, client, as_of)
+    if detail:
+        return _csv_response(f"payables-bills-{as_of}.csv", ["bill", "supplier", "issued", "due", "days_overdue", "bucket", "outstanding"],
+                             [[r["number"], r["supplier"], r["issue_date"], r["due_date"], r["days_overdue"], r["bucket"], r["outstanding"]] for r in per_bill])
+    return _csv_response(f"payables-{as_of}.csv", ["supplier", "bills", "current", "1_30", "31_60", "61_90", "over_90", "total", "oldest_days"],
+                         [[r["name"], r["bills"], r["current"], r["1_30"], r["31_60"], r["61_90"], r["over_90"], r["total"], r["oldest_days"]] for r in rows])
+
+
+def spend_report_data(db, client, start, end):
+    """Where the money went between two days: bills by their date (drafts are
+    not spend yet), business expenses by the day they were spent, and the
+    credit notes suppliers gave. Net is bills and expenses less credits."""
+    sup, cat, mon = {}, {}, {}
+
+    def bucket(table, key, name):
+        return table.setdefault(key, {"name": name, "bills": 0.0, "expenses": 0.0, "credits": 0.0, "count": 0})
+
+    def add(table, key, name, field, amount, count=True):
+        row = bucket(table, key, name)
+        row[field] = money(row[field] + amount)
+        if count and field != "credits":
+            row["count"] += 1
+
+    def clean(name):
+        n = " ".join((name or "").split()) or "Unnamed"
+        return n.lower(), n
+
+    for b in db.query(models.DBBill).filter(models.DBBill.client_id == client.id, models.DBBill.status != "Draft").all():
+        on = (b.issue_date or "")[:10]
+        if not on or on < start or on > end:
+            continue
+        k, n = clean(b.vendor_name)
+        add(sup, k, n, "bills", bill_total(b))
+        add(cat, b.category or "general", b.category or "general", "bills", bill_total(b))
+        add(mon, on[:7], on[:7], "bills", bill_total(b))
+    for e in db.query(models.DBBusinessExpense).filter(models.DBBusinessExpense.client_id == client.id,
+                                                       models.DBBusinessExpense.spent_on >= start,
+                                                       models.DBBusinessExpense.spent_on <= end).all():
+        k, n = clean(e.payee or e.description)
+        add(sup, k, n, "expenses", e.total or 0.0)
+        add(cat, e.category or "general", e.category or "general", "expenses", e.total or 0.0)
+        add(mon, (e.spent_on or "")[:7], (e.spent_on or "")[:7], "expenses", e.total or 0.0)
+    for c in db.query(models.DBSupplierCreditNote).filter(models.DBSupplierCreditNote.client_id == client.id,
+                                                          models.DBSupplierCreditNote.status != "Void",
+                                                          models.DBSupplierCreditNote.issue_date >= start,
+                                                          models.DBSupplierCreditNote.issue_date <= end).all():
+        k, n = clean(c.vendor_name)
+        add(sup, k, n, "credits", c.total or 0.0)
+        add(mon, (c.issue_date or "")[:7], (c.issue_date or "")[:7], "credits", c.total or 0.0)
+
+    def finish(table, order):
+        rows = list(table.values())
+        for r in rows:
+            r["net"] = money(r["bills"] + r["expenses"] - r["credits"])
+        rows.sort(key=order)
+        return rows
+
+    by_supplier = finish(sup, lambda r: (-r["net"], r["name"].lower()))
+    by_category = finish(cat, lambda r: (-r["net"], r["name"].lower()))
+    for r in by_category:
+        r.pop("credits", None)                        # a credit note has no category
+    by_month = finish(mon, lambda r: r["name"])
+    bills_total = money(sum(r["bills"] for r in by_supplier))
+    expenses_total = money(sum(r["expenses"] for r in by_supplier))
+    credits_total = money(sum(r["credits"] for r in by_supplier))
+    return {"start": start, "end": end,
+            "summary": {"bills": bills_total, "expenses": expenses_total, "credits": credits_total,
+                        "net": money(bills_total + expenses_total - credits_total)},
+            "by_supplier": by_supplier, "by_category": by_category, "by_month": by_month}
+
+
+def spend_range(start, end):
+    end = _clean_ymd(end, "end") or date.today().isoformat()
+    start = _clean_ymd(start, "start") or date.today().replace(month=1, day=1).isoformat()
+    if start > end:
+        raise HTTPException(status_code=400, detail="The start date cannot be after the end date")
+    return start, end
+
+
+@app.get("/api/purchases/reports/spend")
+def spend_report(request: Request, start: str = "", end: str = "", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    start, end = spend_range(start, end)
+    out = spend_report_data(db, client, start, end)
+    out["currency"] = base_currency(client)
+    return out
+
+
+@app.get("/api/purchases/reports/spend.csv")
+def spend_report_csv(request: Request, start: str = "", end: str = "", view: str = "supplier", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    if view not in ("supplier", "category", "month"):
+        raise HTTPException(status_code=400, detail="View must be one of: supplier, category, month")
+    start, end = spend_range(start, end)
+    data = spend_report_data(db, client, start, end)
+    rows = data["by_" + view]
+    if view == "category":
+        return _csv_response(f"spend-by-category-{start}-{end}.csv", ["category", "bills", "expenses", "total"],
+                             [[r["name"], r["bills"], r["expenses"], r["net"]] for r in rows])
+    label = "month" if view == "month" else "supplier"
+    return _csv_response(f"spend-by-{label}-{start}-{end}.csv", [label, "bills", "expenses", "credits", "net"],
+                         [[r["name"], r["bills"], r["expenses"], r["credits"], r["net"]] for r in rows])
+
+
 # --- statements ---------------------------------------------------------------------
 
 def _contact_invoices(db, client_id, contact):
@@ -35343,6 +36516,368 @@ def invoice_list(request: Request, q: str = "", status: str = "all", customer: s
             "summary": summary, "currency": client.currency or ""}
 
 
+def _overview_buckets(rows, today):
+    """Draft / awaiting / overdue / done for a list of (state, amount, due_date)
+    where state is "draft", "open" or "done". Open money past its due date is
+    overdue; the rest of it is awaiting, split by when it falls due."""
+    out = {"draft": {"count": 0, "amount": 0.0}, "awaiting": {"count": 0, "amount": 0.0},
+           "overdue": {"count": 0, "amount": 0.0}, "done": {"count": 0, "amount": 0.0},
+           "due_this_week": 0.0, "due_next_week": 0.0}
+    for state, amount, due_date in rows:
+        amount = amount or 0.0
+        if state == "draft":
+            out["draft"]["count"] += 1
+            out["draft"]["amount"] = money(out["draft"]["amount"] + amount)
+        elif state == "done":
+            out["done"]["count"] += 1
+            out["done"]["amount"] = money(out["done"]["amount"] + amount)
+        elif state == "open" and amount > 0:
+            due = _parse_date(due_date)
+            if due and due < today:
+                out["overdue"]["count"] += 1
+                out["overdue"]["amount"] = money(out["overdue"]["amount"] + amount)
+                continue
+            out["awaiting"]["count"] += 1
+            out["awaiting"]["amount"] = money(out["awaiting"]["amount"] + amount)
+            if due:
+                days = (due - today).days
+                if days <= 6:
+                    out["due_this_week"] = money(out["due_this_week"] + amount)
+                elif days <= 13:
+                    out["due_next_week"] = money(out["due_next_week"] + amount)
+    return out
+
+
+@app.get("/api/sales/overview")
+def sales_overview(request: Request, db: Session = Depends(get_db)):
+    """The sales screen's summary: draft invoices, invoices awaiting payment,
+    overdue ones and finished sales, what falls due soon, and who owes most."""
+    client = get_client_user(request, db)
+    today = date.today()
+    inv = models.DBInvoice
+    rows = db.query(inv.status, inv.due, inv.paid, inv.due_date, inv.to_company, inv.to_contact) \
+        .filter(inv.client_id == client.id).all()
+    buckets, owing = [], {}
+    for r in rows:
+        if r.status in ("Void", "Credited"):
+            continue
+        if r.status == "Draft":
+            buckets.append(("draft", (r.due or 0.0) + (r.paid or 0.0), r.due_date))
+        elif r.status == "Paid":
+            buckets.append(("done", r.paid or 0.0, r.due_date))
+        else:
+            buckets.append(("open", r.due or 0.0, r.due_date))
+            if (r.due or 0) > 0:
+                who = (r.to_company or r.to_contact or "").strip() or "Unnamed"
+                owing[who] = money(owing.get(who, 0.0) + (r.due or 0.0))
+    out = _overview_buckets(buckets, today)
+    out["customers_owing_most"] = [{"name": n, "owed": a} for n, a in
+                                   sorted(owing.items(), key=lambda kv: -kv[1])[:5]]
+    out["currency"] = client.currency or ""
+    return out
+
+
+@app.get("/api/purchases/overview")
+def purchases_overview(request: Request, db: Session = Depends(get_db)):
+    """The same picture for what the business owes its suppliers."""
+    client = get_client_user(request, db)
+    today = date.today()
+    b = models.DBBill
+    rows = db.query(b.status, b.total, b.amount_paid, b.due_date, b.vendor_name) \
+        .filter(b.client_id == client.id).all()
+    buckets, owing = [], {}
+    for r in rows:
+        total = r.total or 0.0
+        if r.status == "Draft":
+            buckets.append(("draft", total, r.due_date))
+        elif r.status == "Paid":
+            buckets.append(("done", r.amount_paid or total, r.due_date))
+        else:
+            left = max(total - (r.amount_paid or 0.0), 0.0)
+            buckets.append(("open", left, r.due_date))
+            if left > 0:
+                who = (r.vendor_name or "").strip() or "Unnamed"
+                owing[who] = money(owing.get(who, 0.0) + left)
+    out = _overview_buckets(buckets, today)
+    out["suppliers_owed_most"] = [{"name": n, "owed": a} for n, a in
+                                  sorted(owing.items(), key=lambda kv: -kv[1])[:5]]
+    out["currency"] = base_currency(client)
+    return out
+
+
+@app.get("/api/purchases/suppliers")
+def purchases_suppliers(request: Request, db: Session = Depends(get_db)):
+    """Everyone the business has been billed by, worked out from its bills:
+    how many, how much, what is still owed, and the last one. Names are matched
+    without regard to case or stray spaces, so "Paper Co" and "paper co " are one
+    supplier. Most owed first."""
+    client = get_client_user(request, db)
+    today = date.today()
+    b = models.DBBill
+    rows = db.query(b.vendor_name, b.vendor_email, b.status, b.total, b.amount_paid, b.due_date, b.issue_date) \
+        .filter(b.client_id == client.id).order_by(b.id.asc()).all()
+    out = {}
+    for r in rows:
+        shown = " ".join((r.vendor_name or "").split()) or "Unnamed"
+        s = out.setdefault(shown.lower(), {"name": shown, "email": "", "bills": 0, "billed": 0.0, "owed": 0.0,
+                                           "overdue": 0, "last_bill": ""})
+        s["email"] = (r.vendor_email or "").strip() or s["email"]
+        total = r.total or 0.0
+        s["bills"] += 1
+        s["billed"] = money(s["billed"] + total)
+        s["last_bill"] = max(s["last_bill"], r.issue_date or "")
+        if r.status not in ("Draft", "Paid"):
+            left = max(total - (r.amount_paid or 0.0), 0.0)
+            if left > 0:
+                s["owed"] = money(s["owed"] + left)
+                due = _parse_date(r.due_date)
+                if due and due < today:
+                    s["overdue"] += 1
+    suppliers = sorted(out.values(), key=lambda x: (-x["owed"], x["name"].lower()))
+    return {"suppliers": suppliers, "currency": base_currency(client)}
+
+
+# --- Payment links --------------------------------------------------------------
+# Get paid without raising an invoice by hand: an amount, what it is for, and a
+# link to send. Behind it is a real one-line invoice, so every way of paying an
+# invoice works, the receipt and the bank reconciliation are the usual ones,
+# and the money is counted as sales. It is never chased, and it stops working
+# on its expiry date.
+
+PAYMENT_LINK_PLACEHOLDER = "Payment link"
+
+
+def link_is_expired(inv):
+    """An active link past its last day that has not been paid in full."""
+    if not inv or inv.payment_link != "active" or not (inv.payment_link_expires or ""):
+        return False
+    if inv.status == "Paid" or (inv.due or 0) <= 0.005:
+        return False
+    return inv.payment_link_expires < date.today().isoformat()
+
+
+def link_unavailable_detail(inv):
+    if inv is not None and inv.payment_link == "cancelled":
+        return "This payment link has been cancelled"
+    if inv is not None and (inv.payment_link == "expired" or link_is_expired(inv)):
+        return "This payment link has expired"
+    return "That invoice is not available"
+
+
+def link_state(inv):
+    if inv.status == "Paid" or (inv.due or 0) <= 0.005:
+        return "paid"
+    if inv.payment_link in ("cancelled", "expired"):
+        return inv.payment_link
+    return "expired" if link_is_expired(inv) else "open"
+
+
+def link_to_dict(db, inv, detail=False):
+    first = inv.line_items[0] if inv.line_items else None
+    total = money((inv.paid or 0.0) + (inv.due or 0.0))
+    out = {"number": inv.number, "tracking_id": inv.tracking_id, "description": (first.description if first else "") or "",
+           "amount": total, "paid": money(inv.paid or 0.0), "due": money(inv.due or 0.0),
+           "currency": (inv.currency or "GBP").upper(),
+           "customer": "" if inv.to_contact == PAYMENT_LINK_PLACEHOLDER else (inv.to_contact or ""),
+           "email": inv.email or "", "reference": inv.ref or "", "state": link_state(inv), "created": inv.issue_date or "",
+           "expires_on": inv.payment_link_expires or "", "opens": inv.open_count or 0, "last_opened": inv.last_opened or "",
+           "sent": inv.sent or ""}
+    if detail:
+        pays = db.query(models.DBPayment).filter(models.DBPayment.invoice_id == inv.id).order_by(models.DBPayment.id.asc()).all()
+        out["payments"] = [{"amount": p.amount or 0.0, "paid_on": p.paid_on or "", "method": p.method or "", "reference": p.reference or ""} for p in pays]
+    return out
+
+
+class PaymentLinkIn(BaseModel):
+    amount: float
+    description: str
+    customer_name: Optional[str] = ""
+    email: Optional[str] = ""
+    reference: Optional[str] = ""
+    expires_in_days: Optional[int] = 30
+    send: Optional[bool] = False
+
+
+def payment_link_row(db, client, number):
+    inv = db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id, models.DBInvoice.number == number,
+                                            models.DBInvoice.payment_link != "").first()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Payment link not found")
+    return inv
+
+
+def send_payment_link_email(db, client, inv, background_tasks, request):
+    """Email the link, in words that say what it is: a request to pay, not an
+    invoice. Raises HTTPException with the reason when it cannot go."""
+    if not inv.email or not validate_email_address(inv.email):
+        raise HTTPException(status_code=400, detail="Add the customer's email address to send the link")
+    from_email = platform_from_address()
+    if not from_email:
+        raise HTTPException(status_code=400, detail="No sender email configured.")
+    ready, missing = email_delivery_ready(db, client.id)
+    if not ready:
+        raise HTTPException(status_code=503, detail=f"The link cannot be emailed at the moment - {missing}.")
+    company = tenant_setting(db, client.id, "company_name", "") or client.company_name or "Accounts"
+    cur = currency_symbol((inv.currency or client.currency or "GBP").upper())
+    first = inv.line_items[0] if inv.line_items else None
+    what = (first.description if first else "") or "your payment"
+    amount = money(inv.due or 0.0)
+    link = page_url(f"/invoice.html?id={inv.tracking_id}", request)
+    greeting = "Hello" + (f" {inv.to_contact}" if inv.to_contact and inv.to_contact != PAYMENT_LINK_PLACEHOLDER else "")
+    until = f"\nThe link works until {inv.payment_link_expires}.\n" if inv.payment_link_expires else ""
+    subject = f"{company} has asked you to pay {cur}{amount:.2f}"
+    body = (f"{greeting},\n\n{company} has asked you to pay {cur}{amount:.2f} for: {what}.\n\nPay online here:\n{link}\n{until}\n"
+            f"If you have any questions, reply to this email.\n\nKind regards,\n{company}\n")
+    html_body = f"""<!DOCTYPE html><html><body style="font-family:Arial,Helvetica,sans-serif;color:#1e293b;line-height:1.6;margin:0;background:#f1f5f9;">
+      <div style="max-width:560px;margin:0 auto;padding:36px 20px;"><div style="background:#fff;border-radius:12px;padding:32px 28px;">
+        <p style="margin:0 0 16px;font-size:15px;">{esc(greeting)},</p>
+        <p style="margin:0 0 20px;font-size:15px;color:#475569;"><strong>{esc(company)}</strong> has asked you to pay:</p>
+        <div style="background:#0f172a;border-radius:10px;padding:20px 24px;margin-bottom:22px;color:#fff;">
+          <div style="font-size:13px;color:#94a3b8;">{esc(what)}</div>
+          <div style="font-size:28px;font-weight:800;margin-top:4px;">{cur}{amount:.2f}</div></div>
+        <p style="text-align:center;margin:0 0 20px;"><a href="{esc(link)}" style="display:inline-block;background:#0284c7;color:#fff;text-decoration:none;font-weight:700;padding:13px 28px;border-radius:8px;">Pay now</a></p>
+        {f'<p style="margin:0 0 16px;font-size:13px;color:#64748b;">The link works until {esc(inv.payment_link_expires)}.</p>' if inv.payment_link_expires else ''}
+        <p style="margin:0;font-size:13px;color:#64748b;">If you have any questions, reply to this email.</p>
+      </div></div></body></html>"""
+    charge = require_credit(db, client.id, "invoice_send", 1, inv.number)
+    delivery = start_delivery(db, client.id, "payment_link", inv.number, inv.email, charge)
+    background_tasks.add_task(deliver_and_record, delivery.id, inv.email, subject, body, f"{company} <{from_email}>",
+                              html_body, None, "", client.logo_url or "", client_id=client.id)
+    inv.sent = date.today().isoformat()
+    log_audit(db, client.id, "payment_link_sent", "invoice", inv.id, inv.number, f"Sent to {inv.email}", request)
+    db.commit()
+
+
+@app.post("/api/payment-links")
+def create_payment_link(body: PaymentLinkIn, request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    amount = money(body.amount)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="The amount must be more than nothing")
+    if amount > 10_000_000:
+        raise HTTPException(status_code=400, detail="That amount is too large for a payment link")
+    description = " ".join((body.description or "").split())
+    if not description:
+        raise HTTPException(status_code=400, detail="Say what the payment is for")
+    if len(description) > 200:
+        raise HTTPException(status_code=400, detail="Keep the description to 200 characters")
+    email = (body.email or "").strip()
+    if email and not validate_email_address(email):
+        raise HTTPException(status_code=400, detail="That email address does not look right")
+    if body.send and not email:
+        raise HTTPException(status_code=400, detail="Add the customer's email address to send the link")
+    days = 30 if body.expires_in_days is None else body.expires_in_days
+    if not 1 <= days <= 365:
+        raise HTTPException(status_code=400, detail="The link can last between 1 and 365 days")
+    today = date.today()
+    expires = (today + timedelta(days=days)).isoformat()
+    inv = models.DBInvoice(
+        client_id=client.id, number=next_sequence_number(db, models.DBInvoice, client.id, invoice_prefix_for(db, client.id)),
+        ref=(body.reference or "").strip()[:120], to_contact=((body.customer_name or "").strip() or PAYMENT_LINK_PLACEHOLDER)[:120],
+        email=email, issue_date=today.isoformat(), due_date=expires, paid=0.0, due=amount, status="Awaiting Payment", sent="",
+        tax_type="exclusive", currency=(client.currency or "GBP").upper(), chase_paused=True, payment_link="active",
+        payment_link_expires=expires)
+    db.add(inv)
+    db.flush()
+    db.add(models.DBLineItem(invoice_id=inv.id, name="", description=description, qty=1, price=amount, disc=0.0,
+                             account="200 - Sales", tax_rate="No Tax"))
+    log_audit(db, client.id, "payment_link_created", "invoice", inv.id, inv.number, f"{amount:.2f}, {description}", request)
+    db.commit()
+    db.refresh(inv)
+    out = link_to_dict(db, inv)
+    # A link nobody can pay with online is a page with a bank account on it:
+    # say so now, while it can be fixed, not when the customer is confused.
+    out["warning"] = "" if invoice_payment_methods(db, inv) else \
+        "No online payment method is switched on, so this link will only show your bank details. Turn one on under Payment options."
+    out["sent_now"], out["send_error"] = False, ""
+    if body.send:
+        try:
+            send_payment_link_email(db, client, inv, background_tasks, request)
+            out["sent_now"] = True
+        except HTTPException as exc:
+            db.rollback()
+            out["send_error"] = str(exc.detail)
+    return out
+
+
+@app.get("/api/payment-links")
+def list_payment_links(request: Request, status: str = "all", q: str = "", db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    status = (status or "all").lower()
+    if status not in ("all", "open", "paid", "expired", "cancelled"):
+        raise HTTPException(status_code=400, detail="Status must be one of: all, open, paid, expired, cancelled")
+    rows = db.query(models.DBInvoice).filter(models.DBInvoice.client_id == client.id, models.DBInvoice.payment_link != "") \
+        .order_by(models.DBInvoice.id.desc()).limit(500).all()
+    items = [link_to_dict(db, i) for i in rows]
+    if status != "all":
+        items = [i for i in items if i["state"] == status]
+    needle = q.strip().lower()
+    if needle:
+        items = [i for i in items if needle in " ".join([i["number"], i["customer"], i["description"], i["reference"], i["email"]]).lower()]
+    return {"links": items, "count": len(items), "open_total": money(sum(i["due"] for i in items if i["state"] == "open")),
+            "paid_total": money(sum(i["paid"] for i in items if i["state"] == "paid")), "currency": (client.currency or "GBP").upper()}
+
+
+@app.get("/api/payment-links/{number}")
+def get_payment_link(number: str, request: Request, db: Session = Depends(get_db)):
+    client = get_client_user(request, db)
+    return link_to_dict(db, payment_link_row(db, client, number), True)
+
+
+@app.post("/api/payment-links/{number}/send")
+def send_payment_link(number: str, request: Request, background_tasks: BackgroundTasks, body: dict = None,
+                      db: Session = Depends(get_db)):
+    """Email the link, or email it again, to the address given or the one on it."""
+    client = get_client_user(request, db)
+    inv = payment_link_row(db, client, number)
+    if link_state(inv) != "open":
+        raise HTTPException(status_code=400, detail="Only an open link can be sent")
+    to = str((body or {}).get("email") or "").strip()
+    if to:
+        if not validate_email_address(to):
+            raise HTTPException(status_code=400, detail="That email address does not look right")
+        inv.email = to
+    send_payment_link_email(db, client, inv, background_tasks, request)
+    return {"message": f"Link sent to {inv.email}"}
+
+
+@app.post("/api/payment-links/{number}/cancel")
+def cancel_payment_link(number: str, request: Request, db: Session = Depends(get_db)):
+    """Withdraw a link nobody has paid: the page stops working and the invoice
+    behind it is voided, so it counts as nothing."""
+    client = get_client_user(request, db)
+    inv = payment_link_row(db, client, number)
+    if link_state(inv) != "open":
+        raise HTTPException(status_code=400, detail="Only an open link can be cancelled")
+    if (inv.paid or 0) > 0.005:
+        raise HTTPException(status_code=400, detail="Part of this has been paid. Record a refund on the invoice instead.")
+    inv.status, inv.payment_link = "Void", "cancelled"
+    log_audit(db, client.id, "payment_link_cancelled", "invoice", inv.id, inv.number, "", request)
+    db.commit()
+    return link_to_dict(db, inv)
+
+
+@scheduled_job("payment_link_expiry")
+def job_payment_link_expiry(db, now):
+    """Close links that have run out. An unpaid one is voided so it does not sit
+    in the books as overdue; one part-paid is marked expired and left to be
+    collected like any invoice."""
+    today = now.date().isoformat()
+    n = 0
+    for inv in db.query(models.DBInvoice).filter(models.DBInvoice.payment_link == "active",
+                                                 models.DBInvoice.payment_link_expires != "",
+                                                 models.DBInvoice.payment_link_expires < today,
+                                                 models.DBInvoice.status.notin_(["Paid", "Void"])).all():
+        if (inv.due or 0) <= 0.005:
+            continue
+        inv.payment_link = "expired"
+        if (inv.paid or 0) <= 0.005:
+            inv.status = "Void"
+        n += 1
+    db.commit()
+    return f"{n} link(s) expired"
+
+
 @app.get("/api/invoice-list.csv")
 def invoice_list_csv(request: Request, q: str = "", status: str = "all", customer: str = "", start: str = "", end: str = "",
                      sort: str = "number", dir: str = "desc", db: Session = Depends(get_db)):
@@ -36146,7 +37681,7 @@ def code_bank_line(db, client, line, category, tax_rate="", transfer_account_id=
         if paid > balance + 0.005:
             raise HTTPException(status_code=400, detail=f"This line is more than bill {bill.number} has left ({balance:.2f})")
         record_bill_payment(db, client, bill, paid, line.date or "", "bank_transfer", (line.description or "")[:120], "from a bank line",
-                            line.account_id, bank_line_id=line.id)
+                            line.account_id, None, bank_line_id=line.id)
         line.bill_id = bill.id
         line.tax_rate = tax_rate or ""
     else:
@@ -36168,7 +37703,7 @@ def uncode_bank_line(db, client, line):
         if bill:
             row = db.query(models.DBBillPayment).filter(models.DBBillPayment.bank_line_id == line.id).first()
             if row is not None:
-                remove_bill_payment(db, bill, row)
+                unpay_bill(db, bill, row)
             else:   # coded before payments were recorded one by one
                 bill.amount_paid = money(max(0.0, (bill.amount_paid or 0) - abs(line.amount or 0)))
                 bill.status = ledgers.bill_status(bill.total or 0, bill.amount_paid, "Awaiting Payment")
@@ -36803,15 +38338,23 @@ RTI_FIELDS = ("office_no", "paye_ref", "ao_ref", "contact_name", "contact_email"
 RTI_PASSWORD_KEY = "hmrc.gateway_password"
 
 
-def rti_cfg() -> dict:
-    return {
-        "vendor_id": os.getenv("HMRC_VENDOR_ID", "").strip(),
-        "endpoint": os.getenv("HMRC_RTI_ENDPOINT", "").strip(),
-        "mode": "live" if os.getenv("HMRC_RTI_MODE", "test").strip().lower() == "live" else "test",
-        "irmark": os.getenv("HMRC_RTI_IRMARK", "").strip() == "1",
-        "product": os.getenv("HMRC_PRODUCT_NAME", "aniprotech").strip() or "aniprotech",
-        "key": os.getenv("HMRC_ENCRYPTION_KEY", "").strip(),
-    }
+def rti_cfg(db=None) -> dict:
+    """HMRC filing settings: saved on the operator's settings screen, else the
+    environment variable that used to hold them. The encryption key is only
+    ever an environment variable."""
+    def build(session):
+        return {
+            "vendor_id": platform_setting(session, "hmrc.vendor_id").strip(),
+            "endpoint": platform_setting(session, "hmrc.endpoint").strip(),
+            "mode": "live" if platform_setting(session, "hmrc.mode").strip().lower() == "live" else "test",
+            "irmark": platform_setting(session, "hmrc.irmark").strip().lower() in ("1", "true"),
+            "product": os.getenv("HMRC_PRODUCT_NAME", "aniprotech").strip() or "aniprotech",
+            "key": os.getenv("HMRC_ENCRYPTION_KEY", "").strip(),
+        }
+    if db is not None:
+        return build(db)
+    with SessionLocal() as session:
+        return build(session)
 
 
 def rti_employer(db, client_id) -> dict:
@@ -36867,9 +38410,9 @@ def rti_readiness(db, client_id) -> list:
          "detail": ("The password stored cannot be read - enter it again." if has_password and not password_ok and cfg["key"]
                     else "The ones you use for HMRC's PAYE for employers online service.")},
         {"key": "vendor", "owner": "platform", "ok": bool(cfg["vendor_id"]),
-         "label": "HMRC has recognised this software (Vendor ID)", "detail": "HMRC_VENDOR_ID is not set."},
+         "label": "HMRC has recognised this software (Vendor ID)", "detail": "Not set - add it under Platform settings > HMRC (or HMRC_VENDOR_ID)."},
         {"key": "endpoint", "owner": "platform", "ok": bool(cfg["endpoint"]),
-         "label": "The address of HMRC's Gateway", "detail": "HMRC_RTI_ENDPOINT is not set."},
+         "label": "The address of HMRC's Gateway", "detail": "Not set - add it under Platform settings > HMRC (or HMRC_RTI_ENDPOINT)."},
         {"key": "encryption", "owner": "platform", "ok": bool(cfg["key"]),
          "label": "A key to keep Gateway passwords safe", "detail": "HMRC_ENCRYPTION_KEY is not set."},
     ]
@@ -37479,7 +39022,8 @@ def delete_supplier(supplier_id: int, request: Request, db: Session = Depends(ge
     client = get_client_user(request, db)
     row = _supplier_or_404(db, client, supplier_id)
     used = db.query(models.DBBill).filter(models.DBBill.supplier_id == row.id).count() \
-        + db.query(models.DBSupplierCredit).filter(models.DBSupplierCredit.supplier_id == row.id).count()
+        + db.query(models.DBSupplierCreditNote).filter(models.DBSupplierCreditNote.client_id == client.id,
+                                                      func.lower(models.DBSupplierCreditNote.vendor_name) == (row.name or "").strip().lower()).count()
     if used:
         row.active = False
         db.commit()
@@ -37490,136 +39034,33 @@ def delete_supplier(supplier_id: int, request: Request, db: Session = Depends(ge
     return {"message": "Removed", "closed": False}
 
 
-# --- supplier credit notes ---------------------------------------------------------------
+# --- supplier credit notes, as the purchase ledger reads them ------------------------------
+# The credit notes themselves are the Purchases screen's (supplier_credit_notes):
+# they name their supplier by name and, often, the bill they correct. Here each
+# is put on a supplier account - the bill's, or the one with the same name - in
+# the bill's currency. A credit set against a bill is a payment with method
+# "credit_note" and the note's number as its reference; money the supplier paid
+# back is "refunded".
 
-def credit_effective_currency(c, base):
-    return ((c.currency or "") or base).upper()
-
-
-def supplier_credit_to_dict(c, names=None, base="GBP"):
-    return {"id": c.id, "number": c.number, "reference": c.reference or "", "supplier_id": c.supplier_id,
-            "supplier": (names or {}).get(c.supplier_id, ""), "issue_date": c.issue_date or "", "amount": money(c.amount or 0),
-            "applied": money(c.applied or 0), "remaining": money(max(0.0, (c.amount or 0) - (c.applied or 0))),
-            "currency": credit_effective_currency(c, base), "reason": c.reason or "", "status": c.status or "Open"}
-
-
-def _credit_or_404(db, client, credit_id):
-    row = db.query(models.DBSupplierCredit).filter(models.DBSupplierCredit.id == credit_id, models.DBSupplierCredit.client_id == client.id).first()
-    if not row:
-        raise HTTPException(status_code=404, detail="Credit note not found")
-    return row
-
-
-def _next_supplier_credit_number(db, client_id):
-    top = 0
-    for (n,) in db.query(models.DBSupplierCredit.number).filter(models.DBSupplierCredit.client_id == client_id).all():
-        m = re.fullmatch(r"SC-?(\d+)", (n or "").strip(), flags=re.I)
-        if m:
-            top = max(top, int(m.group(1)))
-    return f"SC-{top + 1:04d}"
-
-
-def apply_supplier_credit(db, client, credit, bill, amount, day=""):
-    """Set some of a supplier's credit against one of their bills. The bill is
-    paid by it (a payment of kind "credit"), and the credit is used up by it."""
-    amount = money(amount)
-    if credit.status == "Void":
-        raise HTTPException(status_code=400, detail=f"Credit note {credit.number} is void")
-    if bill.supplier_id != credit.supplier_id:
-        raise HTTPException(status_code=400, detail="A credit can only be set against a bill from the same supplier")
+def supplier_notes(db, client, suppliers, bills_by_id):
+    by_name = {(s.name or "").strip().lower(): s.id for s in suppliers.values()}
     base = base_currency(client)
-    if credit_effective_currency(credit, base) != bill_effective_currency(bill, base):
-        raise HTTPException(status_code=400, detail="The credit and the bill are in different currencies")
-    left = money(max(0.0, (credit.amount or 0) - (credit.applied or 0)))
-    if amount <= 0:
-        raise HTTPException(status_code=400, detail="Say how much of the credit to use")
-    if amount > left + 0.005:
-        raise HTTPException(status_code=400, detail=f"Only {left:.2f} of credit note {credit.number} is left")
-    row = record_bill_payment(db, client, bill, amount, day, "credit", credit.number, f"credit note {credit.number}", None, credit_id=credit.id)
-    credit.applied = money((credit.applied or 0) + amount)
-    credit.status = "Applied" if credit.applied >= (credit.amount or 0) - 0.005 else "Open"
-    return row
-
-
-@app.get("/api/supplier-credits")
-def list_supplier_credits(request: Request, supplier_id: int = 0, status: str = "", db: Session = Depends(get_db)):
-    client = get_client_user(request, db)
-    q = db.query(models.DBSupplierCredit).filter(models.DBSupplierCredit.client_id == client.id)
-    if supplier_id:
-        q = q.filter(models.DBSupplierCredit.supplier_id == supplier_id)
-    if status:
-        q = q.filter(models.DBSupplierCredit.status == status)
-    names = {s.id: s.name for s in db.query(models.DBSupplier).filter(models.DBSupplier.client_id == client.id).all()}
-    base = base_currency(client)
-    return [supplier_credit_to_dict(c, names, base) for c in q.order_by(models.DBSupplierCredit.id.desc()).all()]
-
-
-@app.get("/api/supplier-credits/{credit_id}")
-def get_supplier_credit(credit_id: int, request: Request, db: Session = Depends(get_db)):
-    client = get_client_user(request, db)
-    c = _credit_or_404(db, client, credit_id)
-    names = {s.id: s.name for s in db.query(models.DBSupplier).filter(models.DBSupplier.client_id == client.id).all()}
-    out = supplier_credit_to_dict(c, names, base_currency(client))
-    out["allocations"] = [{"payment_id": p.id, "bill_id": p.bill_id, "amount": money(p.amount or 0), "date": p.paid_on or ""}
-                          for p in db.query(models.DBBillPayment).filter(models.DBBillPayment.credit_id == c.id).order_by(models.DBBillPayment.id).all()]
+    out = []
+    for n in db.query(models.DBSupplierCreditNote).filter(models.DBSupplierCreditNote.client_id == client.id).all():
+        if (n.status or "") == "Void":
+            continue
+        bill = bills_by_id.get(n.bill_id) if n.bill_id else None
+        sid = (bill.supplier_id if bill is not None and bill.supplier_id else None) or by_name.get((n.vendor_name or "").strip().lower())
+        out.append(SimpleNamespace(
+            id=n.id, number=n.number, reference=n.supplier_ref or "", reason=n.reason or "", supplier_id=sid or 0,
+            issue_date=n.issue_date or "", created_at=n.created_at or "", amount=money(n.total or 0),
+            applied=money((n.allocated or 0) + (n.refunded or 0)), refunded=money(n.refunded or 0), refunded_on=n.refunded_on or "",
+            currency=bill_effective_currency(bill, base) if bill is not None else base, status=n.status, vendor_name=n.vendor_name or "", note=n))
     return out
 
 
-@app.post("/api/supplier-credits")
-def create_supplier_credit(request: Request, body: dict = None, db: Session = Depends(get_db)):
-    client = get_client_user(request, db)
-    body = body or {}
-    supplier = resolve_supplier(db, client, body.get("supplier_id"), "", "")
-    if supplier is None:
-        raise HTTPException(status_code=400, detail="Which supplier is this credit from?")
-    amount = _money_field(body.get("amount"), "Amount")
-    if amount <= 0:
-        raise HTTPException(status_code=400, detail="A credit note is for more than zero")
-    number = re.sub(r"\s+", " ", str(body.get("number") or "")).strip()[:40] or _next_supplier_credit_number(db, client.id)
-    if db.query(models.DBSupplierCredit).filter(models.DBSupplierCredit.client_id == client.id, models.DBSupplierCredit.number == number).first():
-        raise HTTPException(status_code=400, detail="Credit note number already exists")
-    base = base_currency(client)
-    cur = str(body.get("currency") or supplier.currency or "").strip().upper()[:3]
-    if cur and not cur.isalpha():
-        raise HTTPException(status_code=400, detail="Currency is a three-letter code, like USD")
-    credit = models.DBSupplierCredit(client_id=client.id, supplier_id=supplier.id, number=number, reference=str(body.get("reference") or "")[:120],
-                                     issue_date=_clean_ymd(body.get("issue_date"), "Issue date") or date.today().isoformat(), amount=amount,
-                                     currency="" if cur == base else cur, reason=str(body.get("reason") or "")[:300], status="Open")
-    db.add(credit)
-    db.flush()
-    if body.get("bill_id"):
-        bill = _bill_or_404(db, client, int(body["bill_id"]))
-        bal = ledgers.bill_balance(bill.total or 0, bill.amount_paid or 0)
-        apply_supplier_credit(db, client, credit, bill, min(amount, bal), credit.issue_date)
-    log_audit(db, client.id, "supplier_credit_created", "supplier_credit", credit.id, credit.number, f"{supplier.name}: {amount}", request)
-    db.commit()
-    db.refresh(credit)
-    return supplier_credit_to_dict(credit, {supplier.id: supplier.name}, base)
-
-
-@app.post("/api/supplier-credits/{credit_id}/allocate")
-def allocate_supplier_credit(credit_id: int, request: Request, body: dict = None, db: Session = Depends(get_db)):
-    client = get_client_user(request, db)
-    credit = _credit_or_404(db, client, credit_id)
-    body = body or {}
-    bill = _bill_or_404(db, client, int(body.get("bill_id") or 0))
-    apply_supplier_credit(db, client, credit, bill, _money_field(body.get("amount"), "Amount"), body.get("date") or "")
-    log_audit(db, client.id, "supplier_credit_applied", "supplier_credit", credit.id, credit.number, f"to {bill.number}", request)
-    db.commit()
-    return {"ok": True, "credit_remaining": money(max(0.0, (credit.amount or 0) - (credit.applied or 0))), "bill_status": bill.status,
-            "bill_balance": ledgers.bill_balance(bill.total or 0, bill.amount_paid or 0)}
-
-
-@app.post("/api/supplier-credits/{credit_id}/void")
-def void_supplier_credit(credit_id: int, request: Request, db: Session = Depends(get_db)):
-    client = get_client_user(request, db)
-    credit = _credit_or_404(db, client, credit_id)
-    if (credit.applied or 0) > 0:
-        raise HTTPException(status_code=400, detail=f"{credit.applied:.2f} of credit note {credit.number} has been set against bills. Take that back first.")
-    credit.status = "Void"
-    log_audit(db, client.id, "supplier_credit_voided", "supplier_credit", credit.id, credit.number, "", request)
-    db.commit()
-    return {"ok": True, "status": "Void"}
+def credit_effective_currency(c, base):
+    return ((c.currency or "") or base).upper()
 
 
 # --- the purchase ledger -----------------------------------------------------------------
@@ -37635,7 +39076,8 @@ def _purchase_data(db, client):
     pays = {}
     for p in db.query(models.DBBillPayment).filter(models.DBBillPayment.client_id == client.id).all():
         pays.setdefault(p.bill_id, []).append(p)
-    credits = [c for c in db.query(models.DBSupplierCredit).filter(models.DBSupplierCredit.client_id == client.id).all() if (c.status or "") != "Void"]
+    every_bill = {b.id: b for b in db.query(models.DBBill).filter(models.DBBill.client_id == client.id).all()}
+    credits = supplier_notes(db, client, suppliers, every_bill)
     return base, suppliers, bills, pays, credits
 
 
@@ -37678,13 +39120,14 @@ def payables_ageing(db, client, as_of=None, data=None):
     used_by_credit = {}
     for plist in pays.values():
         for p in plist:
-            if p.credit_id:
-                used_by_credit.setdefault(p.credit_id, []).append(p)
+            if p.method == "credit_note":
+                used_by_credit.setdefault(p.reference or "", []).append(p)
     for c in credits:
         if (c.issue_date or "")[:10] > as_of:
             continue
-        used = money(sum(p.amount or 0 for p in used_by_credit.get(c.id, []) if (p.paid_on or "")[:10] <= as_of))
-        left = money(max(0.0, (c.amount or 0) - used))
+        used = money(sum(p.amount or 0 for p in used_by_credit.get(c.number, []) if (p.paid_on or "")[:10] <= as_of))
+        back = c.refunded if c.refunded and (c.refunded_on or "")[:10] <= as_of else 0.0
+        left = money(max(0.0, (c.amount or 0) - used - back))
         if left > 0:
             row = row_for(c.supplier_id, credit_effective_currency(c, base))
             row["credits"] = money(row["credits"] + left)
@@ -37717,7 +39160,7 @@ def supplier_events(sid, data):
                        "description": f"Paid on {b.number} before payments were recorded one by one",
                        "increase": 0.0, "decrease": gap, "order": 2})
         for p in plist:
-            if p.method == "credit":
+            if p.method == "credit_note":
                 continue
             ev.append({"date": (p.paid_on or p.created_at or "")[:10], "kind": "payment", "ref": p.reference or b.number, "bill_id": b.id, "currency": cur,
                        "description": f"Payment on {b.number} ({ledgers.BILL_METHODS.get(p.method, p.method)})" + (f", ref {p.reference}" if p.reference else ""),
@@ -37729,6 +39172,11 @@ def supplier_events(sid, data):
                    "currency": credit_effective_currency(c, base),
                    "description": f"Credit note {c.number}" + (f" ({c.reference})" if c.reference else "") + (f": {c.reason}" if c.reason else ""),
                    "increase": 0.0, "decrease": money(c.amount or 0), "order": 1})
+        if c.refunded:
+            # They paid the credit back in money, so it no longer lowers what is owed.
+            ev.append({"date": (c.refunded_on or c.issue_date or "")[:10], "kind": "refund", "ref": c.number, "credit_id": c.id,
+                       "currency": credit_effective_currency(c, base), "description": f"Credit note {c.number} paid back to you",
+                       "increase": money(c.refunded), "decrease": 0.0, "order": 3})
     return ev
 
 
@@ -37740,7 +39188,7 @@ def _last_dates(data):
         sid = b.supplier_id or 0
         bill_day[sid] = max(bill_day.get(sid, ""), (b.issue_date or "")[:10])
         for p in pays.get(b.id, []):
-            if p.method != "credit":
+            if p.method != "credit_note":
                 pay_day[sid] = max(pay_day.get(sid, ""), (p.paid_on or "")[:10])
     return bill_day, pay_day
 
@@ -37883,7 +39331,7 @@ def supplier_ledger(supplier_id: int, request: Request, start: str = "", end: st
     ledger = ledgers.running_ledger(supplier_events(supplier_id, data), start, end, base)
     rows, per_bill, _b = payables_ageing(db, client, end, data)
     mine_rows = [r for r in rows if r["supplier_id"] == supplier_id]
-    cred = [supplier_credit_to_dict(c, {s.id: s.name for s in suppliers.values()}, base) for c in credits if c.supplier_id == supplier_id]
+    cred = [dict(credit_to_dict(c.note), currency=c.currency, supplier_id=c.supplier_id) for c in credits if c.supplier_id == supplier_id]
     also = None
     if supplier_id:
         contact, how = linked_contact(db, client, _supplier_or_404(db, client, supplier_id))
@@ -37909,31 +39357,6 @@ def supplier_ledger_csv(supplier_id: int, request: Request, start: str = "", end
         out.append([end, "balance carried forward", "", "", led["currency"], "", "", led["closing_balance"]])
     safe = "".join(ch if ch.isalnum() else "-" for ch in name)[:40]
     return _csv_response(f"supplier-ledger-{safe}-{start}-{end}.csv", ["date", "kind", "reference", "description", "currency", "billed", "paid_or_credited", "balance_owed"], out)
-
-
-@app.get("/api/reports/ageing/payables")
-def payables_ageing_report(request: Request, as_of: str = "", db: Session = Depends(get_db)):
-    """What the business owes, to whom, and for how long, as of a day."""
-    client = get_client_user(request, db)
-    day = _as_of(as_of)
-    rows, per_bill, base = payables_ageing(db, client, day)
-    totals = _ledger_totals(rows, base)
-    return {"as_of": day, "currency": base, "buckets": totals["buckets"], "total_outstanding": totals["balance"],
-            "overdue": totals["overdue"], "credits": money(sum(r["credits"] for r in rows if r["currency"] == base)),
-            "suppliers": rows, "bills": per_bill, "suppliers_owed": totals["accounts_owing"],
-            "other_currencies": sorted({r["currency"] for r in rows if r["currency"] != base})}
-
-
-@app.get("/api/reports/ageing/payables.csv")
-def payables_ageing_csv(request: Request, as_of: str = "", detail: int = 0, db: Session = Depends(get_db)):
-    client = get_client_user(request, db)
-    day = _as_of(as_of)
-    rows, per_bill, _base = payables_ageing(db, client, day)
-    if detail:
-        return _csv_response(f"aged-creditors-bills-{day}.csv", ["bill", "supplier", "currency", "issued", "due", "days_overdue", "bucket", "outstanding"],
-                             [[_csv_text(b["number"]), _csv_text(b["supplier"]), b["currency"], b["issue_date"], b["due_date"], b["days_overdue"], b["bucket"], b["outstanding"]] for b in per_bill])
-    return _csv_response(f"aged-creditors-{day}.csv", ["supplier", "currency", "bills", "not_yet_due", "1_30", "31_60", "61_90", "over_90", "credits", "total", "oldest_days"],
-                         [[_csv_text(r["supplier"]), r["currency"], r["bills"], r["current"], r["1_30"], r["31_60"], r["61_90"], r["over_90"], r["credits"], r["total"], r["oldest_days"]] for r in rows])
 
 
 # --- the sales ledger --------------------------------------------------------------------

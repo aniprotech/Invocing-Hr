@@ -55,7 +55,18 @@ def get_bill(tenant, bill_id):
 
 
 def credit(tenant, supplier_id, amount, **kw):
-    r = tenant.post("/api/supplier-credits", json={"supplier_id": supplier_id, "amount": amount, "issue_date": d(-3), **kw})
+    """A supplier credit note, made the way the Purchases screen makes one: by
+    the supplier's name, not set against a bill unless asked."""
+    name = tenant.get(f"/api/suppliers/{supplier_id}").json()["name"]
+    body = {"vendor_name": name, "amount": amount, "issue_date": d(-3), "apply_to_bill": False}
+    body.update(kw)
+    r = tenant.post("/api/supplier-credit-notes", json=body)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def use_credit(tenant, credit_id, bill_id, amount):
+    r = tenant.post(f"/api/supplier-credit-notes/{credit_id}/allocate", json={"bill_id": bill_id, "amount": amount})
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -308,11 +319,10 @@ def test_every_draft_can_be_posted_at_once(tenant):
     assert tenant.post("/api/bills/post-drafts").json() == {"posted": 0}
 
 
-def test_a_bill_with_payments_is_not_deleted_but_one_without_is(tenant, worked):
-    r = tenant.delete(f"/api/bills/{worked[0]['id']}")
-    assert r.status_code == 400 and "has payments" in r.json()["detail"]
-    assert tenant.delete(f"/api/bills/{worked[1]['id']}").status_code == 200
-    assert tenant.get(f"/api/bills/{worked[1]['id']}").status_code == 404
+def test_a_deleted_bill_takes_its_payments_and_leaves_the_ledger(tenant, worked):
+    assert tenant.delete(f"/api/bills/{worked[0]['id']}").status_code == 200
+    assert tenant.get(f"/api/bills/{worked[0]['id']}").status_code == 404
+    assert account(tenant)["total"] == 200.0
 
 
 def test_a_bill_is_voided_only_when_nothing_has_been_paid_and_then_cannot_change(tenant, worked):
@@ -322,116 +332,8 @@ def test_a_bill_is_voided_only_when_nothing_has_been_paid_and_then_cannot_change
     assert tenant.post(f"/api/bills/{worked[1]['id']}/payments", json={"amount": 5}).status_code == 400
 
 
-# =====================================================================================
-# Payments on a bill
-# =====================================================================================
-
-def test_a_bill_is_paid_in_as_many_goes_as_it_takes(tenant):
-    b = bill(tenant, amount=100.0)
-    r1 = pay(tenant, b["id"], 40, d(-9), method="cheque", reference="CHQ 17")
-    assert r1["status"] == "Partially Paid" and r1["balance"] == 60.0 and r1["amount_paid"] == 40.0
-    r2 = pay(tenant, b["id"], 60, d(-2))
-    assert r2["status"] == "Paid" and r2["balance"] == 0.0
-    got = get_bill(tenant, b["id"])
-    assert [(p["amount"], p["method"], p["reference"]) for p in got["payments"]] == [(40.0, "cheque", "CHQ 17"), (60.0, "bank_transfer", "")]
-
-
-@pytest.mark.parametrize("body,says", [
-    ({"amount": 0}, "more than zero"), ({"amount": -5}, "between 0"), ({"amount": 100.01}, "more than bill"), ({"amount": "abc"}, "must be a number"),
-    ({"amount": 10, "method": "bitcoin"}, "Pick how it was paid"), ({"amount": 10, "method": "credit"}, "Pick how it was paid"),
-    ({"amount": 10, "paid_on": "yesterday"}, "YYYY-MM-DD"), ({"amount": 10, "account_id": 99999}, "not one of yours"),
-])
-def test_a_payment_that_cannot_be_right_is_refused(tenant, body, says):
-    b = bill(tenant, amount=100.0)
-    r = tenant.post(f"/api/bills/{b['id']}/payments", json=body)
-    assert r.status_code == 400 and says in r.json()["detail"], r.text
-    assert get_bill(tenant, b["id"])["amount_paid"] == 0.0
-
-
-def test_a_paid_bill_cannot_be_paid_again_and_a_draft_must_be_posted_first(tenant):
-    b = bill(tenant, amount=50.0)
-    pay(tenant, b["id"], 50)
-    r = tenant.post(f"/api/bills/{b['id']}/payments", json={"amount": 1})
-    assert r.status_code == 400 and "already paid" in r.json()["detail"]
-    dr = bill(tenant, vendor="D", draft=True)
-    r = tenant.post(f"/api/bills/{dr['id']}/payments", json={"amount": 1})
-    assert r.status_code == 400 and "post it before paying" in r.json()["detail"]
-
-
-def test_a_payment_can_name_the_account_it_came_from(tenant):
-    acc = tenant.post("/api/accounts", json={"name": "Current account", "kind": "bank"}).json()
-    b = bill(tenant, amount=100.0)
-    pay(tenant, b["id"], 25, account_id=acc["id"])
-    got = get_bill(tenant, b["id"])["payments"][0]
-    assert got["account_id"] == acc["id"] and got["account"] == "Current account"
-
-
-def test_another_businesss_account_cannot_be_named(tenant, client):
-    from fastapi.testclient import TestClient
-    with TestClient(main.app) as other:
-        other.post("/api/client/register", json={"email": "rival2@example.com", "password": "Passw0rdTest", "company_name": "Rival"})
-        other.post("/api/client/login", json={"email": "rival2@example.com", "password": "Passw0rdTest"})
-        theirs = other.post("/api/accounts", json={"name": "Theirs", "kind": "bank"}).json()
-    b = bill(tenant, amount=100.0)
-    assert tenant.post(f"/api/bills/{b['id']}/payments", json={"amount": 5, "account_id": theirs["id"]}).status_code == 400
-
-
-def test_taking_a_payment_back_owes_the_bill_again(tenant):
-    b = bill(tenant, amount=100.0)
-    first = pay(tenant, b["id"], 100)
-    pid = get_bill(tenant, b["id"])["payments"][0]["id"]
-    r = tenant.delete(f"/api/bills/{b['id']}/payments/{pid}").json()
-    assert r["status"] == "Awaiting Payment" and r["amount_paid"] == 0.0
-    assert get_bill(tenant, b["id"])["payments"] == [] and first["status"] == "Paid"
-    assert tenant.delete(f"/api/bills/{b['id']}/payments/{pid}").status_code == 404
-
-
-def test_one_payment_of_two_can_be_taken_back(tenant):
-    b = bill(tenant, amount=100.0)
-    pay(tenant, b["id"], 30)
-    pay(tenant, b["id"], 70)
-    pid = get_bill(tenant, b["id"])["payments"][0]["id"]
-    tenant.delete(f"/api/bills/{b['id']}/payments/{pid}")
-    got = get_bill(tenant, b["id"])
-    assert got["amount_paid"] == 70.0 and got["status"] == "Partially Paid" and len(got["payments"]) == 1
-
-
-def test_a_payment_belongs_to_its_own_bill(tenant):
-    a, b = bill(tenant, amount=100.0), bill(tenant, vendor="Other", amount=100.0)
-    pay(tenant, a["id"], 10)
-    pid = get_bill(tenant, a["id"])["payments"][0]["id"]
-    assert tenant.delete(f"/api/bills/{b['id']}/payments/{pid}").status_code == 404
-    assert get_bill(tenant, a["id"])["amount_paid"] == 10.0
-
-
-def test_the_pay_shortcut_pays_what_is_left_and_records_it(tenant):
-    b = bill(tenant, amount=100.0)
-    pay(tenant, b["id"], 40)
-    r = tenant.post(f"/api/bills/{b['id']}/pay").json()
-    assert r["status"] == "Paid" and r["balance"] == 0.0
-    got = get_bill(tenant, b["id"])
-    assert got["amount_paid"] == 100.0 and [p["amount"] for p in got["payments"]] == [40.0, 60.0]
-
-
-def test_the_pay_shortcut_can_pay_part_and_a_draft_is_posted_by_it(tenant):
-    b = bill(tenant, amount=100.0, draft=True)
-    r = tenant.post(f"/api/bills/{b['id']}/pay", json={"amount": 25, "paid_on": d(-3), "method": "card"}).json()
-    assert r["status"] == "Partially Paid" and r["balance"] == 75.0
-    assert get_bill(tenant, b["id"])["payments"][0]["method"] == "card"
-
-
-def test_a_payment_to_a_supplier_on_hold_warns_but_is_made(tenant):
-    s = supplier(tenant, "Hold Co", on_hold=True)
-    b = tenant.post("/api/bills", json={"supplier_id": s["id"], "amount": 10, "issue_date": d(-1), "due_date": d(5)}).json()
-    r = tenant.post(f"/api/bills/{b['id']}/payments", json={"amount": 10}).json()
-    assert "on hold" in r["warning"] and r["status"] == "Paid"
-
-
-def test_a_payment_made_in_pennies_settles_exactly(tenant):
-    b = bill(tenant, amount=0.30)
-    pay(tenant, b["id"], 0.10)
-    pay(tenant, b["id"], 0.20)
-    assert get_bill(tenant, b["id"])["status"] == "Paid"
+# Payments on a bill - part payments, refusals, taking one back, the pay shortcut -
+# are the Purchases screen's and are tested in test_bill_payments.py.
 
 
 # =====================================================================================
@@ -459,7 +361,7 @@ def test_a_bank_line_paying_a_bill_leaves_a_payment_that_taking_back_removes(ten
     assert gone.status_code == 400 and "Bank" in gone.json()["detail"]
     tenant.post(f"/api/bank/lines/{line['id']}/uncode")
     back = get_bill(tenant, b["id"])
-    assert back["amount_paid"] == 0.0 and back["payments"] == [] and back["status"] == "Awaiting Payment"
+    assert back["amount_paid"] == 0.0 and back["payments"] == [] and back["status"] == "Unpaid"
 
 
 def test_a_coding_made_before_payments_were_recorded_one_by_one_still_comes_back(tenant):
@@ -474,115 +376,33 @@ def test_a_coding_made_before_payments_were_recorded_one_by_one_still_comes_back
 
 
 # =====================================================================================
-# Supplier credit notes
+# Supplier credit notes on the purchase ledger (the notes themselves are tested in
+# test_supplier_credit_notes.py)
 # =====================================================================================
 
-def test_a_credit_note_is_recorded_with_a_number_of_its_own(tenant):
-    s = supplier(tenant, "Credit Co")
-    c1, c2 = credit(tenant, s["id"], 50, reason="damaged goods", reference="THEIR-9"), credit(tenant, s["id"], 20)
-    assert (c1["number"], c2["number"]) == ("SC-0001", "SC-0002")
-    assert c1["remaining"] == 50.0 and c1["status"] == "Open" and c1["reason"] == "damaged goods" and c1["reference"] == "THEIR-9"
-    assert [c["number"] for c in tenant.get("/api/supplier-credits").json()] == ["SC-0002", "SC-0001"]
-    assert [c["number"] for c in tenant.get("/api/supplier-credits", params={"supplier_id": s["id"]}).json()] == ["SC-0002", "SC-0001"]
+def test_a_credit_note_lands_on_its_suppliers_account_by_name_or_by_its_bill(tenant, worked):
+    credit(tenant, worked[0]["supplier_id"], 10)
+    assert account(tenant)["credits"] == 10.0
+    r = tenant.post("/api/supplier-credit-notes", json={"vendor_name": "Typed Differently Ltd", "amount": 5, "bill_id": worked[1]["id"],
+                                                         "issue_date": d(-2), "apply_to_bill": False})
+    assert r.status_code == 200, r.text
+    assert account(tenant)["credits"] == 15.0          # by the bill it corrects, whatever name was typed
 
 
-@pytest.mark.parametrize("body,says", [
-    ({"amount": 0}, "more than zero"), ({"amount": -5}, "between 0"), ({"supplier_id": None}, "Which supplier"), ({"supplier_id": 99999}, "not one of yours"),
-    ({"issue_date": "soon"}, "YYYY-MM-DD"), ({"currency": "U$D"}, "three-letter"),
-])
-def test_a_credit_note_that_cannot_be_right_is_refused(tenant, body, says):
-    s = supplier(tenant, "Credit Co")
-    payload = {"supplier_id": s["id"], "amount": 10, **body}
-    r = tenant.post("/api/supplier-credits", json=payload)
-    assert r.status_code == 400 and says in r.json()["detail"], r.text
-
-
-def test_a_credit_number_cannot_repeat(tenant):
-    s = supplier(tenant, "C")
-    tenant.post("/api/supplier-credits", json={"supplier_id": s["id"], "amount": 5, "number": "CN-1"})
-    assert tenant.post("/api/supplier-credits", json={"supplier_id": s["id"], "amount": 5, "number": "CN-1"}).status_code == 400
-
-
-def test_a_credit_is_set_against_a_bill_in_parts(tenant, worked):
-    first, second = worked
-    c = credit(tenant, first["supplier_id"], 50)
-    r = tenant.post(f"/api/supplier-credits/{c['id']}/allocate", json={"bill_id": first["id"], "amount": 20}).json()
-    assert r["credit_remaining"] == 30.0 and r["bill_balance"] == 50.0 and r["bill_status"] == "Partially Paid"
-    r = tenant.post(f"/api/supplier-credits/{c['id']}/allocate", json={"bill_id": second["id"], "amount": 30}).json()
-    assert r["credit_remaining"] == 0.0 and r["bill_balance"] == 170.0
-    got = tenant.get(f"/api/supplier-credits/{c['id']}").json()
-    assert got["status"] == "Applied" and got["applied"] == 50.0 and [a["amount"] for a in got["allocations"]] == [20.0, 30.0]
-    pays = get_bill(tenant, first["id"])["payments"]
-    assert [(p["method"], p["reference"]) for p in pays][-1] == ("credit", c["number"]) and pays[-1]["credit_id"] == c["id"]
-
-
-def test_a_credit_can_be_set_against_a_bill_as_it_is_recorded(tenant, worked):
-    first, _ = worked
-    c = credit(tenant, first["supplier_id"], 90, bill_id=first["id"])
-    assert c["applied"] == 70.0 and c["remaining"] == 20.0 and c["status"] == "Open"       # only the 70 the bill had left
-    assert get_bill(tenant, first["id"])["status"] == "Paid"
-
-
-@pytest.mark.parametrize("amount,says", [(0, "how much"), (60, "Only 50.00"), (-1, "between 0")])
-def test_more_credit_than_there_is_cannot_be_used(tenant, worked, amount, says):
+def test_a_credit_the_supplier_paid_back_no_longer_lowers_what_is_owed(tenant, worked):
     c = credit(tenant, worked[0]["supplier_id"], 50)
-    r = tenant.post(f"/api/supplier-credits/{c['id']}/allocate", json={"bill_id": worked[1]["id"], "amount": amount})
-    assert r.status_code == 400 and says in r.json()["detail"], r.text
+    assert account(tenant)["total"] == 220.0
+    r = tenant.post(f"/api/supplier-credit-notes/{c['id']}/refund", json={"amount": 50, "date": d(-1)})
+    assert r.status_code == 200, r.text
+    assert account(tenant)["total"] == 270.0 and account(tenant)["credits"] == 0.0
+    led = tenant.get(f"/api/ledger/purchases/{worked[0]['supplier_id']}", params={"start": d(-60), "end": d(0)}).json()["ledgers"][0]
+    assert led["closing_balance"] == 270.0 and any(l["kind"] == "refund" for l in led["lines"])
 
 
-def test_a_credit_cannot_pay_more_than_the_bill_has_left(tenant, worked):
-    c = credit(tenant, worked[0]["supplier_id"], 500)
-    r = tenant.post(f"/api/supplier-credits/{c['id']}/allocate", json={"bill_id": worked[0]["id"], "amount": 75})
-    assert r.status_code == 400 and "more than bill" in r.json()["detail"]
-
-
-def test_a_credit_is_only_for_its_own_suppliers_bills(tenant, worked):
-    other = bill(tenant, vendor="Someone Else", amount=40.0)
-    c = credit(tenant, worked[0]["supplier_id"], 10)
-    r = tenant.post(f"/api/supplier-credits/{c['id']}/allocate", json={"bill_id": other["id"], "amount": 5})
-    assert r.status_code == 400 and "same supplier" in r.json()["detail"]
-
-
-def test_a_credit_in_one_currency_does_not_pay_a_bill_in_another(tenant):
-    s = supplier(tenant, "Dual")
-    usd_bill = bill(tenant, vendor="Dual", amount=50.0, currency="USD")
-    c = credit(tenant, s["id"], 10)       # in the books' currency
-    r = tenant.post(f"/api/supplier-credits/{c['id']}/allocate", json={"bill_id": usd_bill["id"], "amount": 5})
-    assert r.status_code == 400 and "different currencies" in r.json()["detail"]
-
-
-def test_taking_back_a_credit_payment_frees_the_credit(tenant, worked):
+def test_a_void_credit_note_is_not_on_the_ledger(tenant, worked):
     c = credit(tenant, worked[0]["supplier_id"], 50)
-    tenant.post(f"/api/supplier-credits/{c['id']}/allocate", json={"bill_id": worked[0]["id"], "amount": 50})
-    assert tenant.get(f"/api/supplier-credits/{c['id']}").json()["status"] == "Applied"
-    pid = [p for p in get_bill(tenant, worked[0]["id"])["payments"] if p["method"] == "credit"][0]["id"]
-    tenant.delete(f"/api/bills/{worked[0]['id']}/payments/{pid}")
-    got = tenant.get(f"/api/supplier-credits/{c['id']}").json()
-    assert got["status"] == "Open" and got["applied"] == 0.0 and got["remaining"] == 50.0 and get_bill(tenant, worked[0]["id"])["amount_paid"] == 30.0
-
-
-def test_a_credit_that_has_been_used_cannot_be_voided_until_it_is_freed(tenant, worked):
-    c = credit(tenant, worked[0]["supplier_id"], 50)
-    tenant.post(f"/api/supplier-credits/{c['id']}/allocate", json={"bill_id": worked[0]["id"], "amount": 10})
-    r = tenant.post(f"/api/supplier-credits/{c['id']}/void")
-    assert r.status_code == 400 and "set against bills" in r.json()["detail"]
-    free = credit(tenant, worked[0]["supplier_id"], 5)
-    assert tenant.post(f"/api/supplier-credits/{free['id']}/void").json()["status"] == "Void"
-    r = tenant.post(f"/api/supplier-credits/{free['id']}/allocate", json={"bill_id": worked[1]["id"], "amount": 1})
-    assert r.status_code == 400 and "void" in r.json()["detail"]
-
-
-def test_credit_notes_belong_to_one_business(tenant, client):
-    s = supplier(tenant, "Mine")
-    c = credit(tenant, s["id"], 10)
-    from fastapi.testclient import TestClient
-    with TestClient(main.app) as other:
-        other.post("/api/client/register", json={"email": "rival3@example.com", "password": "Passw0rdTest", "company_name": "Rival"})
-        other.post("/api/client/login", json={"email": "rival3@example.com", "password": "Passw0rdTest"})
-        assert other.get("/api/supplier-credits").json() == []
-        for method, path in (("get", f"/api/supplier-credits/{c['id']}"), ("post", f"/api/supplier-credits/{c['id']}/void"),
-                             ("post", f"/api/supplier-credits/{c['id']}/allocate")):
-            assert getattr(other, method)(path).status_code == 404, path
+    tenant.post(f"/api/supplier-credit-notes/{c['id']}/void", json={"reason": "typed twice"})
+    assert account(tenant)["credits"] == 0.0 and account(tenant)["total"] == 270.0
 
 
 # =====================================================================================
@@ -606,7 +426,7 @@ def test_credit_not_yet_used_comes_off_what_is_owed(tenant, worked):
 
 def test_credit_set_against_a_bill_is_counted_once(tenant, worked):
     c = credit(tenant, worked[0]["supplier_id"], 50)
-    tenant.post(f"/api/supplier-credits/{c['id']}/allocate", json={"bill_id": worked[0]["id"], "amount": 50})
+    use_credit(tenant, c["id"], worked[0]["id"], 50)
     a = account(tenant)
     assert a["total"] == 220.0 and a["credits"] == 0.0 and a["1_30"] == 20.0 and a["current"] == 200.0
 
@@ -687,7 +507,7 @@ def test_the_balance_is_carried_forward_into_a_later_period(tenant, worked):
 def test_a_credit_note_lowers_the_ledger_once_even_when_it_is_set_against_a_bill(tenant, worked):
     sid = worked[0]["supplier_id"]
     c = credit(tenant, sid, 50)
-    tenant.post(f"/api/supplier-credits/{c['id']}/allocate", json={"bill_id": worked[0]["id"], "amount": 50})
+    use_credit(tenant, c["id"], worked[0]["id"], 50)
     led = tenant.get(f"/api/ledger/purchases/{sid}", params={"start": d(-60), "end": d(0)}).json()["ledgers"][0]
     assert led["closing_balance"] == 220.0 and sum(1 for l in led["lines"] if l["kind"] == "credit") == 1
     assert not any(l["kind"] == "payment" and l.get("ref") == c["number"] for l in led["lines"])
@@ -721,21 +541,10 @@ def test_a_bill_with_no_supplier_is_found_under_no_supplier(tenant):
     assert tenant.get("/api/ledger/purchases/0").json()["ledgers"][0]["closing_balance"] == 40.0
 
 
-def test_the_aged_creditors_report_has_the_same_figures(tenant, worked):
-    credit(tenant, worked[0]["supplier_id"], 50)
-    r = tenant.get("/api/reports/ageing/payables").json()
-    assert r["total_outstanding"] == 220.0 and r["overdue"] == 70.0 and r["credits"] == 50.0 and r["suppliers_owed"] == 1
-    assert r["buckets"]["1_30"] == 70.0 and r["buckets"]["current"] == 200.0
-    assert [(b["number"], b["outstanding"], b["bucket"]) for b in r["bills"]] == [("B-1", 70.0, "1_30"), ("B-2", 200.0, "current")]
-    assert r["suppliers"][0]["supplier"] == "Acme Supplies"
-    assert tenant.get("/api/reports/ageing/payables", params={"as_of": d(-30)}).json()["total_outstanding"] == 100.0
-
-
 def test_the_csv_exports_have_the_figures_and_do_not_run_as_formulas(tenant):
     evil = supplier(tenant, "=HYPERLINK(\"http://x\")", account_ref="+1")
     b = tenant.post("/api/bills", json={"supplier_id": evil["id"], "amount": 10, "issue_date": d(-3), "due_date": d(10), "number": "@SUM(1)"}).json()
-    for path in ("/api/ledger/purchases.csv", f"/api/ledger/purchases/{evil['id']}/ledger.csv", "/api/reports/ageing/payables.csv",
-                 "/api/reports/ageing/payables.csv?detail=1"):
+    for path in ("/api/ledger/purchases.csv", f"/api/ledger/purchases/{evil['id']}/ledger.csv"):
         r = tenant.get(path)
         assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv"), path
         for line in r.text.splitlines():
@@ -956,7 +765,7 @@ def test_a_supplier_credit_lowers_what_the_business_spent(tenant):
     bill(tenant, amount=100.0, issue="2026-01-05", due="2026-01-20")
     s = tenant.get("/api/suppliers").json()[0]
     assert tenant.get("/api/reports/profit-loss").json()["total_expenses"] == 100.0
-    tenant.post("/api/supplier-credits", json={"supplier_id": s["id"], "amount": 30, "issue_date": "2026-01-25"})
+    credit(tenant, s["id"], 30, issue_date="2026-01-25")
     r = tenant.get("/api/reports/profit-loss").json()
     assert r["total_expenses"] == 70.0 and r["months"] == ["2026-01"] and r["expenses"] == [70.0]
 
@@ -986,8 +795,8 @@ def test_money_out_is_counted_in_the_month_it_was_paid(tenant):
 
 def test_a_credit_set_against_a_bill_is_not_money_out(tenant):
     b = bill(tenant, amount=100.0, issue="2026-01-05", due="2026-01-20")
-    c = tenant.post("/api/supplier-credits", json={"supplier_id": b["supplier_id"], "amount": 30, "issue_date": "2026-01-10"}).json()
-    tenant.post(f"/api/supplier-credits/{c['id']}/allocate", json={"bill_id": b["id"], "amount": 30, "date": "2026-01-12"})
+    c = credit(tenant, b["supplier_id"], 30, issue_date="2026-01-10")
+    use_credit(tenant, c["id"], b["id"], 30)
     pay(tenant, b["id"], 70, "2026-01-30")
     r = tenant.get("/api/reports/cash-summary").json()
     assert sum(r["money_out"]) == 70.0
@@ -997,7 +806,7 @@ def test_a_credit_set_against_a_bill_is_not_money_out(tenant):
 def test_the_balance_sheet_owes_suppliers_less_credit_not_yet_used(tenant):
     b = bill(tenant, amount=100.0, issue="2026-01-05", due="2026-01-20")
     assert tenant.get("/api/reports/balance-sheet").json()["liabilities"]["accounts_payable"] == 100.0
-    tenant.post("/api/supplier-credits", json={"supplier_id": b["supplier_id"], "amount": 25, "issue_date": "2026-01-10"})
+    credit(tenant, b["supplier_id"], 25, issue_date="2026-01-10")
     assert tenant.get("/api/reports/balance-sheet").json()["liabilities"]["accounts_payable"] == 75.0
 
 
@@ -1013,11 +822,11 @@ def set_plan(tenant, modules):
 
 
 def test_the_ledgers_belong_to_the_invoicing_plan(tenant):
-    for path in ("/api/suppliers", "/api/suppliers/1", "/api/supplier-credits", "/api/ledger/purchases", "/api/ledger/sales", "/api/ledger/credit-check"):
+    for path in ("/api/suppliers", "/api/suppliers/1", "/api/supplier-credit-notes", "/api/ledger/purchases", "/api/ledger/sales", "/api/ledger/credit-check"):
         assert main.module_for_path(path) == "invoicing", path
     set_plan(tenant, "hr")
     for method, path in (("get", "/api/suppliers"), ("post", "/api/suppliers"), ("get", "/api/ledger/purchases"), ("get", "/api/ledger/sales"),
-                         ("get", "/api/supplier-credits"), ("get", "/api/ledger/credit-check")):
+                         ("get", "/api/supplier-credit-notes"), ("get", "/api/ledger/credit-check")):
         assert getattr(tenant, method)(path).status_code == 403, path
     set_plan(tenant, "invoicing")
     assert tenant.get("/api/ledger/purchases").status_code == 200
@@ -1025,13 +834,15 @@ def test_the_ledgers_belong_to_the_invoicing_plan(tenant):
 
 def test_every_ledger_endpoint_needs_a_login(client):
     for method, path in (("get", "/api/suppliers"), ("post", "/api/suppliers"), ("put", "/api/suppliers/1"), ("delete", "/api/suppliers/1"),
-                         ("get", "/api/supplier-credits"), ("post", "/api/supplier-credits"), ("post", "/api/supplier-credits/1/allocate"),
+                         ("get", "/api/supplier-credit-notes"), ("post", "/api/supplier-credit-notes/1/allocate"),
                          ("get", "/api/ledger/purchases"), ("get", "/api/ledger/purchases.csv"), ("get", "/api/ledger/purchases/1"),
                          ("get", "/api/ledger/purchases/1/ledger.csv"), ("get", "/api/ledger/sales"), ("get", "/api/ledger/sales.csv"),
-                         ("get", "/api/ledger/sales/1"), ("get", "/api/ledger/credit-check"), ("get", "/api/reports/ageing/payables"),
-                         ("get", "/api/reports/ageing/payables.csv"), ("post", "/api/bills/1/payments"), ("delete", "/api/bills/1/payments/1"),
+                         ("get", "/api/ledger/sales/1"), ("get", "/api/ledger/credit-check"), ("delete", "/api/bills/1/payments/1"),
                          ("post", "/api/bills/1/void"), ("post", "/api/bills/post-drafts")):
         assert getattr(client, method)(path).status_code in (401, 403), path
+    # Validated before sign-in is checked, so it is sent whole: refused all the same.
+    assert client.post("/api/supplier-credit-notes", json={"vendor_name": "X", "amount": 5}).status_code in (401, 403)
+    assert client.post("/api/bills/1/payments", json={"amount": 5}).status_code in (401, 403)
 
 
 def test_a_read_only_member_can_read_the_ledgers_but_not_change_them(client, tenant):
@@ -1042,11 +853,11 @@ def test_a_read_only_member_can_read_the_ledgers_but_not_change_them(client, ten
     raw = set_their_password(member["id"])
     client.post("/api/client/reset-password", json={"token": raw, "password": "Colleague123"})
     sign_in_as(client, email)
-    for path in ("/api/ledger/purchases", "/api/ledger/sales", "/api/suppliers", "/api/supplier-credits", "/api/reports/ageing/payables", f"/api/bills/{b['id']}"):
+    for path in ("/api/ledger/purchases", "/api/ledger/sales", "/api/suppliers", "/api/supplier-credit-notes", f"/api/bills/{b['id']}"):
         assert client.get(path).status_code == 200, path
     for method, path, body in (("post", "/api/suppliers", {"name": "X"}), ("put", f"/api/suppliers/{s['id']}", {"name": "Y"}),
                                ("post", f"/api/bills/{b['id']}/payments", {"amount": 1}), ("post", f"/api/bills/{b['id']}/pay", {}),
-                               ("post", "/api/supplier-credits", {"supplier_id": s["id"], "amount": 5}), ("post", f"/api/bills/{b['id']}/void", {}),
+                               ("post", "/api/supplier-credit-notes", {"vendor_name": "Readable", "amount": 5}), ("post", f"/api/bills/{b['id']}/void", {}),
                                ("post", "/api/bills/post-drafts", {}), ("delete", f"/api/bills/{b['id']}", None)):
         res = getattr(client, method)(path, json=body) if body is not None else getattr(client, method)(path)
         assert res.status_code == 403 and "read-only" in res.json()["detail"].lower(), (method, path, res.status_code)

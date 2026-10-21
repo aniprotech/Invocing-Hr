@@ -1945,12 +1945,25 @@ def ensure_columns():
             except Exception:
                 MIGRATION_ERRORS.append(f"migration step 71: {sys.exc_info()[1]}")
 
-            # 72. Sales and purchase ledgers: a customer's account details, a
+            # 72. Payment links: an invoice made to be paid from a link, and the
+            # day the link stops working.
+            try:
+                for ddl in (
+                    "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS payment_link VARCHAR DEFAULT ''",
+                    "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS payment_link_expires VARCHAR DEFAULT ''",
+                    "CREATE INDEX IF NOT EXISTS ix_invoices_payment_link ON invoices (payment_link)",
+                ):
+                    conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                MIGRATION_ERRORS.append(f"migration step 72: {sys.exc_info()[1]}")
+
+            # 73. Sales and purchase ledgers: a customer's account details, a
             # bill's supplier and currency. Then every supplier name already
             # typed on a bill becomes a supplier account and the bills are
             # linked to it - once, and only for bills not yet linked, so
             # running it again changes nothing. The new tables come from
-            # create_all.
+            # create_all. A bill payment can name the bank line that settled it.
             try:
                 for ddl in (
                     "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS account_ref VARCHAR DEFAULT ''",
@@ -1959,13 +1972,15 @@ def ensure_columns():
                     "ALTER TABLE bills ADD COLUMN IF NOT EXISTS supplier_id INTEGER",
                     "ALTER TABLE bills ADD COLUMN IF NOT EXISTS currency VARCHAR DEFAULT ''",
                     "CREATE INDEX IF NOT EXISTS ix_bills_supplier_id ON bills (supplier_id)",
+                    "ALTER TABLE bill_payments ADD COLUMN IF NOT EXISTS bank_line_id INTEGER",
+                    "CREATE INDEX IF NOT EXISTS ix_bill_payments_bank_line_id ON bill_payments (bank_line_id)",
                 ) + SUPPLIER_BACKFILL:
                     conn.execute(text(ddl))
                 conn.commit()
             except Exception:
-                MIGRATION_ERRORS.append(f"migration step 72: {sys.exc_info()[1]}")
+                MIGRATION_ERRORS.append(f"migration step 73: {sys.exc_info()[1]}")
 
-            # 73. Payroll and staff money in the books: when a payslip or an
+            # 74. Payroll and staff money in the books: when a payslip or an
             # expense claim was paid, from which account, and on which bank
             # line. Payments to HMRC and the pension provider get a table of
             # their own, made by create_all.
@@ -1983,9 +1998,9 @@ def ensure_columns():
                     conn.execute(text(ddl))
                 conn.commit()
             except Exception:
-                MIGRATION_ERRORS.append(f"migration step 73: {sys.exc_info()[1]}")
+                MIGRATION_ERRORS.append(f"migration step 74: {sys.exc_info()[1]}")
 
-            # 74. Stock from more than invoices: a recurring template's lines
+            # 75. Stock from more than invoices: a recurring template's lines
             # name their item, and a stock movement names the bill or credit
             # note behind it.
             try:
@@ -1997,15 +2012,15 @@ def ensure_columns():
                     conn.execute(text(ddl))
                 conn.commit()
             except Exception:
-                MIGRATION_ERRORS.append(f"migration step 74: {sys.exc_info()[1]}")
+                MIGRATION_ERRORS.append(f"migration step 75: {sys.exc_info()[1]}")
 
-            # 75. A supplier can be the same business as a customer.
+            # 76. A supplier can be the same business as a customer.
             try:
                 conn.execute(text("ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS contact_id INTEGER"))
                 conn.execute(text("CREATE INDEX IF NOT EXISTS ix_suppliers_contact_id ON suppliers (contact_id)"))
                 conn.commit()
             except Exception:
-                MIGRATION_ERRORS.append(f"migration step 75: {sys.exc_info()[1]}")
+                MIGRATION_ERRORS.append(f"migration step 76: {sys.exc_info()[1]}")
 
     except Exception as e:
         # Recorded, not printed. Every one of the 51 steps above appends here

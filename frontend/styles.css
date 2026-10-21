@@ -158,6 +158,7 @@ h1, h2, h3, h4, p, td, th, li, .stat-value { overflow-wrap: anywhere; }
 .status-sent { background: rgba(56, 189, 248, 0.15); color: #38bdf8; }
 .status-awaiting-payment { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
 .status-paid { background: rgba(52, 211, 153, 0.15); color: #34d399; }
+.status-partially-paid { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
 .status-credited, .status-issued { background: rgba(148, 163, 184, 0.2); color: var(--text-secondary); }
 .status-void { background: rgba(148, 163, 184, 0.12); color: var(--text-secondary); text-decoration: line-through; }
 /* Stock. Low is the same amber as waiting-to-be-paid; out is the same red the
@@ -1570,6 +1571,7 @@ body::after {
     padding: 6px; box-shadow: var(--shadow-lg); z-index: var(--layer-menu);
 }
 .nav-group.open > .nav-group-menu { display: flex; }
+.nav-menu-divider { height: 1px; margin: 4px 6px; background: var(--border-color); }
 .nav-group-menu .nav-item { width: 100%; white-space: nowrap; }
 
 /* A mega menu: columns with a heading each, an icon and a line per item.

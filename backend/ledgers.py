@@ -23,9 +23,10 @@ AGE_BUCKETS = ("current", "1_30", "31_60", "61_90", "over_90")
 BUCKET_LABELS = {"current": "Not yet due", "1_30": "1-30 days late", "31_60": "31-60 days late",
                  "61_90": "61-90 days late", "over_90": "Over 90 days late"}
 
-BILL_OPEN = ("Awaiting Payment", "Partially Paid")
+BILL_OPEN = ("Awaiting Payment", "Unpaid", "Partially Paid")
 BILL_METHODS = {"bank_transfer": "bank transfer", "card": "card", "cash": "cash", "cheque": "cheque",
-                "direct_debit": "direct debit", "other": "other", "credit": "credit note"}
+                "direct_debit": "direct debit", "other": "other", "credit": "credit note",
+                "credit_note": "credit note"}
 
 
 def money(value) -> float:
@@ -79,9 +80,12 @@ def bill_status(total, paid, current: str = "") -> str:
         return "Paid"
     if paid > 0:
         return "Partially Paid"
+    # Nothing paid: owed. The Purchases screens call that "Unpaid", older
+    # bills "Awaiting Payment"; whichever the bill already had, it keeps.
+    owed = "Unpaid" if current == "Unpaid" else "Awaiting Payment"
     if total <= 0 and paid <= 0:
-        return "Paid" if current == "Paid" else "Awaiting Payment"
-    return "Awaiting Payment"
+        return "Paid" if current == "Paid" else owed
+    return owed
 
 
 def bill_balance(total, paid) -> float:

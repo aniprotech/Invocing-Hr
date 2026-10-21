@@ -70,8 +70,8 @@ const PURCHASE_DETAIL = {
     ageing: [{ currency: 'GBP', supplier: 'Acme Supplies', total: 220, current: 200, '1_30': 70, '31_60': 0, '61_90': 0, over_90: 0, credits: 50 }],
     open_bills: [{ bill_id: 11, number: 'B-1', issue_date: '2026-09-05', due_date: '2026-10-05', outstanding: 70, days_overdue: 10, bucket: '1_30', currency: 'GBP', supplier_id: 7 },
                  { bill_id: 12, number: 'B-2', issue_date: '2026-10-10', due_date: '2026-11-09', outstanding: 200, days_overdue: 0, bucket: 'current', currency: 'GBP', supplier_id: 7 }],
-    credits: [{ id: 21, number: 'SC-0001', reference: 'THEIR-9', issue_date: '2026-10-01', reason: 'damaged', amount: 50, applied: 0, remaining: 50, currency: 'GBP', status: 'Open', supplier_id: 7 },
-              { id: 22, number: 'SC-0002', reference: '', issue_date: '2026-10-02', reason: '', amount: 10, applied: 10, remaining: 0, currency: 'GBP', status: 'Applied', supplier_id: 7 }],
+    credits: [{ id: 21, number: 'SCN-0001', supplier_ref: 'THEIR-9', issue_date: '2026-10-01', reason: 'damaged', total: 50, allocated: 0, refunded: 0, remaining: 50, currency: 'GBP', status: 'Open', supplier_id: 7 },
+              { id: 22, number: 'SCN-0002', supplier_ref: '', issue_date: '2026-10-02', reason: '', total: 10, allocated: 10, refunded: 0, remaining: 0, currency: 'GBP', status: 'Applied', supplier_id: 7 }],
 };
 
 const BILLS = [
@@ -135,9 +135,9 @@ const text = el => (el ? el.textContent.replace(/\s+/g, ' ') : '');
     // --- on the map -------------------------------------------------------------------
     {
         const { w, doc, sent } = boot();
-        check('the Sales group has a Sales ledger and the Money group a Purchase ledger',
+        check('the Sales group has a Sales ledger and the Purchases group a Purchase ledger',
             !!doc.getElementById('nav-sales-ledger') && !!doc.getElementById('nav-purchase-ledger') &&
-            doc.getElementById('nav-sales-ledger').closest('[data-nav-group="Sales"]') !== null && doc.getElementById('nav-purchase-ledger').closest('[data-nav-group="Money"]') !== null);
+            doc.getElementById('nav-sales-ledger').closest('[data-nav-group="Sales"]') !== null && doc.getElementById('nav-purchase-ledger').closest('[data-nav-group="Purchases"]') !== null);
         check('  and each goes to its own screen by address', /sales-ledger/.test(doc.getElementById('nav-sales-ledger').getAttribute('href')) && /purchase-ledger/.test(doc.getElementById('nav-purchase-ledger').getAttribute('href')));
         check('  the screens have their own slugs and highlight their own link', w.ROUTE_SLUGS['sales-ledger-view'] === 'sales-ledger' && w.ROUTE_SLUGS['purchase-ledger-view'] === 'purchase-ledger'
             && w.NAV_FOR_VIEW['sales-ledger-view'] === 'nav-sales-ledger' && w.NAV_FOR_VIEW['purchase-ledger-view'] === 'nav-purchase-ledger');
@@ -273,30 +273,9 @@ const text = el => (el ? el.textContent.replace(/\s+/g, ' ') : '');
         check('  the ledger runs bills, a payment and a credit note into a balance', /Bill B-1/.test(body) && /Payment on B-1 \(cheque\)/.test(body) && /Credit note SC-0001/.test(body) && /Balance carried forward\s*£220\.00/.test(body));
         check('  the column heads say billed and paid or credited', /Billed/.test(body) && /Paid or credited/.test(body));
         check('  bills to pay, with how late each is', /Bills to pay/.test(body) && /10 days late/.test(body) && /not yet due/.test(body));
-        check('  credit notes: one can be used and voided, one already used cannot be voided', !!doc.querySelector('[data-ledger-use="21"]') && !!doc.querySelector('[data-ledger-void="21"]') && !doc.querySelector('[data-ledger-use="22"]') && !doc.querySelector('[data-ledger-void="22"]'));
+        check('  each credit note can be opened, with what is left, and goods returned on it', !!doc.querySelector('[data-ledger-credit="21"]') && !!doc.querySelector('[data-ledger-credit="22"]') && !!doc.querySelector('[data-ledger-return="21"]') && /THEIR-9/.test(body));
         check('  nothing in a name runs as markup', !doc.querySelector('#ledger-detail-body i') && !doc.querySelector('#ledger-detail-title i'));
         check('  the ledger can be exported for the period', /\/api\/ledger\/purchases\/7\/ledger\.csv\?start=2026-07-17&end=2026-10-15/.test(doc.getElementById('ledger-csv').getAttribute('href')));
-        // paying a bill from here
-        w._forms.length = 0;
-        const formFn = w.uiForm;
-        w.uiForm = (fields, o) => { w._forms.push({ fields, o }); return Promise.resolve({ amount: '25', paid_on: '2026-10-15', method: 'cheque', account_id: '3', reference: 'CHQ 9' }); };
-        click(w, doc.querySelector('[data-ledger-pay="11"]'));
-        await wait(100);
-        const f = w._forms[0];
-        check('Pay asks how much (what is left), when, how, from where and the reference',
-            f && f.fields.map(x => x.name).join() === 'amount,paid_on,method,account_id,reference' && f.fields[0].value === 70 && /Pay bill B-1/.test(f.o.title) && /Current account/.test(JSON.stringify(f.fields[3].options)) && !/Old/.test(JSON.stringify(f.fields[3].options)));
-        const post = sent.find(x => x.url === '/api/bills/11/payments' && x.method === 'POST');
-        check('  and records just that payment', post && bodyOf(post).amount === 25 && bodyOf(post).method === 'cheque' && bodyOf(post).account_id === 3 && bodyOf(post).reference === 'CHQ 9' && bodyOf(post).paid_on === '2026-10-15');
-        w.uiForm = formFn;
-        // using a credit
-        w.uiForm = (fields, o) => { w._forms.push({ fields, o }); return Promise.resolve({ bill_id: '12', amount: '30' }); };
-        click(w, doc.querySelector('[data-ledger-use="21"]'));
-        await wait(120);
-        const alloc = sent.find(x => x.url === '/api/supplier-credits/21/allocate');
-        check('Use a credit asks which bill and how much, and sets it', alloc && bodyOf(alloc).bill_id === 12 && bodyOf(alloc).amount === 30);
-        click(w, doc.querySelector('[data-ledger-void="21"]'));
-        await wait(80);
-        check('Void asks first, then voids', /Void this credit note/.test(w._asked[w._asked.length - 1]) && sent.some(x => x.url === '/api/supplier-credits/21/void' && x.method === 'POST'));
         click(w, doc.getElementById('ledger-hold'));
         await wait(60);
         check('Put on hold saves it on the supplier', bodyOf(sent.find(x => x.url === '/api/suppliers/7' && x.method === 'PUT')).on_hold === true);
@@ -347,27 +326,6 @@ const text = el => (el ? el.textContent.replace(/\s+/g, ' ') : '');
         check('a refusal is shown in the server\'s words and the window stays open', (w._toasts || []).some(t => /already have a supplier/.test(t[0]) && t[1] === 'error') && doc.getElementById('supplier-modal').style.display === 'flex');
     }
 
-    // --- supplier credit notes ------------------------------------------------------------------------------------
-    {
-        const { w, sent } = boot({ form: { supplier_id: '8', amount: '40.5', issue_date: '2026-10-14', reference: 'THEIR-1', reason: 'short delivery' },
-            reply: { 'POST /api/supplier-credits': () => ({ body: { id: 1, number: 'SC-0003' } }) } });
-        await w.openSupplierCredit(0);
-        const post = bodyOf(sent.find(x => x.url === '/api/supplier-credits'));
-        check('a supplier credit note is recorded with supplier, amount, date, their number and the reason', post.supplier_id === 8 && post.amount === 40.5 && post.issue_date === '2026-10-14' && post.reference === 'THEIR-1' && post.reason === 'short delivery');
-        check('  and says what number it got', (w._toasts || []).some(t => /SC-0003/.test(t[0])));
-        check('  the form offers the suppliers to choose from', JSON.stringify(w._forms[0].fields[0].options).includes('Quiet Co'));
-    }
-    {
-        const { w, sent } = boot({ form: null });
-        await w.openSupplierCredit(7);
-        check('backing out of the credit form records nothing', !sent.some(x => x.url === '/api/supplier-credits' && x.method === 'POST'));
-    }
-    {
-        const { w } = boot({ reply: { '/api/suppliers': () => ({ body: [] }) } });
-        await w.openSupplierCredit(0);
-        check('with no suppliers there is nothing to credit and it says why', (w._toasts || []).some(t => /Add a supplier first/.test(t[0])));
-    }
-
     // --- Bills ---------------------------------------------------------------------------------------------------------
     {
         const { w, doc, sent } = boot();
@@ -398,75 +356,27 @@ const text = el => (el ? el.textContent.replace(/\s+/g, ' ') : '');
     }
     {
         const { w, doc, sent } = boot();
-        await w.loadBills();
-        click(w, doc.querySelector('[data-bill-pay="12"]'));
-        await wait(100);
-        const post = sent.find(x => x.url === '/api/bills/12/payments' && x.method === 'POST');
-        check('Pay on a bill asks, and with the defaults pays what is left', post && bodyOf(post).amount === 200 && bodyOf(post).method === 'bank_transfer' && w._forms[0].fields[0].value === 200);
-        click(w, doc.querySelector('[data-bill-payments="11"]'));
-        await wait(100);
-        const m = doc.getElementById('bill-payments-modal');
-        const t = text(doc.getElementById('bill-payments-body'));
-        check('Payments lists each payment, with the total, what is paid and left', m.style.display === 'flex' && /£100\.00/.test(t) && /£70\.00/.test(t) && /CHQ 1/.test(t) && /£20\.00/.test(t) && /£10\.00/.test(t));
-        check('  one that came from a bank line cannot be taken back here', !!doc.querySelector('[data-bp-remove="1"]') && !doc.querySelector('[data-bp-remove="2"]') && /bank line/.test(t));
-        check('  how to pay the supplier is shown', /Sort 12-34/.test(t));
-        click(w, doc.querySelector('[data-bp-remove="1"]'));
-        await wait(100);
-        check('Take back asks first, then deletes that payment', /Take this payment back/.test(w._asked[w._asked.length - 1]) && sent.some(x => x.url === '/api/bills/11/payments/1' && x.method === 'DELETE'));
-        click(w, doc.getElementById('bill-payments-done'));
-        check('Close shuts it', m.style.display === 'none');
-    }
-    {
-        const { w, doc, sent } = boot({ form: null });
-        await w.loadBills();
-        click(w, doc.querySelector('[data-bill-pay="12"]'));
-        await wait(80);
-        check('backing out of the payment form pays nothing', !sent.some(x => x.url === '/api/bills/12/payments'));
-    }
-    {
-        const { w, doc, sent } = boot({ reply: { 'POST /api/bills/12/payments': () => ({ status: 400, body: { detail: 'That is more than bill B-2 has left (200.00)' } }) } });
-        await w.loadBills();
-        click(w, doc.querySelector('[data-bill-pay="12"]'));
-        await wait(100);
-        check('a payment the server refuses is reported in its words', (w._toasts || []).some(t => /more than bill B-2/.test(t[0]) && t[1] === 'error'));
-    }
-    {
-        const { w, doc, sent } = boot();
         await w.showAddBillModal();
         const el = id => doc.getElementById(id);
-        check('a new bill starts posted, not a draft, with the supplier list loaded', el('bill-draft').checked === false && el('bill-draft').disabled === false && el('bill-number').value === 'BILL-0009' && el('bill-vendor-list').options.length === 2);
+        check('a new bill opens numbered, with the supplier list loaded', !el('bill-draft') && el('bill-number').value === 'BILL-0009' && el('bill-vendor-list').options.length === 2);
         el('bill-vendor').value = 'Fresh Co';
         el('bill-currency').value = 'usd';
         el('bill-amount').value = '100';
         await w.saveBill();
         const post = bodyOf(sent.find(x => x.url === '/api/bills' && x.method === 'POST'));
-        check('saving posts the bill to the supplier named, in its currency, as not a draft', post.vendor_name === 'Fresh Co' && post.currency === 'USD' && post.draft === false && post.number === 'BILL-0009');
-        el('bill-draft').checked = true;
-        await w.saveBill();
-        check('ticking draft saves a draft', bodyOf(sent.filter(x => x.url === '/api/bills' && x.method === 'POST')[1]).draft === true);
+        check('saving sends the bill to the supplier named, in its currency, as a draft to approve', post.vendor_name === 'Fresh Co' && post.currency === 'USD' && post.status === 'Draft' && post.number === 'BILL-0009');
         el('bill-vendor').value = '';
         await w.saveBill();
-        check('no supplier is refused before anything is sent', (w._toasts || []).some(t => /supplier required/.test(t[0])) && sent.filter(x => x.url === '/api/bills' && x.method === 'POST').length === 2);
+        check('no supplier is refused before anything is sent', (w._toasts || []).some(t => /vendor name required/.test(t[0])) && sent.filter(x => x.url === '/api/bills' && x.method === 'POST').length === 1);
     }
     {
         const { w, doc, sent } = boot();
         await w.editBill(11);
         const el = id => doc.getElementById(id);
-        check('editing a bill with payments leaves its currency fixed and its status alone', el('bill-currency').disabled === true && el('bill-draft').disabled === true && el('bill-draft').checked === false);
+        check('editing a bill with payments leaves its currency fixed', el('bill-currency').disabled === true);
         await w.saveBill();
         const put = bodyOf(sent.find(x => x.url === '/api/bills/11' && x.method === 'PUT'));
         check('  so the save does not say draft or status', !('draft' in put) && !('status' in put));
-    }
-    {
-        const { w, doc, sent } = boot({ bills: BILLS });
-        await w.loadBills();
-        // a draft bill being edited can be posted by unticking the box
-        const { w: w2, doc: d2, sent: s2 } = boot({ reply: { '/api/bills/14': () => ({ body: { ...BILLS[3], payments: [], supplier: null } }) } });
-        await w2.editBill(14);
-        check('editing a draft shows it ticked and unticking posts it', d2.getElementById('bill-draft').checked === true && d2.getElementById('bill-draft').disabled === false);
-        d2.getElementById('bill-draft').checked = false;
-        await w2.saveBill();
-        check('  by saying it is not a draft', bodyOf(s2.find(x => x.url === '/api/bills/14' && x.method === 'PUT')).draft === false);
     }
     {
         const { w, doc } = boot({ reply: { 'POST /api/bills': () => ({ status: 400, body: { detail: 'Bill number already exists' } }) } });
@@ -557,34 +467,47 @@ const text = el => (el ? el.textContent.replace(/\s+/g, ' ') : '');
         check('an account over its limit has its credit bar in the warning colour', bar && /var\(--danger-text\)/.test(bar.getAttribute('style')), bar && bar.getAttribute('style'));
     }
 
-    // --- Aged creditors on the Reports page ------------------------------------------------------------------
+    // --- paying and crediting go through the Purchases screens -----------------------------------------
     {
-        const PAYABLES = { as_of: '2026-10-15', currency: 'GBP', buckets: { current: 200, '1_30': 70, '31_60': 0, '61_90': 0, over_90: 0 }, total_outstanding: 220, overdue: 70, credits: 50,
-            suppliers: [{ supplier_id: 7, supplier: 'Acme <i>Supplies</i>', currency: 'GBP', current: 200, '1_30': 70, '31_60': 0, '61_90': 0, over_90: 0, credits: 50, total: 220 },
-                        { supplier_id: 8, supplier: 'Quiet Co', currency: 'GBP', current: 0, '1_30': 0, '31_60': 0, '61_90': 0, over_90: 0, credits: 0, total: 0 }],
-            bills: [], other_currencies: [] };
-        const { w, doc, sent } = boot({ reply: { '/api/reports/ageing/payables': () => ({ body: PAYABLES }) } });
-        check('the Reports page has an Aged Creditors button', !!doc.getElementById('rpt-payables-btn'));
-        await w.loadAgedPayables();
-        const box = text(doc.getElementById('payables-buckets'));
-        check('it shows what you owe by age, after credit, and what is overdue', doc.getElementById('reports-payables-content').style.display === 'block' &&
-            /Not yet due\s*£200\.00/.test(box) && /You owe £220\.00/.test(box) && /after £50\.00 of supplier credit/.test(box) && /overdue £70\.00/.test(box), box);
-        const rows = doc.querySelectorAll('#payables-suppliers tbody tr');
-        check('  a row per supplier owed, names as text', rows.length === 1 && !doc.querySelector('#payables-suppliers i') && /£220\.00/.test(text(rows[0])));
-        check('  and the other report tabs are hidden', doc.getElementById('reports-aged-content').style.display === 'none');
-        doc.getElementById('payables-asof').value = '2026-06-30';
-        await w.loadAgedPayables();
-        check('the day chosen goes to the report and both spreadsheets', sent.some(x => x.full === '/api/reports/ageing/payables?as_of=2026-06-30') &&
-            doc.getElementById('payables-csv').getAttribute('href') === '/api/reports/ageing/payables.csv?as_of=2026-06-30' &&
-            doc.getElementById('payables-csv-detail').getAttribute('href') === '/api/reports/ageing/payables.csv?as_of=2026-06-30&detail=1');
-        w.openPurchaseAccount = id => { w._openedSupplier = id; };
-        click(w, doc.querySelector('[data-payables-open="7"]'));
-        check('a supplier opens their account', w._openedSupplier === 7);
+        const { w, doc } = boot();
+        await w.loadPurchaseLedger();
+        click(w, doc.querySelector('#purchase-ledger-body [data-ledger-open="7"]'));
+        await wait(60);
+        let paid = null, opened = null, made = null;
+        w.openBillPaymentModal = id => { paid = id; };
+        w.openSupplierCreditNote = id => { opened = id; };
+        w.newSupplierCreditNote = v => { made = v; };
+        w.showView = () => { };
+        click(w, doc.querySelector('[data-ledger-pay="11"]'));
+        await wait(60);
+        check('Pay on a supplier account opens the payment form for that bill, and the account comes back after', paid === 11 && typeof w._onPurchaseChange === 'function');
+        await w.openPurchaseAccount(7);
+        await wait(40);
+        click(w, doc.querySelector('[data-ledger-credit="21"]'));
+        check('Open on a credit note opens it on the credit notes screen', opened === 21);
+        await w.openPurchaseAccount(7);
+        await wait(40);
+        click(w, doc.getElementById('ledger-newcredit'));
+        check('Record a credit note starts the credit note form for this supplier', made === 'Acme <i>Supplies</i>');
     }
     {
-        const { w, doc } = boot({ reply: { '/api/reports/ageing/payables': () => ({ status: 500, body: {} }) } });
-        await w.loadAgedPayables();
-        check('a report that fails to load says so', /Could not load/.test(text(doc.getElementById('payables-buckets'))));
+        const { w, doc } = boot();
+        await w.loadBills();
+        const asked = [];
+        w.openBillPaymentModal = id => { asked.push(id); };
+        click(w, doc.querySelector('[data-bill-pay="12"]'));
+        click(w, doc.querySelector('[data-bill-payments="11"]'));
+        await wait(20);
+        check('Pay and Payments on the Bills screen open the payment form', JSON.stringify(asked) === '[12,11]');
+        check('my old payments window and the Aged Creditors tab are gone (Purchases has both)', !doc.getElementById('bill-payments-modal') && !doc.getElementById('rpt-payables-btn'));
+    }
+    {
+        const { w } = boot();
+        let heard = 0;
+        w._onPurchaseChange = () => { heard++; };
+        w.purchaseChanged();
+        w.purchaseChanged();
+        check('a purchase change is told to whoever asked, once', heard === 1);
     }
 
     // --- voiding a bill -----------------------------------------------------------------------------------------

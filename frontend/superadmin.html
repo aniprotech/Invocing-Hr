@@ -367,12 +367,12 @@
             *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
         }
     </style>
-    <link rel="stylesheet" href="mobile.css?v=202">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=202">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=202">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=202">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=202">
-    <script src="/dialogs.js?v=202"></script>
+    <link rel="stylesheet" href="mobile.css?v=211">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=211">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=211">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=211">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=211">
+    <script src="/dialogs.js?v=211"></script>
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -479,6 +479,7 @@
             <span style="font-size:0.78rem;color:#94a3b8;" id="gateway-status"></span>
             <button class="action-btn" onclick="checkGoCardlessKeys()"
                     style="margin-left:auto;">Test GoCardless</button>
+            <button class="action-btn" onclick="checkSaltEdgeKeys()">Test Salt Edge</button>
             <button class="action-btn" onclick="checkRazorpayKeys()">Test Razorpay</button>
         </div>
         <div id="razorpay-check" style="font-size:0.78rem;color:#94a3b8;margin-top:6px;"></div>
@@ -1041,6 +1042,24 @@
             }
         }
         window.checkGoCardlessKeys = checkGoCardlessKeys;
+
+        // Salt Edge: one read of the bank list proves the keys and the signature
+        // without moving money; anything else that would stop a payment is listed.
+        async function checkSaltEdgeKeys() {
+            var host = document.getElementById('razorpay-check');
+            host.style.color = '#94a3b8';
+            host.textContent = 'Asking Salt Edge...';
+            try {
+                var d = await fetchJson('/api/superadmin/saltedge-check');
+                host.style.color = d.ok ? ((d.notes || []).length ? '#fbbf24' : '#34d399') : '#f43f5e';
+                host.textContent = (d.message || (d.ok ? 'Connected.' : 'Could not connect.')) +
+                    ((d.notes || []).length ? ' \u2022 ' + d.notes.join(' \u2022 ') : '');
+            } catch (e) {
+                host.style.color = '#f43f5e';
+                host.textContent = 'Could not reach the server.';
+            }
+        }
+        window.checkSaltEdgeKeys = checkSaltEdgeKeys;
 
         // Whether a key pair works is a question Razorpay can answer directly,
         // with a call that moves no money. Finding out through a failed top-up
@@ -3090,6 +3109,6 @@
         <div id="wallet-panel-body"></div>
       </div>
     </div>
-    <script src="/pwa.js?v=202"></script>
+    <script src="/pwa.js?v=211"></script>
 </body>
 </html>

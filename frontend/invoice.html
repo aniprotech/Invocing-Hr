@@ -118,12 +118,12 @@
     }
   </style>
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-    <link rel="stylesheet" href="/mobile.css?v=202">
-    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=202">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=202">
-    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=202">
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=202">
-    <script src="/dialogs.js?v=202"></script>
+    <link rel="stylesheet" href="/mobile.css?v=211">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png?v=211">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png?v=211">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg?v=211">
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=211">
+    <script src="/dialogs.js?v=211"></script>
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="aniprotech">
     <meta property="og:title" content="Your invoice">
@@ -164,8 +164,13 @@
       try {
         var res = await fetch('/api/public/invoices/' + encodeURIComponent(id));
         if (res.status === 404) {
-          state.textContent = 'This invoice is no longer available. '
-            + 'If you think that is wrong, reply to the email it came from.';
+          // A payment link that has run out or been withdrawn says so, in
+          // those words, instead of calling itself an invoice.
+          var gone = await res.json().catch(function () { return {}; });
+          state.textContent = /payment link/i.test(gone.detail || '')
+            ? gone.detail + '. Please ask the business for a new one.'
+            : 'This invoice is no longer available. '
+              + 'If you think that is wrong, reply to the email it came from.';
           return;
         }
         if (!res.ok) throw new Error('http ' + res.status);
@@ -211,9 +216,9 @@
             '<div class="due">' + money(sym, inv.is_settled ? inv.total : inv.amount_due) + '</div>' +
           '</div>' +
           '<div style="text-align:right;">' +
-            '<div class="label">' + (inv.is_settled ? 'Status' : 'Due') + '</div>' +
-            '<div>' + (inv.is_settled ? 'Thank you' : esc(inv.due_date)) + '</div>' +
-            (late ? '<div class="small" style="color:#a63321;">' +
+            '<div class="label">' + (inv.is_settled ? 'Status' : (inv.payment_link ? 'Valid until' : 'Due')) + '</div>' +
+            '<div>' + (inv.is_settled ? 'Thank you' : esc(inv.payment_link ? (inv.valid_until || inv.due_date) : inv.due_date)) + '</div>' +
+            (late && !inv.payment_link ? '<div class="small" style="color:#a63321;">' +
               inv.days_overdue + ' days overdue</div>' : '') +
           '</div>' +
         '</div>' +
@@ -225,12 +230,14 @@
         '<p class="small" id="payNote" style="margin:0 0 18px;"></p>' +
 
         '<div class="cols">' +
-          '<div><div class="label">Billed to</div>' + esc(inv.to.name) +
+          // A payment link may name nobody; then there is nothing to put under "Billed to".
+          ((inv.payment_link && !inv.to.name && !inv.to.company) ? '' :
+            '<div><div class="label">Billed to</div>' + esc(inv.to.name) +
             (inv.to.company ? '<br>' + esc(inv.to.company) : '') +
             (inv.to.address ? '<br><span class="small">' + esc(inv.to.address).replace(/\n/g, '<br>') + '</span>' : '') +
-            (inv.to.tax_id ? '<br><span class="small">Tax ID ' + esc(inv.to.tax_id) + '</span>' : '') + '</div>' +
-          '<div><div class="label">Issued</div>' + esc(inv.issue_date) + '</div>' +
-          '<div><div class="label">Due</div>' + esc(inv.due_date) + '</div>' +
+            (inv.to.tax_id ? '<br><span class="small">Tax ID ' + esc(inv.to.tax_id) + '</span>' : '') + '</div>') +
+          '<div><div class="label">' + (inv.payment_link ? 'Requested' : 'Issued') + '</div>' + esc(inv.issue_date) + '</div>' +
+          '<div><div class="label">' + (inv.payment_link ? 'Valid until' : 'Due') + '</div>' + esc(inv.payment_link ? (inv.valid_until || inv.due_date) : inv.due_date) + '</div>' +
         '</div>' +
 
         '<div class="scroll"><table><thead><tr>' +

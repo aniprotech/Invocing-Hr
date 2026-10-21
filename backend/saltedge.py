@@ -89,12 +89,18 @@ def _clean(value):
 
 
 def _pem(value):
-    """A PEM key as a one-line environment variable.
+    """A PEM key as pasted into a one-line box or an environment variable.
 
-    Dashboards that cannot hold a multi-line value are given the key with
-    literal \\n in it, so those are turned back into real line breaks.
+    Three shapes arrive: real line breaks, literal \\n (dashboards that cannot
+    hold a multi-line value), and a single line with the breaks lost (a
+    multi-line paste into a one-line field). All three come out as a proper
+    PEM, which is what the key parser needs.
     """
     text = _clean(value).replace("\\n", "\n")
+    m = re.fullmatch(r"(-----BEGIN [A-Z ]+-----)\s*(.*?)\s*(-----END [A-Z ]+-----)", text, re.S)
+    if m:
+        body = re.sub(r"\s+", "", m.group(2))
+        text = m.group(1) + "\n" + "\n".join(body[i:i + 64] for i in range(0, len(body), 64)) + "\n" + m.group(3)
     return text
 
 

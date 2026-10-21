@@ -36,7 +36,11 @@ payroll software, and ask for:
    (HMRC's own target is about 10 working days; confirm with them)
 5. a check of our **IRmark** against their test service
 
-Then on the Railway service that serves aniprotech.com, add:
+Then enter the Vendor ID, Gateway address, mode and IRmark switch in **superadmin >
+Platform settings > HMRC** (no redeploy needed). They can instead be set as
+variables on the Railway service that serves aniprotech.com; a value saved on
+the screen wins over the variable. Only `HMRC_ENCRYPTION_KEY` has to be a
+variable. The variables are:
 
 ```
 HMRC_VENDOR_ID=...                 # the Vendor ID from HMRC

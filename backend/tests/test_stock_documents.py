@@ -187,8 +187,8 @@ def test_a_missing_or_void_credit_note_restocks_nothing(tenant):
 def test_goods_sent_back_to_a_supplier_leave_stock(tenant):
     it = tracked(tenant, 10, 4.0)
     s = tenant.post("/api/suppliers", json={"name": f"Sup {uuid.uuid4().hex[:4]}"}).json()
-    cr = tenant.post("/api/supplier-credits", json={"supplier_id": s["id"], "amount": 8, "issue_date": d(-1)}).json()
-    url = f"/api/supplier-credits/{cr['id']}/return-stock"
+    cr = tenant.post("/api/supplier-credit-notes", json={"vendor_name": s["name"], "amount": 8, "issue_date": d(-1)}).json()
+    url = f"/api/supplier-credit-notes/{cr['id']}/return-stock"
     r = tenant.post(url, json={"lines": [{"item_id": it["id"], "quantity": 2}]})
     assert r.status_code == 200, r.text
     assert on_hand(tenant, it)["quantity_on_hand"] == 8
@@ -197,7 +197,7 @@ def test_goods_sent_back_to_a_supplier_leave_stock(tenant):
     assert tenant.post(url, json={"lines": [{"item_id": it["id"], "quantity": 1}]}).status_code == 409
     assert tenant.post(url, json={"lines": [{"item_id": it["id"], "quantity": 1}], "again": True}).status_code == 200
     assert on_hand(tenant, it)["quantity_on_hand"] == 7
-    assert tenant.post(f"/api/supplier-credits/{cr['id']}/void").status_code == 200
+    assert tenant.post(f"/api/supplier-credit-notes/{cr['id']}/void", json={}).status_code == 200
     assert tenant.post(url, json={"lines": [{"item_id": it["id"], "quantity": 1}], "again": True}).status_code == 400
 
 

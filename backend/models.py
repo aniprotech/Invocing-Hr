@@ -108,6 +108,11 @@ class DBInvoice(Base):
     chase_paused = Column(Boolean, default=False)
     # The day it is to be emailed, when that is later than now.
     send_at = Column(String, default="")
+    # A payment link is an invoice made to be paid from a link: "" for an
+    # ordinary invoice, else active | cancelled | expired. It is never chased,
+    # and stops being payable after payment_link_expires.
+    payment_link = Column(String, default="", index=True)
+    payment_link_expires = Column(String, default="")
 
     line_items = relationship("DBLineItem", back_populates="invoice")
     client = relationship("DBClient", back_populates="invoices")
@@ -1538,46 +1543,163 @@ class DBSupplier(Base):
 
 
 class DBBillPayment(Base):
-    """One payment against a bill, or one credit set against it. The bill keeps
-    a running amount_paid; this is the history that explains it, so "what did
-    we pay them, when, from where" has an answer. bank_line_id ties a payment to
-    the bank line that settled it, credit_id to the supplier credit applied."""
+    """One payment made against a supplier bill. Bills keep a running
+    amount_paid; this table is the ledger that explains how it got there. A
+    credit note set against a bill is a payment too (method "credit_note",
+    the note's number as its reference), so the bill's history is in one place."""
     __tablename__ = "bill_payments"
 
     id = Column(Integer, primary_key=True, index=True)
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
     bill_id = Column(Integer, ForeignKey("bills.id"), nullable=False, index=True)
     amount = Column(Float, default=0.0)
-    paid_on = Column(String, default="")
+    paid_on = Column(String, default="", index=True)
     method = Column(String, default="bank_transfer")
     reference = Column(String, default="")
     note = Column(String, default="")
+    # Which of the business's own accounts it was paid from. Null when unsaid.
     account_id = Column(Integer, ForeignKey("money_accounts.id"), nullable=True, index=True)
+    # The bank line that settled it, when it was paid by matching one.
     bank_line_id = Column(Integer, nullable=True, index=True)
-    credit_id = Column(Integer, nullable=True, index=True)
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
-class DBSupplierCredit(Base):
-    """A credit note from a supplier: they owe the business this much, to be set
-    against their bills. status: Open (some or all still to use), Applied (all
-    used) or Void."""
-    __tablename__ = "supplier_credits"
+class DBSupplierCreditNote(Base):
+    """A credit note a supplier has given the business: it corrects a bill, or
+    is money the supplier owes back. What it credits can be taken off the bill
+    it belongs to, set against other bills from them, or paid back in cash -
+    and the note keeps count, so what is left of it is always known.
+
+    A credit set against a bill is a payment on that bill (method
+    "credit_note", this note's number as the reference); allocated counts
+    those."""
+    __tablename__ = "supplier_credit_notes"
     __table_args__ = (
         UniqueConstraint('client_id', 'number', name='uq_client_supplier_credit_number'),
     )
 
     id = Column(Integer, primary_key=True, index=True)
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
-    supplier_id = Column(Integer, nullable=False, index=True)
-    number = Column(String, index=True)
-    reference = Column(String, default="")      # the supplier's own number for it
+    number = Column(String, index=True)               # ours: SCN-0001
+    supplier_ref = Column(String, default="")         # theirs, as printed on the note
+    vendor_name = Column(String, default="", index=True)
+    vendor_email = Column(String, default="")
     issue_date = Column(String, default="")
-    amount = Column(Float, default=0.0)
-    applied = Column(Float, default=0.0)
-    currency = Column(String, default="")
     reason = Column(String, default="")
-    status = Column(String, default="Open", index=True)
+    amount = Column(Float, default=0.0)
+    tax_amount = Column(Float, default=0.0)
+    total = Column(Float, default=0.0)
+    bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True, index=True)
+    bill_number = Column(String, default="")
+    status = Column(String, default="Open", index=True)    # Open | Applied | Void
+    allocated = Column(Float, default=0.0)            # set against bills
+    refunded = Column(Float, default=0.0)             # paid back to the business
+    refunded_on = Column(String, default="")
+    refund_method = Column(String, default="")
+    refund_reference = Column(String, default="")
+    refund_account_id = Column(Integer, ForeignKey("money_accounts.id"), nullable=True)
+    voided_on = Column(String, default="")
+    void_reason = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBPurchaseOrder(Base):
+    """An order placed with a supplier. Draft while it is being written,
+    Approved once it is ready to go, Billed once a bill has been made from it
+    (the bill's number is kept), or Void. Its figures are worked out from its
+    lines when it is saved."""
+    __tablename__ = "purchase_orders"
+    __table_args__ = (
+        UniqueConstraint('client_id', 'number', name='uq_client_po_number'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    number = Column(String, index=True)
+    vendor_name = Column(String, default="", index=True)
+    vendor_email = Column(String, default="")
+    issue_date = Column(String, default="")
+    delivery_date = Column(String, default="")
+    reference = Column(String, default="")
+    notes = Column(String, default="")
+    subtotal = Column(Float, default=0.0)
+    tax_total = Column(Float, default=0.0)
+    total = Column(Float, default=0.0)
+    status = Column(String, default="Draft", index=True)     # Draft | Approved | Billed | Void
+    approved_on = Column(String, default="")
+    bill_id = Column(Integer, ForeignKey("bills.id"), nullable=True)
+    bill_number = Column(String, default="")
+    billed_on = Column(String, default="")
+    voided_on = Column(String, default="")
+    void_reason = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    lines = relationship("DBPurchaseOrderLine", back_populates="order", cascade="all, delete-orphan",
+                         order_by="DBPurchaseOrderLine.id")
+
+
+class DBPurchaseOrderLine(Base):
+    __tablename__ = "purchase_order_lines"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(Integer, ForeignKey("purchase_orders.id"), nullable=False, index=True)
+    description = Column(String, default="")
+    qty = Column(Float, default=1.0)
+    price = Column(Float, default=0.0)
+    tax_rate = Column(Float, default=0.0)            # a percentage, 20 for 20%
+
+    order = relationship("DBPurchaseOrder", back_populates="lines")
+
+
+class DBBusinessExpense(Base):
+    """Money the business has already spent that did not come as a supplier
+    bill: a card payment, petty cash, a receipt. Not a staff claim - those
+    are reimbursed through People - this is the business's own spending."""
+    __tablename__ = "business_expenses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    spent_on = Column(String, default="", index=True)
+    payee = Column(String, default="", index=True)
+    description = Column(String, default="")
+    category = Column(String, default="general", index=True)
+    amount = Column(Float, default=0.0)
+    tax_amount = Column(Float, default=0.0)
+    total = Column(Float, default=0.0)
+    method = Column(String, default="card")
+    account_id = Column(Integer, ForeignKey("money_accounts.id"), nullable=True, index=True)
+    reference = Column(String, default="")
+    created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+class DBRecurringBill(Base):
+    """A standing instruction to enter the same supplier bill on a schedule:
+    rent, software, a retainer. Holds the figures itself, so editing it never
+    rewrites bills already entered from it."""
+    __tablename__ = "recurring_bills"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    name = Column(String, default="")
+    vendor_name = Column(String, default="")
+    vendor_email = Column(String, default="")
+    category = Column(String, default="general")
+    reference = Column(String, default="")
+    notes = Column(String, default="")
+    amount = Column(Float, default=0.0)
+    tax_amount = Column(Float, default=0.0)
+    # weekly | monthly | quarterly | yearly
+    frequency = Column(String, default="monthly")
+    # Days after the bill date that it falls due.
+    payment_terms_days = Column(Integer, default=30)
+    next_run = Column(String, default="", index=True)
+    end_date = Column(String, default="")
+    is_active = Column(Boolean, default=True, index=True)
+    # Enter each one as Awaiting payment (approved) instead of leaving a draft.
+    auto_approve = Column(Boolean, default=False)
+    last_run = Column(String, default="")
+    last_bill_number = Column(String, default="")
+    bills_created = Column(Integer, default=0)
     created_at = Column(String, default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
