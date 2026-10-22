@@ -51,6 +51,8 @@ const EXTRA = ['#a3e635', '#0f6b4f', '#a63321', '#14161d', '#5b6070',
 // Other companies' marks. Restyling these would be misrepresenting them.
 const FOREIGN = ['#4285f4', '#ea4335', '#fbbc05', '#34a853',  // Google
                  '#25d366',                                     // WhatsApp
+                 '#1a1f71', '#eb001b', '#f79e1b', '#1c1c1c',    // Visa, Mastercard, Apple Pay (payment badges)
+                 '#2e77bc', '#003087', '#009cde',               // Amex, PayPal
                  '#1a73e8', '#5f6368', '#202124', '#1557b0',    // Google UI
                  '#f1f3f4', '#e6e6e6', '#e5e7eb', '#e8eaed', '#9ca3af',
                  '#fbfdff', '#f6f7fa', '#2d3748', '#1a202c', '#0d1117'];

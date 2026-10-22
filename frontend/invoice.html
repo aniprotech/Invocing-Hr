@@ -116,6 +116,24 @@
       .sheet { box-shadow: none; margin: 0; max-width: none; }
       .actions, .paybox, #payNote { display: none; }
     }
+    /* The ways to pay, as small badges: the brands' colours, not their logos. */
+    .badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 12px 0 0; }
+    .badges .lead { font-size: .78rem; color: #64748b; margin-right: 2px; }
+    .pb { display: inline-flex; align-items: center; justify-content: center; font: 700 11px/1 -apple-system, "Segoe UI", Arial, sans-serif;
+          padding: 6px 9px; border-radius: 4px; min-width: 38px; }
+    .pb-visa { background: #1a1f71; color: #fff; font-style: italic; font-weight: 800; letter-spacing: .3px; }
+    .pb-mastercard { background: #1c1c1c; position: relative; width: 42px; height: 24px; padding: 0; }
+    .pb-mastercard:before, .pb-mastercard:after { content: ""; position: absolute; top: 5px; width: 14px; height: 14px; border-radius: 50%; }
+    .pb-mastercard:before { left: 8px; background: #eb001b; }
+    .pb-mastercard:after { left: 20px; background: #f79e1b; }
+    .pb-amex { background: #2e77bc; color: #fff; font-weight: 800; }
+    .pb-applepay { background: #000; color: #fff; }
+    .pb-googlepay { background: #fff; color: #5f6368; border: 1px solid #cbd5e1; }
+    .pb-googlepay b { color: #4285f4; }
+    .pb-paypal { background: #fff; color: #003087; border: 1px solid #cbd5e1; font-style: italic; font-weight: 800; }
+    .pb-paypal b { color: #009cde; }
+    .pb-upi { background: #fff; color: #444; border: 1px solid #cbd5e1; font-weight: 800; }
+    .pb-bank { background: #f1f5f9; color: #334155; border: 1px solid #cbd5e1; }
   </style>
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
     <link rel="stylesheet" href="/mobile.css?v=211">
@@ -325,12 +343,26 @@
         if (new URLSearchParams(location.search).get('pay') === '1') openPayStep();
       }
 
+      // The server says which ways to pay this business has on; the badges are
+      // those, and only those. Names are fixed words, never anything typed.
+      var BADGES = {
+        visa: '<span class="pb pb-visa">VISA</span>', mastercard: '<span class="pb pb-mastercard" title="Mastercard" role="img" aria-label="Mastercard"></span>',
+        amex: '<span class="pb pb-amex">AMEX</span>', applepay: '<span class="pb pb-applepay">Apple Pay</span>',
+        googlepay: '<span class="pb pb-googlepay"><b>G</b>&nbsp;Pay</span>', paypal: '<span class="pb pb-paypal">Pay<b>Pal</b></span>',
+        upi: '<span class="pb pb-upi">UPI</span>', bank: '<span class="pb pb-bank">Pay by bank</span>'
+      };
+      function badgeStrip() {
+        var list = ((inv.payment && inv.payment.badges) || []).filter(function (b) { return BADGES[b]; });
+        return list.length ? '<div class="badges" aria-label="Ways to pay"><span class="lead">Pay online with</span>' +
+          list.map(function (b) { return BADGES[b]; }).join('') + '</div>' : '';
+      }
+
       function drawPayBar() {
         var box = document.getElementById('payBox');
         box.innerHTML = '<div class="paybar">' +
           '<div><div class="label">Amount due</div><div class="due">' + money(sym, inv.amount_due) + '</div></div>' +
           '<button class="btn primary" id="payOpen" onclick="openPayStep()">Pay ' + money(sym, inv.amount_due) + '</button>' +
-          '</div>' + autodebitLink();
+          '</div>' + badgeStrip() + autodebitLink();
       }
 
       window.openPayStep = function () {

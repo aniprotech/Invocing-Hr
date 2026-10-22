@@ -3635,6 +3635,8 @@ async function viewInvoice(number) {
         var inv = await response.json();
         _viewCurrency = inv.currency || '';
         _viewTrackingId = inv.tracking_id || '';
+        // What "View and pay online" draws on this invoice's PDF, when it has one.
+        window._viewPayOnline = inv.pay_online ? Object.assign({ number: inv.number }, inv.pay_online) : null;
         _viewOutstanding = inv.due || 0;
         _viewPayments = inv.payments || [];
         _viewInvoice = inv;
@@ -3781,7 +3783,8 @@ var defaultInvoiceLayout = [
     { id: 'bank_details', visible: true, label: 'Bank Details' },
     { id: 'terms_conditions', visible: true, label: 'Terms & Conditions' },
     { id: 'signature', visible: true, label: 'Signature' },
-    { id: 'payment_stub', visible: true, label: 'Payment Stub' }
+    { id: 'payment_stub', visible: true, label: 'Payment Stub' },
+    { id: 'pay_online', visible: true, label: 'View and pay online (QR code and payment methods)' }
 ];
 
 window._invoiceLayout = JSON.parse(JSON.stringify(defaultInvoiceLayout));
@@ -3804,6 +3807,10 @@ function initTemplateBuilder(layoutData) {
     if (!Array.isArray(window._invoiceLayout)) {
         window._invoiceLayout = JSON.parse(JSON.stringify(defaultInvoiceLayout));
     }
+    // A layout saved before a block existed does not list it; add it, shown.
+    defaultInvoiceLayout.forEach(function (d) {
+        if (!window._invoiceLayout.some(function (b) { return b.id === d.id; })) window._invoiceLayout.push(Object.assign({}, d));
+    });
     renderDocumentSections();
 }
 window.loadInvoiceLayout = initTemplateBuilder;
@@ -3811,7 +3818,7 @@ window.loadInvoiceLayout = initTemplateBuilder;
 // The four blocks a business actually chooses to hide. This replaces a
 // drag-and-drop list that sat beside the branding editor doing a job the
 // branding editor should own, and reappeared on every refresh.
-var HIDEABLE_BLOCKS = ['bank_details', 'terms_conditions', 'signature', 'payment_stub'];
+var HIDEABLE_BLOCKS = ['bank_details', 'terms_conditions', 'signature', 'payment_stub', 'pay_online'];
 
 function renderDocumentSections() {
     var host = document.getElementById('bt-blocks');
@@ -3982,6 +3989,11 @@ var PDF_DOC_TYPES = {
         dateOutLabel: 'Against Invoice', bank: false, paymentAdvice: false,
     },
 };
+
+// The sample the branding preview draws, so a business can see where "View and
+// pay online" will sit. A real code for an example address, not for the business.
+var DUMMY_PAY_ONLINE = { heading: 'View and pay online', badges: ['visa', 'mastercard', 'applepay', 'googlepay'],
+    matrix: ["11111110000101001001001111111", "10000010010101110010001000001", "10111010000011001111101011101", "10111010011001110010001011101", "10111010011011101110001011101", "10000010110111100111001000001", "11111110101010101010101111111", "00000000000100100110000000000", "10010110100010011001010100000", "01000100000010110000101001001", "11011010100010001011000111110", "01110000010100111010010110110", "10100111100100001101111001011", "00001001110000000101010000000", "01101011100110001010110011111", "01001100110111111111110101010", "10010010110011110100110000010", "01110100001010001000011101001", "10111111100101001000011010011", "00100100010111011111101110011", "10010110001010100011111110100", "00000000100111001001100010111", "11111110000111101000101010010", "10000010111101011010100011111", "10111010010100111100111110001", "10111010101110100111111011110", "10111010010100100010000011101", "10000010000011110111101000010", "11111110110111000100101111010"] };
 
 function generateInvoicePDF(isDummy, kind) {
     var cfg = PDF_DOC_TYPES[kind] || PDF_DOC_TYPES.invoice;
@@ -4393,9 +4405,101 @@ function generateInvoicePDF(isDummy, kind) {
     lh(ml, mr, y, 0.5); y += 10;
 
     // ════════════════════════════════════════════════════════
+    //  VIEW AND PAY ONLINE - a code to scan and the ways to pay
+    //  Drawn on the left of the totals, the same sizes as the server's PDF
+    //  (draw_pay_badge and draw_qr in pdf.py).
+    // ════════════════════════════════════════════════════════
+    var PAY_QR = 70, BADGE_H = 17, BADGE_GAP = 5;
+    var BADGE_W = { visa: 40, mastercard: 40, amex: 40, applepay: 48, googlepay: 44, paypal: 46, upi: 36, bank: 66 };
+    var payOnline = null;
+    if (kind === 'invoice' && isVisible('pay_online')) {
+        var po = isDummy ? DUMMY_PAY_ONLINE : window._viewPayOnline;
+        // Only the block that belongs to this invoice, never one left over from another.
+        if (po && po.matrix && po.matrix.length && (isDummy || String(po.number || '').trim() === String(numberText || '').trim())) payOnline = po;
+    }
+
+    function badgeText(parts, cx, base, size) {
+        doc.setFontSize(size);
+        var widths = parts.map(function (p) { doc.setFont('helvetica', p[1]); return doc.getTextWidth(p[0]); });
+        var x = cx - widths.reduce(function (a, b) { return a + b; }, 0) / 2;
+        parts.forEach(function (p, i) {
+            doc.setFont('helvetica', p[1]);
+            doc.setTextColor(p[2][0], p[2][1], p[2][2]);
+            doc.text(p[0], x, base);
+            x += widths[i];
+        });
+    }
+
+    function drawPayBadge(key, x, top) {
+        var bw = BADGE_W[key] || 40, cx = x + bw / 2, base = top + BADGE_H / 2 + 3;
+        doc.setLineWidth(0.6);
+        var box = function (fill, stroke) {
+            doc.setFillColor(fill[0], fill[1], fill[2]);
+            if (stroke) { doc.setDrawColor(stroke[0], stroke[1], stroke[2]); doc.roundedRect(x, top, bw, BADGE_H, 3, 3, 'FD'); }
+            else doc.roundedRect(x, top, bw, BADGE_H, 3, 3, 'F');
+        };
+        if (key === 'visa') {
+            box([26, 31, 113]);
+            badgeText([['VISA', 'bolditalic', [255, 255, 255]]], cx, base, 10);
+        } else if (key === 'mastercard') {
+            box([28, 28, 28]);
+            doc.setFillColor(235, 0, 27); doc.circle(cx - 4.2, top + BADGE_H / 2, 5.6, 'F');
+            doc.setFillColor(247, 158, 27); doc.circle(cx + 4.2, top + BADGE_H / 2, 5.6, 'F');
+        } else if (key === 'amex') {
+            box([46, 119, 188]);
+            badgeText([['AMEX', 'bold', [255, 255, 255]]], cx, base, 8.5);
+        } else if (key === 'applepay') {
+            box([0, 0, 0]);
+            badgeText([['Apple Pay', 'bold', [255, 255, 255]]], cx, base, 7.5);
+        } else if (key === 'googlepay') {
+            box([255, 255, 255], [204, 204, 204]);
+            badgeText([['G', 'bold', [66, 133, 244]], [' Pay', 'bold', [95, 99, 104]]], cx, base, 8.5);
+        } else if (key === 'paypal') {
+            box([255, 255, 255], [204, 204, 204]);
+            badgeText([['Pay', 'bolditalic', [0, 48, 135]], ['Pal', 'bolditalic', [0, 156, 222]]], cx, base, 8.5);
+        } else if (key === 'upi') {
+            box([255, 255, 255], [204, 204, 204]);
+            badgeText([['UPI', 'bold', [69, 69, 69]]], cx, base, 9);
+        } else {
+            box([241, 245, 249], [204, 204, 204]);
+            badgeText([['Pay by bank', 'bold', [51, 64, 84]]], cx, base, 7.5);
+        }
+    }
+
+    function drawPayOnline(top, availRight) {
+        var m = payOnline.matrix, n = m.length, cell = PAY_QR / (n + 8);
+        doc.setFillColor(255, 255, 255); doc.rect(ml, top, PAY_QR, PAY_QR, 'F');
+        doc.setFillColor(0, 0, 0);
+        for (var r = 0; r < n; r++) {
+            var col = 0;
+            while (col < n) {
+                if (m[r].charAt(col) === '1') {
+                    var start = col;
+                    while (col < n && m[r].charAt(col) === '1') col++;
+                    doc.rect(ml + (start + 4) * cell, top + (r + 4) * cell, (col - start) * cell, cell + 0.15, 'F');
+                } else col++;
+            }
+        }
+        var tx = ml + PAY_QR + 10, avail = Math.max(120, availRight - tx);
+        doc.setFont(TF, 'bold'); doc.setFontSize(14); doc.setTextColor(brandRGB[0], brandRGB[1], brandRGB[2]);
+        doc.text(payOnline.heading || 'View and pay online', tx, top + 16);
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(110, 110, 110);
+        doc.text('Scan the code with your phone to pay.', tx, top + 29);
+        var by = top + 38, bx = tx, used = 0;
+        (payOnline.badges || []).forEach(function (key) {
+            var bw = BADGE_W[key] || 40;
+            if (used > 0 && used + BADGE_GAP + bw > avail) { bx = tx; used = 0; by += BADGE_H + 5; }
+            drawPayBadge(key, bx, by);
+            bx += bw + BADGE_GAP; used += (used > 0 ? BADGE_GAP : 0) + bw;
+        });
+        return Math.max(PAY_QR, by + BADGE_H - top);
+    }
+
+    // ════════════════════════════════════════════════════════
     //  TOTALS — right-aligned
     // ════════════════════════════════════════════════════════
-    checkPageBreak(70);
+    checkPageBreak(payOnline ? PAY_QR + 12 : 70);
+    var totalsTop = y;
     // Totals hang off the last numeric column so they line up however many
     // columns the theme is showing. This used to read col.price, which stopped
     // existing when the columns became dynamic - the label x went undefined and
@@ -4421,6 +4525,12 @@ function generateInvoicePDF(isDummy, kind) {
     y += 4;
     tRow('TOTAL  ' + currLabel, total, true);
     y += 10;
+
+    // "View and pay online", on the left of the totals.
+    if (payOnline) {
+        var payHeight = drawPayOnline(totalsTop, tLabelX - 72);
+        y = Math.max(y, totalsTop + payHeight + 8);
+    }
 
     // ════════════════════════════════════════════════════════
     //  DUE DATE + TERMS
