@@ -4819,6 +4819,10 @@ def pay_online_block(db, inv, request=None):
     try:
         if not inv.tracking_id or inv.status in ("Paid", "Void", "Credited") or (inv.due or 0) <= 0.005:
             return None
+        # The payment page refuses a draft and an expired link, so a code on
+        # one would open nothing.
+        if inv.status == "Draft" or link_is_expired(inv):
+            return None
         offered = invoice_payment_methods(db, inv)
         if not offered:
             return None
@@ -25703,11 +25707,11 @@ def list_client_gateways(request: Request, db: Session = Depends(get_db)):
     saved = {r.provider: client_gateway_to_dict(r) for r in rows}
     return {
         "gateways": [
-            saved.get(p, {
+            dict(saved.get(p, {
                 "provider": p, "label": PROVIDER_LABELS[p], "public_key": "",
                 "secret_key": "", "has_secret": False, "webhook_secret": "",
                 "is_active": False, "is_live": False, "updated_at": "",
-            })
+            }), badges=pay_badges_for([p]), badges_html=badges_html(pay_badges_for([p])))
             for p in CLIENT_PROVIDERS
         ],
         # Salt Edge runs on the platform's account, so a business has no keys to
@@ -25717,6 +25721,7 @@ def list_client_gateways(request: Request, db: Session = Depends(get_db)):
             "currencies": [c for c in ("GBP", "EUR") if saltedge.can_take(saltedge_cfg(), c)],
             "collection_mode": collection_mode(db),
             "offered": saltedge_ready(db, "GBP") or saltedge_ready(db, "EUR"),
+            "badges": pay_badges_for(["saltedge"]), "badges_html": badges_html(pay_badges_for(["saltedge"])),
         }],
         # Said plainly so nobody wires their own keys expecting wallet credit.
         "note": "These collect money from your customers into your own account. "

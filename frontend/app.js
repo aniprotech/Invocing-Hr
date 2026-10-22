@@ -20242,10 +20242,17 @@ async function loadPaymentOptions() {
     if (!host) return;
     try {
         var d = await fetchJson('/api/payment-gateways');
-        var on = (d.gateways || []).filter(function (g) { return g.is_active; }).map(function (g) { return g.label; });
-        (d.platform_methods || []).forEach(function (m) { if (m.offered) on.push(m.label + ' (' + (m.currencies || []).join(', ') + ')'); });
+        // Each method with the marks a customer will see beside "View and pay
+        // online" on the invoice. The marks' markup is the server's own (the
+        // same as the email's), fixed text with no customer data in it.
+        var on = (d.gateways || []).filter(function (g) { return g.is_active; }).map(function (g) { return { label: g.label, badges: g.badges_html || '' }; });
+        (d.platform_methods || []).forEach(function (m) { if (m.offered) on.push({ label: m.label + ' (' + (m.currencies || []).join(', ') + ')', badges: m.badges_html || '' }); });
         host.innerHTML = on.length
-            ? on.map(function (l) { return '<div style="padding:8px 0;border-top:1px solid var(--border-color);">' + esc(l) + '</div>'; }).join('')
+            ? on.map(function (o) {
+                return '<div style="padding:10px 0;border-top:1px solid var(--border-color);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center;">' +
+                    '<span>' + esc(o.label) + '</span><span class="pay-option-badges">' + o.badges + '</span></div>';
+            }).join('') +
+              '<p class="bt-note" style="margin:12px 0 0;">Every invoice with something to pay carries a "View and pay online" QR code and link, with these marks.</p>'
             : '<div style="color:var(--text-secondary);">No online payment method is switched on yet, so invoices can only be paid by transfer.</div>';
     } catch (e) {
         host.innerHTML = '<div style="color:var(--text-secondary);">' + esc(e.message || 'Could not load your payment options.') + '</div>';
