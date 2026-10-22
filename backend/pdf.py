@@ -159,6 +159,104 @@ def line_amounts(li, tax_type):
     return amount, 0.0
 
 
+# --- "View and pay online": the QR code and the ways to pay, as badges ----------
+# Drawn in the same places and the same sizes as the browser's engine does
+# (drawPayOnline in app.js). The badges are plain shapes and the brands' own
+# colours, not their logos: enough to say which ways to pay there are.
+
+BADGE_H = 17
+BADGE_W = {"visa": 40, "mastercard": 40, "amex": 40, "applepay": 48, "googlepay": 44, "paypal": 46, "upi": 36, "bank": 66}
+BADGE_GAP = 5
+PAY_QR = 70          # the code and its quiet zone, in points
+
+
+def badge_text_centred(c, parts, cx, base, size):
+    """Text in several colours, centred as one piece: [(text, font, (r,g,b))]."""
+    widths = [stringWidth(t, f, size) for t, f, _ in parts]
+    x = cx - sum(widths) / 2.0
+    for (t, f, col), wd in zip(parts, widths):
+        c.setFont(f, size)
+        c.setFillColorRGB(*col)
+        c.drawString(x, base, t)
+        x += wd
+
+
+def draw_pay_badge(c, key, x, bottom):
+    """One badge, its lower left corner at (x, bottom) in reportlab's own coordinates."""
+    w, h = BADGE_W.get(key, 40), BADGE_H
+    cx, base = x + w / 2.0, bottom + h / 2.0 - 3
+    c.setLineWidth(0.6)
+
+    def box(fill, stroke=None):
+        c.setFillColorRGB(*fill)
+        if stroke:
+            c.setStrokeColorRGB(*stroke)
+        c.roundRect(x, bottom, w, h, 3, stroke=1 if stroke else 0, fill=1)
+
+    if key == "visa":
+        box((26 / 255, 31 / 255, 113 / 255))
+        badge_text_centred(c, [("VISA", "Helvetica-BoldOblique", (1, 1, 1))], cx, base, 10)
+    elif key == "mastercard":
+        box((28 / 255, 28 / 255, 28 / 255))
+        c.setFillColorRGB(235 / 255, 0, 27 / 255)
+        c.circle(cx - 4.2, bottom + h / 2.0, 5.6, stroke=0, fill=1)
+        c.setFillColorRGB(247 / 255, 158 / 255, 27 / 255)
+        c.circle(cx + 4.2, bottom + h / 2.0, 5.6, stroke=0, fill=1)
+    elif key == "amex":
+        box((46 / 255, 119 / 255, 188 / 255))
+        badge_text_centred(c, [("AMEX", "Helvetica-Bold", (1, 1, 1))], cx, base, 8.5)
+    elif key == "applepay":
+        box((0, 0, 0))
+        badge_text_centred(c, [("Apple Pay", "Helvetica-Bold", (1, 1, 1))], cx, base, 7.5)
+    elif key == "googlepay":
+        box((1, 1, 1), (0.8, 0.8, 0.8))
+        badge_text_centred(c, [("G", "Helvetica-Bold", (66 / 255, 133 / 255, 244 / 255)), (" Pay", "Helvetica-Bold", (95 / 255, 99 / 255, 104 / 255))], cx, base, 8.5)
+    elif key == "paypal":
+        box((1, 1, 1), (0.8, 0.8, 0.8))
+        badge_text_centred(c, [("Pay", "Helvetica-BoldOblique", (0, 48 / 255, 135 / 255)), ("Pal", "Helvetica-BoldOblique", (0, 156 / 255, 222 / 255))], cx, base, 8.5)
+    elif key == "upi":
+        box((1, 1, 1), (0.8, 0.8, 0.8))
+        badge_text_centred(c, [("UPI", "Helvetica-Bold", (0.27, 0.27, 0.27))], cx, base, 9)
+    else:   # bank
+        box((0.945, 0.961, 0.976), (0.8, 0.8, 0.8))
+        badge_text_centred(c, [("Pay by bank", "Helvetica-Bold", (0.2, 0.25, 0.33))], cx, base, 7.5)
+
+
+def draw_qr(c, matrix, x, bottom, size):
+    """The code as squares, with the four-module quiet zone every scanner wants.
+    Runs of dark squares in a row are drawn as one rectangle."""
+    n = len(matrix)
+    cell = size / float(n + 8)
+    c.setFillColorRGB(1, 1, 1)
+    c.rect(x, bottom, size, size, stroke=0, fill=1)
+    c.setFillColorRGB(0, 0, 0)
+    for r, row in enumerate(matrix):
+        col = 0
+        while col < n:
+            if row[col] == "1":
+                start = col
+                while col < n and row[col] == "1":
+                    col += 1
+                c.rect(x + (start + 4) * cell, bottom + size - (r + 5) * cell, (col - start) * cell, cell + 0.15, stroke=0, fill=1)
+            else:
+                col += 1
+
+
+def pay_badge_rows(badges, avail):
+    """The badges, wrapped to fit a width: a list of rows of keys."""
+    rows, row, used = [], [], 0.0
+    for b in badges:
+        w = BADGE_W.get(b, 40)
+        if row and used + BADGE_GAP + w > avail:
+            rows.append(row)
+            row, used = [], 0.0
+        used += (BADGE_GAP if row else 0) + w
+        row.append(b)
+    if row:
+        rows.append(row)
+    return rows
+
+
 def document_pdf(doc, kind="invoice"):
     """The PDF bytes for a document dict (see pdf_document_data in main.py)."""
     cfg = DOC_TYPES.get(kind, DOC_TYPES["invoice"])
@@ -469,10 +567,12 @@ def document_pdf(doc, kind="invoice"):
     y += 10
 
     # --- totals, hung off the last column ----------------------------------------------
-    page_break(70)
+    pay_online = doc.get("pay_online") if (kind == "invoice" and visible("pay_online")) else None
+    page_break(PAY_QR + 12 if pay_online else 70)
     last = num_cols[-1]
     label_x = last["x"] - 6
     val_x = MR
+    totals_top = y
 
     def total_row(label, val, is_bold=False):
         nonlocal y
@@ -489,6 +589,23 @@ def document_pdf(doc, kind="invoice"):
     y += 4
     total_row("TOTAL  " + currency, total_text, True)
     y += 10
+
+    # "View and pay online", on the left of the totals: a code to scan, and the
+    # ways to pay. Left out when there is nothing to pay with or nowhere to go.
+    if pay_online and pay_online.get("matrix"):
+        draw_qr(c, pay_online["matrix"], ML, T(totals_top + PAY_QR), PAY_QR)
+        tx = ML + PAY_QR + 10
+        avail = max(120.0, (label_x - 72) - tx)
+        text(pay_online.get("heading") or "View and pay online", tx, totals_top + 16, bold, 14, brand)
+        text("Scan the code with your phone to pay.", tx, totals_top + 29, "Helvetica", 7.5, grey(110))
+        by = totals_top + 38
+        for row in pay_badge_rows(pay_online.get("badges") or [], avail):
+            bx = tx
+            for key in row:
+                draw_pay_badge(c, key, bx, T(by + BADGE_H))
+                bx += BADGE_W.get(key, 40) + BADGE_GAP
+            by += BADGE_H + 5
+        y = max(y, totals_top + max(PAY_QR, by - totals_top) + 8)
 
     if date_out:
         page_break(30)

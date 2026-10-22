@@ -4081,6 +4081,7 @@ def get_invoice(number: str, request: Request, db: Session = Depends(get_db)):
 
     return {
         "last_delivery": delivery_to_dict(last_send) if last_send else None,
+        "pay_online": pay_online_block(db, inv, request),
         "id": inv.id,
         "number": inv.number,
         "ref": inv.ref,
@@ -4401,7 +4402,11 @@ def send_invoice_email(number: str, background_tasks: BackgroundTasks, request: 
 
     # The offer, drawn once and used in both halves of the message.
     pay_link = page_url(f"/invoice.html?id={inv.tracking_id}", request) if inv.tracking_id else ""
-    pay_html, pay_text = invoice_pay_block(inv, cur_symbol, pay_link)
+    try:
+        pay_badges = pay_badges_for([m["provider"] for m in invoice_payment_methods(db, inv)])
+    except Exception:                      # noqa: BLE001 - the email goes without badges, not without the invoice
+        pay_badges = []
+    pay_html, pay_text = invoice_pay_block(inv, cur_symbol, pay_link, badges=pay_badges)
     pay_text_block = (pay_text + "\n\n") if pay_text else ""
 
     body = f"""Hello {esc(inv.to_contact)},
@@ -4529,7 +4534,7 @@ Powered by Aniprotech"""
     # No PDF from the screen - a scheduled send, a recurring invoice, a
     # quote accepted - and the attachment still wanted: the server draws it.
     if payload.attach_pdf and not pdf_b64:
-        pdf_b64 = document_pdf_b64(db, inv, client, "invoice")
+        pdf_b64 = document_pdf_b64(db, inv, client, "invoice", request)
     pdf_filename = f"{inv.number}.pdf" if pdf_b64 else "invoice.pdf"
 
     # Where it is going. An address typed on the screen wins over the one on
@@ -4770,7 +4775,64 @@ def bill_to_dict(doc):
 import pdf as pdf_engine  # noqa: E402
 
 
-def pdf_document_data(db, obj, client, kind="invoice"):
+# --- "View and pay online" -------------------------------------------------------
+# A block on the invoice - a QR code to scan, a heading, and the ways to pay as
+# badges - so a printed or PDF invoice can be paid from a phone. It is drawn on
+# the PDF (here and in the browser's engine), in the email and on the page, from
+# the same answer: only the ways to pay this business really has switched on.
+
+PAY_BADGE_ORDER = ("visa", "mastercard", "amex", "applepay", "googlepay", "paypal", "upi", "bank")
+PAY_BADGES = {
+    "stripe": ("visa", "mastercard", "amex", "applepay", "googlepay"),    # what Stripe's checkout takes
+    "razorpay": ("visa", "mastercard", "upi"),
+    "paypal": ("paypal",),
+    "gocardless": ("bank",),
+    "saltedge": ("bank",),
+}
+PAY_BADGE_LABELS = {"visa": "VISA", "mastercard": "Mastercard", "amex": "AMEX", "applepay": "Apple Pay", "googlepay": "G Pay",
+                    "paypal": "PayPal", "upi": "UPI", "bank": "Pay by bank"}
+
+
+def pay_badges_for(providers):
+    have = set()
+    for p in providers:
+        have.update(PAY_BADGES.get(p, ()))
+    return [b for b in PAY_BADGE_ORDER if b in have]
+
+
+def qr_matrix(text):
+    """A QR code as rows of "0"/"1", for anything that can draw squares. Made
+    with the encoder that ships inside reportlab, so there is nothing more to
+    install; error correction M, the smallest version that holds the text."""
+    from reportlab.graphics.barcode import qrencoder
+    q = qrencoder.QRCode(None, qrencoder.QRErrorCorrectLevel.M)
+    q.addData(text)
+    q.make()
+    n = q.getModuleCount()
+    return ["".join("1" if q.isDark(r, c) else "0" for c in range(n)) for r in range(n)]
+
+
+def pay_online_block(db, inv, request=None):
+    """What to draw for "View and pay online", or None when there is nothing
+    to offer: no way to pay online, nothing owing, or no address the code could
+    point to (a code that opens nothing is worse than none)."""
+    try:
+        if not inv.tracking_id or inv.status in ("Paid", "Void", "Credited") or (inv.due or 0) <= 0.005:
+            return None
+        offered = invoice_payment_methods(db, inv)
+        if not offered:
+            return None
+        url = page_url(f"/invoice.html?id={inv.tracking_id}&pay=1", request)
+        if not url.startswith("http"):
+            return None
+        return {"heading": "View and pay online", "url": url,
+                "badges": pay_badges_for([m["provider"] for m in offered]), "matrix": qr_matrix(url)}
+    except Exception:                      # noqa: BLE001 - the document must still draw without it
+        logger.exception("Could not work out the pay-online block for invoice %s", getattr(inv, "number", "?"))
+        return None
+
+
+def pdf_document_data(db, obj, client, kind="invoice", request=None):
     """Everything the renderer needs, gathered the way the screen gathers it:
     the parties, the lines, the theme, the logo, the terms and the signature
     the business saved under Settings."""
@@ -4807,6 +4869,7 @@ def pdf_document_data(db, obj, client, kind="invoice"):
                        for li in (obj.line_items or [])],
         "theme": theme_to_dict(theme) if theme else {},
         "layout": _layout_blocks(settings_map.get("invoice_layout", "")),
+        "pay_online": pay_online_block(db, obj, request) if kind == "invoice" else None,
     }
 
 
@@ -4819,12 +4882,12 @@ def _layout_blocks(raw):
     return blocks if isinstance(blocks, list) else []
 
 
-def document_pdf_bytes(db, obj, client, kind="invoice") -> bytes:
-    return pdf_engine.document_pdf(pdf_document_data(db, obj, client, kind), kind)
+def document_pdf_bytes(db, obj, client, kind="invoice", request=None) -> bytes:
+    return pdf_engine.document_pdf(pdf_document_data(db, obj, client, kind, request), kind)
 
 
-def document_pdf_b64(db, obj, client, kind="invoice") -> str:
-    return base64.b64encode(document_pdf_bytes(db, obj, client, kind)).decode("ascii")
+def document_pdf_b64(db, obj, client, kind="invoice", request=None) -> str:
+    return base64.b64encode(document_pdf_bytes(db, obj, client, kind, request)).decode("ascii")
 
 
 def pdf_response(data: bytes, filename: str):
@@ -4840,7 +4903,7 @@ def invoice_pdf(number: str, request: Request, db: Session = Depends(get_db)):
                                             models.DBInvoice.client_id == client.id).first()
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    return pdf_response(document_pdf_bytes(db, inv, client, "invoice"), f"{inv.number}.pdf")
+    return pdf_response(document_pdf_bytes(db, inv, client, "invoice", request), f"{inv.number}.pdf")
 
 
 @app.get("/api/quotes/{number}/pdf")
@@ -4864,7 +4927,7 @@ def credit_note_pdf(number: str, request: Request, db: Session = Depends(get_db)
 
 
 @app.get("/api/public/invoices/{tracking_id}/pdf")
-def public_invoice_pdf(tracking_id: str, db: Session = Depends(get_db)):
+def public_invoice_pdf(tracking_id: str, request: Request, db: Session = Depends(get_db)):
     """The document itself, for the person it was sent to. The same rule as
     the page: a draft or a void invoice is not available from a link."""
     inv = db.query(models.DBInvoice).filter(models.DBInvoice.tracking_id == tracking_id).first()
@@ -4873,7 +4936,7 @@ def public_invoice_pdf(tracking_id: str, db: Session = Depends(get_db)):
     client = db.query(models.DBClient).filter(models.DBClient.id == inv.client_id).first()
     if not client:
         raise HTTPException(status_code=404, detail="That invoice is not available")
-    return pdf_response(document_pdf_bytes(db, inv, client, "invoice"), f"{inv.number}.pdf")
+    return pdf_response(document_pdf_bytes(db, inv, client, "invoice", request), f"{inv.number}.pdf")
 
 
 @app.get("/api/public/quotes/{tracking_id}/pdf")
@@ -25456,7 +25519,8 @@ def _public_payment_block(db, client, inv):
         return None
     razorpay_key = collecting_keys(db, client.id, "razorpay")[0] if any(m["provider"] == "razorpay" for m in offered) else ""
     return {"provider": "razorpay" if razorpay_key else offered[0]["provider"], "key_id": razorpay_key or "",
-            "providers": [m["provider"] for m in offered]}
+            "providers": [m["provider"] for m in offered],
+            "badges": pay_badges_for([m["provider"] for m in offered])}
 
 
 @app.get("/api/public/invoices/{tracking_id}")
@@ -35345,7 +35409,33 @@ def pay_block_text(link, amount_text, due_text, number):
               f"Review and pay: {link}")
 
 
-def pay_block_html(link, amount_text, due_text, number, accent="#0f172a"):
+EMAIL_BADGE_STYLES = {
+    "visa": ("#1a1f71", "#ffffff", "VISA", "font-style:italic;font-weight:800;"),
+    "mastercard": ("#1c1c1c", "#ffffff", "mastercard", "font-weight:700;"),
+    "amex": ("#2e77bc", "#ffffff", "AMEX", "font-weight:800;"),
+    "applepay": ("#000000", "#ffffff", "Apple Pay", "font-weight:700;"),
+    "googlepay": ("#ffffff", "#5f6368", "G Pay", "font-weight:700;border:1px solid #cbd5e1;"),
+    "paypal": ("#ffffff", "#003087", "PayPal", "font-style:italic;font-weight:800;border:1px solid #cbd5e1;"),
+    "upi": ("#ffffff", "#444444", "UPI", "font-weight:800;border:1px solid #cbd5e1;"),
+    "bank": ("#f1f5f9", "#334155", "Pay by bank", "font-weight:700;border:1px solid #cbd5e1;"),
+}
+
+
+def badges_html(badges):
+    """The ways to pay as small badges. Inline spans, because that is all every
+    mail client agrees on; a client that ignores the rounding still reads them."""
+    out = []
+    for b in badges or []:
+        style = EMAIL_BADGE_STYLES.get(b)
+        if not style:
+            continue
+        bg, fg, label, extra = style
+        out.append(f'<span style="display:inline-block;background:{bg};color:{fg};font-family:Arial,Helvetica,sans-serif;font-size:11px;'
+                   f'line-height:1;padding:6px 9px;border-radius:4px;margin:0 3px 4px;{extra}">{esc(label)}</span>')
+    return "".join(out)
+
+
+def pay_block_html(link, amount_text, due_text, number, accent="#0f172a", badges=None):
     """What is owed, when, which invoice, and one button that opens the
     payment page - the first thing a customer should see.
 
@@ -35353,6 +35443,8 @@ def pay_block_html(link, amount_text, due_text, number, accent="#0f172a"):
     collapses into a column. The button is a padded anchor for the same
     reason - a <button> outside a form does nothing in several clients.
     """
+    badge_row = (f'<tr><td align="center" style="padding:14px 0 0;"><div style="font-size:12px;color:#64748b;margin-bottom:6px;">Pay online with</div>{badges_html(badges)}</td></tr>'
+                 if badges else "")
     due_row = (f'<tr><td align="center" style="padding:0 0 2px;">'
                f'<div style="font-size:14px;color:#475569;">Due {esc(due_text)}</div></td></tr>') if due_text else ""
     return f"""
@@ -35367,10 +35459,11 @@ def pay_block_html(link, amount_text, due_text, number, accent="#0f172a"):
                 <tr><td align="center">
                   <a href="{esc(link)}" style="display:block;background:{accent};color:#ffffff;font-size:17px;font-weight:700;text-align:center;text-decoration:none;padding:16px 24px;border-radius:6px;">Review and pay</a>
                 </td></tr>
+                {badge_row}
               </table>"""
 
 
-def invoice_pay_block(inv, cur_symbol, link=None, accent="#0f172a"):
+def invoice_pay_block(inv, cur_symbol, link=None, accent="#0f172a", badges=None):
     """(html, text) for this invoice: the button while there is something to
     pay, a plain link once there is not, and nothing at all when the invoice
     has no public page to send anybody to."""
@@ -35389,7 +35482,7 @@ def invoice_pay_block(inv, cur_symbol, link=None, accent="#0f172a"):
     link = link + ("&" if "?" in link else "?") + "pay=1"
     on = _parse_any_date(inv.due_date or "")
     due_text = on.strftime("%d %b %Y").lstrip("0") if on else (inv.due_date or "")
-    return (pay_block_html(link, amount_text, due_text, inv.number, accent),
+    return (pay_block_html(link, amount_text, due_text, inv.number, accent, badges),
             pay_block_text(link, amount_text, due_text, inv.number))
 
 
