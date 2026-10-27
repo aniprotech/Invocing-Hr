@@ -8673,27 +8673,42 @@ def forgot_password(body: ForgotPasswordIn, background_tasks: BackgroundTasks,
     if not email:
         return generic
 
+    # Everyone who signs in on this page with this address: the business's
+    # owner, and team members (who sign in here too, and were sent nothing -
+    # the link they need existed, but nothing ever issued one). One link per
+    # account, each naming the business it is for.
+    accounts = []
     client = db.query(models.DBClient).filter(
         sqlfunc.lower(models.DBClient.email) == email).first()
-    if not client or not client.is_active:
+    if client and client.is_active:
+        accounts.append(("client", client.id, client.id, client.company_name or "your account"))
+    for m in db.query(models.DBTeamMember).filter(
+            sqlfunc.lower(models.DBTeamMember.email) == email,
+            models.DBTeamMember.is_active == True).all():           # noqa: E712
+        biz = db.query(models.DBClient).filter(models.DBClient.id == m.client_id).first()
+        if biz and biz.is_active:
+            accounts.append(("member", m.id, biz.id, f"{biz.company_name or 'your team'} (team member)"))
+    if not accounts:
         return generic
 
-    token = issue_reset_token(db, "client", client.id, ip)
-    log_login(db, client.id, client.email, "client", "password_reset_requested",
-              request, "requested")
-    db.commit()
-
-    link = page_url(f"/reset-password.html?token={token}", request)
-    company = client.company_name or "your account"
     from_email = platform_from_address()
-
-    text_body, html_body = reset_email_bodies(link, company, RESET_TOKEN_TTL_MINUTES)
-
-    background_tasks.add_task(
-        send_email_background, client.email, "Reset your aniprotech password",
-        text_body, f"aniprotech <{from_email}>", html_body, None, "", "",
-        client_id=client.id,
-    )
+    for kind, subject_id, client_id, who in accounts:
+        token = issue_reset_token(db, kind, subject_id, ip)
+        log_login(db, client_id, email, kind, "password_reset_requested", request, "requested")
+        db.commit()
+        link = page_url(f"/reset-password.html?token={token}", request)
+        text_body, html_body = reset_email_bodies(link, who, RESET_TOKEN_TTL_MINUTES)
+        # The platform's own mail, not the business's. Sent through a
+        # business's own Gmail or mail server, a reset failed whenever that
+        # connection had lapsed - which is exactly when somebody is locked out
+        # and cannot reconnect it - and nothing recorded the failure. As
+        # platform mail it goes the way the health check tests, and a failure
+        # shows on the superadmin email panel.
+        background_tasks.add_task(
+            send_email_background, email, "Reset your aniprotech password",
+            text_body, f"aniprotech <{from_email}>", html_body, None, "", "",
+            client_id=None,
+        )
     return generic
 
 
@@ -8810,10 +8825,11 @@ def employee_forgot_password(body: ForgotPasswordIn, background_tasks: Backgroun
         who = f"{emp.first_name} {emp.last_name}".strip() or emp.email
         text_body, html_body = reset_email_bodies(link, who, RESET_TOKEN_TTL_MINUTES)
 
+        # Platform mail, recorded - see forgot_password.
         background_tasks.add_task(
             send_email_background, emp.email, "Reset your aniprotech password",
             text_body, f"aniprotech <{from_email}>", html_body, None, "", "",
-            client_id=emp.client_id,
+            client_id=None,
         )
     return generic
 
