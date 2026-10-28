@@ -13334,9 +13334,31 @@ async function checkAccountStatus() {
         if (!res.ok) return;
         var status = await res.json();
         showTrialBar(status.trial || {});
+        showEmailBar(status.mine || {});
     } catch (e) { /* a nudge, not a gate: the app works without it */ }
 }
 window.checkAccountStatus = checkAccountStatus;
+
+// On every screen for as long as it is true. The prompt that asks once a
+// session is easy to close and forget, and a connection that has quietly died
+// means every invoice and reminder is failing until somebody notices.
+function showEmailBar(mine) {
+    var bar = document.getElementById('email-bar');
+    if (!bar) return;
+    if (mine.can_send === false) {
+        document.getElementById('email-bar-text').textContent =
+            'Your emails are not going out: ' + (mine.blocked_reason || 'email is not set up') + '.';
+        bar.style.display = 'flex';
+        var fix = document.getElementById('email-bar-fix');
+        if (fix && !fix.getAttribute('data-wired')) {
+            fix.setAttribute('data-wired', '1');
+            fix.addEventListener('click', function () { goToEmailSetup(); });
+        }
+    } else {
+        bar.style.display = 'none';
+    }
+}
+window.showEmailBar = showEmailBar;
 
 // Everything is free for the first month, with no card and no wallet. This
 // says so only when it is about to stop being true - a bar counting down all

@@ -2494,6 +2494,36 @@ OTP_MINUTES = 10
 OTP_MAX_ATTEMPTS = 5
 
 
+# Whether a business's own Google connection still works, remembered for a few
+# minutes. Asking Google means a network round trip, and the answer is wanted on
+# every screen; a token that changes (reconnected, disconnected) is a new key,
+# so the answer can never outlive the connection it was about.
+_GMAIL_HEALTH = {}
+GMAIL_HEALTH_OK_SECONDS = 600
+GMAIL_HEALTH_BAD_SECONDS = 120
+GMAIL_DEAD = ("the Google account connected for sending is no longer authorised - "
+              "its access was revoked or has expired. Reconnect it under Settings, Email")
+
+
+def own_gmail_works(refresh_token):
+    """(works, why) for a business's own stored Google token."""
+    if not refresh_token:
+        return False, "no Google account is connected for this business"
+    key = hashlib.sha256(refresh_token.encode()).hexdigest()
+    now = time.time()
+    hit = _GMAIL_HEALTH.get(key)
+    if hit and hit[0] > now:
+        return hit[1], hit[2]
+    try:
+        creds = get_gmail_credentials(access_token=None, refresh_token=refresh_token)
+        works = bool(creds and creds.valid)
+    except Exception:                    # noqa: BLE001 - an answer, not a crash
+        works = False
+    why = "" if works else GMAIL_DEAD
+    _GMAIL_HEALTH[key] = (now + (GMAIL_HEALTH_OK_SECONDS if works else GMAIL_HEALTH_BAD_SECONDS), works, why)
+    return works, why
+
+
 def email_delivery_ready(db, client_id=None):
     """(ok, what is missing) for whichever transport would actually be used.
 
@@ -2509,10 +2539,16 @@ def email_delivery_ready(db, client_id=None):
         if not (mine.smtp_host or "").strip():
             return False, "no mail server is set for this business"
         return True, ""
+    own_token = get_stored_refresh_token(db, client_id=client_id, own_only=True) if client_id else None
     if mine and (mine.transport or "") == "gmail":
-        if not get_stored_refresh_token(db, client_id=client_id, own_only=True):
-            return False, "no Google account is connected for this business"
-        return True, ""
+        # Stored is not the same as working. A token Google has revoked was
+        # counted as ready, so nothing said a word while every invoice failed.
+        return own_gmail_works(own_token)
+    # A business that once connected its own Google account sends through it
+    # even without choosing Gmail (that is the token sending picks first), so
+    # that is the one to test - not the platform's.
+    if own_token and not (mine and (mine.transport or "") == "smtp"):
+        return own_gmail_works(own_token)
 
     transport = email_transport(db)
     if transport == "smtp":
@@ -38295,6 +38331,11 @@ def attention_items(db: Session, client) -> list:
         models.DBEmailDelivery.status == "failed",
         models.DBEmailDelivery.kind.in_(OUTBOUND_DELIVERY_KINDS),
         models.DBEmailDelivery.created_at >= since).count()
+    mail_ok, mail_why = email_delivery_ready(db, client.id)
+    if not mail_ok:
+        items.append({"key": "email_blocked", "count": 1, "label": "Your emails are not going out",
+                      "hint": mail_why, "view": "settings-view", "filter": "email", "tone": "bad",
+                      "amount": None, "currency": ""})
     add("email_failed", failed, "Emails that did not arrive", "in the last 24 hours",
         ("settings-view",), "bad")
 
